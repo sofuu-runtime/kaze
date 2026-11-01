@@ -37,6 +37,9 @@ pub const ACK_TIMEOUT_MS: u64 = 3_000;
 pub const PEER_WAIT_MS: u64 = 1_500;
 /// How long `connect` waits for the first position report after saying hello.
 pub const WARMUP_MS: u64 = 15_000;
+/// How long silence is tolerated before the link calls the vehicle gone. A
+/// real autopilot streams at 1-4 Hz, so two seconds is generous.
+pub const STALE_MS: u64 = 2_000;
 
 /// The commands a Kaze script can put on the wire. Anything else is a bug, and
 /// the link refuses it rather than trusting the caller.
@@ -277,6 +280,9 @@ pub struct DroneLink {
     tele: Arc<Mutex<Telemetry>>,
     notes: Arc<Mutex<Vec<Note>>>,
     stop: Arc<AtomicBool>,
+    /// When the vehicle last said anything. Silence means the link is gone, not
+    /// that commands should queue up behind an answer that will never come.
+    last_rx: Arc<Mutex<Instant>>,
     handle: Option<thread::JoinHandle<()>>,
     ack_timeout_ms: u64,
     pub device: String,
@@ -284,9 +290,11 @@ pub struct DroneLink {
 
 impl DroneLink {
     pub fn connect(device: &str) -> Result<DroneLink, String> {
+        let spec = parse_device(device)?;
+        let is_udp = matches!(spec, DeviceSpec::Udp(_));
         let mut io = open_device(device)?;
         let mut core = Core::new(device);
-        if device.trim().to_ascii_lowercase().starts_with("udp") {
+        if is_udp {
             wait_for_first_bytes(io.as_mut(), PEER_WAIT_MS).map_err(|_| {
                 format!("E_KAZE_LINK: nothing is streaming to {} — is the autopilot sending there?", device)
             })?;
@@ -295,7 +303,7 @@ impl DroneLink {
             io.write(&bytes)
                 .map_err(|e| format!("E_KAZE_LINK: cannot write to {}: {}", device, e))?;
         }
-        if device.trim().to_ascii_lowercase().starts_with("udp") {
+        if is_udp {
             core.request_streams(io.as_mut())?;
             core.warm_up(io.as_mut(), WARMUP_MS).map_err(|why| {
                 format!("E_KAZE_LINK: {} at {}", why, device)
@@ -320,20 +328,34 @@ impl DroneLink {
         let tele = Arc::new(Mutex::new(core.tele.clone()));
         let notes = Arc::new(Mutex::new(Vec::<Note>::new()));
         let stop = Arc::new(AtomicBool::new(false));
+        let last_rx = Arc::new(Mutex::new(Instant::now()));
         let handle = {
             let tele = Arc::clone(&tele);
+            let last_rx = Arc::clone(&last_rx);
             let notes = Arc::clone(&notes);
             let stop = Arc::clone(&stop);
             thread::Builder::new()
                 .name(format!("kaze-link-{}", device))
-                .spawn(move || run_link(core, io, rx, tele, notes, stop, poll_ms, ack_timeout_ms))
+                .spawn(move || {
+                    run_link(core, io, rx, tele, notes, stop, last_rx, poll_ms, ack_timeout_ms)
+                })
                 .map_err(|e| format!("E_KAZE_LINK: cannot start the receiver thread: {}", e))?
         };
-        Ok(DroneLink { tx, tele, notes, stop, handle: Some(handle), ack_timeout_ms, device })
+        Ok(DroneLink {
+            tx,
+            tele,
+            notes,
+            stop,
+            last_rx,
+            handle: Some(handle),
+            ack_timeout_ms,
+            device,
+        })
     }
 
     /// Send a command and wait for the autopilot's answer.
     pub fn command(&self, command: u16, params: [f32; 7]) -> Result<(), String> {
+        self.require_vehicle()?;
         if !SENT_COMMANDS.contains(&command) {
             return Err(format!("E_KAZE_LINK: command {} is not one Kaze sends", command));
         }
@@ -353,6 +375,7 @@ impl DroneLink {
 
     /// Send a frame the vehicle does not acknowledge (a position target).
     pub fn send_target(&self, frame: Frame) -> Result<(), String> {
+        self.require_vehicle()?;
         let (reply_tx, reply_rx) = channel();
         self.tx
             .send(Request { command: 0, params: [0.0; 7], frame: Some(frame), reply: reply_tx })
@@ -384,8 +407,32 @@ impl DroneLink {
         self.notes.lock().map(|mut n| std::mem::take(&mut *n)).unwrap_or_default()
     }
 
+    /// Is the receiving thread still running?
     pub fn is_alive(&self) -> bool {
         self.handle.as_ref().map(|h| !h.is_finished()).unwrap_or(false)
+    }
+
+    /// Milliseconds since the vehicle last said anything.
+    pub fn silence_ms(&self) -> u64 {
+        self.last_rx
+            .lock()
+            .map(|at| at.elapsed().as_millis() as u64)
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Has the vehicle been heard from recently enough to be worth talking to?
+    pub fn vehicle_alive(&self) -> bool {
+        self.silence_ms() < STALE_MS
+    }
+
+    fn require_vehicle(&self) -> Result<(), String> {
+        if self.vehicle_alive() {
+            return Ok(());
+        }
+        Err(format!(
+            "E_KAZE_LINK: nothing heard from the vehicle for {} ms",
+            self.silence_ms()
+        ))
     }
 }
 
@@ -520,6 +567,7 @@ fn run_link(
     tele: Arc<Mutex<Telemetry>>,
     notes: Arc<Mutex<Vec<Note>>>,
     stop: Arc<AtomicBool>,
+    last_rx: Arc<Mutex<Instant>>,
     poll_ms: u64,
     ack_timeout_ms: u64,
 ) {
@@ -539,6 +587,9 @@ fn run_link(
         match io.read(&mut buf) {
             Ok(0) => {}
             Ok(n) => {
+                if let Ok(mut at) = last_rx.lock() {
+                    *at = Instant::now();
+                }
                 for frame in core.on_bytes(&buf[..n]) {
                     if frame.msgid == 77 {
                         let command = frame.u16_at(0);
@@ -661,30 +712,80 @@ fn statustext(frame: &Frame) -> String {
     String::from_utf8_lossy(&raw[..end]).trim().to_string()
 }
 
-fn open_device(device: &str) -> Result<Box<dyn Io>, String> {
+/// What a `--cap drone=<device>` string asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceSpec {
+    /// `udp:HOST:PORT` — the local endpoint the link binds.
+    Udp(String),
+    /// `uart:/dev/ttyAMA0@57600` — a serial device and its baud rate.
+    Uart { path: String, baud: u32 },
+}
+
+/// The one place a device string is interpreted, so a typo is a named error
+/// rather than a socket that never connects.
+pub fn parse_device(device: &str) -> Result<DeviceSpec, String> {
     let trimmed = device.trim();
     let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("udp:") {
-        return UdpIo::connect(trimmed)
-            .map(|io| Box::new(io) as Box<dyn Io>)
-            .map_err(|e| format!("E_KAZE_LINK: cannot open {}: {}", trimmed, e));
+    if let Some(addr) = lower.strip_prefix("udp:") {
+        let _ = addr;
+        let addr = trimmed[4..].trim().to_string();
+        if addr.is_empty() || !addr.contains(':') {
+            return Err(format!(
+                "E_KAZE_LINK: '{}' is not udp:HOST:PORT (for example udp:127.0.0.1:14550)",
+                trimmed
+            ));
+        }
+        return Ok(DeviceSpec::Udp(addr));
     }
-    #[cfg(feature = "uart")]
-    {
-        let rest = trimmed.strip_prefix("uart:").unwrap_or(trimmed);
+    if lower.starts_with("uart:") {
+        let rest = trimmed[5..].trim();
         let (path, baud) = match rest.rsplit_once('@') {
-            Some((path, baud)) => (path, baud.parse::<u32>().unwrap_or(57_600)),
-            None => (rest, 57_600),
+            Some((path, baud)) => {
+                let baud: u32 = baud.trim().parse().map_err(|_| {
+                    format!("E_KAZE_LINK: '{}' does not end in a baud rate", trimmed)
+                })?;
+                (path.trim().to_string(), baud)
+            }
+            None => (rest.to_string(), 57_600),
         };
-        return UartIo::open(path, baud)
-            .map(|io| Box::new(io) as Box<dyn Io>)
-            .map_err(|e| format!("E_KAZE_LINK: cannot open {} at {} baud: {}", path, baud, e));
+        if path.is_empty() {
+            return Err(
+                "E_KAZE_LINK: uart: needs a device path, for example uart:/dev/ttyAMA0@57600"
+                    .to_string(),
+            );
+        }
+        return Ok(DeviceSpec::Uart { path, baud });
     }
-    #[cfg(not(feature = "uart"))]
     Err(format!(
-        "E_KAZE_LINK: {} needs serial support — rebuild with --features uart (UDP works as built)",
+        "E_KAZE_LINK: '{}' is neither udp:HOST:PORT nor uart:/dev/device@baud",
         trimmed
     ))
+}
+
+fn open_device(device: &str) -> Result<Box<dyn Io>, String> {
+    match parse_device(device)? {
+        DeviceSpec::Udp(addr) => UdpIo::connect(&format!("udp:{}", addr))
+            .map(|io| Box::new(io) as Box<dyn Io>)
+            .map_err(|e| format!("E_KAZE_LINK: cannot open udp:{}: {}", addr, e)),
+        DeviceSpec::Uart { path, baud } => {
+            #[cfg(feature = "uart")]
+            {
+                UartIo::open(&path, baud)
+                    .map(|io| Box::new(io) as Box<dyn Io>)
+                    .map_err(|e| {
+                        format!("E_KAZE_LINK: cannot open {} at {} baud: {}", path, baud, e)
+                    })
+            }
+            #[cfg(not(feature = "uart"))]
+            {
+                let _ = baud;
+                Err(format!(
+                    "E_KAZE_LINK: {} needs serial support — rebuild with --features uart (UDP works as built)",
+                    path
+                ))
+            }
+        }
+    }
 }
 
 fn wait_for_first_bytes(io: &mut dyn Io, timeout_ms: u64) -> Result<(), ()> {
@@ -699,3 +800,131 @@ fn wait_for_first_bytes(io: &mut dyn Io, timeout_ms: u64) -> Result<(), ()> {
     }
     Err(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mavlink::Frame;
+
+    #[test]
+    fn a_udp_device_string_is_its_bind_address() {
+        assert_eq!(
+            parse_device("udp:127.0.0.1:14550").expect("parses"),
+            DeviceSpec::Udp("127.0.0.1:14550".to_string())
+        );
+        assert_eq!(
+            parse_device("  UDP:0.0.0.0:14550 ").expect("case and spaces are forgiven"),
+            DeviceSpec::Udp("0.0.0.0:14550".to_string())
+        );
+    }
+
+    #[test]
+    fn a_udp_string_without_a_port_is_refused_by_name() {
+        let err = parse_device("udp:127.0.0.1").expect_err("no port");
+        assert!(err.contains("is not udp:HOST:PORT"), "{err}");
+        let err = parse_device("udp:").expect_err("no address");
+        assert!(err.contains("is not udp:HOST:PORT"), "{err}");
+    }
+
+    #[test]
+    fn a_uart_device_string_carries_its_baud() {
+        assert_eq!(
+            parse_device("uart:/dev/ttyAMA0@57600").expect("parses"),
+            DeviceSpec::Uart { path: "/dev/ttyAMA0".to_string(), baud: 57_600 }
+        );
+        assert_eq!(
+            parse_device("uart:/dev/ttyUSB0").expect("the baud has a default"),
+            DeviceSpec::Uart { path: "/dev/ttyUSB0".to_string(), baud: 57_600 }
+        );
+    }
+
+    #[test]
+    fn a_uart_string_with_nonsense_is_refused_by_name() {
+        let err = parse_device("uart:/dev/ttyUSB0@fast").expect_err("not a baud");
+        assert!(err.contains("does not end in a baud rate"), "{err}");
+        let err = parse_device("uart:@57600").expect_err("no path");
+        assert!(err.contains("needs a device path"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_transport_is_refused_instead_of_guessed() {
+        let err = parse_device("can:0").expect_err("not a transport");
+        assert!(err.contains("neither udp:HOST:PORT nor uart"), "{err}");
+    }
+
+    #[test]
+    fn telemetry_only_reports_what_the_vehicle_sent() {
+        let mut tele = Telemetry::default();
+        assert_eq!(tele.read("altitude"), None, "silence is not zero");
+        assert_eq!(tele.read("armed"), None);
+
+        let mut hb = Frame::new(0, 0, 7, 1).expect("heartbeat");
+        hb.set_u32_at(0, 4);
+        hb.set_u8_at(6, 0x80 | 0x51);
+        tele.apply(&hb);
+        assert_eq!(tele.read("armed"), Some(1.0));
+        assert_eq!(tele.mode.as_deref(), Some("Guided"));
+
+        let mut pos = Frame::new(33, 1, 7, 1).expect("position");
+        pos.set_i32_at(4, 476_000_000);
+        pos.set_i32_at(8, 85_000_000);
+        pos.set_i32_at(12, 500_000);
+        pos.set_i32_at(16, 120_000);
+        pos.set_i16_at(20, 300);
+        pos.set_i16_at(22, 400);
+        tele.apply(&pos);
+        assert!((tele.read("lat").expect("lat") - 47.6).abs() < 1e-9);
+        assert!((tele.read("altitude").expect("alt") - 120.0).abs() < 1e-6);
+        assert!((tele.read("speed").expect("speed") - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_statustext_is_read_as_a_string() {
+        let mut frame = Frame::new(253, 0, 7, 1).expect("statustext");
+        frame.set_u8_at(0, 4);
+        for (i, byte) in b"PreArm: hardware safety switch".iter().enumerate() {
+            frame.set_u8_at(1 + i, *byte);
+        }
+        assert_eq!(statustext(&frame), "PreArm: hardware safety switch");
+    }
+
+    struct Silent;
+
+    impl Io for Silent {
+        fn write(&mut self, _: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn a_silent_vehicle_makes_the_link_refuse_instead_of_hanging() {
+        let link = DroneLink::with_io(
+            Core::new("silent"),
+            Box::new(Silent),
+            "silent".to_string(),
+            10,
+            100,
+        )
+        .expect("the thread starts");
+        assert!(link.vehicle_alive(), "a fresh link assumes nothing yet is wrong");
+
+        std::thread::sleep(Duration::from_millis(STALE_MS + 300));
+
+        let err = link
+            .command(crate::mavlink::cmd::COMPONENT_ARM_DISARM, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            .expect_err("silence is not consent");
+        assert!(err.contains("nothing heard from the vehicle"), "{err}");
+        assert!(!link.vehicle_alive());
+    }
+
+    #[test]
+    fn the_command_allowlist_is_closed() {
+        assert!(SENT_COMMANDS.contains(&crate::mavlink::cmd::COMPONENT_ARM_DISARM));
+        assert!(!SENT_COMMANDS.contains(&crate::mavlink::cmd::PARAM_SET));
+        assert!(!SENT_COMMANDS.contains(&crate::mavlink::cmd::DO_MOTOR_TEST));
+    }
+}
+

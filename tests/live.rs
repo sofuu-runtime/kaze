@@ -156,6 +156,36 @@ fn a_script_drives_a_real_gpio_line() {
 }
 
 #[test]
+fn hardware_named_without_a_pin_is_refused_not_simulated() {
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["device".to_string()];
+    opts.backend = vec![("device".to_string(), "gpio".to_string())];
+    opts.fuel = 50_000;
+    let source = "needs: fan\n\naction main():\n    turn on fan\n";
+    let err = run_source(source, "gpio.kaze", &opts).expect_err("nothing to drive");
+    assert!(
+        err.message.contains("needs at least one --pin"),
+        "a script must not get a simulated success: {}",
+        err.message
+    );
+}
+
+#[test]
+fn a_family_with_no_live_backend_says_so() {
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["sensor".to_string()];
+    opts.backend = vec![("sensor".to_string(), "i2c".to_string())];
+    opts.fuel = 50_000;
+    let source = "needs: sensor, log\n\naction main():\n    log sensor.temperature()\n";
+    let err = run_source(source, "sensor.kaze", &opts).expect_err("no live sensor");
+    assert!(
+        err.message.contains("has no live backend in v0.2"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
 fn a_pin_the_operator_never_named_is_refused() {
     let _ = gpio_root();
     let mut opts = RunOptions::default();

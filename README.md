@@ -186,14 +186,27 @@ COMMAND_LONG↔COMMAND_ACK correlation, and arming confirmed from the vehicle's
 heartbeat rather than from the ACK alone. Six commands can leave the process —
 arm, takeoff, land, RTL, loiter, set-mode — plus a position target for
 `drone.goto`. A refusal keeps its cause: `E_COMMAND_REJECTED`,
-`E_ARMING_DENIED`, `E_KAZE_LINK`, `E_KAZE_LINK_TIMEOUT`.
+`E_ARMING_DENIED`, `E_KAZE_LINK`, `E_KAZE_LINK_TIMEOUT`. Two seconds of
+silence makes the link refuse instead of waiting on an answer that is never
+coming, and hardware the operator did not name is never simulated.
 
 Measured against ArduCopter SITL over UDP: `arm` → GUIDED → `takeoff to 15
 meters` → `drone.goto(...)` → `return to launch` in one script, exit 0.
 
-Honest limits: GPIO is sysfs (`/sys/class/gpio`) only — a Pi 5 that exposes the
-character-device ABI instead is not supported yet; serial needs the `uart`
-feature; and error line numbers name the routine, not the call.
+GPIO defaults to sysfs (`/sys/class/gpio`). A board that dropped sysfs — a
+Raspberry Pi 5, for instance — needs the character-device ABI:
+
+```bash
+cargo build --features chardev          # /dev/gpiochipN (GPIO v2 UAPI)
+cargo build --features uart             # serial flight-controller links
+cargo build --features chardev,uart     # both
+```
+
+Honest limits: the chardev path is compiled against the documented v2 UAPI and
+its request layout and ioctl numbers are unit-tested, but it has not been run
+against a real GPIO chip here, so its first use on a board is a check, not a
+given. PWM has no Kaze verb yet, so there is none — that is a language change,
+not a backend. And error line numbers name the routine, not the call.
 
 ### Interactive REPL
 ```bash

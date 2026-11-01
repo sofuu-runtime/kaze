@@ -36,10 +36,30 @@ impl LiveHost {
     ) -> Result<LiveHost, String> {
         let mut link = None;
         for (family, device) in backends {
-            if family != "drone" || device.is_empty() || device == "sim" {
+            let device = device.trim();
+            if device.is_empty() || device == "sim" {
                 continue;
             }
-            link = Some(DroneLink::connect(device)?);
+            match family.as_str() {
+                "drone" => link = Some(DroneLink::connect(device)?),
+                // A device family with no named pin has nothing to drive, and
+                // falling back to the simulator would let a script report
+                // success for a relay that does not exist.
+                "device" => {
+                    if pins.is_empty() {
+                        return Err(format!(
+                            "E_KAZE_LINK: --cap device={} needs at least one --pin name=<line>",
+                            device
+                        ));
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "E_KAZE_LINK: the '{}' family has no live backend in v0.2 (drone and device do)",
+                        other
+                    ));
+                }
+            }
         }
         let gpio = if pins.is_empty() { None } else { Some(GpioBus::new(pins, None)) };
         Ok(LiveHost { sim: SimHost::new(sim), link, gpio })

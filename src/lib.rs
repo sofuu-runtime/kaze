@@ -10,6 +10,8 @@ pub mod checker;
 pub mod compiler;
 pub mod deadline;
 pub mod gpio;
+#[cfg(feature = "chardev")]
+pub mod gpio_chardev;
 pub mod hardware;
 pub mod host;
 pub mod isa;

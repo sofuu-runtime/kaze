@@ -323,7 +323,7 @@ impl Frame {
 
 /// One byte through the MAVLink CRC accumulator. The seed is `0xFFFF`; the
 /// per-message CRC_EXTRA byte is fed in last.
-pub fn crc_accumulate(mut crc: u16, byte: u8) -> u16 {
+pub fn crc_accumulate(crc: u16, byte: u8) -> u16 {
     let tmp = byte ^ (crc as u8);
     let tmp = tmp ^ (tmp << 4);
     let tmp = tmp as u16;

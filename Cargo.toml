@@ -21,6 +21,9 @@ serde_json = "1.0"
 # Serial (UART) flight-controller links. Off by default: a UDP link needs
 # nothing extra, and a device build with a cable turns this on.
 uart = []
+# GPIO through /dev/gpiochipN (the character device ABI) instead of sysfs.
+# Boards that dropped sysfs — Raspberry Pi 5 among them — need this.
+chardev = []
 
 [[bin]]
 name = "kaze"
