@@ -270,6 +270,11 @@ impl SimHost {
         SimHost { state, actions: Vec::new(), logs: Vec::new(), seq: 0 }
     }
 
+    /// Record a call another backend answered, so the trace has one owner.
+    pub(crate) fn note(&mut self, family: &str, op: &str, args: &[String], result: String) {
+        self.record(family, op, args, result);
+    }
+
     fn record(&mut self, family: &str, op: &str, args: &[String], result: String) {
         self.seq += 1;
         self.actions.push(Action {

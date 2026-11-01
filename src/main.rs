@@ -17,7 +17,12 @@ pub fn print_help() {
          \x20 repl                 Interactive session: define routines, then .run\n\
          \x20 version              Print the Kaze language version\n\n\
          run options:\n\
-         \x20 --cap <family>[=sim]   Grant a backend (drone, rover, sensor, device, alert)\n\
+         \x20 --cap <family>[=<device>]  Grant a backend. `sim` (default) is the\n\
+         \x20                        simulator; `drone=udp:127.0.0.1:14550` or\n\
+         \x20                        `drone=uart:/dev/ttyAMA0@57600` is a real\n\
+         \x20                        autopilot (v0.2, serial needs --features uart)\n\
+         \x20 --pin <name>=<line>   Name a GPIO line the device family may drive\n\
+         \x20                        (v0.2, e.g. --pin fan=17)\n\
          \x20 --entry <name>         Routine to run (default: main, or the only one)\n\
          \x20 --arg <name>=<json>    Bind a parameter (repeatable)\n\
          \x20 --fuel <n>             Instruction budget (default 200000)\n\
@@ -33,6 +38,10 @@ pub fn print_help() {
 struct Flags {
     positional: Vec<String>,
     caps: Vec<String>,
+    /// `family -> device` from `--cap drone=udp:127.0.0.1:14550` (v0.2).
+    backend: Vec<(String, String)>,
+    /// `name -> GPIO line` from `--pin fan=17` (v0.2).
+    pins: Vec<(String, u16)>,
     entry: Option<String>,
     args: serde_json::Map<String, serde_json::Value>,
     fuel: Option<u64>,
@@ -51,6 +60,8 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
     let mut f = Flags {
         positional: Vec::new(),
         caps: Vec::new(),
+        backend: Vec::new(),
+        pins: Vec::new(),
         entry: None,
         args: serde_json::Map::new(),
         fuel: None,
@@ -76,8 +87,23 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
         match a {
             "--cap" => {
                 let v = next("--cap")?;
-                let fam = v.split('=').next().unwrap_or(&v).to_string();
-                f.caps.push(fam);
+                match v.split_once('=') {
+                    Some((family, device)) => {
+                        f.caps.push(family.to_string());
+                        f.backend.push((family.to_string(), device.to_string()));
+                    }
+                    None => f.caps.push(v),
+                }
+            }
+            "--pin" => {
+                let v = next("--pin")?;
+                let (name, line) = v
+                    .split_once('=')
+                    .ok_or_else(|| "--pin expects name=number, e.g. --pin fan=17".to_string())?;
+                let line: u16 = line
+                    .parse()
+                    .map_err(|_| format!("--pin {} is not a GPIO line number", line))?;
+                f.pins.push((name.to_string(), line));
             }
             "--entry" => f.entry = Some(next("--entry")?),
             "--arg" => {
@@ -138,6 +164,8 @@ fn options_from(f: &Flags) -> Result<RunOptions, String> {
         tick_ms: f.tick_ms.unwrap_or(100),
         sim,
         policy: policy_layer(f.no_policy),
+        backend: f.backend.clone(),
+        pins: f.pins.clone(),
     })
 }
 

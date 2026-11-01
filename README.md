@@ -165,6 +165,36 @@ kaze compile examples/patrol.kaze --disasm
 kaze run patrol.kazebc --cap drone=sim --arg 'points=[1, 2]'
 ```
 
+### Live Hardware (v0.2)
+A family granted a device runs against real hardware; every other family keeps
+the simulator. Nothing is guessed: a device the operator did not name is refused.
+
+```bash
+# A real autopilot: binds this UDP endpoint and replies to whoever speaks first
+kaze run examples/patrol.kaze --cap drone=udp:127.0.0.1:14550
+
+# A serial flight controller (build with --features uart)
+kaze run examples/patrol.kaze --cap drone=uart:/dev/ttyAMA0@57600
+
+# Real GPIO lines, named by the operator
+kaze run examples/greenhouse.kaze --cap device=gpio --pin fan=17 --pin mister=27
+```
+
+What the link does on its own: a 1 Hz HEARTBEAT, a 20 Hz receive loop on its
+own thread, `MAV_CMD_SET_MESSAGE_INTERVAL` for the telemetry a flight needs,
+COMMAND_LONG↔COMMAND_ACK correlation, and arming confirmed from the vehicle's
+heartbeat rather than from the ACK alone. Six commands can leave the process —
+arm, takeoff, land, RTL, loiter, set-mode — plus a position target for
+`drone.goto`. A refusal keeps its cause: `E_COMMAND_REJECTED`,
+`E_ARMING_DENIED`, `E_KAZE_LINK`, `E_KAZE_LINK_TIMEOUT`.
+
+Measured against ArduCopter SITL over UDP: `arm` → GUIDED → `takeoff to 15
+meters` → `drone.goto(...)` → `return to launch` in one script, exit 0.
+
+Honest limits: GPIO is sysfs (`/sys/class/gpio`) only — a Pi 5 that exposes the
+character-device ABI instead is not supported yet; serial needs the `uart`
+feature; and error line numbers name the routine, not the call.
+
 ### Interactive REPL
 ```bash
 kaze repl
@@ -233,7 +263,7 @@ A physical machine acting on clamped values is acting on a lie. Kaze halts uncat
 | Phase | Milestone | Focus Areas |
 | :--- | :--- | :--- |
 | **v0.1** | **Core Foundation (Done)** | Fixed 4-byte ISA, clean-room lexer/parser/checker, arena allocator, fuel meter, CLI & REPL. |
-| **v0.2** | **Physical Hardware (P-K1)** | Live MAVLink v1/v2 serial UART (`/dev/ttyUSB0`) & UDP, Linux GPIO/PWM, 50 Hz real-time heartbeat watchdog. |
+| **v0.2** | **Physical Hardware (P-K1) — shipped** | Live MAVLink over UDP & serial UART, Linux GPIO (sysfs), 20 Hz receive thread with a 1 Hz heartbeat, ACK correlation. Measured against ArduCopter SITL. |
 | **v0.3** | **Spatial Kinematics (P-K2)** | Native 2D/3D vectors (`vector(x, y, z)`), WGS84 GPS Haversine distance, bearing, trigonometry (`sin`, `cos`, `atan2`). |
 | **v0.4** | **Fault Tolerance (P-K3)** | In-script `try ... otherwise` error recovery, link-loss failsafes (`when link lost for 3 seconds:`). |
 | **v0.5** | **Modular Composition (P-K4)** | `use "patterns/grid.kaze"` multi-file compilation with compile-time inlining into single `.kazebc`. |

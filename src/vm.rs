@@ -592,10 +592,37 @@ impl<'a> Vm<'a> {
         let result = self
             .host
             .call(&cap.family, &cap.op, &args, &mut self.arena, &mut self.heap)
-            .map_err(|msg| VmError { code: "E_KAZE_HOST", msg, line })?;
+            .map_err(|msg| {
+                // v0.2: a live backend names its own failure — a rejected
+                // command, a silent link, a pin the operator never configured —
+                // and that code should reach the script, not a generic one.
+                let (code, rest) = split_host_code(msg);
+                VmError { code, msg: rest, line }
+            })?;
         self.push(result, line)
     }
 
+}
+
+/// The error codes a live backend may report through `CapHost::call`.
+const HOST_CODES: &[&str] = &[
+    "E_KAZE_LINK",
+    "E_KAZE_LINK_TIMEOUT",
+    "E_COMMAND_REJECTED",
+    "E_ARMING_DENIED",
+    "E_SAFETY_VIOLATION",
+];
+
+/// Split `CODE: message` so the code survives; anything else is a host error.
+fn split_host_code(msg: String) -> (&'static str, String) {
+    if let Some((head, rest)) = msg.split_once(':') {
+        for code in HOST_CODES {
+            if head == *code {
+                return (code, rest.trim_start().to_string());
+            }
+        }
+    }
+    ("E_KAZE_HOST", msg)
 }
 
 fn jump(pc: usize, imm: i32, len: usize, line: u32) -> Result<usize, VmError> {

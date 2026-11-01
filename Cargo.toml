@@ -1,6 +1,6 @@
 [package]
 name = "kaze"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Priyanshu Boruah <priyanshu@sofuu.xyz>", "Sofuu Runtime Team <team@sofuu.xyz>"]
 description = "Kaze (風): the ultra-friendly, Rust-secured scripting language for robotics, drones, and ambient edge devices."
@@ -16,6 +16,11 @@ categories = ["compilers", "embedded"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[features]
+# Serial (UART) flight-controller links. Off by default: a UDP link needs
+# nothing extra, and a device build with a cable turns this on.
+uart = []
 
 [[bin]]
 name = "kaze"

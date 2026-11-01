@@ -9,8 +9,12 @@ pub mod caps;
 pub mod checker;
 pub mod compiler;
 pub mod deadline;
+pub mod gpio;
 pub mod hardware;
+pub mod host;
 pub mod isa;
+pub mod link;
+pub mod mavlink;
 pub mod lexer;
 pub mod parser;
 pub mod value;
@@ -21,7 +25,10 @@ pub use isa::Module;
 pub use vm::{Limits, Verdict, Vm};
 
 /// Language version reported by `kaze --version` / `kaze version`.
-pub const VERSION: &str = "0.1";
+///
+/// 0.2 is the hardware release: the language is unchanged, and a script can now
+/// reach a real autopilot and real GPIO pins through `--cap drone=<device>`.
+pub const VERSION: &str = "0.2";
 
 #[derive(Debug, Clone)]
 pub struct KazeError {
@@ -125,6 +132,11 @@ pub struct RunOptions {
     /// R7 policy layered over the hardware gate. `None` means "declaration and
     /// grant only", which is what the tests use.
     pub policy: Option<serde_json::Value>,
+    /// `family -> device` from `--cap drone=udp:127.0.0.1:14550`. A device
+    /// other than `sim` puts the live backend behind that family (v0.2).
+    pub backend: Vec<(String, String)>,
+    /// `device name -> GPIO line` from `--pin fan=17` (v0.2).
+    pub pins: Vec<(String, u16)>,
 }
 
 impl Default for RunOptions {
@@ -138,6 +150,8 @@ impl Default for RunOptions {
             tick_ms: 100,
             sim: SimState::default(),
             policy: None,
+            backend: Vec::new(),
+            pins: Vec::new(),
         }
     }
 }
@@ -205,7 +219,18 @@ pub fn run_module(module: Module, name: &str, opts: &RunOptions) -> Result<RunRe
 fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, KazeError> {
     let module = prepared.module;
     let declared = module.needs.clone();
-    let mut sim = SimHost::new(opts.sim.clone());
+    // v0.2: a family granted a real device runs live; every other family keeps
+    // the deterministic simulator.
+    let live =
+        opts.backend.iter().any(|(_, d)| !d.is_empty() && d != "sim") || !opts.pins.is_empty();
+    let mut host: Box<dyn CapHost> = if live {
+        match crate::host::LiveHost::new(opts.sim.clone(), &opts.backend, &opts.pins) {
+            Ok(host) => Box::new(host),
+            Err(e) => return Err(KazeError::new("E_KAZE_LINK", format!("{}: {}", prepared.name, e))),
+        }
+    } else {
+        Box::new(SimHost::new(opts.sim.clone()))
+    };
     let limits = Limits {
         fuel: opts.fuel.max(1),
         ..Limits::default()
@@ -227,7 +252,7 @@ fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, Kaze
     {
         let mut vm = Vm::new(
             &module,
-            &mut sim,
+            &mut *host,
             &declared,
             &opts.grants,
             opts.policy.as_ref(),
@@ -269,8 +294,8 @@ fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, Kaze
         report.instructions = vm.instructions;
     }
 
-    report.actions = sim.actions().iter().map(|a: &Action| a.render()).collect();
-    report.logs = sim.logs().to_vec();
+    report.actions = host.actions().iter().map(|a: &Action| a.render()).collect();
+    report.logs = host.logs().to_vec();
     Ok(report)
 }
 
