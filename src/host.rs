@@ -267,19 +267,37 @@ fn ensure_guided(link: &mut DroneLink) -> Result<(), String> {
             return Ok(());
         }
     }
-    link.command(
-        mavlink::cmd::DO_SET_MODE,
-        [1.0, COPTER_MODE_GUIDED as f32, 0.0, 0.0, 0.0, 0.0, 0.0],
-    )?;
-    for _ in 0..40 {
-        if let Some(mode) = link.telemetry().mode {
-            if mode.eq_ignore_ascii_case("guided") {
-                return Ok(());
-            }
+    // A mode switch is refused while the vehicle is still coming up (EKF, home
+    // position), and the same request a moment later is accepted. Retrying an
+    // idempotent mode change is what a ground station does; anything else would
+    // surface as a mysterious failure to a script that just asked to fly.
+    let mut last = String::from("E_KAZE_LINK: the vehicle never answered the mode change");
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        match link.command(
+            mavlink::cmd::DO_SET_MODE,
+            [1.0, COPTER_MODE_GUIDED as f32, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ) {
+            Ok(()) => {
+                for _ in 0..40 {
+                    if let Some(mode) = link.telemetry().mode {
+                        if mode.eq_ignore_ascii_case("guided") {
+                            return Ok(());
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                last = "E_KAZE_LINK: the vehicle accepted GUIDED but is not reporting it".to_string();
+            }
+            Err(why) => last = why,
+        }
     }
-    Err("E_KAZE_LINK: the vehicle accepted GUIDED but is not reporting it".to_string())
+    if let Some(note) = link.take_notes().pop() {
+        last = format!("{} ({})", last, note.text);
+    }
+    Err(last)
 }
 
 /// One Kaze device verb, one GPIO line.
