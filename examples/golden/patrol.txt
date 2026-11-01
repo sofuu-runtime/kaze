@@ -1,0 +1,9 @@
+patrol -> nothing
+actions:
+   1. log.info("Starting automated perimeter patrol") -> nothing
+   2. drone.arm -> nothing
+   3. drone.takeoff(15) -> nothing
+   4. drone.goto(1, 15) -> nothing
+   5. drone.goto(2, 15) -> nothing
+   6. drone.rtl -> nothing
+59 instructions, 59 fuel, 0 ticks

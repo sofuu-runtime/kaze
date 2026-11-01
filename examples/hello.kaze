@@ -1,0 +1,15 @@
+# The smallest useful script: no devices, no grants, no effects.
+#
+#   sofuu script run examples/kaze/hello.kaze
+
+needs: log
+
+action main():
+    log "Kaze is running"
+    let total = 0
+    let n = 1
+    while n < 5:
+        set total to total + n
+        set n to n + 1
+    log "sum 1..4 checked"
+    return total

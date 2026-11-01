@@ -1,0 +1,18 @@
+# Kaze example — a rover obstacle loop that runs on a fixed tick.
+#
+#   sofuu script run examples/kaze/rover.kaze --cap rover=sim --cap lidar=sim \
+#       --ticks 5 --sim distance=0.3
+#
+# The loop body is bounded by fuel, so a stuck sensor cannot spin forever:
+# the run stops with E_FUEL instead of freezing the robot.
+
+needs: rover, lidar, log
+
+every 100ms:
+    let front = lidar.front_distance()
+    if front < 0.5 meters:
+        log warning "Obstacle detected ahead!"
+        stop rover
+        turn right by 90 degrees
+    otherwise:
+        drive forward at 1.2 m/s

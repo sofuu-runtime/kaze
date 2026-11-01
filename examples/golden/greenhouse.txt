@@ -1,0 +1,7 @@
+climate -> nothing
+actions:
+   1. sensor.temperature -> 22
+   2. device.set_relay("fan", false) -> nothing
+   3. sensor.humidity -> 45
+   4. device.pulse("mister", 5) -> nothing
+19 instructions, 19 fuel, 0 ticks

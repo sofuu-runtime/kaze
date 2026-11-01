@@ -1,0 +1,5 @@
+main -> 10
+actions:
+   1. log.info("Kaze is running") -> nothing
+   2. log.info("sum 1..4 checked") -> nothing
+73 instructions, 73 fuel, 0 ticks

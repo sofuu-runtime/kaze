@@ -1,0 +1,6 @@
+user_prompt -> "what is the weather"
+actions:
+   1. policy.detects("secrets", "what is the weather") -> false
+   2. memory.save("last_valid_query", "what is the weather") -> nothing
+verdict: allow "what is the weather"
+16 instructions, 16 fuel, 0 ticks

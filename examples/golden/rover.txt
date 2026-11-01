@@ -1,0 +1,6 @@
+actions:
+   1. sensor.front_distance -> 0.3
+   2. log.warn("Obstacle detected ahead!") -> nothing
+   3. rover.stop -> nothing
+   4. rover.turn_right(90) -> nothing
+16 instructions, 16 fuel, 1 ticks

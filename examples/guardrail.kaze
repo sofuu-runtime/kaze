@@ -1,0 +1,18 @@
+# Kaze example — a prompt guardrail.
+#
+#   sofuu script run examples/kaze/guardrail.kaze --arg prompt='"hello"'
+#
+# A `filter` is the one routine that answers instead of acting: it ends in
+# `allow` or `reject`, and the checker refuses to compile a filter that can
+# fall off the end without deciding. Nothing here reaches a network — the
+# verdict is returned to the caller (here: a JS tool).
+
+needs: memory, policy
+
+filter user_prompt(prompt):
+    if length of prompt > 2000:
+        reject with "Prompt exceeds maximum allowed length"
+    if policy detects secrets in prompt:
+        reject with "Prompt contains private API keys"
+    remember prompt as "last_valid_query"
+    allow prompt

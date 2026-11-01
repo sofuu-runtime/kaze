@@ -1,0 +1,23 @@
+# Kaze example — a drone perimeter patrol.
+#
+# Run it:
+#   sofuu script run examples/kaze/patrol.kaze --cap drone=sim \
+#       --arg 'points=[1,2,3,4]' --ticks 3 --sim battery=15
+#
+# Every line is checked before anything moves. `needs` is the whole
+# permission story: without a host grant for `drone`, `arm drone` is refused
+# and no action is ever taken.
+
+needs: drone, log
+
+action patrol(points):
+    log "Starting automated perimeter patrol"
+    arm drone
+    takeoff to 15 meters
+    for each point in points:
+        fly to point at 15 meters
+    return to launch
+
+when battery < 20%:
+    log warning "Battery critical!"
+    return to launch

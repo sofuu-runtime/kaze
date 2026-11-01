@@ -1,0 +1,26 @@
+[package]
+name = "kaze"
+version = "0.1.0"
+edition = "2021"
+authors = ["Priyanshu Boruah <priyanshu@sofuu.xyz>", "Sofuu Runtime Team <team@sofuu.xyz>"]
+description = "Kaze (風): the ultra-friendly, Rust-secured scripting language for robotics, drones, and ambient edge devices."
+homepage = "https://sofuu.xyz"
+repository = "https://github.com/sofuu-runtime/kaze"
+readme = "README.md"
+license = "MIT"
+keywords = ["robotics", "drone", "dsl", "scripting", "compiler"]
+categories = ["compilers", "embedded"]
+
+[workspace]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[[bin]]
+name = "kaze"
+path = "src/main.rs"
+
+[lib]
+name = "kaze"
+path = "src/lib.rs"

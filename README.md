@@ -1,0 +1,247 @@
+# Kaze (風)
+
+[![CI](https://github.com/sofuu-runtime/kaze/actions/workflows/ci.yml/badge.svg)](https://github.com/sofuu-runtime/kaze/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](Cargo.toml)
+[![Zero GC](https://img.shields.io/badge/Memory-Zero--GC_Arena-green.svg)](#memory-model)
+[![Fixed ISA](https://img.shields.io/badge/Bytecode-4--Byte_Fixed_ISA-purple.svg)](#bytecode-isa)
+
+> **The ultra-friendly, Rust-secured scripting language for robotics, drones, and ambient edge devices.**
+
+Kaze (風, "wind" — *the wind of [Sofuu](https://sofuu.xyz)*) delivers **all of Rust's security, determinism, and zero-GC performance, paired with the effortless, human-readable scripting experience of Python.**
+
+---
+
+## 🌪️ Why Kaze?
+
+Modern edge AI, companion computers, and robotics platforms face a dilemma:
+* **Python** offers fast iteration and clean syntax, but its non-deterministic garbage collection (stop-the-world pauses), high memory overhead, and lack of sandboxing can cause physical vehicle stutter or crashes at 10 Hz control loops.
+* **Rust** provides ironclad memory safety and bare-metal speed, but forces developers and LLM agents to fight borrow checkers, lifetime annotations (`'a`), and verbose error handling just to script a simple patrol mission.
+* **Lua / WASM** bring in ambient I/O vulnerabilities, memory bloat, or heavy VM runtimes.
+
+**Kaze is a domain scripting language hand-rolled in pure Rust.** It is not a general-purpose language; it exists specifically to execute safe, resource-bounded, capability-isolated routines for physical machines and AI agent guardrails.
+
+---
+
+## ⚡ The Five Doctrines
+
+1. **Natural Phrasing, Zero Syntax Friction:** Designed for effortless human auditability and zero-shot LLM generation. Clean natural English verbs (`takeoff to 15 meters`, `drive forward at 1.5 m/s`) compile into strict bytecode.
+2. **First-Class Physical Units:** Units like `meters`, `m/s`, `degrees`, `seconds`, `ms`, and `%` are native tokens. Dimensional conflicts and catastrophic unit mismatches (e.g. feet vs. meters) are caught at parse time.
+3. **Zero Ambient I/O (Structural Capability Security):** Kaze scripts have **zero built-in side-effects**. No ambient filesystem, clock, networking, or process spawning. Every external effect requires an explicit `needs: ...` declaration and passes an R7 hardware safety gate.
+4. **Deterministic by Construction (Zero GC Pauses):** Memory is sequentially allocated in a linear arena per run and reclaimed wholesale in one instant operation. There is zero garbage collector, zero stop-the-world stutter, and zero heap fragmentation.
+5. **Fuel-Bounded Always:** Every instruction decrements a fuel meter. Runaway loops or runaway math halt uncatchably and return a typed `E_TIMEOUT`. A Kaze script cannot hang a drone, freeze a rover, or stall an agent.
+
+---
+
+## 🗺️ System Architecture
+
+```mermaid
+flowchart LR
+    subgraph Frontend["Language Front-End"]
+        SRC[".kaze Source Code<br/>(Natural English syntax, units)"]
+        LEX["Lexer<br/>(Indentation-aware, tabs refused)"]
+        PARSE["Parser<br/>(Unit normalization, verbs)"]
+        CHECK["Semantic Checker<br/>(Declared capabilities, filter termination)"]
+    end
+
+    subgraph CompilerVM["Compiler & Execution Engine (crates/kaze)"]
+        COMP["Compiler<br/>(33 opcodes, fused JEQ/JNE)"]
+        BC[".kazebc Bytecode Module<br/>(Deterministic 4-byte ISA)"]
+        VM["Arena VM<br/>(Instruction fuel bounds, deadline interrupt)"]
+    end
+
+    subgraph SafetyGate["Hardware Safety Gate"]
+        GATE_CAP["CALL_CAP Gate<br/>• H-1: E_CAP_UNDECLARED<br/>• H-2: E_CAP_MISSING<br/>• H-3: E_CAP_DENIED<br/>• H-4: E_KAZE_RANGE"]
+        ACT["Actuators / Flight Controller / Sensors"]
+    end
+
+    SRC --> LEX --> PARSE --> CHECK --> COMP --> BC --> VM
+    VM --> GATE_CAP --> ACT
+```
+
+---
+
+## 📖 Language Tour by Example
+
+### 1. Aerial Robotics & Drone Missions (`patrol.kaze`)
+```kaze
+needs: drone, log
+
+action patrol(points):
+    log "Starting automated perimeter patrol"
+    
+    arm drone
+    takeoff to 15 meters
+    
+    for each point in points:
+        fly to point at 15 meters
+    
+    return to launch
+
+when battery < 20%:
+    log warning "Battery critical! Returning home immediately"
+    return to launch
+```
+
+### 2. Ground Robotics & Rovers (`rover.kaze`)
+```kaze
+needs: rover, lidar, log
+
+every 100ms:
+    let front = lidar.front_distance()
+
+    if front < 0.5 meters:
+        log warning "Obstacle detected ahead! Turning right"
+        stop rover
+        turn right by 90 degrees
+    otherwise:
+        drive forward at 1.2 m/s
+```
+
+### 3. Smart Devices & Ambient IoT (`greenhouse.kaze`)
+```kaze
+needs: sensor, fan, mister, alert
+
+check climate(target_temp, target_humidity):
+    if sensor.temperature() > target_temp + 2:
+        turn on fan
+        send alert "Cooling fan activated"
+    otherwise:
+        turn off fan
+
+    if sensor.humidity() < target_humidity:
+        pulse mister for 5 seconds
+```
+
+### 4. AI Agent Guardrails & Memory Filters (`guardrail.kaze`)
+```kaze
+needs: memory, policy
+
+filter user_prompt(prompt):
+    if length of prompt > 2000:
+        reject with "Prompt exceeds maximum allowed length"
+
+    if policy detects secrets in prompt:
+        reject with "Prompt contains private API keys or credentials"
+
+    remember prompt as "last_valid_query"
+    allow prompt
+```
+
+---
+
+## 🛠️ CLI Quickstart
+
+Install the standalone `kaze` CLI using Cargo:
+
+```bash
+cargo install --path .
+```
+
+### Run a Script
+```bash
+# Run a drone script against the simulated flight backend
+kaze run examples/patrol.kaze --cap drone=sim --arg 'points=[1, 2, 3]'
+
+# Run a rover script with virtual time ticks
+kaze run examples/rover.kaze --cap rover=sim,lidar=sim --ticks 3
+```
+
+### Verify & Typecheck (Front-End Only)
+```bash
+kaze check examples/patrol.kaze
+# Output: ✓ examples/patrol.kaze is valid
+```
+
+### Compile to Standalone Bytecode (`.kazebc`)
+```bash
+# Emit deterministic bytecode module
+kaze compile examples/patrol.kaze -o patrol.kazebc
+
+# Inspect disassembled bytecode instructions
+kaze compile examples/patrol.kaze --disasm
+
+# Execute directly from bytecode without parsing
+kaze run patrol.kazebc --cap drone=sim --arg 'points=[1, 2]'
+```
+
+### Interactive REPL
+```bash
+kaze repl
+```
+
+---
+
+## 🦀 Rust Embedding Guide
+
+Embed Kaze inside any Rust companion computer or robotics supervisor:
+
+```toml
+[dependencies]
+kaze = "0.1.0"
+```
+
+```rust
+use kaze::{run_source, RunOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let script = r#"
+        needs: drone, log
+        action main():
+            log "Mission launched"
+            arm drone
+            takeoff to 10 meters
+            return to launch
+    "#;
+
+    let opts = RunOptions {
+        grants: vec!["drone".to_string()],
+        fuel: 50_000,
+        ..Default::default()
+    };
+
+    let report = run_source(script, "mission.kaze", &opts)?;
+    
+    println!("Result: {}", report.value);
+    println!("Fuel consumed: {}", report.fuel_used);
+    for action in report.actions {
+        println!("Action executed: {}", action);
+    }
+
+    Ok(())
+}
+```
+
+---
+
+## 🔒 Safety Contract: Reject, Never Clamp
+
+Kaze enforces a strict **"Reject, Never Clamp"** safety doctrine. 
+
+If a flight script commands `takeoff to 900 meters` (when the safety ceiling is 500 meters), execution **immediately aborts** with code `E_KAZE_RANGE`:
+
+```
+E_KAZE_RANGE: drone.takeoff got 900 meters, which is outside the permitted range 0 to 500 meters (rejected, not clamped) (H-4/range)
+```
+
+A physical machine acting on clamped values is acting on a lie. Kaze halts uncatchably and allows the supervisor to initiate safe failsafes.
+
+---
+
+## 🗺️ Roadmap to v1.0 Production Readiness
+
+| Phase | Milestone | Focus Areas |
+| :--- | :--- | :--- |
+| **v0.1** | **Core Foundation (Done)** | Fixed 4-byte ISA, clean-room lexer/parser/checker, arena allocator, fuel meter, CLI & REPL. |
+| **v0.2** | **Physical Hardware (P-K1)** | Live MAVLink v1/v2 serial UART (`/dev/ttyUSB0`) & UDP, Linux GPIO/PWM, 50 Hz real-time heartbeat watchdog. |
+| **v0.3** | **Spatial Kinematics (P-K2)** | Native 2D/3D vectors (`vector(x, y, z)`), WGS84 GPS Haversine distance, bearing, trigonometry (`sin`, `cos`, `atan2`). |
+| **v0.4** | **Fault Tolerance (P-K3)** | In-script `try ... otherwise` error recovery, link-loss failsafes (`when link lost for 3 seconds:`). |
+| **v0.5** | **Modular Libraries (P-K4)** | `use "patterns/grid.kaze"` multi-file compilation with compile-time inlining into single `.kazebc`. |
+| **v1.0** | **Tooling & Release (P-K5/P-K6)** | Language Server (`kaze-lsp`), VS Code / Cursor extension, formatter (`kaze fmt`), SITL mission benchmarks. |
+
+---
+
+## 📄 License
+
+Licensed under the [MIT License](LICENSE).  
+Maintained by the **[Sofuu Runtime Team](https://sofuu.xyz)** and open-source contributors.

@@ -1,0 +1,18 @@
+# Kaze example — greenhouse climate control.
+#
+#   sofuu script run examples/kaze/greenhouse.kaze --cap sensor=sim \
+#       --cap device=sim --cap alert=sim --arg target_temp=28 --arg target_humidity=60
+#
+# `fan` and `mister` are instances of the `device` family, so one grant
+# covers both relays.
+
+needs: sensor, fan, mister, alert
+
+check climate(target_temp, target_humidity):
+    if sensor.temperature() > target_temp + 2:
+        turn on fan
+        send alert "Cooling fan activated"
+    otherwise:
+        turn off fan
+    if sensor.humidity() < target_humidity:
+        pulse mister for 5 seconds

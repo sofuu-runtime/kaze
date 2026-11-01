@@ -1,0 +1,5 @@
+user_prompt -> nothing
+actions:
+   1. policy.detects("secrets", "my api_key is sk-live-9") -> true
+verdict: reject - Prompt contains private API keys
+12 instructions, 12 fuel, 0 ticks
