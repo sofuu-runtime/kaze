@@ -219,6 +219,11 @@ fn drone_op(
         // sentence form. A point index has no meaning to a real vehicle, so a
         // two-argument call treats the first as latitude — the same reading the
         // simulator uses.
+        //
+        // The target is a position setpoint, not MAV_CMD_NAV_WAYPOINT: measured
+        // against ArduCopter, NAV_WAYPOINT is answered UNSUPPORTED outside AUTO
+        // mode, while a GUIDED position target flies the same route. A mission
+        // variant (AUTO + NAV_WAYPOINT) belongs with mission upload, later.
         "goto" => {
             ensure_guided(link)?;
             let tele = link.telemetry();
