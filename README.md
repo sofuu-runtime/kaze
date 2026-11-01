@@ -292,7 +292,7 @@ A physical machine acting on clamped values is acting on a lie. Kaze halts uncat
 | Phase | Milestone | Focus Areas |
 | :--- | :--- | :--- |
 | **v0.1** | **Core Foundation (Done)** | Fixed 4-byte ISA, clean-room lexer/parser/checker, arena allocator, fuel meter, CLI & REPL. |
-| **v0.2** | **Physical Hardware (P-K1) — shipped** | Live MAVLink over UDP & serial UART, Linux GPIO (sysfs), 20 Hz receive thread with a 1 Hz heartbeat, ACK correlation. Measured against ArduCopter SITL. |
+| **v0.2** | **Physical Hardware (P-K1) — shipped** | Live MAVLink over UDP & serial UART, Linux GPIO (sysfs + chardev v2 UAPI), Linux PWM (sysfs), 20 Hz receive thread with a 1 Hz heartbeat, ACK correlation. Measured against ArduCopter SITL. |
 | **v0.3** | **Spatial Kinematics (P-K2)** | Native 2D/3D vectors (`vector(x, y, z)`), WGS84 GPS Haversine distance, bearing, trigonometry (`sin`, `cos`, `atan2`). |
 | **v0.4** | **Fault Tolerance (P-K3)** | In-script `try ... otherwise` error recovery, link-loss failsafes (`when link lost for 3 seconds:`). |
 | **v0.5** | **Modular Composition (P-K4)** | `use "patterns/grid.kaze"` multi-file compilation with compile-time inlining into single `.kazebc`. |
