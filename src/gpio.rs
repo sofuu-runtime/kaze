@@ -208,7 +208,20 @@ impl Drop for GpioBus {
 }
 
 fn write_value(path: &Path, value: &str) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new().write(true).truncate(false).open(path)?;
+    // Truncate so a shorter value leaves no stale digits (a fake sysfs file in a
+    // test, or any ordinary file). A real sysfs attribute ignores the flag and
+    // parses whatever was written, so the fallback keeps device files working.
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(_) => std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(false)
+            .open(path)?,
+    };
     file.write_all(value.as_bytes())?;
     file.flush()
 }

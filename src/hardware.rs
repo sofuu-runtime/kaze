@@ -120,6 +120,9 @@ pub fn validate_arguments(family: &str, op: &str, args: &[Value], _arena: &Arena
         ("rover", "forward") | ("rover", "backward") => range(family, op, 0, args, 0.0, 10.0, "m/s")?,
         ("sensor", "distance") => range(family, op, 0, args, 0.0, 100.0, "meters")?,
         ("device", "pulse") => range(family, op, 1, args, 0.0, 60.0, "seconds")?,
+        // A duty cycle outside 0-100% is a script bug, not something to clamp:
+        // a fan running at a speed nobody asked for is a safety problem.
+        ("device", "set_duty") => range(family, op, 1, args, 0.0, 100.0, "percent")?,
         _ => {}
     }
     Ok(())

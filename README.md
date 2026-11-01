@@ -178,7 +178,22 @@ kaze run examples/patrol.kaze --cap drone=uart:/dev/ttyAMA0@57600
 
 # Real GPIO lines, named by the operator
 kaze run examples/greenhouse.kaze --cap device=gpio --pin fan=17 --pin mister=27
+
+# Real PWM: name a channel as chip:channel, then set a duty cycle
+kaze run examples/greenhouse.kaze --cap device=gpio --pwm fan=0:0
 ```
+
+```kaze
+needs: fan
+
+action main():
+    turn on fan                     # relay: on or off
+    device.set_duty("fan", 60)      # PWM: 60% at 50 Hz
+    device.set_duty("fan", 0)       # 0% switches the channel off
+```
+
+A duty cycle outside 0-100 is refused by the range gate, not clamped: a fan
+spinning at a speed nobody asked for is a safety problem, not a rounding one.
 
 What the link does on its own: a 1 Hz HEARTBEAT, a 20 Hz receive loop on its
 own thread, `MAV_CMD_SET_MESSAGE_INTERVAL` for the telemetry a flight needs,
@@ -205,8 +220,9 @@ cargo build --features chardev,uart     # both
 Honest limits: the chardev path is compiled against the documented v2 UAPI and
 its request layout and ioctl numbers are unit-tested, but it has not been run
 against a real GPIO chip here, so its first use on a board is a check, not a
-given. PWM has no Kaze verb yet, so there is none — that is a language change,
-not a backend. And error line numbers name the routine, not the call.
+given. PWM is spelled `device.set_duty(name, percent)` — the call form; a
+sentence form (`set fan to 60 percent`) is not in yet. And error line numbers
+name the routine, not the call.
 
 ### Interactive REPL
 ```bash

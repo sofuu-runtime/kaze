@@ -93,6 +93,24 @@ fn free_udp_port() -> u16 {
         .port()
 }
 
+/// One fake PWM sysfs root for the whole test binary (the variable is global).
+fn pwm_root() -> PathBuf {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("kaze-live-pwm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let channel = root.join("pwmchip0").join("pwm0");
+        std::fs::create_dir_all(&channel).expect("fake pwm channel");
+        std::fs::write(root.join("pwmchip0").join("export"), "").expect("export");
+        for file in ["period", "duty_cycle", "enable"] {
+            std::fs::write(channel.join(file), "0").expect("channel file");
+        }
+        std::env::set_var("KAZE_PWM_ROOT", &root);
+        root
+    })
+    .clone()
+}
+
 /// One fake sysfs root for the whole test binary (the variable is global).
 fn gpio_root() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -153,6 +171,54 @@ fn a_script_drives_a_real_gpio_line() {
     assert_eq!(report.actions.len(), 1);
     let value = std::fs::read_to_string(root.join("gpio17").join("value")).expect("pin file");
     assert_eq!(value.trim(), "1", "the line is high");
+}
+
+#[test]
+fn a_script_sets_a_duty_cycle_on_a_real_pwm_channel() {
+    let root = pwm_root();
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["device".to_string()];
+    opts.pwm = vec![("fan".to_string(), 0u16, 0u16)];
+    opts.fuel = 50_000;
+    let source = "needs: fan\n\naction main():\n    device.set_duty(\"fan\", 60)\n";
+    let report = run_source(source, "pwm.kaze", &opts).expect("the channel is driven");
+    assert_eq!(report.actions.len(), 1, "{:?}", report.actions);
+    let duty = std::fs::read_to_string(root.join("pwmchip0").join("pwm0").join("duty_cycle"))
+        .expect("duty file");
+    assert_eq!(duty.trim(), "12000000", "60% of a 20 ms period");
+    let enable = std::fs::read_to_string(root.join("pwmchip0").join("pwm0").join("enable"))
+        .expect("enable file");
+    assert_eq!(enable.trim(), "1");
+}
+
+#[test]
+fn a_duty_cycle_out_of_range_is_refused_by_the_gate() {
+    let _ = pwm_root();
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["device".to_string()];
+    opts.pwm = vec![("fan".to_string(), 0u16, 0u16)];
+    opts.fuel = 50_000;
+    let source = "needs: fan\n\naction main():\n    device.set_duty(\"fan\", 140)\n";
+    let err = run_source(source, "pwm.kaze", &opts).expect_err("140% is not a duty cycle");
+    assert_eq!(err.code, "E_KAZE_RANGE", "{}", err.message);
+    assert!(err.message.contains("outside the permitted range 0 to 100 percent"), "{}", err.message);
+    assert!(err.message.contains("rejected, not clamped"), "{}", err.message);
+}
+
+#[test]
+fn an_unnamed_pwm_channel_is_refused() {
+    let _ = pwm_root();
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["device".to_string()];
+    opts.pwm = vec![("fan".to_string(), 0u16, 0u16)];
+    opts.fuel = 50_000;
+    let source = "needs: pump\n\naction main():\n    device.set_duty(\"pump\", 50)\n";
+    let err = run_source(source, "pwm.kaze", &opts).expect_err("no channel for pump");
+    assert!(
+        err.message.contains("no PWM channel is configured for 'pump'"),
+        "{}",
+        err.message
+    );
 }
 
 #[test]

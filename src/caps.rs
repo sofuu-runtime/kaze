@@ -80,6 +80,7 @@ pub fn op_arity(family: &str, op: &str) -> Option<(usize, usize)> {
         ("device", "set_relay") => Some((2, 2)),
         ("device", "pulse") => Some((2, 2)),
         ("device", "read_gpio") => Some((1, 1)),
+        ("device", "set_duty") => Some((2, 2)),
         ("memory", "save") => Some((2, 2)),
         ("memory", "recall") => Some((1, 1)),
         ("policy", "detects" | "detect") => Some((2, 2)),
@@ -422,6 +423,10 @@ impl CapHost for SimHost {
                 Ok(Value::Unit)
             }
             ("device", "pulse") => Ok(Value::Unit),
+            // The simulator has no PWM: the call is traced and accepted so a
+            // script can be exercised end to end; only a live backend actually
+            // drives a channel.
+            ("device", "set_duty") => Ok(Value::Unit),
 
             ("memory", "save") => {
                 let key = str_at(args, 0, arena);

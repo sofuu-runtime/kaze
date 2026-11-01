@@ -23,6 +23,7 @@ pub struct LiveHost {
     sim: SimHost,
     link: Option<DroneLink>,
     gpio: Option<GpioBus>,
+    pwm: Option<crate::pwm::PwmBus>,
 }
 
 impl LiveHost {
@@ -33,6 +34,7 @@ impl LiveHost {
         sim: SimState,
         backends: &[(String, String)],
         pins: &[(String, u16)],
+        pwm: &[(String, u16, u16)],
     ) -> Result<LiveHost, String> {
         let mut link = None;
         for (family, device) in backends {
@@ -62,17 +64,18 @@ impl LiveHost {
             }
         }
         let gpio = if pins.is_empty() { None } else { Some(GpioBus::new(pins, None)) };
-        Ok(LiveHost { sim: SimHost::new(sim), link, gpio })
+        let pwm_bus = if pwm.is_empty() { None } else { Some(crate::pwm::PwmBus::new(pwm, None)) };
+        Ok(LiveHost { sim: SimHost::new(sim), link, gpio, pwm: pwm_bus })
     }
 
     /// A host around an already-open link (tests drive the real command path
     /// without a socket).
     pub fn with_link(sim: SimState, link: DroneLink) -> LiveHost {
-        LiveHost { sim: SimHost::new(sim), link: Some(link), gpio: None }
+        LiveHost { sim: SimHost::new(sim), link: Some(link), gpio: None, pwm: None }
     }
 
     pub fn is_live(&self) -> bool {
-        self.link.is_some() || self.gpio.is_some()
+        self.link.is_some() || self.gpio.is_some() || self.pwm.is_some()
     }
 
     pub fn device(&self) -> Option<&str> {
@@ -112,6 +115,28 @@ impl CapHost for LiveHost {
             };
             self.sim.note("drone", op, &shown, rendered);
             self.drain_notes();
+            return result;
+        }
+
+        // PWM belongs to the device family but has its own backend, so it is
+        // matched before the GPIO bus.
+        if family == "device" && op == "set_duty" && self.pwm.is_some() {
+            let shown: Vec<String> = args.iter().map(|v| render_value(*v, arena, heap)).collect();
+            let name = args
+                .first()
+                .map(|v| render_value(*v, arena, heap))
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string();
+            let percent = args.get(1).and_then(|v| v.as_num()).unwrap_or(f64::NAN);
+            let mut bus = self.pwm.take().expect("checked above");
+            let result = bus.set_duty(&name, percent).map(|_| Value::Unit);
+            self.pwm = Some(bus);
+            let rendered = match &result {
+                Ok(value) => render_value(*value, arena, heap),
+                Err(e) => format!("error: {}", e),
+            };
+            self.sim.note("device", op, &shown, rendered);
             return result;
         }
 

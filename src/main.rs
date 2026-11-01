@@ -23,6 +23,8 @@ pub fn print_help() {
          \x20                        autopilot (v0.2, serial needs --features uart)\n\
          \x20 --pin <name>=<line>   Name a GPIO line the device family may drive\n\
          \x20                        (v0.2, e.g. --pin fan=17)\n\
+         \x20 --pwm <name>=<chip>:<channel>  Name a PWM channel for set_duty\n\
+         \x20                        (v0.2, e.g. --pwm fan=0:0)\n\
          \x20 --entry <name>         Routine to run (default: main, or the only one)\n\
          \x20 --arg <name>=<json>    Bind a parameter (repeatable)\n\
          \x20 --fuel <n>             Instruction budget (default 200000)\n\
@@ -42,6 +44,8 @@ struct Flags {
     backend: Vec<(String, String)>,
     /// `name -> GPIO line` from `--pin fan=17` (v0.2).
     pins: Vec<(String, u16)>,
+    /// `name -> (chip, channel)` from `--pwm fan=0:0` (v0.2).
+    pwm: Vec<(String, u16, u16)>,
     entry: Option<String>,
     args: serde_json::Map<String, serde_json::Value>,
     fuel: Option<u64>,
@@ -62,6 +66,7 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
         caps: Vec::new(),
         backend: Vec::new(),
         pins: Vec::new(),
+        pwm: Vec::new(),
         entry: None,
         args: serde_json::Map::new(),
         fuel: None,
@@ -104,6 +109,22 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
                     .parse()
                     .map_err(|_| format!("--pin {} is not a GPIO line number", line))?;
                 f.pins.push((name.to_string(), line));
+            }
+            "--pwm" => {
+                let v = next("--pwm")?;
+                let (name, address) = v.split_once('=').ok_or_else(|| {
+                    "--pwm expects name=chip:channel, e.g. --pwm fan=0:0".to_string()
+                })?;
+                let (chip, channel) = address.split_once(':').ok_or_else(|| {
+                    format!("--pwm {} is not chip:channel", address)
+                })?;
+                let chip: u16 = chip
+                    .parse()
+                    .map_err(|_| format!("--pwm chip {} is not a number", chip))?;
+                let channel: u16 = channel
+                    .parse()
+                    .map_err(|_| format!("--pwm channel {} is not a number", channel))?;
+                f.pwm.push((name.to_string(), chip, channel));
             }
             "--entry" => f.entry = Some(next("--entry")?),
             "--arg" => {
@@ -166,6 +187,7 @@ fn options_from(f: &Flags) -> Result<RunOptions, String> {
         policy: policy_layer(f.no_policy),
         backend: f.backend.clone(),
         pins: f.pins.clone(),
+        pwm: f.pwm.clone(),
     })
 }
 

@@ -17,6 +17,7 @@ pub mod host;
 pub mod isa;
 pub mod link;
 pub mod mavlink;
+pub mod pwm;
 pub mod lexer;
 pub mod parser;
 pub mod value;
@@ -139,6 +140,8 @@ pub struct RunOptions {
     pub backend: Vec<(String, String)>,
     /// `device name -> GPIO line` from `--pin fan=17` (v0.2).
     pub pins: Vec<(String, u16)>,
+    /// `name -> (chip, channel)` from `--pwm fan=0:0` (v0.2).
+    pub pwm: Vec<(String, u16, u16)>,
 }
 
 impl Default for RunOptions {
@@ -154,6 +157,7 @@ impl Default for RunOptions {
             policy: None,
             backend: Vec::new(),
             pins: Vec::new(),
+            pwm: Vec::new(),
         }
     }
 }
@@ -224,9 +228,11 @@ fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, Kaze
     // v0.2: a family granted a real device runs live; every other family keeps
     // the deterministic simulator.
     let live =
-        opts.backend.iter().any(|(_, d)| !d.is_empty() && d != "sim") || !opts.pins.is_empty();
+        opts.backend.iter().any(|(_, d)| !d.is_empty() && d != "sim")
+            || !opts.pins.is_empty()
+            || !opts.pwm.is_empty();
     let mut host: Box<dyn CapHost> = if live {
-        match crate::host::LiveHost::new(opts.sim.clone(), &opts.backend, &opts.pins) {
+        match crate::host::LiveHost::new(opts.sim.clone(), &opts.backend, &opts.pins, &opts.pwm) {
             Ok(host) => Box::new(host),
             Err(e) => return Err(KazeError::new("E_KAZE_LINK", format!("{}: {}", prepared.name, e))),
         }
