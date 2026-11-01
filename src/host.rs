@@ -44,13 +44,13 @@ impl LiveHost {
             }
             match family.as_str() {
                 "drone" => link = Some(DroneLink::connect(device)?),
-                // A device family with no named pin has nothing to drive, and
-                // falling back to the simulator would let a script report
-                // success for a relay that does not exist.
+                // A device family with no named pin or PWM channel has nothing to drive,
+                // and falling back to the simulator would let a script report
+                // success for a relay or fan that does not exist.
                 "device" => {
-                    if pins.is_empty() {
+                    if pins.is_empty() && pwm.is_empty() {
                         return Err(format!(
-                            "E_KAZE_LINK: --cap device={} needs at least one --pin name=<line>",
+                            "E_KAZE_LINK: --cap device={} needs at least one --pin name=<line> or --pwm name=<chip>:<channel>",
                             device
                         ));
                     }
@@ -120,7 +120,7 @@ impl CapHost for LiveHost {
 
         // PWM belongs to the device family but has its own backend, so it is
         // matched before the GPIO bus.
-        if family == "device" && op == "set_duty" && self.pwm.is_some() {
+        if family == "device" && op == "set_duty" {
             let shown: Vec<String> = args.iter().map(|v| render_value(*v, arena, heap)).collect();
             let name = args
                 .first()
@@ -129,9 +129,18 @@ impl CapHost for LiveHost {
                 .trim_matches('"')
                 .to_string();
             let percent = args.get(1).and_then(|v| v.as_num()).unwrap_or(f64::NAN);
-            let mut bus = self.pwm.take().expect("checked above");
-            let result = bus.set_duty(&name, percent).map(|_| Value::Unit);
-            self.pwm = Some(bus);
+            let result = if let Some(mut bus) = self.pwm.take() {
+                let res = bus.set_duty(&name, percent).map(|_| Value::Unit);
+                self.pwm = Some(bus);
+                res
+            } else if self.gpio.is_some() {
+                Err(format!(
+                    "E_KAZE_LINK: no PWM channel is configured for '{}' (--pwm {}=<chip>:<channel>)",
+                    name, name
+                ))
+            } else {
+                self.sim.call(family, op, args, arena, heap)
+            };
             let rendered = match &result {
                 Ok(value) => render_value(*value, arena, heap),
                 Err(e) => format!("error: {}", e),

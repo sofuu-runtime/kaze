@@ -408,7 +408,7 @@ impl<'a> Cx<'a> {
     }
 
     fn temp(&mut self) -> Result<u8, CompileError> {
-        if self.next_slot >= MAX_SLOTS {
+        if self.next_slot == MAX_SLOTS {
             return e(0, "this block uses more than 255 values; split it into actions");
         }
         let slot = self.next_slot;

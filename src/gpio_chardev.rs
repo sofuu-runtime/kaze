@@ -11,8 +11,6 @@
 //! against a real GPIO chip in this project's CI, so treat first use on a board
 //! as a check rather than a given.
 
-#![cfg(feature = "chardev")]
-
 use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::raw::{c_int, c_ulong};

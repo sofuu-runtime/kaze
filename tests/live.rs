@@ -99,11 +99,14 @@ fn pwm_root() -> PathBuf {
     ROOT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("kaze-live-pwm-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let channel = root.join("pwmchip0").join("pwm0");
-        std::fs::create_dir_all(&channel).expect("fake pwm channel");
+        std::fs::create_dir_all(root.join("pwmchip0")).expect("chip dir");
         std::fs::write(root.join("pwmchip0").join("export"), "").expect("export");
-        for file in ["period", "duty_cycle", "enable"] {
-            std::fs::write(channel.join(file), "0").expect("channel file");
+        for ch in ["pwm0", "pwm1"] {
+            let channel = root.join("pwmchip0").join(ch);
+            std::fs::create_dir_all(&channel).expect("fake pwm channel");
+            for file in ["period", "duty_cycle", "enable"] {
+                std::fs::write(channel.join(file), "0").expect("channel file");
+            }
         }
         std::env::set_var("KAZE_PWM_ROOT", &root);
         root
@@ -312,6 +315,39 @@ fn the_telemetry_a_script_reads_comes_from_the_vehicle() {
         "the altitude the vehicle reported reaches the script: {:?}",
         report.logs
     );
+}
+
+#[test]
+fn a_script_runs_with_only_pwm_and_no_pins_under_live_device() {
+    let root = pwm_root();
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["device".to_string()];
+    opts.backend = vec![("device".to_string(), "gpio".to_string())];
+    opts.pwm = vec![("mister".to_string(), 0u16, 1u16)];
+    opts.fuel = 50_000;
+    let source = "needs: mister\n\naction main():\n    device.set_duty(\"mister\", 40)\n";
+    let report = run_source(source, "pwm_only.kaze", &opts).expect("runs with only pwm");
+    assert_eq!(report.actions.len(), 1);
+    let duty = std::fs::read_to_string(root.join("pwmchip0").join("pwm1").join("duty_cycle"))
+        .expect("duty file");
+    assert_eq!(duty.trim(), "8000000");
+}
+
+#[test]
+fn set_duty_without_pwm_configured_hints_at_the_fix() {
+    let _ = gpio_root();
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["device".to_string()];
+    opts.pins = vec![("fan".to_string(), 17u16)];
+    opts.fuel = 50_000;
+    let source = "needs: fan\n\naction main():\n    device.set_duty(\"fan\", 50)\n";
+    let err = run_source(source, "no_pwm.kaze", &opts).expect_err("no pwm channel");
+    assert!(
+        err.message.contains("no PWM channel is configured for 'fan'"),
+        "{}",
+        err.message
+    );
+    assert!(err.message.contains("--pwm fan=<chip>:<channel>"), "{}", err.message);
 }
 
 // Keep the Mutex import meaningful for future shared-state tests.

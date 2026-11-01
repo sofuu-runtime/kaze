@@ -66,8 +66,16 @@ pub struct Prepared {
     pub name: String,
 }
 
-/// Read a script from disk.
+/// Read a script from disk (or stdin when path is "-").
 pub fn read_source(path: &str) -> Result<String, KazeError> {
+    if path == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| KazeError::new("E_KAZE_IO", format!("cannot read stdin: {}", e)))?;
+        return Ok(buf);
+    }
     std::fs::read_to_string(path)
         .map_err(|e| KazeError::new("E_KAZE_IO", format!("cannot read '{}': {}", path, e)))
 }
