@@ -236,8 +236,12 @@ A physical machine acting on clamped values is acting on a lie. Kaze halts uncat
 | **v0.2** | **Physical Hardware (P-K1)** | Live MAVLink v1/v2 serial UART (`/dev/ttyUSB0`) & UDP, Linux GPIO/PWM, 50 Hz real-time heartbeat watchdog. |
 | **v0.3** | **Spatial Kinematics (P-K2)** | Native 2D/3D vectors (`vector(x, y, z)`), WGS84 GPS Haversine distance, bearing, trigonometry (`sin`, `cos`, `atan2`). |
 | **v0.4** | **Fault Tolerance (P-K3)** | In-script `try ... otherwise` error recovery, link-loss failsafes (`when link lost for 3 seconds:`). |
-| **v0.5** | **Modular Libraries (P-K4)** | `use "patterns/grid.kaze"` multi-file compilation with compile-time inlining into single `.kazebc`. |
-| **v1.0** | **Tooling & Release (P-K5/P-K6)** | Language Server (`kaze-lsp`), VS Code / Cursor extension, formatter (`kaze fmt`), SITL mission benchmarks. |
+| **v0.5** | **Modular Composition (P-K4)** | `use "patterns/grid.kaze"` multi-file compilation with compile-time inlining into single `.kazebc`. |
+| **v0.6** | **Developer Tooling (P-K5)** | Language Server (`kaze-lsp`), VS Code / Cursor extensions, CLI code formatter (`kaze fmt`). |
+| **v0.7** | **Security & Fuzzing (P-K6)** | Bytecode verifier validation, malformed `.kazebc` differential fuzzing, zero-panic memory audit. |
+| **v0.8** | **Mission Benchmarks (P-K7)** | Automated 8-waypoint SITL drone mission, Raspberry Pi 5 hardware soak test, packet loss resilience. |
+| **v0.9** | **Release Candidate (P-K8)** | Spec freeze, canonical robotics skill standard library, ISA backward-compatibility lock. |
+| **v1.0** | **Production GA / LTS** | Formal specification, long-term stability guarantee, flight-certified baseline. |
 
 ---
 
