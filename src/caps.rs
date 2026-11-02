@@ -39,6 +39,8 @@ pub const ALIASES: &[(&str, &str)] = &[
 pub const TELEMETRY: &[&str] = &[
     "battery", "altitude", "heading", "speed", "position", "temperature", "humidity", "distance",
     "armed",
+    // v0.3: enough of a position to build a point and measure from it.
+    "latitude", "longitude", "satellites",
 ];
 
 pub fn is_telemetry(name: &str) -> bool {
@@ -228,6 +230,10 @@ pub fn render_value(v: Value, arena: &Arena, heap: &Heap) -> String {
             }
             None => "{}".to_string(),
         },
+        Value::Vec(i) => match heap.vec3(i) {
+            Some([x, y, z]) => format!("({}, {}, {})", fmt_num(x), fmt_num(y), fmt_num(z)),
+            None => "(?, ?, ?)".to_string(),
+        },
     }
 }
 
@@ -305,6 +311,8 @@ impl SimHost {
             "humidity" => Value::Num(self.state.humidity),
             "distance" => Value::Num(self.state.distance),
             "armed" => Value::Bool(self.state.armed),
+            "latitude" => Value::Num(self.state.lat),
+            "longitude" => Value::Num(self.state.lon),
             _ => Value::Num(0.0),
         }
     }

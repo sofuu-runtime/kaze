@@ -148,7 +148,15 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
                 let v = next("--tick-ms")?;
                 f.tick_ms = Some(v.parse().map_err(|_| format!("--tick-ms '{}' is not a number", v))?);
             }
-            "--sim" => f.sim = next("--sim")?,
+            "--sim" => {
+                // Repeatable: `--sim lat=47.6 --sim lon=8.5` is the same as
+                // `--sim lat=47.6,lon=8.5` rather than the last one winning.
+                let v = next("--sim")?;
+                if !f.sim.is_empty() {
+                    f.sim.push(',');
+                }
+                f.sim.push_str(&v);
+            }
             "--out" | "-o" => f.out = Some(next("--out")?),
             "--disasm" => f.disasm = true,
             "--json" => f.json = true,

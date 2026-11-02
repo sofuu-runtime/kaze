@@ -170,6 +170,62 @@ impl<'a> Vm<'a> {
                     let n = self.length(v, item.line)?;
                     self.push(Value::Num(n), item.line)?;
                 }
+                Op::VecNew => {
+                    let n = field_a(w) as usize;
+                    if n != 3 {
+                        return Err(VmError::new("E_KAZE_BADCODE", "VECNEW with a width other than 3"));
+                    }
+                    let mut parts = [0.0f64; 3];
+                    for slot in parts.iter_mut().rev() {
+                        let v = self.pop(item.line)?;
+                        *slot = self.num_of(v, item.line)?;
+                    }
+                    let v = self.heap.push_vec(parts);
+                    self.push(v, item.line)?;
+                }
+                Op::VecDist | Op::VecBearingBetween => {
+                    let b = self.pop(item.line)?;
+                    let a = self.pop(item.line)?;
+                    let (p, q) = (self.point(a, item.line)?, self.point(b, item.line)?);
+                    let n = if op == Op::VecDist {
+                        crate::geo::haversine_m(p, q)
+                    } else {
+                        crate::geo::bearing_deg(p, q)
+                    };
+                    self.push(Value::Num(n), item.line)?;
+                }
+                Op::VecBearing => {
+                    let v = self.pop(item.line)?;
+                    let p = self.point(v, item.line)?;
+                    self.push(Value::Num(crate::geo::bearing_of(p)), item.line)?;
+                }
+                Op::Sin | Op::Cos | Op::Sqrt | Op::DegToRad | Op::RadToDeg => {
+                    let v = self.pop(item.line)?;
+                    let x = self.num_of(v, item.line)?;
+                    let r = match op {
+                        Op::Sin => x.sin(),
+                        Op::Cos => x.cos(),
+                        Op::Sqrt => {
+                            if x < 0.0 {
+                                return Err(VmError {
+                                    code: "E_KAZE_MATH",
+                                    msg: format!("sqrt of {} has no real answer", crate::arena::fmt_num(x)),
+                                    line: item.line,
+                                });
+                            }
+                            x.sqrt()
+                        }
+                        Op::DegToRad => crate::geo::to_radians(x),
+                        _ => crate::geo::to_degrees(x),
+                    };
+                    self.push(Value::Num(r), item.line)?;
+                }
+                Op::Atan2 => {
+                    let x = self.pop(item.line)?;
+                    let y = self.pop(item.line)?;
+                    let (x, y) = (self.num_of(x, item.line)?, self.num_of(y, item.line)?);
+                    self.push(Value::Num(y.atan2(x)), item.line)?;
+                }
                 Op::GetField => {
                     let field = self.pop(item.line)?;
                     let base = self.pop(item.line)?;
@@ -181,7 +237,7 @@ impl<'a> Vm<'a> {
                     pc += 1;
                     let b = self.pop(item.line)?;
                     let a = self.pop(item.line)?;
-                    let eq = crate::arena::values_equal(a, b, &self.arena);
+                    let eq = self.values_equal(a, b);
                     let taken = if op == Op::Jeq { eq } else { !eq };
                     if taken {
                         pc = jump(pc, imm, code.len(), item.line)?;
@@ -221,7 +277,7 @@ impl<'a> Vm<'a> {
                 Op::CmpEq | Op::CmpNe => {
                     let b = self.pop(item.line)?;
                     let a = self.pop(item.line)?;
-                    let eq = crate::arena::values_equal(a, b, &self.arena);
+                    let eq = self.values_equal(a, b);
                     self.push(Value::Bool(if op == Op::CmpEq { eq } else { !eq }), item.line)?;
                 }
                 Op::Not => {
@@ -381,6 +437,11 @@ impl<'a> Vm<'a> {
                 })?;
                 Ok(Value::Str(r))
             }
+            (Value::Vec(x), Value::Vec(y)) => {
+                let (p, q) = (self.point(Value::Vec(x), line)?, self.point(Value::Vec(y), line)?);
+                let sum = [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
+                Ok(self.heap.push_vec(sum))
+            }
             (a, b) => Err(VmError {
                 code: "E_KAZE_TYPE",
                 msg: format!("cannot add {} to {}", a.type_name(), b.type_name()),
@@ -392,6 +453,12 @@ impl<'a> Vm<'a> {
     fn arith(&mut self, op: Op, line: u32) -> Result<(), VmError> {
         let b = self.pop(line)?;
         let a = self.pop(line)?;
+        // Points: `a - b` is an offset, a number scales one, and `0 - p` (how
+        // the parser spells unary minus) negates it.
+        if matches!(a, Value::Vec(_)) || matches!(b, Value::Vec(_)) {
+            let v = self.vector_arith(op, a, b, line)?;
+            return self.push(v, line);
+        }
         let (x, y) = match (a, b) {
             (Value::Num(x), Value::Num(y)) => (x, y),
             (a, b) => {
@@ -423,6 +490,92 @@ impl<'a> Vm<'a> {
             return Err(overflow(line));
         }
         self.push(Value::Num(v), line)
+    }
+
+    /// Equality that knows points are values, not heap slots: two separately
+    /// built points with the same components are equal.
+    fn values_equal(&self, a: Value, b: Value) -> bool {
+        match (a, b) {
+            (Value::Vec(x), Value::Vec(y)) => {
+                match (self.heap.vec3(x), self.heap.vec3(y)) {
+                    (Some(p), Some(q)) => p == q,
+                    _ => false,
+                }
+            }
+            (a, b) => crate::arena::values_equal(a, b, &self.arena),
+        }
+    }
+
+    /// A point's three components.
+    fn point(&self, v: Value, line: u32) -> Result<[f64; 3], VmError> {
+        match v {
+            Value::Vec(i) => self.heap.vec3(i).ok_or_else(|| VmError {
+                code: "E_KAZE_BADCODE",
+                msg: "a point is missing from the heap".to_string(),
+                line,
+            }),
+            other => Err(VmError {
+                code: "E_KAZE_TYPE",
+                msg: format!("this needs a point, but it is {}", other.type_name()),
+                line,
+            }),
+        }
+    }
+
+    fn num_of(&self, v: Value, line: u32) -> Result<f64, VmError> {
+        match v {
+            Value::Num(n) => Ok(n),
+            other => Err(VmError {
+                code: "E_KAZE_TYPE",
+                msg: format!("this needs a number, but it is {}", other.type_name()),
+                line,
+            }),
+        }
+    }
+
+    /// `op` where at least one side is a point.
+    fn vector_arith(&mut self, op: Op, a: Value, b: Value, line: u32) -> Result<Value, VmError> {
+        let out = match (op, a, b) {
+            (Op::Sub, Value::Vec(x), Value::Vec(y)) => {
+                let p = self.point(Value::Vec(x), line)?;
+                let q = self.point(Value::Vec(y), line)?;
+                [p[0] - q[0], p[1] - q[1], p[2] - q[2]]
+            }
+            (Op::Mul, Value::Vec(x), Value::Num(s))
+            | (Op::Mul, Value::Num(s), Value::Vec(x)) => {
+                let p = self.point(Value::Vec(x), line)?;
+                [p[0] * s, p[1] * s, p[2] * s]
+            }
+            (Op::Div, Value::Vec(x), Value::Num(s)) => {
+                if s == 0.0 {
+                    return Err(divide_by_zero(line));
+                }
+                let p = self.point(Value::Vec(x), line)?;
+                [p[0] / s, p[1] / s, p[2] / s]
+            }
+            (Op::Sub, Value::Num(z), Value::Vec(x)) if z == 0.0 => {
+                let p = self.point(Value::Vec(x), line)?;
+                [-p[0], -p[1], -p[2]]
+            }
+            (op, a, b) => {
+                return Err(VmError {
+                    code: "E_KAZE_TYPE",
+                    msg: format!(
+                        "'{}' does not apply to {} and {}",
+                        op_symbol(op),
+                        a.type_name(),
+                        b.type_name()
+                    ),
+                    line,
+                })
+            }
+        };
+        for component in out {
+            if !component.is_finite() {
+                return Err(overflow(line));
+            }
+        }
+        Ok(self.heap.push_vec(out))
     }
 
     fn compare(&self, op: Op, a: Value, b: Value, line: u32) -> Result<bool, VmError> {
@@ -486,6 +639,7 @@ impl<'a> Vm<'a> {
             Value::Str(s) => Ok(self.arena.get(s).chars().count() as f64),
             Value::Arr(i) => Ok(self.heap.array(i).map(|a| a.len()).unwrap_or(0) as f64),
             Value::Map(i) => Ok(self.heap.map(i).map(|m| m.len()).unwrap_or(0) as f64),
+            Value::Vec(i) => Ok(crate::geo::magnitude(self.heap.vec3(i).unwrap_or([0.0; 3]))),
             other => Err(VmError {
                 code: "E_KAZE_TYPE",
                 msg: format!("'length of' does not apply to {}", other.type_name()),
@@ -645,6 +799,17 @@ fn overflow(line: u32) -> VmError {
 
 fn divide_by_zero(line: u32) -> VmError {
     VmError { code: "E_KAZE_DIV0", msg: "dividing by zero".to_string(), line }
+}
+
+fn op_symbol(op: Op) -> &'static str {
+    match op {
+        Op::Add => "+",
+        Op::Sub => "-",
+        Op::Mul => "*",
+        Op::Div => "/",
+        Op::Mod => "%",
+        _ => "?",
+    }
 }
 
 fn render(v: &Value, arena: &Arena, heap: &Heap) -> String {

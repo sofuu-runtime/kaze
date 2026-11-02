@@ -42,6 +42,9 @@ enum Ty {
     Str,
     Bool,
     List,
+    /// A point or an offset: `vector(x, y, z)` and what arithmetic on
+    /// points produces. Added in v0.3.
+    Point,
     Unit,
     Any,
 }
@@ -54,6 +57,7 @@ impl Ty {
             Ty::Str => "text",
             Ty::Bool => "true or false",
             Ty::List => "a list",
+            Ty::Point => "a point",
             Ty::Unit => "nothing",
             Ty::Any => "a host value",
         }
@@ -246,8 +250,11 @@ fn infer(
         }
         Expr::Len(inner) => {
             let t = infer(inner, scope, declared, errors);
-            if !matches!(t, Ty::Str | Ty::List | Ty::Any) {
-                errors.push(e(0, format!("'length of' needs text or a list, but this is {}", t.label())));
+            if !matches!(t, Ty::Str | Ty::List | Ty::Point | Ty::Any) {
+                errors.push(e(
+                    0,
+                    format!("'length of' needs text, a list or a point, but this is {}", t.label()),
+                ));
             }
             Ty::Num(None)
         }
@@ -310,7 +317,120 @@ fn infer(
         Expr::Bin(op, left, right) => {
             let lt = infer(left, scope, declared, errors);
             let rt = infer(right, scope, declared, errors);
-            bin_result(*op, lt, rt)
+            point_aware_bin(*op, lt, rt, errors)
+        }
+        Expr::Math { kind, args, line } => infer_math(*kind, args, *line, scope, declared, errors),
+    }
+}
+
+/// Arithmetic that understands points: two points add or subtract to a point
+/// (an offset), a number scales a point, and every other mixture is refused
+/// here rather than at run time.
+fn point_aware_bin(op: BinOp, lt: Ty, rt: Ty, errors: &mut Vec<CheckError>) -> Ty {
+    use BinOp::*;
+    if lt != Ty::Point && rt != Ty::Point {
+        return bin_result(op, lt, rt);
+    }
+    match (op, lt, rt) {
+        (Add | Sub, Ty::Point, Ty::Point) => Ty::Point,
+        (Add | Sub, Ty::Point, Ty::Any) | (Add | Sub, Ty::Any, Ty::Point) => Ty::Point,
+        (Mul, Ty::Point, Ty::Num(_)) | (Mul, Ty::Num(_), Ty::Point) => Ty::Point,
+        (Div, Ty::Point, Ty::Num(_)) => Ty::Point,
+        (Eq | Ne, Ty::Point, Ty::Point) => Ty::Bool,
+        _ => {
+            errors.push(e(
+                0,
+                format!(
+                    "'{}' does not apply to {} and {}: points add to points, and a number scales one",
+                    op.symbol(),
+                    lt.label(),
+                    rt.label()
+                ),
+            ));
+            Ty::Any
+        }
+    }
+}
+
+fn infer_math(
+    kind: MathKind,
+    args: &[Expr],
+    line: u32,
+    scope: &mut Vec<(String, Ty)>,
+    declared: &[&str],
+    errors: &mut Vec<CheckError>,
+) -> Ty {
+    let tys: Vec<Ty> = args.iter().map(|a| infer(a, scope, declared, errors)).collect();
+    let want = match kind {
+        MathKind::Vector => 3,
+        MathKind::Distance | MathKind::BearingFrom | MathKind::Atan2 => 2,
+        _ => 1,
+    };
+    if tys.len() != want {
+        errors.push(e(
+            line,
+            format!("{:?} takes {} value(s), but {} were given", kind, want, tys.len()),
+        ));
+        return Ty::Any;
+    }
+    let numeric = |t: Ty| matches!(t, Ty::Num(_) | Ty::Any);
+    let point = |t: Ty| matches!(t, Ty::Point | Ty::Any);
+    match kind {
+        MathKind::Vector => {
+            for t in &tys {
+                if !numeric(*t) {
+                    errors.push(e(line, format!("a point is three numbers, but this is {}", t.label())));
+                }
+            }
+            Ty::Point
+        }
+        MathKind::Distance => {
+            for t in &tys {
+                if !point(*t) {
+                    errors.push(e(
+                        line,
+                        format!("'distance between' needs two points, but this is {}", t.label()),
+                    ));
+                }
+            }
+            Ty::Num(Some(Unit::Meter))
+        }
+        MathKind::BearingTo => {
+            if !point(tys[0]) {
+                errors.push(e(line, format!("'bearing to' needs a point, but this is {}", tys[0].label())));
+            }
+            Ty::Num(Some(Unit::Deg))
+        }
+        MathKind::BearingFrom => {
+            for t in &tys {
+                if !point(*t) {
+                    errors.push(e(
+                        line,
+                        format!("'bearing from ... to' needs two points, but this is {}", t.label()),
+                    ));
+                }
+            }
+            Ty::Num(Some(Unit::Deg))
+        }
+        MathKind::Sin | MathKind::Cos | MathKind::Sqrt => {
+            if !numeric(tys[0]) {
+                errors.push(e(line, format!("{:?} needs a number, but this is {}", kind, tys[0].label())));
+            }
+            Ty::Num(None)
+        }
+        MathKind::Atan2 => {
+            for t in &tys {
+                if !numeric(*t) {
+                    errors.push(e(line, format!("atan2 needs two numbers, but this is {}", t.label())));
+                }
+            }
+            Ty::Num(None)
+        }
+        MathKind::ToRadians | MathKind::ToDegrees => {
+            if !numeric(tys[0]) {
+                errors.push(e(line, format!("a conversion needs a number, but this is {}", tys[0].label())));
+            }
+            Ty::Num(None)
         }
     }
 }

@@ -59,6 +59,27 @@ pub enum Op {
     Jeq = 31,
     /// wide: pop two, jump when not equal
     Jne = 32,
+    // ── v0.3: kinematics and spatial maths ──────────────────────────
+    /// a: component count (3), pops that many numbers, pushes a point
+    VecNew = 33,
+    /// pop two points, push the great-circle distance in metres
+    VecDist = 34,
+    /// pop a point, push the compass bearing of the vector in degrees
+    VecBearing = 35,
+    /// pop two points, push the initial bearing from the first to the second
+    VecBearingBetween = 36,
+    /// pop a number (radians), push its sine
+    Sin = 37,
+    /// pop a number (radians), push its cosine
+    Cos = 38,
+    /// pop x then y, push atan2(y, x) in radians
+    Atan2 = 39,
+    /// pop a number, push its square root (a negative argument is an error)
+    Sqrt = 40,
+    /// pop degrees, push radians
+    DegToRad = 41,
+    /// pop radians, push degrees
+    RadToDeg = 42,
 }
 
 impl Op {
@@ -97,6 +118,16 @@ impl Op {
             30 => Op::GetField,
             31 => Op::Jeq,
             32 => Op::Jne,
+            33 => Op::VecNew,
+            34 => Op::VecDist,
+            35 => Op::VecBearing,
+            36 => Op::VecBearingBetween,
+            37 => Op::Sin,
+            38 => Op::Cos,
+            39 => Op::Atan2,
+            40 => Op::Sqrt,
+            41 => Op::DegToRad,
+            42 => Op::RadToDeg,
             _ => return None,
         })
     }
@@ -150,6 +181,16 @@ impl Op {
             Op::GetField => "GET_FIELD",
             Op::Jeq => "JEQ",
             Op::Jne => "JNE",
+            Op::VecNew => "VECNEW",
+            Op::VecDist => "VECDIST",
+            Op::VecBearing => "VECBEARING",
+            Op::VecBearingBetween => "VECBEARING_BETWEEN",
+            Op::Sin => "SIN",
+            Op::Cos => "COS",
+            Op::Atan2 => "ATAN2",
+            Op::Sqrt => "SQRT",
+            Op::DegToRad => "DEG_TO_RAD",
+            Op::RadToDeg => "RAD_TO_DEG",
         }
     }
 }
@@ -247,7 +288,9 @@ impl Module {
 }
 
 const MAGIC: &[u8; 8] = b"KAZEBC1\0";
-const VERSION: u16 = 1;
+/// 2 since v0.3 added the maths opcodes: a v0.2 reader would meet an opcode it
+/// does not know, so it refuses the module up front instead.
+const VERSION: u16 = 2;
 
 struct Writer {
     out: Vec<u8>,

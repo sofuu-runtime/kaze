@@ -104,12 +104,39 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>),
     /// `[a, b, c]`
     List(Vec<Expr>),
+    /// A pure maths form: `vector(x, y, z)`, `distance between a and b`,
+    /// `bearing to v`, `sin(x)`, `<x> in radians`. No capability, no host.
+    Math { kind: MathKind, args: Vec<Expr>, line: u32 },
+}
+
+/// The v0.3 maths forms. Each one is a pure function of its arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MathKind {
+    /// `vector(x, y, z)` — three components.
+    Vector,
+    /// `distance between a and b` — metres on the WGS84 sphere.
+    Distance,
+    /// `bearing to v` — the compass direction of a local vector.
+    BearingTo,
+    /// `bearing from a to b` — the initial bearing to a place.
+    BearingFrom,
+    /// `sin(x)`, `cos(x)` — radians in, plain number out.
+    Sin,
+    Cos,
+    /// `atan2(y, x)` — radians, the same convention as `f64::atan2`.
+    Atan2,
+    /// `sqrt(x)` — refuses a negative argument instead of returning NaN.
+    Sqrt,
+    /// `<x> in radians` — degrees to radians.
+    ToRadians,
+    /// `<x> in degrees` — radians to degrees.
+    ToDegrees,
 }
 
 impl Expr {
     pub fn line(&self) -> u32 {
         match self {
-            Expr::Call { line, .. } | Expr::Field { line, .. } => *line,
+            Expr::Call { line, .. } | Expr::Field { line, .. } | Expr::Math { line, .. } => *line,
             _ => 0,
         }
     }

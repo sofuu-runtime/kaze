@@ -15,6 +15,7 @@ pub mod gpio_chardev;
 pub mod hardware;
 pub mod host;
 pub mod isa;
+pub mod geo;
 pub mod link;
 pub mod mavlink;
 pub mod pwm;
@@ -29,9 +30,11 @@ pub use vm::{Limits, Verdict, Vm};
 
 /// Language version reported by `kaze --version` / `kaze version`.
 ///
-/// 0.2 is the hardware release: the language is unchanged, and a script can now
-/// reach a real autopilot and real GPIO pins through `--cap drone=<device>`.
-pub const VERSION: &str = "0.2";
+/// 0.3 is the spatial release: a point is a value, so a script can measure a
+/// distance, take a bearing and scale an offset without a host call. 0.2 added
+/// live hardware behind `--cap`; the ISA grew 10 opcodes for the maths, which is
+/// why the module format version moved with it.
+pub const VERSION: &str = "0.3";
 
 #[derive(Debug, Clone)]
 pub struct KazeError {

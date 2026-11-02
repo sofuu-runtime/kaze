@@ -684,8 +684,23 @@ impl Parser {
     }
 
     fn postfix_expr(&mut self) -> Result<Expr, ParseError> {
+        let (line, _) = self.here();
         let mut value = self.primary()?;
         loop {
+            // `<x> in radians` / `<x> in degrees` (v0.3).
+            if matches!(self.peek(), Tok::Ident(w) if w == "in")
+                && matches!(self.peek_at(1), Tok::Ident(u) if u == "radians" || u == "degrees")
+            {
+                let to_radians = matches!(self.peek_at(1), Tok::Ident(u) if u == "radians");
+                self.bump();
+                self.bump();
+                value = Expr::Math {
+                    kind: if to_radians { MathKind::ToRadians } else { MathKind::ToDegrees },
+                    args: vec![value],
+                    line,
+                };
+                continue;
+            }
             if self.eat_punct('[') {
                 let idx = self.expr()?;
                 self.expect_punct(']')?;
@@ -741,6 +756,64 @@ impl Parser {
                     self.bump();
                     let inner = self.add_expr()?;
                     return Ok(Expr::Len(Box::new(inner)));
+                }
+                // v0.3 maths. Recognised only where a variable of the same name
+                // could not be meant, so `let sin = 2` still shadows nothing.
+                if matches!(word.as_str(), "vector" | "sin" | "cos" | "atan2" | "sqrt")
+                    && matches!(self.peek_at(1), Tok::Punct('('))
+                {
+                    self.bump();
+                    self.bump();
+                    let mut args = Vec::new();
+                    if !self.eat_punct(')') {
+                        loop {
+                            args.push(self.expr()?);
+                            if self.eat_punct(',') {
+                                continue;
+                            }
+                            self.expect_punct(')')?;
+                            break;
+                        }
+                    }
+                    let kind = match word.as_str() {
+                        "vector" => MathKind::Vector,
+                        "sin" => MathKind::Sin,
+                        "cos" => MathKind::Cos,
+                        "atan2" => MathKind::Atan2,
+                        _ => MathKind::Sqrt,
+                    };
+                    return Ok(Expr::Math { kind, args, line });
+                }
+                if word == "distance" && matches!(self.peek_at(1), Tok::Ident(w) if w == "between") {
+                    self.bump();
+                    self.bump();
+                    let a = self.add_expr()?;
+                    self.expect_word("and")?;
+                    let b = self.add_expr()?;
+                    return Ok(Expr::Math { kind: MathKind::Distance, args: vec![a, b], line });
+                }
+                if word == "bearing" {
+                    match self.peek_at(1).clone() {
+                        Tok::Ident(w) if w == "to" => {
+                            self.bump();
+                            self.bump();
+                            let v = self.add_expr()?;
+                            return Ok(Expr::Math { kind: MathKind::BearingTo, args: vec![v], line });
+                        }
+                        Tok::Ident(w) if w == "from" => {
+                            self.bump();
+                            self.bump();
+                            let a = self.add_expr()?;
+                            self.expect_word("to")?;
+                            let b = self.add_expr()?;
+                            return Ok(Expr::Math {
+                                kind: MathKind::BearingFrom,
+                                args: vec![a, b],
+                                line,
+                            });
+                        }
+                        _ => {}
+                    }
                 }
                 if word == "policy" && matches!(self.peek_at(1), Tok::Ident(w) if w == "detects" || w == "detect") {
                     self.bump();

@@ -1,0 +1,13 @@
+main -> nothing
+actions:
+   1. log.info("metres to the waypoint:") -> nothing
+   2. log.info(53.64501025917031) -> nothing
+   3. log.info("bearing to the waypoint, in degrees:") -> nothing
+   4. log.info(33.991632721403974) -> nothing
+   5. log.info("the offset, doubled:") -> nothing
+   6. log.info((0.0007999999999981355, 0.0008000000000016882, 0)) -> nothing
+   7. log.info("its length in coordinate units:") -> nothing
+   8. log.info(0.0011313708498983514) -> nothing
+   9. log.info("sin of 30 degrees:") -> nothing
+  10. log.info(0.49999999999999994) -> nothing
+56 instructions, 56 fuel, 0 ticks

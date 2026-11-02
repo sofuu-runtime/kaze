@@ -224,6 +224,42 @@ given. PWM is spelled `device.set_duty(name, percent)` — the call form; a
 sentence form (`set fan to 60 percent`) is not in yet. And error line numbers
 name the routine, not the call.
 
+### Points and Bearings (v0.3)
+
+A point is a value, so distance, bearing and offset are computed inside the
+script — a mission can check its own geometry instead of asking a ground
+station:
+
+```kaze
+needs: log
+
+action main():
+    let home = vector(47.6000, 8.5000, 500)
+    let waypoint = vector(47.6004, 8.5004, 500)
+    log distance between home and waypoint        # 53.645 metres, Haversine
+    log bearing from home to waypoint             # 33.99 degrees
+    let offset = waypoint - home                  # points subtract to a point
+    log sin(30 in radians)
+    log atan2(1, 1) in degrees                    # 45
+```
+
+```bash
+kaze run examples/kinematics.kaze --cap log=sim --plain
+```
+
+* `vector(x, y, z)` makes a point; points add to points and a number scales one.
+* `distance between a and b` is great-circle metres on the WGS84 mean sphere.
+* `bearing to v` is the compass direction of a local vector; `bearing from a to b`
+  is the initial bearing towards a place. Degrees, 0 = north.
+* `length of p` is the 3-D magnitude; `sin`, `cos`, `atan2`, `sqrt` take radians;
+  `<x> in radians` and `<x> in degrees` convert.
+* `sqrt` of a negative number stops the run (`E_KAZE_MATH`) instead of returning
+  NaN.
+
+Honest limits: `distance between` ignores altitude (it is a ground distance;
+`length of (b - a)` is the 3-D one), and the coordinates of `vector` are not
+unit-checked, so mixing degrees and metres in one point is on you.
+
 ### Interactive REPL
 ```bash
 kaze repl
@@ -293,7 +329,7 @@ A physical machine acting on clamped values is acting on a lie. Kaze halts uncat
 | :--- | :--- | :--- |
 | **v0.1** | **Core Foundation (Done)** | Fixed 4-byte ISA, clean-room lexer/parser/checker, arena allocator, fuel meter, CLI & REPL. |
 | **v0.2** | **Physical Hardware (P-K1) — shipped** | Live MAVLink over UDP & serial UART, Linux GPIO (sysfs + chardev v2 UAPI), Linux PWM (sysfs), 20 Hz receive thread with a 1 Hz heartbeat, ACK correlation. Measured against ArduCopter SITL. |
-| **v0.3** | **Spatial Kinematics (P-K2)** | Native 2D/3D vectors (`vector(x, y, z)`), WGS84 GPS Haversine distance, bearing, trigonometry (`sin`, `cos`, `atan2`). |
+| **v0.3** | **Spatial Kinematics (P-K2) — shipped** | Points as values (`vector(x, y, z)`), WGS84 Haversine `distance between`, `bearing from … to …`, `length of`, `sin`/`cos`/`atan2`/`sqrt`, degree/radian conversion. Ten new opcodes; module format version 2. Measured against ArduCopter SITL: distance and bearing computed in-VM from live telemetry. |
 | **v0.4** | **Fault Tolerance (P-K3)** | In-script `try ... otherwise` error recovery, link-loss failsafes (`when link lost for 3 seconds:`). |
 | **v0.5** | **Modular Composition (P-K4)** | `use "patterns/grid.kaze"` multi-file compilation with compile-time inlining into single `.kazebc`. |
 | **v0.6** | **Developer Tooling (P-K5)** | Language Server (`kaze-lsp`), VS Code / Cursor extensions, CLI code formatter (`kaze fmt`). |

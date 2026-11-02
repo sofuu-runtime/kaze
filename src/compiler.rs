@@ -246,6 +246,25 @@ impl<'a> Cx<'a> {
                 }
                 self.emit(Op::NewArr, items.len() as u8, 0, 0);
             }
+            Expr::Math { kind, args, line: _ } => {
+                for a in args {
+                    self.expr(a)?;
+                }
+                let op = match kind {
+                    MathKind::Vector => Op::VecNew,
+                    MathKind::Distance => Op::VecDist,
+                    MathKind::BearingTo => Op::VecBearing,
+                    MathKind::BearingFrom => Op::VecBearingBetween,
+                    MathKind::Sin => Op::Sin,
+                    MathKind::Cos => Op::Cos,
+                    MathKind::Atan2 => Op::Atan2,
+                    MathKind::Sqrt => Op::Sqrt,
+                    MathKind::ToRadians => Op::DegToRad,
+                    MathKind::ToDegrees => Op::RadToDeg,
+                };
+                let a = if *kind == MathKind::Vector { args.len() as u8 } else { 0 };
+                self.emit(op, a, 0, 0);
+            }
             Expr::Name(name) => {
                 match self.resolve(name) {
                     Some(slot) => {

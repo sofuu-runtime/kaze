@@ -19,6 +19,8 @@ pub enum Value {
     Arr(u32),
     /// Index into `Heap::maps`.
     Map(u32),
+    /// Index into `Heap::vecs` — a point or an offset, `[x, y, z]`.
+    Vec(u32),
 }
 
 impl Value {
@@ -30,6 +32,7 @@ impl Value {
             Value::Str(_) => "text",
             Value::Arr(_) => "list",
             Value::Map(_) => "record",
+            Value::Vec(_) => "point",
         }
     }
 
@@ -46,7 +49,7 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Num(n) => *n != 0.0,
             Value::Str(s) => s.len > 0,
-            Value::Arr(_) | Value::Map(_) => true,
+            Value::Arr(_) | Value::Map(_) | Value::Vec(_) => true,
         }
     }
 }
@@ -57,11 +60,13 @@ impl Value {
 pub struct Heap {
     pub arrays: Vec<Vec<Value>>,
     pub maps: Vec<Vec<(Value, Value)>>,
+    /// Points and offsets: three `f64`s, no pointers, freed wholesale.
+    pub vecs: Vec<[f64; 3]>,
 }
 
 impl Heap {
     pub fn new() -> Self {
-        Heap { arrays: Vec::new(), maps: Vec::new() }
+        Heap { arrays: Vec::new(), maps: Vec::new(), vecs: Vec::new() }
     }
 
     pub fn push_array(&mut self, items: Vec<Value>) -> Value {
@@ -74,6 +79,16 @@ impl Heap {
         let idx = self.maps.len() as u32;
         self.maps.push(entries);
         Value::Map(idx)
+    }
+
+    pub fn push_vec(&mut self, v: [f64; 3]) -> Value {
+        let idx = self.vecs.len() as u32;
+        self.vecs.push(v);
+        Value::Vec(idx)
+    }
+
+    pub fn vec3(&self, idx: u32) -> Option<[f64; 3]> {
+        self.vecs.get(idx as usize).copied()
     }
 
     pub fn array(&self, idx: u32) -> Option<&Vec<Value>> {
@@ -99,9 +114,10 @@ impl Heap {
     pub fn free_wholesale(&mut self) {
         self.arrays.clear();
         self.maps.clear();
+        self.vecs.clear();
     }
 
     pub fn used(&self) -> usize {
-        self.arrays.len() + self.maps.len()
+        self.arrays.len() + self.maps.len() + self.vecs.len()
     }
 }

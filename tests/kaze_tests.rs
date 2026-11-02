@@ -25,6 +25,7 @@ fn every_example_matches_its_golden_trace() {
             "greenhouse" => include_str!("../examples/golden/greenhouse.txt"),
             "guardrail" => include_str!("../examples/golden/guardrail.txt"),
             "guardrail-reject" => include_str!("../examples/golden/guardrail-reject.txt"),
+            "kinematics" => include_str!("../examples/golden/kinematics.txt"),
             other => panic!("no golden for {}", other),
         }
     }
@@ -59,13 +60,14 @@ fn every_example_matches_its_golden_trace() {
     args.insert("prompt".into(), serde_json::json!("my api_key is sk-live-9"));
     let reject = RunOptions { args, ..Default::default() };
 
-    let cases: [(&str, &str, &RunOptions); 6] = [
+    let cases: [(&str, &str, &RunOptions); 7] = [
         ("hello", "hello.kaze", &RunOptions::default()),
         ("patrol", "patrol.kaze", &patrol),
         ("rover", "rover.kaze", &rover),
         ("greenhouse", "greenhouse.kaze", &greenhouse),
         ("guardrail", "guardrail.kaze", &allow),
         ("guardrail-reject", "guardrail.kaze", &reject),
+        ("kinematics", "kinematics.kaze", &RunOptions::default()),
     ];
 
     for (name, file, opts) in cases {
@@ -122,4 +124,137 @@ fn range_violations_are_rejected_not_clamped() {
     let err = run_source(src, "<test>", &opts).unwrap_err();
     assert_eq!(err.code, "E_KAZE_RANGE");
     assert!(err.message.contains("rejected, not clamped"));
+}
+
+
+// v0.3: kinematics and spatial maths
+
+/// The argument of every traced `log` line, in order. A trace line reads
+/// `1. log.info(X) -> nothing`, so the value is what sits inside the parens.
+fn logged(src: &str) -> Vec<String> {
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let report = run_source(src, "<math>", &opts).expect("the script should run");
+    report
+        .actions
+        .iter()
+        .map(|line| {
+            let start = line.find('(').map(|i| i + 1).unwrap_or(0);
+            let end = line.rfind(')').unwrap_or(line.len());
+            line[start..end].to_string()
+        })
+        .collect()
+}
+
+fn one_log(src: &str) -> String {
+    let mut all = logged(src);
+    assert_eq!(all.len(), 1, "expected one log line, got {:?}", all);
+    all.remove(0)
+}
+
+fn number(text: &str) -> f64 {
+    text.trim_matches('"').parse().expect("a number in the trace")
+}
+
+#[test]
+fn a_distance_between_two_places_is_geodesic_metres() {
+    let out = one_log(
+        "needs: log\naction main():\n    log distance between vector(0, 0, 0) and vector(1, 0, 0)\n",
+    );
+    let metres = number(&out);
+    assert!((metres - 111_194.9).abs() < 50.0, "{metres}");
+}
+
+#[test]
+fn bearings_are_compass_degrees() {
+    let out = one_log(
+        "needs: log\naction main():\n    log bearing from vector(0, 0, 0) to vector(0, 1, 0)\n",
+    );
+    assert_eq!(out, "90", "east is 90 degrees: {out}");
+}
+
+#[test]
+fn points_add_to_points_and_scale_by_numbers() {
+    let out = one_log(
+        "needs: log\naction main():\n    let d = vector(1, 2, 3) - vector(1, 1, 1)\n    log d * 3\n",
+    );
+    assert_eq!(out, "(0, 3, 6)");
+}
+
+#[test]
+fn length_of_a_point_is_its_magnitude() {
+    let out = one_log("needs: log\naction main():\n    log length of vector(3, 4, 0)\n");
+    assert_eq!(out, "5");
+}
+
+#[test]
+fn a_degree_conversion_goes_both_ways() {
+    let out = logged(
+        "needs: log\naction main():\n    log 180 in radians\n    log 3.141592653589793 in degrees\n",
+    );
+    assert_eq!(out.len(), 2, "{:?}", out);
+    let rad = number(&out[0]);
+    let deg = number(&out[1]);
+    assert!((rad - std::f64::consts::PI).abs() < 1e-12, "{rad}");
+    assert!((deg - 180.0).abs() < 1e-9, "{deg}");
+}
+
+#[test]
+fn two_separately_built_points_are_equal() {
+    let out = one_log(
+        "needs: log\naction main():\n    if vector(1, 2, 3) == vector(1, 2, 3):\n        log \"same\"\n",
+    );
+    assert_eq!(out, "\"same\"");
+}
+
+#[test]
+fn a_point_and_a_number_are_not_additive() {
+    let src = "needs: log\naction main():\n    let x = vector(1, 2, 3) + 4\n    log x\n";
+    let err = kaze::check_source(src, "<math>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_CHECK");
+    assert!(err.message.contains("points add to points"), "{}", err.message);
+}
+
+#[test]
+fn a_point_needs_three_numbers() {
+    let src = "needs: log\naction main():\n    log vector(1, 2)\n";
+    let err = kaze::check_source(src, "<math>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_CHECK");
+    assert!(err.message.contains("3 value(s)"), "{}", err.message);
+}
+
+#[test]
+fn the_square_root_of_a_negative_number_stops_the_run() {
+    let src = "needs: log\naction main():\n    log sqrt(0 - 4)\n";
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let err = run_source(src, "<math>", &opts).unwrap_err();
+    assert_eq!(err.code, "E_KAZE_MATH");
+    assert!(err.message.contains("no real answer"), "{}", err.message);
+}
+
+#[test]
+fn distance_needs_the_word_and() {
+    let src = "needs: log\naction main():\n    log distance between vector(1, 2, 3) vector(1, 2, 4)\n";
+    let err = kaze::check_source(src, "<math>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_PARSE");
+}
+
+#[test]
+fn a_point_can_be_built_from_the_vehicles_own_position() {
+    let src = "needs: drone, log\naction main():\n    let here = vector(latitude, longitude, 0)\n    let waypoint = vector(47.6004, 8.5004, 0)\n    log distance between here and waypoint\n";
+    let mut sim = SimState::default();
+    sim.lat = 47.6;
+    sim.lon = 8.5;
+    let opts = RunOptions { grants: grants(&["drone", "log"]), sim, ..Default::default() };
+    let report = run_source(src, "<math>", &opts).expect("the script should run");
+    // Ambient telemetry reads are traced too, so find the log line rather than
+    // assuming it is the first action.
+    let line = report
+        .actions
+        .iter()
+        .find(|a| a.contains("log.info"))
+        .expect("the script logs its answer");
+    let start = line.find('(').expect("a call") + 1;
+    let end = line.rfind(')').expect("a call");
+    let metres: f64 = line[start..end].parse().expect("a number");
+    assert!((metres - 53.4).abs() < 2.0, "{metres}");
 }
