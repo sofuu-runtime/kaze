@@ -261,8 +261,12 @@ fn infer(
         Expr::Index(list, idx) => {
             let lt = infer(list, scope, declared, errors);
             let it = infer(idx, scope, declared, errors);
-            if !matches!(lt, Ty::List | Ty::Str | Ty::Any) {
-                errors.push(e(0, format!("[ ] needs a list or text, but this is {}", lt.label())));
+            // `p[0]`, `p[1]`, `p[2]` read a point's components.
+            if !matches!(lt, Ty::List | Ty::Str | Ty::Point | Ty::Any) {
+                errors.push(e(
+                    0,
+                    format!("[ ] needs a list, text or a point, but this is {}", lt.label()),
+                ));
             }
             if !matches!(it, Ty::Num(_) | Ty::Any) {
                 errors.push(e(0, format!("a position must be a number, but this is {}", it.label())));
@@ -317,6 +321,14 @@ fn infer(
         Expr::Bin(op, left, right) => {
             let lt = infer(left, scope, declared, errors);
             let rt = infer(right, scope, declared, errors);
+            // `-p` is written `0 - p` by the parser, and negating a point is
+            // meaningful (the opposite offset), so it is not a type error.
+            let negation = *op == BinOp::Sub
+                && rt == Ty::Point
+                && matches!(**left, Expr::Num(n, _) if n == 0.0);
+            if negation {
+                return Ty::Point;
+            }
             point_aware_bin(*op, lt, rt, errors)
         }
         Expr::Math { kind, args, line } => infer_math(*kind, args, *line, scope, declared, errors),
@@ -362,14 +374,20 @@ fn infer_math(
 ) -> Ty {
     let tys: Vec<Ty> = args.iter().map(|a| infer(a, scope, declared, errors)).collect();
     let want = match kind {
-        MathKind::Vector => 3,
+        // `vector(x, y)` is a 2-D point: z defaults to 0.
+        MathKind::Vector => 2,
         MathKind::Distance | MathKind::BearingFrom | MathKind::Atan2 => 2,
         _ => 1,
     };
-    if tys.len() != want {
+    let wrong_count = match kind {
+        MathKind::Vector => tys.len() != 2 && tys.len() != 3,
+        _ => tys.len() != want,
+    };
+    if wrong_count {
+        let range = if kind == MathKind::Vector { "2 or 3" } else { "exactly" };
         errors.push(e(
             line,
-            format!("{:?} takes {} value(s), but {} were given", kind, want, tys.len()),
+            format!("{:?} takes {} value(s), but {} were given", kind, range, tys.len()),
         ));
         return Ty::Any;
     }

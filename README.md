@@ -247,7 +247,9 @@ action main():
 kaze run examples/kinematics.kaze --cap log=sim --plain
 ```
 
-* `vector(x, y, z)` makes a point; points add to points and a number scales one.
+* `vector(x, y, z)` makes a point, and `vector(x, y)` is a 2-D point (z = 0).
+  Points add to points, a number scales one, `-p` flips one, and `p[0]`, `p[1]`,
+  `p[2]` read the components back.
 * `distance between a and b` is great-circle metres on the WGS84 mean sphere.
 * `bearing to v` is the compass direction of a local vector; `bearing from a to b`
   is the initial bearing towards a place. Degrees, 0 = north.

@@ -171,12 +171,13 @@ impl<'a> Vm<'a> {
                     self.push(Value::Num(n), item.line)?;
                 }
                 Op::VecNew => {
+                    // Two components is a 2-D point: x and y, with z = 0.
                     let n = field_a(w) as usize;
-                    if n != 3 {
-                        return Err(VmError::new("E_KAZE_BADCODE", "VECNEW with a width other than 3"));
+                    if n != 2 && n != 3 {
+                        return Err(VmError::new("E_KAZE_BADCODE", "VECNEW with a bad width"));
                     }
                     let mut parts = [0.0f64; 3];
-                    for slot in parts.iter_mut().rev() {
+                    for slot in parts.iter_mut().take(n).rev() {
                         let v = self.pop(item.line)?;
                         *slot = self.num_of(v, item.line)?;
                     }
@@ -668,6 +669,21 @@ impl<'a> Vm<'a> {
         }
         let i = i as usize;
         match coll {
+            Value::Vec(v) => {
+                let p = self.heap.vec3(v).ok_or_else(|| VmError {
+                    code: "E_KAZE_BADCODE",
+                    msg: "a point is missing from the heap".to_string(),
+                    line,
+                })?;
+                if i > 2 {
+                    return Err(VmError {
+                        code: "E_KAZE_BOUNDS",
+                        msg: format!("a point has components 0, 1 and 2, not {}", i),
+                        line,
+                    });
+                }
+                Ok(Value::Num(p[i]))
+            }
             Value::Arr(a) => self
                 .heap
                 .array(a)

@@ -461,7 +461,13 @@ impl CapHost for SimHost {
             ("policy", "allow") => Ok(args.first().copied().unwrap_or(Value::Unit)),
             ("policy", "reject") => Ok(Value::Unit),
             ("log", "info") | ("log", "warn") | ("log", "error") | ("log", "debug") => {
-                let msg = str_at(args, 0, arena);
+                // Render against the run's real heap: a point in a log line is a
+                // value, and rendering it with an empty heap prints (?, ?, ?).
+                let msg = match args.first() {
+                    Some(Value::Str(s)) => arena.get(*s).to_string(),
+                    Some(other) => render_value(*other, arena, heap),
+                    None => String::new(),
+                };
                 let level = match op {
                     "warn" => "warning",
                     "error" => "error",

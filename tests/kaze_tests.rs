@@ -215,11 +215,11 @@ fn a_point_and_a_number_are_not_additive() {
 }
 
 #[test]
-fn a_point_needs_three_numbers() {
-    let src = "needs: log\naction main():\n    log vector(1, 2)\n";
+fn a_point_needs_two_or_three_numbers() {
+    let src = "needs: log\naction main():\n    log vector(1)\n";
     let err = kaze::check_source(src, "<math>").unwrap_err();
     assert_eq!(err.code, "E_KAZE_CHECK");
-    assert!(err.message.contains("3 value(s)"), "{}", err.message);
+    assert!(err.message.contains("2 or 3 value(s)"), "{}", err.message);
 }
 
 #[test]
@@ -257,4 +257,57 @@ fn a_point_can_be_built_from_the_vehicles_own_position() {
     let end = line.rfind(')').expect("a call");
     let metres: f64 = line[start..end].parse().expect("a number");
     assert!((metres - 53.4).abs() < 2.0, "{metres}");
+}
+
+// Regressions found by auditing v0.3 against the plan, not by writing it.
+
+#[test]
+fn a_two_component_vector_is_a_point_on_the_ground() {
+    let out = one_log("needs: log\naction main():\n    log vector(3, 4)\n");
+    assert_eq!(out, "(3, 4, 0)");
+}
+
+#[test]
+fn a_points_components_can_be_read_back() {
+    let out = logged(
+        "needs: log\naction main():\n    let p = vector(7, 8, 9)\n    log p[0]\n    log p[2]\n",
+    );
+    assert_eq!(out, vec!["7".to_string(), "9".to_string()]);
+}
+
+#[test]
+fn a_component_past_the_third_is_out_of_bounds() {
+    let src = "needs: log\naction main():\n    let p = vector(1, 2, 3)\n    log p[3]\n";
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let err = run_source(src, "<math>", &opts).unwrap_err();
+    assert_eq!(err.code, "E_KAZE_BOUNDS", "{}", err.message);
+    assert!(err.message.contains("components 0, 1 and 2"), "{}", err.message);
+}
+
+#[test]
+fn negating_a_point_flips_every_component() {
+    let out = one_log("needs: log\naction main():\n    log 0 - vector(1, 2, 3)\n");
+    assert_eq!(out, "(-1, -2, -3)");
+}
+
+#[test]
+fn a_point_in_a_log_line_is_not_a_question_mark() {
+    let src = "needs: log\naction main():\n    log vector(1, 2, 3)\n";
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let report = run_source(src, "<math>", &opts).expect("it runs");
+    assert_eq!(report.logs.len(), 1);
+    assert_eq!(report.logs[0].1, "(1, 2, 3)", "a point must render, not (?, ?, ?)");
+}
+
+#[test]
+fn a_v03_module_survives_serialization() {
+    let src = std::fs::read_to_string(example("kinematics.kaze")).unwrap();
+    let prep = kaze::prepare(&src, "kinematics.kaze").unwrap();
+    let bytes = isa::serialize(&prep.module);
+    let reloaded = isa::deserialize(&bytes).expect("a v0.3 module must reload");
+    let opts = RunOptions::default();
+    let from_source = run("kinematics.kaze", &opts);
+    let from_bytes = kaze::run_module(reloaded, "kinematics.kazebc", &opts).unwrap();
+    assert_eq!(from_source.actions, from_bytes.actions);
+    assert_eq!(from_source.fuel_used, from_bytes.fuel_used);
 }
