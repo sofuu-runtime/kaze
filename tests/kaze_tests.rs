@@ -169,7 +169,10 @@ fn bearings_are_compass_degrees() {
     let out = one_log(
         "needs: log\naction main():\n    log bearing from vector(0, 0, 0) to vector(0, 1, 0)\n",
     );
-    assert_eq!(out, "90", "east is 90 degrees: {out}");
+    // A tolerance, not an exact string: sin/cos/atan2 come from the platform
+    // libm, and the last bit of a different libm must not fail this test.
+    let deg = number(&out);
+    assert!((deg - 90.0).abs() < 1e-9, "east is 90 degrees: {deg}");
 }
 
 #[test]
