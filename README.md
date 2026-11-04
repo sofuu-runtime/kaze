@@ -289,7 +289,9 @@ kaze run examples/kinematics.kaze --cap log=sim --plain
 Honest limits: `vector` components are not unit-checked, so mixing degrees and
 metres inside one point is on you; a local offset of a few thousandths of a
 degree still passes the place check because it is a valid coordinate — the
-check catches unit mistakes, not intent.
+check catches unit mistakes, not intent. See
+[`docs/KINEMATICS-CHECKLIST.md`](docs/KINEMATICS-CHECKLIST.md) for testing
+kinematics and SITL missions.
 
 ### Interactive REPL
 ```bash
