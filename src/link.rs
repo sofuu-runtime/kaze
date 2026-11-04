@@ -119,10 +119,10 @@ impl UartIo {
             .args(["-F", path, &baud.to_string(), "raw", "-echo", "-echoe", "-echok"])
             .status()?;
         if !status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("stty could not configure {} at {} baud", path, baud),
-            ));
+            return Err(io::Error::other(format!(
+                "stty could not configure {} at {} baud",
+                path, baud
+            )));
         }
         let writer = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
         let mut reader = writer.try_clone()?;
@@ -560,6 +560,7 @@ impl Core {
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn run_link(
     mut core: Core,
     mut io: Box<dyn Io>,

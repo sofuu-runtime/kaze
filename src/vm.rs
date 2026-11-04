@@ -575,7 +575,7 @@ impl<'a> Vm<'a> {
                 let p = self.point(Value::Vec(x), line)?;
                 [p[0] / s, p[1] / s, p[2] / s]
             }
-            (Op::Sub, Value::Num(z), Value::Vec(x)) if z == 0.0 => {
+            (Op::Sub, Value::Num(0.0), Value::Vec(x)) => {
                 let p = self.point(Value::Vec(x), line)?;
                 [-p[0], -p[1], -p[2]]
             }
@@ -647,6 +647,19 @@ impl<'a> Vm<'a> {
                     .alloc(&name)
                     .map_err(|e| VmError { code: "E_KAZE_MEMORY", msg: e, line })?;
                 Ok(self.heap.map_get(m, Value::Str(key), &self.arena).unwrap_or(Value::Unit))
+            }
+            Value::Vec(v) => {
+                let p = self.point(Value::Vec(v), line)?;
+                match name.as_str() {
+                    "x" | "lat" | "latitude" => Ok(Value::Num(p[0])),
+                    "y" | "lon" | "longitude" => Ok(Value::Num(p[1])),
+                    "z" | "alt" | "altitude" => Ok(Value::Num(p[2])),
+                    _ => Err(VmError {
+                        code: "E_KAZE_TYPE",
+                        msg: format!("'.{}' is not a point component; write x/lat, y/lon, or z/alt", name),
+                        line,
+                    }),
+                }
             }
             other => Err(VmError {
                 code: "E_KAZE_TYPE",
@@ -773,7 +786,7 @@ impl<'a> Vm<'a> {
         if cap.family == "policy" && cap.op == "reject" {
             let reason = match args.first() {
                 Some(Value::Str(s)) => self.arena.get(*s).to_string(),
-                other => other.map(|v| render(&v, &self.arena, &self.heap)).unwrap_or_default(),
+                other => other.map(|v| render(v, &self.arena, &self.heap)).unwrap_or_default(),
             };
             self.verdict = Some(Verdict::Reject(reason));
             self.push(Value::Unit, line)?;

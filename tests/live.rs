@@ -1,3 +1,5 @@
+#![allow(clippy::field_reassign_with_default)]
+
 // The live backends, end to end: a Kaze script drives a real socket and real
 // sysfs files. No autopilot and no hardware needed — the stand-ins below speak
 // the real wire format.

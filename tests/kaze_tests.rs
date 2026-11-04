@@ -34,8 +34,7 @@ fn every_example_matches_its_golden_trace() {
     args.insert("points".into(), serde_json::json!([1, 2]));
     let patrol = RunOptions { args, grants: grants(&["drone"]), ..Default::default() };
 
-    let mut sim = SimState::default();
-    sim.distance = 0.3;
+    let sim = SimState { distance: 0.3, ..Default::default() };
     let rover = RunOptions {
         grants: grants(&["rover", "lidar"]),
         ticks: 1,
@@ -244,9 +243,7 @@ fn distance_needs_the_word_and() {
 #[test]
 fn a_point_can_be_built_from_the_vehicles_own_position() {
     let src = "needs: drone, log\naction main():\n    let here = vector(latitude, longitude, 0)\n    let waypoint = vector(47.6004, 8.5004, 0)\n    log distance between here and waypoint\n";
-    let mut sim = SimState::default();
-    sim.lat = 47.6;
-    sim.lon = 8.5;
+    let sim = SimState { lat: 47.6, lon: 8.5, ..Default::default() };
     let opts = RunOptions { grants: grants(&["drone", "log"]), sim, ..Default::default() };
     let report = run_source(src, "<math>", &opts).expect("the script should run");
     // Ambient telemetry reads are traced too, so find the log line rather than
@@ -321,9 +318,7 @@ fn a_v03_module_survives_serialization() {
 #[test]
 fn bearing_to_measures_from_the_machines_own_position() {
     let src = "needs: drone, log\naction main():\n    log bearing to vector(47.6004, 8.5004, 0)\n";
-    let mut sim = SimState::default();
-    sim.lat = 47.6;
-    sim.lon = 8.5;
+    let sim = SimState { lat: 47.6, lon: 8.5, ..Default::default() };
     let opts = RunOptions { grants: grants(&["drone", "log"]), sim, ..Default::default() };
     let report = run_source(src, "<math>", &opts).expect("it runs");
     let line = report
@@ -372,4 +367,49 @@ fn a_value_that_cannot_be_a_place_is_refused() {
     let err = run_source(src, "<math>", &opts).unwrap_err();
     assert_eq!(err.code, "E_KAZE_RANGE", "{}", err.message);
     assert!(err.message.contains("not a latitude and longitude"), "{}", err.message);
+}
+
+#[test]
+fn fly_to_a_vector_updates_simulator_position() {
+    let src = "needs: drone, log\naction main():\n    arm drone\n    takeoff to 10 meters\n    fly to vector(47.6004, 8.5004, 25)\n    log latitude\n    log longitude\n    log altitude\n";
+    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let report = run_source(src, "<nav>", &opts).expect("it runs");
+    let logs: Vec<String> = report
+        .actions
+        .iter()
+        .filter(|a| a.contains("log.info"))
+        .cloned()
+        .collect();
+    assert!(logs[0].contains("47.6004"), "{}", logs[0]);
+    assert!(logs[1].contains("8.5004"), "{}", logs[1]);
+    assert!(logs[2].contains("25"), "{}", logs[2]);
+}
+
+#[test]
+fn fly_to_a_vector_at_altitude_overrides_vector_z() {
+    let src = "needs: drone, log\naction main():\n    arm drone\n    takeoff to 10 meters\n    fly to vector(47.6004, 8.5004, 25) at 40 meters\n    log altitude\n";
+    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let report = run_source(src, "<nav>", &opts).expect("it runs");
+    let line = report.actions.iter().find(|a| a.contains("log.info")).expect("log");
+    assert!(line.contains("40"), "{}", line);
+}
+
+#[test]
+fn point_fields_read_by_name() {
+    let src = "needs: log\naction main():\n    let p = vector(47.6, 8.5, 500)\n    log p.x\n    log p.y\n    log p.z\n    log p.lat\n    log p.lon\n    log p.alt\n";
+    let out = logged(src);
+    assert_eq!(number(&out[0]), 47.6);
+    assert_eq!(number(&out[1]), 8.5);
+    assert_eq!(number(&out[2]), 500.0);
+    assert_eq!(number(&out[3]), 47.6);
+    assert_eq!(number(&out[4]), 8.5);
+    assert_eq!(number(&out[5]), 500.0);
+}
+
+#[test]
+fn invalid_point_field_is_refused_at_check_time() {
+    let src = "needs: log\naction main():\n    let p = vector(47.6, 8.5, 500)\n    log p.mystery\n";
+    let err = kaze::check_source(src, "<math>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_CHECK");
+    assert!(err.message.contains("write x/lat, y/lon, or z/alt"), "{}", err.message);
 }

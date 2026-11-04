@@ -64,11 +64,11 @@ struct Parser {
 impl Parser {
     // ── token plumbing ───────────────────────────────────────────────
     fn peek(&self) -> &Tok {
-        &self.toks.get(self.pos).map(|t| &t.tok).unwrap_or(&Tok::Eof)
+        self.toks.get(self.pos).map(|t| &t.tok).unwrap_or(&Tok::Eof)
     }
 
     fn peek_at(&self, n: usize) -> &Tok {
-        &self.toks.get(self.pos + n).map(|t| &t.tok).unwrap_or(&Tok::Eof)
+        self.toks.get(self.pos + n).map(|t| &t.tok).unwrap_or(&Tok::Eof)
     }
 
     fn here(&self) -> (u32, u32) {
@@ -172,7 +172,7 @@ impl Parser {
             self.expect_punct(':')?;
             loop {
                 let name = self.expect_ident()?;
-                if self.needs.iter().any(|n| *n == name) {
+                if self.needs.contains(&name) {
                     let (l, c) = self.here();
                     return err(l, c, format!("'{}' is declared twice in needs:", name));
                 }
@@ -273,7 +273,7 @@ impl Parser {
         if !self.eat_punct(')') {
             loop {
                 let p = self.expect_ident()?;
-                if params.iter().any(|x| *x == p) {
+                if params.contains(&p) {
                     let (l, c) = self.here();
                     return err(l, c, format!("parameter '{}' is repeated", p));
                 }

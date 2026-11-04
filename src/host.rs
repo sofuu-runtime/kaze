@@ -236,7 +236,17 @@ fn drone_op(
         "goto" => {
             ensure_guided(link)?;
             let tele = link.telemetry();
-            let (lat, lon, alt) = if args.len() >= 3 {
+            let (lat, lon, alt) = if let Some(Value::Vec(v)) = args.first() {
+                let p = heap.vec3(*v).unwrap_or([tele.lat.unwrap_or(0.0), tele.lon.unwrap_or(0.0), 0.0]);
+                let alt = if args.len() >= 2 {
+                    num(1, if p[2] != 0.0 { p[2] } else { tele.rel_alt_m.unwrap_or(10.0) })
+                } else if p[2] != 0.0 {
+                    p[2]
+                } else {
+                    tele.rel_alt_m.unwrap_or(10.0)
+                };
+                (p[0], p[1], alt)
+            } else if args.len() >= 3 {
                 (num(0, tele.lat.unwrap_or(0.0)), num(1, tele.lon.unwrap_or(0.0)), num(2, tele.rel_alt_m.unwrap_or(10.0)))
             } else if args.len() == 2 {
                 (num(0, tele.lat.unwrap_or(0.0)), tele.lon.unwrap_or(0.0), num(1, 10.0))

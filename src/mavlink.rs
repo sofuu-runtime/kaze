@@ -477,6 +477,7 @@ impl Parser {
 
     /// Yield the next CRC-valid frame, advancing past anything unusable.
     /// Returns `None` when the buffer holds no complete frame.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Frame> {
         loop {
             /* Find the first plausible start byte. */

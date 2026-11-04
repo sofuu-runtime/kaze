@@ -354,19 +354,34 @@ impl CapHost for SimHost {
             }
             ("drone", "goto") => {
                 if !self.state.on_ground {
-                    if let Some(Value::Map(m)) = args.first() {
+                    if let Some(Value::Vec(v)) = args.first() {
+                        if let Some(p) = heap.vec3(*v) {
+                            self.state.lat = p[0];
+                            self.state.lon = p[1];
+                            if args.len() > 1 {
+                                self.state.altitude_m = num_at(args, 1, self.state.altitude_m);
+                            } else if p[2] != 0.0 {
+                                self.state.altitude_m = p[2];
+                            }
+                        }
+                    } else if let Some(Value::Map(m)) = args.first() {
                         if let Some(lat) = heap.map_get(*m, Value::Num(0.0), arena) {
                             self.state.lat = lat.as_num().unwrap_or(self.state.lat);
                         }
-                    } else if let Some(n) = args.first().and_then(|v| v.as_num()) {
-                        self.state.lat = n;
-                    }
-                    if args.len() >= 3 {
-                        // The capability's own signature: goto(lat, lon, alt).
-                        self.state.lon = num_at(args, 1, self.state.lon);
-                        self.state.altitude_m = num_at(args, 2, self.state.altitude_m);
-                    } else if args.len() > 1 {
-                        self.state.altitude_m = num_at(args, 1, self.state.altitude_m);
+                        if args.len() > 1 {
+                            self.state.altitude_m = num_at(args, 1, self.state.altitude_m);
+                        }
+                    } else {
+                        if let Some(n) = args.first().and_then(|v| v.as_num()) {
+                            self.state.lat = n;
+                        }
+                        if args.len() >= 3 {
+                            // The capability's own signature: goto(lat, lon, alt).
+                            self.state.lon = num_at(args, 1, self.state.lon);
+                            self.state.altitude_m = num_at(args, 2, self.state.altitude_m);
+                        } else if args.len() > 1 {
+                            self.state.altitude_m = num_at(args, 1, self.state.altitude_m);
+                        }
                     }
                     self.state.drain(1.0);
                     Ok(Value::Unit)

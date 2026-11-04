@@ -232,11 +232,29 @@ fn infer(
             }
             Ty::Any
         }
-        Expr::Field { base, line, .. } => {
-            if !scope.iter().rev().any(|(n, _)| n == base) {
+        Expr::Field { base, field, line } => {
+            if let Some((_, ty)) = scope.iter().rev().find(|(n, _)| n == base) {
+                if let Ty::Point = ty {
+                    match field.as_str() {
+                        "x" | "y" | "z" | "lat" | "lon" | "alt" | "latitude" | "longitude" | "altitude" => {
+                            return Ty::Num(None);
+                        }
+                        _ => {
+                            errors.push(e(
+                                *line,
+                                format!(
+                                    "'.{}' is not a component of point '{}'; write x/lat, y/lon, or z/alt",
+                                    field, base
+                                ),
+                            ));
+                            return Ty::Any;
+                        }
+                    }
+                }
+            } else {
                 errors.push(e(
                     *line,
-                    format!("'.{}' reads a field of '{}', which is not a value here", "", base),
+                    format!("'.{}' reads a field of '{}', which is not a value here", field, base),
                 ));
             }
             Ty::Any
