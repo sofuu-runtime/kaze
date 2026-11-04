@@ -20,7 +20,7 @@
 [![Zero GC](https://img.shields.io/badge/Memory-Zero--GC_Arena-green.svg)](#memory-model)
 [![Fixed ISA](https://img.shields.io/badge/Bytecode-4--Byte_Fixed_ISA-purple.svg)](#bytecode-isa)
 
-> **The ultra-friendly, Rust-secured scripting language for robotics, drones, and ambient edge devices.**
+> **The ultra-friendly, Rust-secured scripting language for AI agents, robotics, drones, and ambient edge devices.**
 
 Kaze (風, "wind" — *the wind of [Sofuu](https://sofuu.xyz)*) delivers **all of Rust's security, determinism, and zero-GC performance, paired with the effortless, human-readable scripting experience of Python.**
 
@@ -28,22 +28,24 @@ Kaze (風, "wind" — *the wind of [Sofuu](https://sofuu.xyz)*) delivers **all o
 
 ## 🌪️ Why Kaze?
 
-Modern edge AI, companion computers, and robotics platforms face a dilemma:
-* **Python** offers fast iteration and clean syntax, but its non-deterministic garbage collection (stop-the-world pauses), high memory overhead, and lack of sandboxing can cause physical vehicle stutter or crashes at 10 Hz control loops.
-* **Rust** provides ironclad memory safety and bare-metal speed, but forces developers and LLM agents to fight borrow checkers, lifetime annotations (`'a`), and verbose error handling just to script a simple patrol mission.
-* **Lua / WASM** bring in ambient I/O vulnerabilities, memory bloat, or heavy VM runtimes.
+Modern autonomous AI agents and edge robotics face a fundamental execution dilemma:
+* **For AI Agents:** Writing multi-step decision and tool logic in Python or JavaScript is broken. Python's ambient I/O (`os`, `subprocess`, `open`) requires heavy Docker/gVisor sandboxes to prevent prompt injection or disk wiping. JavaScript suffers from async/await race conditions and unhandled Promise rejections. Furthermore, chaining 5 tools currently takes 5 slow, expensive LLM round-trips over JSON.
+* **For Robotics & Physical Systems:** Python's non-deterministic garbage collection (stop-the-world pauses) causes actuator stutter or vehicle crashes in 10 Hz control loops. Rust provides bare-metal speed, but forces developers and LLMs to fight borrow checkers, lifetime annotations (`'a`), and verbose error handling just to script a simple patrol mission.
 
-**Kaze is a domain scripting language hand-rolled in pure Rust.** It is not a general-purpose language; it exists specifically to execute safe, resource-bounded, capability-isolated routines for physical machines and AI agent guardrails.
+**Kaze solves both as a dual-pillar domain scripting language hand-rolled in pure Rust.**
+1. **For AI Agents:** A natural-language execution substrate where LLMs can generate multi-step tool logic, data processing, and guardrails with zero syntax errors, zero container overhead, and fuel-bounded execution.
+2. **For Robotics & Drones:** Hard real-time determinism, zero GC stutter, first-class physical units, and capability-isolated hardware control.
 
 ---
 
-## ⚡ The Five Doctrines
+## ⚡ The Six Doctrines
 
-1. **Natural Phrasing, Zero Syntax Friction:** Designed for effortless human auditability and zero-shot LLM generation. Clean natural English verbs (`takeoff to 15 meters`, `drive forward at 1.5 m/s`) compile into strict bytecode.
-2. **First-Class Physical Units:** Units like `meters`, `m/s`, `degrees`, `seconds`, `ms`, and `%` are native tokens. Dimensional conflicts and catastrophic unit mismatches (e.g. feet vs. meters) are caught at parse time.
-3. **Zero Ambient I/O (Structural Capability Security):** Kaze scripts have **zero built-in side-effects**. No ambient filesystem, clock, networking, or process spawning. Every external effect requires an explicit `needs: ...` declaration and passes an R7 hardware safety gate.
-4. **Deterministic by Construction (Zero GC Pauses):** Memory is sequentially allocated in a linear arena per run and reclaimed wholesale in one instant operation. There is zero garbage collector, zero stop-the-world stutter, and zero heap fragmentation.
-5. **Fuel-Bounded Always:** Every instruction decrements a fuel meter. Runaway loops or runaway math halt uncatchably and return a typed `E_TIMEOUT`. A Kaze script cannot hang a drone, freeze a rover, or stall an agent.
+1. **Natural Phrasing, Zero Syntax Friction:** Designed for effortless human auditability and zero-shot LLM synthesis. Clean natural English phrasing (`needs: memory, tools`, `if x > 10: ... otherwise: ...`) compiles into strict bytecode without indentation traps or missing imports.
+2. **First-Class Substrate for AI Agents:** Agents can synthesize a single Kaze script to execute multi-tool pipelines and conditional logic locally in <1ms, replacing 5 sequential JSON chat completions with one deterministic atomic turn.
+3. **First-Class Physical Units:** Units like `meters`, `m/s`, `degrees`, `seconds`, `ms`, and `%` are native tokens. Dimensional conflicts and unit mismatches (e.g. feet vs. meters) are caught at check time.
+4. **Zero Ambient I/O (Structural Capability Security):** Kaze scripts have **zero built-in side-effects**. No ambient filesystem, clock, networking, or child processes. Every external effect requires an explicit `needs: ...` declaration and crosses a strict capability gate.
+5. **Deterministic by Construction (Zero GC Pauses):** Memory is sequentially allocated in a linear arena per run and reclaimed wholesale in one instant operation. There is zero garbage collector, zero stop-the-world stutter, and zero heap fragmentation.
+6. **Fuel-Bounded Always:** Every instruction decrements a fuel meter. Runaway loops or runaway math halt uncatchably and return a typed `E_TIMEOUT`. A Kaze script cannot hang a drone, freeze a rover, or stall an agent.
 
 ---
 
@@ -140,6 +142,31 @@ filter user_prompt(prompt):
 
     remember prompt as "last_valid_query"
     allow prompt
+```
+
+### 5. Autonomous AI Agent Decision Logic (`agent_pipeline.kaze`)
+```kaze
+needs: memory, tools, alert, policy
+
+action process_lead(lead):
+    # Safe semantic/structured recall with zero injection risks
+    let history = recall lead.company_name
+
+    if history is nothing:
+        let enriched = tools.enrich_company(lead.domain)
+        save lead.company_name: enriched
+
+        # Deterministic multi-step reasoning executed in a single atomic turn
+        if enriched.revenue > 1000000 and lead.employees > 50:
+            tools.create_crm_deal(lead.id, "enterprise")
+            alert "Qualified enterprise lead: " + lead.company_name
+        otherwise:
+            tools.tag_lead(lead.id, "nurture")
+    otherwise:
+        log "Existing lead already processed"
+
+when token_budget > 90%:
+    alert warning "Agent session token budget threshold reached"
 ```
 
 ---
