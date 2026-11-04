@@ -6,10 +6,10 @@
 > frozen). This directory is an earlier, standalone prototype with its own
 > workspace, CLI and test suite; `make` and CI never build it.
 >
-> The two surfaces have diverged. The prototype carries nine vector/trig
-> opcodes (`VecNew`, `VecDist`, `VecBearing`, `VecBearingBetween`,
-> `Sin`, `Cos`, `Sqrt`, `DegToRad`, `RadToDeg`) and calls itself v0.3,
-> while the product is v0.1 and has none of them. Capability verbs are at
+> The two surfaces have diverged. The prototype carries eleven vector/trig
+> opcodes (`VecNew` through `VecSlantDist`, including `Atan2`) and three
+> fault-tolerance opcodes (`TryBegin`, `TryEnd`, `LinkLost`), and calls itself
+> v0.4, while the product is v0.1 and has none of them. Capability verbs are at
 > parity as of 2026-11-02. `scripts/kaze-drift-check.sh` (run by
 > `make test`) keeps that honest: do not treat anything in this README as a
 > description of the shipped runtime.
@@ -61,7 +61,7 @@ flowchart LR
     end
 
     subgraph CompilerVM["Compiler & Execution Engine (crates/kaze)"]
-        COMP["Compiler<br/>(33 opcodes, fused JEQ/JNE)"]
+        COMP["Compiler<br/>(47 opcodes, fused JEQ/JNE, TRY_BEGIN)"]
         BC[".kazebc Bytecode Module<br/>(Deterministic 4-byte ISA)"]
         VM["Arena VM<br/>(Instruction fuel bounds, deadline interrupt)"]
     end
@@ -320,6 +320,78 @@ check catches unit mistakes, not intent. See
 [`docs/KINEMATICS-CHECKLIST.md`](docs/KINEMATICS-CHECKLIST.md) for testing
 kinematics and SITL missions.
 
+### Fault Tolerance (v0.4)
+
+`try ... otherwise` recovers from an operational failure — a link that is down,
+a rejected command, a denied arm, a host refusal — so a mission can report it
+and continue:
+
+```kaze
+needs: drone, log
+
+action main():
+    try:
+        takeoff to 15 meters
+    otherwise with err:
+        log warning err.code        # E_KAZE_HOST
+        log warning err.message
+        log warning err.line
+        arm drone
+        takeoff to 15 meters
+```
+
+`otherwise with err:` binds the error record. It has exactly three fields:
+`code` (text), `message` (text) and `line` (number). Without `with err:` the
+recovery block simply runs.
+
+**Safety and budget stops are never catchable.** `E_KAZE_RANGE`, every
+`E_CAP_*` denial, `E_SAFETY_VIOLATION`, `E_TIMEOUT`, `E_KAZE_MEMORY`, type and
+maths errors, and bytecode errors still stop the run. A machine that caught a
+range violation and kept flying would be acting on a value it was told to
+refuse. The recoverable set is exactly `E_KAZE_LINK`,
+`E_KAZE_LINK_TIMEOUT`, `E_COMMAND_REJECTED`, `E_ARMING_DENIED` and
+`E_KAZE_HOST`.
+
+A link-loss failsafe is a `when` hook. Hooks run on supervisor ticks:
+
+```kaze
+needs: drone, log
+
+when link lost for 3 seconds:
+    log warning "link lost; returning to launch"
+    try:
+        return to launch
+    otherwise with err:
+        log warning err.code
+```
+
+The RTL may itself fail — the link is gone — so it is wrapped just as the
+takeoff was; a failsafe that stops on that failure is not a failsafe.
+
+`link lost for N seconds` is true once the link has been silent at least that
+long, and it requires `needs: drone`. In a live run pass `--pace`, or the
+supervisor will burn through its ticks in microseconds and never let three real
+seconds pass. In the simulator, `--sim link_lost_after=1500` drops the link at
+virtual millisecond 1500, so the hook is deterministic offline (no `--pace`
+needed):
+
+```bash
+kaze run examples/fault_tolerance.kaze --cap drone --cap log \
+  --ticks 35 --tick-ms 100 --sim link_lost_after=0 --plain
+```
+
+Honest limits: the hook fires on every tick while the link stays lost, so write
+the recovery to be idempotent (as the example does); a live host measures
+silence from its receive thread, so the first evaluation after a real dropout
+can be up to one tick late; the error record's `line` is the routine's line,
+not yet the individual call's line; and `.kazebc` files from v0.3 (module
+format 2) must be recompiled for format 3. The supervisor reclaims the run
+arena and heap between ticks, so a hook's evaluation stays bounded; the
+action/log trace is the mission record and still grows with the number of
+calls, so cap it for a very long run. See
+[`docs/FAULT-TOLERANCE-CHECKLIST.md`](docs/FAULT-TOLERANCE-CHECKLIST.md) for the
+SITL dropout drill.
+
 ### Interactive REPL
 ```bash
 kaze repl
@@ -333,7 +405,7 @@ Embed Kaze inside any Rust companion computer or robotics supervisor:
 
 ```toml
 [dependencies]
-kaze = "0.1.0"
+kaze = "0.4.0"
 ```
 
 ```rust
@@ -390,7 +462,7 @@ A physical machine acting on clamped values is acting on a lie. Kaze halts uncat
 | **v0.1** | **Core Foundation (Done)** | Fixed 4-byte ISA, clean-room lexer/parser/checker, arena allocator, fuel meter, CLI & REPL. |
 | **v0.2** | **Physical Hardware (P-K1) — shipped** | Live MAVLink over UDP & serial UART, Linux GPIO (sysfs + chardev v2 UAPI), Linux PWM (sysfs), 20 Hz receive thread with a 1 Hz heartbeat, ACK correlation. Measured against ArduCopter SITL. |
 | **v0.3** | **Spatial Kinematics (P-K2) — shipped** | Points as values (`vector`, arithmetic, `p[0..2]`, `p.x`/`p.lat`), WGS84 `distance between` and `slant distance between`, three bearing forms (`to` a place from the machine, `from … to …`, `of` an offset), `length of`, `sin`/`cos`/`atan2`/`sqrt`, degree/radian conversion, and a check that refuses a value that cannot be a coordinate. Eleven opcodes; module format version 2. Measured against ArduCopter SITL: bearing 33.97°, ground 53.659 m, slant 55.716 m from live telemetry. |
-| **v0.4** | **Fault Tolerance (P-K3)** | In-script `try ... otherwise` error recovery, link-loss failsafes (`when link lost for 3 seconds:`). |
+| **v0.4** | **Fault Tolerance (P-K3) — shipped** | In-script `try ... otherwise [with err]` recovery from operational host failures (`E_KAZE_LINK`, `E_KAZE_LINK_TIMEOUT`, `E_COMMAND_REJECTED`, `E_ARMING_DENIED`, `E_KAZE_HOST`) while safety and budget stops stay fatal; `when link lost for N seconds:` failsafes with a deterministic simulated dropout (`--sim link_lost_after=…`). Three opcodes; module format version 3. |
 | **v0.5** | **Modular Composition (P-K4)** | `use "patterns/grid.kaze"` multi-file compilation with compile-time inlining into single `.kazebc`. |
 | **v0.6** | **Developer Tooling (P-K5)** | Language Server (`kaze-lsp`), VS Code / Cursor extensions, CLI code formatter (`kaze fmt`). |
 | **v0.7** | **Security & Fuzzing (P-K6)** | Bytecode verifier validation, malformed `.kazebc` differential fuzzing, zero-panic memory audit. |

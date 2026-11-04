@@ -82,6 +82,15 @@ pub enum Op {
     RadToDeg = 42,
     /// pop two points, push the great-circle distance plus altitude change
     VecSlantDist = 43,
+    // ── v0.4: fault tolerance ───────────────────────────────────────
+    /// a: local slot for the error record (255 = no binding);
+    /// wide: relative jump to the recovery block, from the end of the instruction
+    TryBegin = 44,
+    /// pop the innermost active try handler
+    TryEnd = 45,
+    /// wide: milliseconds of link silence; push true once the link has been
+    /// silent at least that long (false when there is no live link)
+    LinkLost = 46,
 }
 
 impl Op {
@@ -131,6 +140,9 @@ impl Op {
             41 => Op::DegToRad,
             42 => Op::RadToDeg,
             43 => Op::VecSlantDist,
+            44 => Op::TryBegin,
+            45 => Op::TryEnd,
+            46 => Op::LinkLost,
             _ => return None,
         })
     }
@@ -146,6 +158,11 @@ impl Op {
                 | Op::Jne
                 | Op::CallCap
                 | Op::Trap
+                // FuelTick carries its loop's source line. It was missing here,
+                // which made `compile --disasm` read that line as an opcode.
+                | Op::FuelTick
+                | Op::TryBegin
+                | Op::LinkLost
         )
     }
 
@@ -195,6 +212,9 @@ impl Op {
             Op::DegToRad => "DEG_TO_RAD",
             Op::RadToDeg => "RAD_TO_DEG",
             Op::VecSlantDist => "VECSLANT_DIST",
+            Op::TryBegin => "TRY_BEGIN",
+            Op::TryEnd => "TRY_END",
+            Op::LinkLost => "LINK_LOST",
         }
     }
 }
@@ -292,9 +312,10 @@ impl Module {
 }
 
 const MAGIC: &[u8; 8] = b"KAZEBC1\0";
-/// 2 since v0.3 added the maths opcodes: a v0.2 reader would meet an opcode it
-/// does not know, so it refuses the module up front instead.
-const VERSION: u16 = 2;
+/// 3 since v0.4 added `TryBegin`, `TryEnd` and `LinkLost`; bumping the version
+/// makes an older reader refuse the module up front instead of meeting an
+/// opcode it does not know. Format 2 (v0.3) modules must be recompiled.
+const VERSION: u16 = 3;
 
 struct Writer {
     out: Vec<u8>,
@@ -554,6 +575,15 @@ mod tests {
     }
 
     #[test]
+    fn an_older_module_format_is_refused_up_front() {
+        let mut bytes = serialize(&Module::default());
+        // MAGIC is 8 bytes; the format version is the next little-endian u16.
+        bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+        let err = deserialize(&bytes).expect_err("a v0.3 artifact is not a v0.4 artifact");
+        assert!(err.contains("version"), "{}", err);
+    }
+
+    #[test]
     fn garbage_is_refused() {
         assert!(deserialize(b"nope").is_err());
         let mut bytes = serialize(&Module::default());
@@ -563,7 +593,7 @@ mod tests {
 
     #[test]
     fn opcodes_round_trip() {
-        for b in 0u8..=32 {
+        for b in 0u8..=46 {
             let op = Op::from_u8(b).expect("known opcode");
             assert_eq!(op as u8, b);
         }

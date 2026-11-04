@@ -16,7 +16,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
-    - name: Run Tests
+      with:
+        components: clippy
+    - name: Run Tests (default features)
       run: cargo test --verbose
-    - name: Run Integration Tests
-      run: cargo test --test kaze_tests --verbose
+    - name: Run Tests (all features)
+      run: cargo test --all-features --verbose
+    - name: Clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings

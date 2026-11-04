@@ -68,11 +68,30 @@ pub struct Vm<'a> {
     pub instructions: u64,
     stack: Vec<Value>,
     locals: Vec<Value>,
+    handlers: Vec<Handler>,
     verdict: Option<Verdict>,
 }
 
 /// The stack is a fixed-size vector; a script cannot grow it without bound.
 const MAX_STACK: usize = 256;
+
+/// Live `try` handlers. A catchable host failure unwinds to the innermost one.
+const MAX_HANDLERS: usize = 32;
+/// `TRY_BEGIN`'s "do not bind the error record" slot sentinel.
+const NO_ERROR_BINDING: u8 = 255;
+
+struct Handler {
+    /// Where the recovery block starts.
+    target: usize,
+    /// Operand-stack depth at `TRY_BEGIN`; a catch unwinds back to it.
+    stack_len: usize,
+    /// Local slot for the error record, or `NO_ERROR_BINDING`.
+    slot: u8,
+    /// The item verdict in force at `TRY_BEGIN`. A catch restores it, so an
+    /// `allow`/`reject` produced by a body path that was abandoned cannot
+    /// stand as the filter's decision.
+    verdict: Option<Verdict>,
+}
 
 impl<'a> Vm<'a> {
     pub fn new(
@@ -96,6 +115,7 @@ impl<'a> Vm<'a> {
             instructions: 0,
             stack: Vec::with_capacity(32),
             locals: Vec::new(),
+            handlers: Vec::new(),
             verdict: None,
         }
     }
@@ -103,6 +123,7 @@ impl<'a> Vm<'a> {
     /// Run one item to completion. `args` bind to `item.params` by position.
     pub fn run_item(&mut self, item: &ItemCode, args: &[Value]) -> Result<Value, VmError> {
         self.stack.clear();
+        self.handlers.clear();
         self.locals = vec![Value::Unit; item.slots.max(item.params.len() as u8) as usize];
         for (i, a) in args.iter().enumerate().take(self.locals.len()) {
             self.locals[i] = *a;
@@ -301,7 +322,14 @@ impl<'a> Vm<'a> {
                 Op::CallCap => {
                     let imm = self.imm(code, pc, item.line)? as usize;
                     pc += 1;
-                    self.call_cap(imm, field_a(w) as usize, item.line)?;
+                    if let Err(err) = self.call_cap(imm, field_a(w) as usize, item.line) {
+                        // v0.4: an operational host failure may recover at the
+                        // innermost `try`. Safety, range, fuel and memory
+                        // errors never reach catch_error (see is_catchable).
+                        if !self.catch_error(&err, &mut pc)? {
+                            return Err(err);
+                        }
+                    }
                 }
                 Op::PolicyStop => {
                     let v = self.pop(item.line)?;
@@ -342,6 +370,62 @@ impl<'a> Vm<'a> {
                     return Err(VmError { code: "E_KAZE_TRAP", msg, line: item.line });
                 }
                 Op::Halt => return Ok(Value::Unit),
+                Op::TryBegin => {
+                    let imm = self.imm(code, pc, item.line)? as i32;
+                    let target = jump(pc + 1, imm, code.len(), item.line)?;
+                    pc += 1;
+                    if self.handlers.len() >= MAX_HANDLERS {
+                        return Err(VmError {
+                            code: "E_KAZE_STACK",
+                            msg: format!("more than {} nested 'try' blocks", MAX_HANDLERS),
+                            line: item.line,
+                        });
+                    }
+                    self.handlers.push(Handler {
+                        target,
+                        stack_len: self.stack.len(),
+                        slot: field_a(w),
+                        verdict: self.verdict.clone(),
+                    });
+                }
+                Op::TryEnd => {
+                    if self.handlers.pop().is_none() {
+                        return Err(VmError::new(
+                            "E_KAZE_BADCODE",
+                            "TRY_END ran without an active try block",
+                        ));
+                    }
+                }
+                Op::LinkLost => {
+                    // The checker enforces this for source. Enforcing it here
+                    // too keeps a hand-built `.kazebc` on the same H-1 rule.
+                    if !self
+                        .declared
+                        .iter()
+                        .any(|d| crate::caps::family_of(d) == "drone")
+                    {
+                        return Err(VmError {
+                            code: "E_CAP_UNDECLARED",
+                            msg: "'link lost' reads the drone link; add 'needs: drone'".to_string(),
+                            line: item.line,
+                        });
+                    }
+                    let after_ms = self.imm(code, pc, item.line)? as u64;
+                    pc += 1;
+                    if after_ms == 0 {
+                        return Err(VmError::new(
+                            "E_KAZE_BADCODE",
+                            "LINK_LOST with a zero window would always be true",
+                        ));
+                    }
+                    // No live link means "never lost": the hook stays quiet
+                    // rather than firing in a simulator that has no link.
+                    let lost = self
+                        .host
+                        .link_silent_ms()
+                        .is_some_and(|silent| silent >= after_ms);
+                    self.push(Value::Bool(lost), item.line)?;
+                }
             }
         }
         Ok(Value::Unit)
@@ -354,6 +438,65 @@ impl<'a> Vm<'a> {
 
     pub fn fuel_left(&self) -> u64 {
         self.fuel_left
+    }
+
+    // ── fault tolerance (v0.4) ───────────────────────────────────────
+    /// Unwind a catchable host failure to the innermost active `try`.
+    ///
+    /// Returns `false` when nothing caught it, so the caller can propagate the
+    /// original error. The operand stack returns to the depth it had at
+    /// `TRY_BEGIN`; locals are deliberately left as they are, the way a
+    /// recovery block expects to see the state that failed.
+    fn catch_error(&mut self, err: &VmError, pc: &mut usize) -> Result<bool, VmError> {
+        if !is_catchable(err.code) {
+            return Ok(false);
+        }
+        let Some(handler) = self.handlers.pop() else {
+            return Ok(false);
+        };
+        self.stack.truncate(handler.stack_len);
+        // The body may have set a filter verdict before the failure. That path
+        // was abandoned; the recovery block starts from the decision that was
+        // in force when the try began, not from a stale approval.
+        self.verdict = handler.verdict;
+        if handler.slot != NO_ERROR_BINDING {
+            let record = self.error_record(err)?;
+            match self.locals.get_mut(handler.slot as usize) {
+                Some(dst) => *dst = record,
+                None => {
+                    return Err(VmError {
+                        code: "E_KAZE_BADCODE",
+                        msg: "TRY_BEGIN names a local slot this routine does not have".to_string(),
+                        line: err.line,
+                    })
+                }
+            }
+        }
+        *pc = handler.target;
+        Ok(true)
+    }
+
+    /// The record bound by `otherwise with err:`: `code`, `message`, `line`.
+    fn error_record(&mut self, err: &VmError) -> Result<Value, VmError> {
+        let code = self.alloc_text(err.code, err.line)?;
+        let message = self.alloc_text(&err.msg, err.line)?;
+        let key_code = self.alloc_text("code", err.line)?;
+        let key_message = self.alloc_text("message", err.line)?;
+        let key_line = self.alloc_text("line", err.line)?;
+        Ok(self.heap.push_map(vec![
+            (key_code, code),
+            (key_message, message),
+            (key_line, Value::Num(err.line as f64)),
+        ]))
+    }
+
+    fn alloc_text(&mut self, text: &str, line: u32) -> Result<Value, VmError> {
+        self.arena.alloc(text).map(Value::Str).map_err(|e| VmError {
+            code: "E_KAZE_MEMORY",
+            // Arena::alloc names its own code; do not print it twice.
+            msg: e.strip_prefix("E_KAZE_MEMORY: ").unwrap_or(&e).to_string(),
+            line,
+        })
     }
 
     // ── helpers ──────────────────────────────────────────────────────
@@ -772,7 +915,7 @@ impl<'a> Vm<'a> {
             &cap.op,
         )
         .map_err(|d| VmError { code: d.code, msg: format!("{} ({})", d.reason, d.rule), line })?;
-        crate::hardware::validate_arguments(&cap.family, &cap.op, &args, &self.arena)
+        crate::hardware::validate_arguments(&cap.family, &cap.op, &args, &self.heap)
             .map_err(|d| VmError { code: d.code, msg: format!("{} ({})", d.reason, d.rule), line })?;
 
         // Verdicts are control flow, not effects: the VM owns them, so a host
@@ -808,13 +951,36 @@ impl<'a> Vm<'a> {
 
 }
 
+/// The failures a script may recover from with `try ... otherwise`.
+///
+/// This list is the safety boundary of the feature. It deliberately excludes
+/// every capability/safety denial (`E_CAP_*`, `E_KAZE_RANGE`,
+/// `E_SAFETY_VIOLATION`), every budget stop (`E_TIMEOUT`), and every memory,
+/// type, maths and bytecode error: a machine acting on a value it was told to
+/// refuse is a machine acting on a lie, so those still stop the run.
+fn is_catchable(code: &str) -> bool {
+    matches!(
+        code,
+        "E_KAZE_LINK" | "E_KAZE_LINK_TIMEOUT" | "E_COMMAND_REJECTED" | "E_ARMING_DENIED"
+            | "E_KAZE_HOST"
+    )
+}
+
 /// The error codes a live backend may report through `CapHost::call`.
 const HOST_CODES: &[&str] = &[
     "E_KAZE_LINK",
     "E_KAZE_LINK_TIMEOUT",
     "E_COMMAND_REJECTED",
     "E_ARMING_DENIED",
+    // Safety/budget codes a backend might name. They keep their identity so
+    // is_catchable can refuse them; an unknown code must never become
+    // E_KAZE_HOST, which is recoverable.
     "E_SAFETY_VIOLATION",
+    "E_KAZE_RANGE",
+    "E_KAZE_MEMORY",
+    "E_KAZE_TYPE",
+    "E_KAZE_MATH",
+    "E_TIMEOUT",
 ];
 
 /// Split `CODE: message` so the code survives; anything else is a host error.
@@ -864,4 +1030,94 @@ fn op_symbol(op: Op) -> &'static str {
 
 fn render(v: &Value, arena: &Arena, heap: &Heap) -> String {
     crate::caps::render_value(*v, arena, heap)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::caps::{Action, CapHost};
+
+    /// A host that fails every non-log call with a chosen code.
+    struct FakeHost {
+        reply: String,
+        logs: Vec<(String, String)>,
+    }
+
+    impl CapHost for FakeHost {
+        fn call(
+            &mut self,
+            family: &str,
+            op: &str,
+            args: &[Value],
+            arena: &mut Arena,
+            heap: &mut Heap,
+        ) -> Result<Value, String> {
+            if family == "log" {
+                let msg = match args.first() {
+                    Some(Value::Str(s)) => arena.get(*s).to_string(),
+                    Some(other) => crate::caps::render_value(*other, arena, heap),
+                    None => String::new(),
+                };
+                self.logs.push((op.to_string(), msg));
+                Ok(Value::Unit)
+            } else {
+                Err(self.reply.clone())
+            }
+        }
+
+        fn actions(&self) -> &[Action] {
+            &[]
+        }
+
+        fn logs(&self) -> &[(String, String)] {
+            &self.logs
+        }
+    }
+
+    fn run_with(reply: &str) -> (Result<(), VmError>, Vec<(String, String)>) {
+        let src = "needs: drone, log\naction main():\n    try:\n        arm drone\n    otherwise with err:\n        log err.code\n";
+        let program = crate::parser::parse(src).expect("parse");
+        crate::checker::check(&program).expect("check");
+        let module = crate::compiler::compile(&program).expect("compile");
+        let declared = vec!["drone".to_string(), "log".to_string()];
+        let grants = vec!["drone".to_string()];
+        let mut host = FakeHost { reply: reply.to_string(), logs: Vec::new() };
+        let result = {
+            let mut vm = Vm::new(&module, &mut host, &declared, &grants, None, Limits::default());
+            let item = module.item("main").expect("main");
+            vm.run_item(item, &[]).map(|_| ())
+        };
+        (result, host.logs)
+    }
+
+    #[test]
+    fn every_operational_host_code_is_recoverable() {
+        for code in [
+            "E_KAZE_LINK",
+            "E_KAZE_LINK_TIMEOUT",
+            "E_COMMAND_REJECTED",
+            "E_ARMING_DENIED",
+            "E_KAZE_HOST",
+        ] {
+            let (result, logs) = run_with(&format!("{}: refused by the fake", code));
+            assert!(result.is_ok(), "{} should be recoverable: {:?}", code, result.err());
+            assert_eq!(logs.first().map(|(_, m)| m.as_str()), Some(code), "{:?}", logs);
+        }
+    }
+
+    #[test]
+    fn a_safety_or_budget_code_from_a_host_stays_fatal() {
+        for code in [
+            "E_KAZE_RANGE",
+            "E_SAFETY_VIOLATION",
+            "E_KAZE_MEMORY",
+            "E_KAZE_TYPE",
+            "E_KAZE_MATH",
+            "E_TIMEOUT",
+        ] {
+            let (result, _) = run_with(&format!("{}: refused by the fake", code));
+            let err = result.expect_err("a safety or budget code must stay fatal");
+            assert_eq!(err.code, code, "{}", err.msg);
+        }
+    }
 }

@@ -9,7 +9,9 @@
 // moved, and only the offset/length pair survives. Dropping the arena (or
 // calling `free_wholesale`) hands the entire run's memory back at once, which
 // is the property a 10 Hz vehicle controller needs: bounded, O(1), and
-// impossible to leak across runs.
+// impossible to leak across runs. The supervisor also calls `free_wholesale`
+// between ticks; no Value survives a tick boundary, so a long-lived
+// `when`/`every` loop reclaims its strings instead of growing forever.
 
 use crate::value::Value;
 

@@ -28,9 +28,14 @@ pub fn print_help() {
          \x20 --entry <name>         Routine to run (default: main, or the only one)\n\
          \x20 --arg <name>=<json>    Bind a parameter (repeatable)\n\
          \x20 --fuel <n>             Instruction budget (default 200000)\n\
-         \x20 --ticks <n>            Supervisor ticks after the entry (default 0)\n\
-         \x20 --tick-ms <n>          Virtual tick period (default 100)\n\
-         \x20 --sim <k=v,k=v>        Initial machine state (battery=15,armed=true)\n\
+         \x20 --ticks <n>            Supervisor ticks after the entry (default 0);\n\
+         \x20                        required for `when`/`every` hooks\n\
+         \x20 --tick-ms <n>          Tick period (default 100)\n\
+         \x20 --pace                 Sleep tick-ms between ticks. Use it for a\n\
+         \x20                        live link-loss failsafe; simulated ticks\n\
+         \x20                        are virtual time and run instantly\n\
+         \x20 --sim <k=v,k=v>        Initial machine state (battery=15,armed=true,\n\
+         \x20                        link_lost_after=1500 for a simulated dropout)\n\
          \x20 --no-policy            Skip local policy layer\n\
          \x20 --json                 Machine-readable report\n",
         kaze::VERSION
@@ -51,6 +56,7 @@ struct Flags {
     fuel: Option<u64>,
     ticks: Option<u32>,
     tick_ms: Option<u64>,
+    pace: bool,
     sim: String,
     out: Option<String>,
     disasm: bool,
@@ -72,6 +78,7 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
         fuel: None,
         ticks: None,
         tick_ms: None,
+        pace: false,
         sim: String::new(),
         out: None,
         disasm: false,
@@ -148,6 +155,7 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
                 let v = next("--tick-ms")?;
                 f.tick_ms = Some(v.parse().map_err(|_| format!("--tick-ms '{}' is not a number", v))?);
             }
+            "--pace" => f.pace = true,
             "--sim" => {
                 // Repeatable: `--sim lat=47.6 --sim lon=8.5` is the same as
                 // `--sim lat=47.6,lon=8.5` rather than the last one winning.
@@ -191,6 +199,7 @@ fn options_from(f: &Flags) -> Result<RunOptions, String> {
         fuel: f.fuel.unwrap_or(200_000),
         ticks: f.ticks.unwrap_or(0),
         tick_ms: f.tick_ms.unwrap_or(100),
+        pace_ticks: f.pace,
         sim,
         policy: policy_layer(f.no_policy),
         backend: f.backend.clone(),

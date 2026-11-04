@@ -55,7 +55,9 @@ impl Value {
 }
 
 /// The collection heap. `arrays` and `maps` are cleared by `free_wholesale`;
-/// an index is never reused within a run, so a stale index cannot alias.
+/// an index is never reused while a Value could still refer to it. The
+/// supervisor clears the whole heap between ticks, when no Value survives a
+/// tick boundary, so a long `when`/`every` run cannot grow without bound.
 #[derive(Default)]
 pub struct Heap {
     pub arrays: Vec<Vec<Value>>,

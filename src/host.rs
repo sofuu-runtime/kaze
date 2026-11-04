@@ -172,6 +172,21 @@ impl CapHost for LiveHost {
     fn logs(&self) -> &[(String, String)] {
         self.sim.logs()
     }
+
+    fn advance(&mut self, now_ms: u64) {
+        // A live link measures silence from its receive thread in wall-clock
+        // time; the simulated link needs the virtual tick clock.
+        self.sim.advance(now_ms);
+    }
+
+    fn link_silent_ms(&self) -> Option<u64> {
+        match &self.link {
+            Some(link) => Some(link.silence_ms()),
+            // `--cap drone=sim` (or a device-only live run) still has the
+            // simulator's link, so a script can exercise the hook offline.
+            None => self.sim.link_silent_ms(),
+        }
+    }
 }
 
 /// One Kaze drone verb, one gated MAVLink command.

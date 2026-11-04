@@ -7,8 +7,7 @@
 //   H-4: physical argument ranges (reject, not clamp) (E_KAZE_RANGE)
 
 use serde_json::Value as Json;
-use crate::arena::Arena;
-use crate::value::Value;
+use crate::value::{Heap, Value};
 
 pub const EFFECTOR_FAMILIES: &[&str] = &["drone", "rover", "sensor", "device", "alert"];
 
@@ -78,20 +77,35 @@ pub fn authorise(
     Ok(())
 }
 
-fn num_arg(args: &[Value], idx: usize) -> Option<f64> {
-    args.get(idx).and_then(|v| v.as_num())
+/// A value where a number is required is a type denial, never something the
+/// host silently coerces. A non-numeric duty that reached `PwmBus` used to be
+/// refused under `E_KAZE_LINK`; with `try` in the language that would have made
+/// a range refusal catchable, so H-4 stops it here instead.
+fn require_num(family: &str, op: &str, idx: usize, args: &[Value]) -> Result<(), Denial> {
+    match args.get(idx) {
+        None | Some(Value::Num(_)) => Ok(()),
+        Some(other) => Err(Denial::new(
+            "E_KAZE_TYPE",
+            "H-4/type",
+            format!(
+                "{}.{} needs a number for argument {}, but it is {} (rejected, not coerced)",
+                family,
+                op,
+                idx + 1,
+                other.type_name()
+            ),
+        )),
+    }
 }
 
-fn range(
+fn range_value(
     family: &str,
     op: &str,
-    idx: usize,
-    args: &[Value],
+    n: f64,
     lo: f64,
     hi: f64,
     unit: &str,
 ) -> Result<(), Denial> {
-    let Some(n) = num_arg(args, idx) else { return Ok(()) };
     if !n.is_finite() || n < lo || n > hi {
         return Err(Denial::new(
             "E_KAZE_RANGE",
@@ -111,11 +125,71 @@ fn range(
     Ok(())
 }
 
-pub fn validate_arguments(family: &str, op: &str, args: &[Value], _arena: &Arena) -> Result<(), Denial> {
+fn range(
+    family: &str,
+    op: &str,
+    idx: usize,
+    args: &[Value],
+    lo: f64,
+    hi: f64,
+    unit: &str,
+) -> Result<(), Denial> {
+    match args.get(idx) {
+        None => Ok(()),
+        Some(Value::Num(n)) => range_value(family, op, *n, lo, hi, unit),
+        Some(other) => Err(Denial::new(
+            "E_KAZE_TYPE",
+            "H-4/type",
+            format!(
+                "{}.{} needs a number for argument {}, but it is {} (rejected, not coerced)",
+                family,
+                op,
+                idx + 1,
+                other.type_name()
+            ),
+        )),
+    }
+}
+
+pub fn validate_arguments(
+    family: &str,
+    op: &str,
+    args: &[Value],
+    heap: &Heap,
+) -> Result<(), Denial> {
     match (family, op) {
-        ("drone", "takeoff") | ("drone", "goto") => {
-            let idx = if family == "drone" && op == "goto" { 1 } else { 0 };
-            range(family, op, idx, args, 0.0, 500.0, "meters")?
+        ("drone", "takeoff") => range(family, op, 0, args, 0.0, 500.0, "meters")?,
+        ("drone", "goto") => {
+            // The bounded value is the altitude. Which argument carries it
+            // depends on the call form: a point may carry it in z, a point
+            // may be followed by an explicit altitude, and the numeric forms
+            // are goto(lat), goto(lat, alt) and goto(lat, lon, alt).
+            match args.first() {
+                Some(Value::Vec(v)) => {
+                    if args.len() >= 2 {
+                        range(family, op, 1, args, 0.0, 500.0, "meters")?;
+                    } else if let Some(p) = heap.vec3(*v) {
+                        range_value(family, op, p[2], 0.0, 500.0, "meters")?;
+                    }
+                }
+                Some(Value::Map(_)) => {
+                    if args.len() >= 2 {
+                        range(family, op, 1, args, 0.0, 500.0, "meters")?;
+                    }
+                }
+                _ => {
+                    if args.len() >= 3 {
+                        require_num(family, op, 0, args)?;
+                        require_num(family, op, 1, args)?;
+                        range(family, op, 2, args, 0.0, 500.0, "meters")?;
+                    } else if args.len() == 2 {
+                        require_num(family, op, 0, args)?;
+                        range(family, op, 1, args, 0.0, 500.0, "meters")?;
+                    } else {
+                        require_num(family, op, 0, args)?;
+                    }
+                }
+            }
         }
         ("rover", "forward") | ("rover", "backward") => range(family, op, 0, args, 0.0, 10.0, "m/s")?,
         ("sensor", "distance") => range(family, op, 0, args, 0.0, 100.0, "meters")?,

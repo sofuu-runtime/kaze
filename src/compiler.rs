@@ -32,6 +32,8 @@ fn e<T>(line: u32, msg: impl Into<String>) -> Result<T, CompileError> {
 }
 
 const MAX_SLOTS: u8 = 255;
+/// `TRY_BEGIN`'s "do not bind the error record" slot sentinel.
+const NO_ERROR_BINDING: u8 = 255;
 
 pub fn compile(program: &Program) -> Result<Module, CompileError> {
     let mut module = Module {
@@ -195,6 +197,30 @@ impl<'a> Cx<'a> {
                 self.jump_back_to(head);
                 self.patch(to_end);
             }
+            Stmt::Try { body, otherwise, error_name, .. } => {
+                // Reserve the error slot before the body is compiled, so the
+                // handler target can name it; it is NOT visible in the body.
+                let slot = if error_name.is_some() {
+                    self.temp()?
+                } else {
+                    NO_ERROR_BINDING
+                };
+                let handler = self.emit_wide(Op::TryBegin, slot, 0);
+                self.stmts(body)?;
+                self.emit(Op::TryEnd, 0, 0, 0);
+                let to_end = self.emit_wide(Op::Jmp, 0, 0);
+                // The VM jumps here after unwinding a catchable failure.
+                self.patch(handler);
+                self.scopes.push(Vec::new());
+                if let Some(name) = error_name {
+                    if let Some(top) = self.scopes.last_mut() {
+                        top.push((name.clone(), slot));
+                    }
+                }
+                self.stmts(otherwise)?;
+                self.scopes.pop();
+                self.patch(to_end);
+            }
             Stmt::Return(value, _line) => match value {
                 Some(v) => {
                     self.expr(v)?;
@@ -265,6 +291,16 @@ impl<'a> Cx<'a> {
                 };
                 let a = if *kind == MathKind::Vector { args.len() as u8 } else { 0 };
                 self.emit(op, a, 0, 0);
+            }
+            Expr::LinkLost { after_ms, line } => {
+                if !after_ms.is_finite() || *after_ms < 1.0 || *after_ms > u32::MAX as f64 {
+                    return e(
+                        *line,
+                        "link lost needs at least 1 millisecond (and less than about 49 days); \
+                         a shorter window cannot be told apart from a healthy link",
+                    );
+                }
+                self.emit_wide(Op::LinkLost, 0, *after_ms as u32);
             }
             Expr::Name(name) => {
                 match self.resolve(name) {

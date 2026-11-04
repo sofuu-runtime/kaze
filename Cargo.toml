@@ -1,6 +1,6 @@
 [package]
 name = "kaze"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Priyanshu Boruah <priyanshu@sofuu.xyz>", "Sofuu Runtime Team <team@sofuu.xyz>"]
 description = "Kaze (風): the ultra-friendly, Rust-secured scripting language for robotics, drones, and ambient edge devices."

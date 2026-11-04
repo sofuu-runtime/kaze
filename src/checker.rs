@@ -45,6 +45,9 @@ enum Ty {
     /// A point or an offset: `vector(x, y, z)` and what arithmetic on
     /// points produces. Added in v0.3.
     Point,
+    /// The record bound by `otherwise with err:` (v0.4). It has exactly three
+    /// readable fields: `code`, `message` and `line`.
+    Error,
     Unit,
     Any,
 }
@@ -58,6 +61,7 @@ impl Ty {
             Ty::Bool => "true or false",
             Ty::List => "a list",
             Ty::Point => "a point",
+            Ty::Error => "an error",
             Ty::Unit => "nothing",
             Ty::Any => "a host value",
         }
@@ -175,6 +179,16 @@ fn check_block(
                 let mut inner = scope.clone();
                 check_block(body, &mut inner, declared, errors);
             }
+            Stmt::Try { body, otherwise, error_name, line } => {
+                let mut inner = scope.clone();
+                check_block(body, &mut inner, declared, errors);
+                let mut recovery = scope.clone();
+                if let Some(name) = error_name {
+                    recovery.push((name.clone(), Ty::Error));
+                }
+                let _ = line;
+                check_block(otherwise, &mut recovery, declared, errors);
+            }
             Stmt::Return(value, _) => {
                 if let Some(v) = value {
                     infer(v, scope, declared, errors);
@@ -250,6 +264,21 @@ fn infer(
                             return Ty::Any;
                         }
                     }
+                } else if let Ty::Error = ty {
+                    return match field.as_str() {
+                        "code" | "message" => Ty::Str,
+                        "line" => Ty::Num(None),
+                        _ => {
+                            errors.push(e(
+                                *line,
+                                format!(
+                                    "'.{}' is not part of an error; write .code, .message or .line",
+                                    field
+                                ),
+                            ));
+                            Ty::Any
+                        }
+                    };
                 }
             } else {
                 errors.push(e(
@@ -350,6 +379,16 @@ fn infer(
             point_aware_bin(*op, lt, rt, errors)
         }
         Expr::Math { kind, args, line } => infer_math(*kind, args, *line, scope, declared, errors),
+        Expr::LinkLost { after_ms, line } => {
+            let _ = after_ms;
+            if !declared.iter().any(|d| caps::family_of(d) == "drone") {
+                errors.push(e(
+                    *line,
+                    "'link lost' reads the drone link; declare it first with 'needs: drone'",
+                ));
+            }
+            Ty::Bool
+        }
     }
 }
 
@@ -552,6 +591,10 @@ fn terminates(stmts: &[Stmt]) -> bool {
         Stmt::If { then, otherwise, .. } => {
             !otherwise.is_empty() && terminates(then) && terminates(otherwise)
         }
+        // Either the body finishes normally and terminates, or it fails and the
+        // (also terminating) recovery block finishes. Both paths must terminate,
+        // because a try body that falls through still reaches the code after it.
+        Stmt::Try { body, otherwise, .. } => terminates(body) && terminates(otherwise),
         _ => false,
     }
 }

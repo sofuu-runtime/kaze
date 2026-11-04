@@ -73,8 +73,10 @@ impl PwmBus {
             )
         })?;
         if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
+            // A range refusal keeps the range code: `try` must never treat
+            // this as a recoverable link failure.
             return Err(format!(
-                "E_KAZE_LINK: {}% is not a duty cycle for '{}' (0 to 100)",
+                "E_KAZE_RANGE: {}% is not a duty cycle for '{}' (0 to 100)",
                 percent, name
             ));
         }

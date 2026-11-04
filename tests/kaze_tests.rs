@@ -26,6 +26,7 @@ fn every_example_matches_its_golden_trace() {
             "guardrail" => include_str!("../examples/golden/guardrail.txt"),
             "guardrail-reject" => include_str!("../examples/golden/guardrail-reject.txt"),
             "kinematics" => include_str!("../examples/golden/kinematics.txt"),
+            "fault_tolerance" => include_str!("../examples/golden/fault_tolerance.txt"),
             other => panic!("no golden for {}", other),
         }
     }
@@ -59,7 +60,15 @@ fn every_example_matches_its_golden_trace() {
     args.insert("prompt".into(), serde_json::json!("my api_key is sk-live-9"));
     let reject = RunOptions { args, ..Default::default() };
 
-    let cases: [(&str, &str, &RunOptions); 7] = [
+    let fault = RunOptions {
+        grants: grants(&["drone", "log"]),
+        ticks: 35,
+        tick_ms: 100,
+        sim: SimState { link_lost_after_ms: Some(0), ..Default::default() },
+        ..Default::default()
+    };
+
+    let cases: [(&str, &str, &RunOptions); 8] = [
         ("hello", "hello.kaze", &RunOptions::default()),
         ("patrol", "patrol.kaze", &patrol),
         ("rover", "rover.kaze", &rover),
@@ -67,6 +76,7 @@ fn every_example_matches_its_golden_trace() {
         ("guardrail", "guardrail.kaze", &allow),
         ("guardrail-reject", "guardrail.kaze", &reject),
         ("kinematics", "kinematics.kaze", &RunOptions::default()),
+        ("fault_tolerance", "fault_tolerance.kaze", &fault),
     ];
 
     for (name, file, opts) in cases {
@@ -386,6 +396,27 @@ fn fly_to_a_vector_updates_simulator_position() {
 }
 
 #[test]
+fn a_three_argument_goto_bounds_the_altitude_not_the_longitude() {
+    let opts = RunOptions { grants: grants(&["drone"]), ..Default::default() };
+    let too_high = "needs: drone\naction main():\n    arm drone\n    takeoff to 10 meters\n    drone.goto(-33.9, 151.2, 900)\n";
+    let err = run_source(too_high, "<nav>", &opts).expect_err("900 m is outside the ceiling");
+    assert_eq!(err.code, "E_KAZE_RANGE");
+    assert!(err.message.contains("900"), "{}", err.message);
+
+    let west = "needs: drone\naction main():\n    arm drone\n    takeoff to 10 meters\n    drone.goto(-33.9, 151.2, 30)\n";
+    run_source(west, "<nav>", &opts).expect("a western longitude is a valid coordinate");
+}
+
+#[test]
+fn a_vector_gotos_own_altitude_is_bounded() {
+    let src = "needs: drone\naction main():\n    arm drone\n    takeoff to 10 meters\n    fly to vector(47.6, 8.5, 900)\n";
+    let opts = RunOptions { grants: grants(&["drone"]), ..Default::default() };
+    let err = run_source(src, "<nav>", &opts).expect_err("the point's z is an altitude");
+    assert_eq!(err.code, "E_KAZE_RANGE");
+    assert!(err.message.contains("900"), "{}", err.message);
+}
+
+#[test]
 fn fly_to_a_vector_at_altitude_overrides_vector_z() {
     let src = "needs: drone, log\naction main():\n    arm drone\n    takeoff to 10 meters\n    fly to vector(47.6004, 8.5004, 25) at 40 meters\n    log altitude\n";
     let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
@@ -412,4 +443,287 @@ fn invalid_point_field_is_refused_at_check_time() {
     let err = kaze::check_source(src, "<math>").unwrap_err();
     assert_eq!(err.code, "E_KAZE_CHECK");
     assert!(err.message.contains("write x/lat, y/lon, or z/alt"), "{}", err.message);
+}
+
+// v0.4: fault tolerance — try/otherwise and link-loss failsafes
+
+#[test]
+fn try_recovers_from_a_host_failure_and_binds_the_error() {
+    // Not arming first makes SimHost refuse takeoff with a host error; that is
+    // exactly the class `try` exists to recover from.
+    let src = "needs: drone, log\naction main():\n    try:\n        takeoff to 10 meters\n    otherwise with err:\n        log warning err.code\n        log warning err.message\n        log warning err.line\n";
+    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let report = run_source(src, "<fault>", &opts).expect("the host failure is recoverable");
+
+    assert!(
+        report.actions.iter().any(|a| a.contains("drone.takeoff") && a.contains("error:")),
+        "the failed call stays in the trace: {:?}",
+        report.actions
+    );
+    assert_eq!(report.logs.len(), 3, "{:?}", report.logs);
+    assert_eq!(report.logs[0].1, "E_KAZE_HOST");
+    assert!(report.logs[1].1.contains("not armed"), "{:?}", report.logs);
+    assert_eq!(report.logs[2].1, "2", "the error record names the action's line");
+}
+
+#[test]
+fn a_range_violation_is_never_catchable() {
+    let src = "needs: drone, log\naction main():\n    try:\n        takeoff to 900 meters\n    otherwise:\n        log warning \"caught\"\n";
+    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let err = run_source(src, "<fault>", &opts).expect_err("safety still stops the run");
+    assert_eq!(err.code, "E_KAZE_RANGE");
+    assert!(err.message.contains("rejected, not clamped"), "{}", err.message);
+}
+
+#[test]
+fn a_missing_capability_grant_is_never_catchable() {
+    let src = "needs: drone, log\naction main():\n    try:\n        arm drone\n    otherwise:\n        log warning \"caught\"\n";
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let err = run_source(src, "<fault>", &opts).expect_err("an ungranted backend still stops");
+    assert_eq!(err.code, "E_CAP_MISSING");
+}
+
+#[test]
+fn a_policy_denial_is_never_catchable() {
+    let src = "needs: drone, log\naction main():\n    try:\n        arm drone\n    otherwise:\n        log warning \"caught\"\n";
+    let opts = RunOptions {
+        grants: grants(&["drone", "log"]),
+        policy: Some(serde_json::json!({ "deny": ["drone.*"] })),
+        ..Default::default()
+    };
+    let err = run_source(src, "<fault>", &opts).expect_err("a policy denial still stops");
+    assert_eq!(err.code, "E_CAP_DENIED");
+}
+
+#[test]
+fn fuel_exhaustion_is_never_catchable() {
+    let src = "needs: log\naction main():\n    try:\n        while 1 == 1:\n            log \"x\"\n    otherwise:\n        log \"caught\"\n";
+    let opts = RunOptions { fuel: 60, grants: grants(&["log"]), ..Default::default() };
+    let err = run_source(src, "<fault>", &opts).expect_err("the budget still stops the run");
+    assert_eq!(err.code, "E_TIMEOUT");
+}
+
+#[test]
+fn a_try_inside_a_when_hook_recovers_on_every_tick() {
+    let src = "needs: drone, log\nwhen battery < 101:\n    try:\n        takeoff to 10 meters\n    otherwise with err:\n        log warning err.code\n";
+    let opts = RunOptions {
+        grants: grants(&["drone", "log"]),
+        ticks: 2,
+        tick_ms: 100,
+        ..Default::default()
+    };
+    let report = run_source(src, "<fault>", &opts).expect("each tick recovers");
+    let caught = report.logs.iter().filter(|(_, t)| t == "E_KAZE_HOST").count();
+    assert_eq!(caught, 2, "{:?}", report.logs);
+}
+
+#[test]
+fn a_try_inside_a_loop_rearms_its_handler() {
+    let src = "needs: drone, log\naction main():\n    for each i in [1, 2, 3]:\n        try:\n            takeoff to 10 meters\n        otherwise with err:\n            log warning err.code\n";
+    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let report = run_source(src, "<fault>", &opts).expect("every iteration recovers");
+    let caught = report.logs.iter().filter(|(_, t)| t == "E_KAZE_HOST").count();
+    assert_eq!(caught, 3, "{:?}", report.logs);
+}
+
+#[test]
+fn a_nested_try_uses_the_innermost_handler() {
+    let src = "needs: drone, log\naction main():\n    try:\n        try:\n            takeoff to 10 meters\n        otherwise with inner:\n            log warning \"inner\"\n            takeoff to 20 meters\n    otherwise with outer:\n        log warning \"outer\"\n        log warning outer.code\n";
+    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let report = run_source(src, "<fault>", &opts).expect("both failures are recoverable");
+    let texts: Vec<&str> = report.logs.iter().map(|(_, t)| t.as_str()).collect();
+    assert_eq!(texts, vec!["inner", "outer", "E_KAZE_HOST"], "{:?}", report.logs);
+}
+
+#[test]
+fn try_requires_an_otherwise_block() {
+    let src = "needs: log\naction main():\n    try:\n        log \"x\"\n";
+    let err = kaze::check_source(src, "<fault>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_PARSE");
+    assert!(err.message.contains("otherwise"), "{}", err.message);
+}
+
+#[test]
+fn an_error_record_only_has_code_message_and_line() {
+    let src = "needs: drone, log\naction main():\n    try:\n        takeoff to 10 meters\n    otherwise with err:\n        log err.mystery\n";
+    let err = kaze::check_source(src, "<fault>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_CHECK");
+    assert!(err.message.contains(".code, .message or .line"), "{}", err.message);
+}
+
+#[test]
+fn link_loss_fires_only_after_the_threshold() {
+    let src = "needs: drone, log\nwhen link lost for 3 seconds:\n    log warning \"link lost\"\n";
+    let fired = |ticks: u32, lost_after: u64| -> usize {
+        let opts = RunOptions {
+            grants: grants(&["drone", "log"]),
+            ticks,
+            tick_ms: 100,
+            sim: SimState { link_lost_after_ms: Some(lost_after), ..Default::default() },
+            ..Default::default()
+        };
+        let report = run_source(src, "<fault>", &opts).expect("the hook runs");
+        report.logs.iter().filter(|(_, t)| t == "link lost").count()
+    };
+
+    // 30 ticks reach t=2900 ms: still inside the 3 s window.
+    assert_eq!(fired(30, 0), 0);
+    // 35 ticks reach t=3400 ms, so 3000..=3400 fire: five ticks.
+    assert_eq!(fired(35, 0), 5);
+    // A link that only drops at 500 ms needs until 3500 ms; 40 ticks reach it.
+    assert_eq!(fired(40, 500), 5);
+}
+
+#[test]
+fn a_filter_can_terminate_through_try() {
+    let src = "needs: policy\nfilter f(p):\n    try:\n        reject with \"no\"\n    otherwise:\n        allow p\n";
+    kaze::check_source(src, "<fault>").expect("both paths decide");
+}
+
+#[test]
+fn a_filter_that_can_fall_through_a_try_is_refused() {
+    let src = "needs: policy, log\nfilter f(p):\n    try:\n        log \"checking\"\n    otherwise:\n        allow p\n";
+    let err = kaze::check_source(src, "<fault>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_CHECK");
+    assert!(err.message.contains("allow"), "{}", err.message);
+}
+
+#[test]
+fn link_loss_needs_a_drone_declaration() {
+    let src = "needs: log\nwhen link lost for 3 seconds:\n    log warning \"x\"\n";
+    let err = kaze::check_source(src, "<fault>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_CHECK");
+    assert!(err.message.contains("needs: drone"), "{}", err.message);
+}
+
+#[test]
+fn a_sub_millisecond_link_window_is_refused() {
+    let src = "needs: drone, log\nwhen link lost for 0.5 ms:\n    log warning \"x\"\n";
+    let err = kaze::check_source(src, "<fault>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_PARSE");
+    assert!(err.message.contains("at least 1 millisecond"), "{}", err.message);
+}
+
+#[test]
+fn a_caught_failure_does_not_keep_a_stale_filter_verdict() {
+    // policy.allow runs before the failure; the abandoned body must not leave
+    // its Allow behind as the filter's decision.
+    let src = "needs: policy, drone, log\nfilter f(p):\n    try:\n        let ok = policy.allow(p)\n        takeoff to 10 meters\n        reject with \"should not fly\"\n    otherwise:\n        return\n";
+    let mut args = serde_json::Map::new();
+    args.insert("p".into(), serde_json::json!("hello"));
+    let opts = RunOptions { args, grants: grants(&["drone"]), ..Default::default() };
+    let report = run_source(src, "<filter>", &opts).expect("the failure is recovered");
+    assert!(
+        report.verdict.is_none(),
+        "a stale allow must not survive the catch: {:?}",
+        report.verdict
+    );
+}
+
+#[test]
+fn paced_ticks_spend_real_time() {
+    let src = "needs: log\nevery 50ms:\n    log \"tick\"\n";
+    let opts = RunOptions {
+        grants: grants(&["log"]),
+        ticks: 4,
+        tick_ms: 50,
+        pace_ticks: true,
+        ..Default::default()
+    };
+    let start = std::time::Instant::now();
+    let report = run_source(src, "<pace>", &opts).expect("paced ticks run");
+    assert_eq!(report.ticks, 4);
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(120),
+        "paced ticks did not wait: {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn the_documented_cli_invocation_matches_the_golden() {
+    let bin = env!("CARGO_BIN_EXE_kaze");
+    let out = std::process::Command::new(bin)
+        .arg("run")
+        .arg(example("fault_tolerance.kaze"))
+        .args([
+            "--cap",
+            "drone",
+            "--cap",
+            "log",
+            "--ticks",
+            "35",
+            "--tick-ms",
+            "100",
+            "--sim",
+            "link_lost_after=0",
+            "--plain",
+        ])
+        .output()
+        .expect("the kaze binary runs");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        include_str!("../examples/golden/fault_tolerance.txt")
+    );
+}
+
+#[test]
+fn the_cli_pace_flag_spends_real_time() {
+    let bin = env!("CARGO_BIN_EXE_kaze");
+    let start = std::time::Instant::now();
+    let out = std::process::Command::new(bin)
+        .arg("run")
+        .arg(example("fault_tolerance.kaze"))
+        .args([
+            "--cap",
+            "drone",
+            "--cap",
+            "log",
+            "--ticks",
+            "3",
+            "--tick-ms",
+            "40",
+            "--pace",
+            "--sim",
+            "link_lost_after=0",
+            "--plain",
+        ])
+        .output()
+        .expect("the kaze binary runs");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(50),
+        "--pace did not sleep: {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn a_long_supervisor_reclaims_the_run_arena_between_ticks() {
+    // The message constant is re-allocated on every tick. Without the
+    // per-tick reclaim, 3000 ticks of a 200-byte string exceed the 256 KiB
+    // arena and the supervisor dies with E_KAZE_MEMORY.
+    let msg = "x".repeat(200);
+    let src = format!("needs: log\nevery 100ms:\n    log \"{}\"\n", msg);
+    let opts = RunOptions {
+        grants: grants(&["log"]),
+        ticks: 3000,
+        tick_ms: 100,
+        ..Default::default()
+    };
+    let report = run_source(&src, "<supervisor>", &opts)
+        .expect("a long supervisor must stay inside its arena");
+    assert_eq!(report.ticks, 3000);
+}
+
+#[test]
+fn a_try_module_round_trips_through_bytecode() {
+    let src = "needs: drone, log\naction main():\n    try:\n        takeoff to 10 meters\n    otherwise with err:\n        log warning err.code\n";
+    let module = kaze::compile_source(src, "<fault>").expect("it compiles");
+    let bytes = isa::serialize(&module);
+    let reloaded = isa::deserialize(&bytes).expect("v0.4 modules deserialize");
+    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let report = kaze::run_module(reloaded, "<fault>.kazebc", &opts).expect("it runs from bytecode");
+    assert_eq!(report.logs[0].1, "E_KAZE_HOST");
 }

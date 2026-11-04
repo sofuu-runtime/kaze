@@ -1,0 +1,19 @@
+main -> nothing
+actions:
+   1. drone.takeoff(15) -> error: the drone is not armed; write 'arm drone' first
+   2. log.warn("E_KAZE_HOST") -> nothing
+   3. log.warn("the drone is not armed; write 'arm drone' first") -> nothing
+   4. log.warn(13) -> nothing
+   5. drone.arm -> nothing
+   6. drone.takeoff(15) -> nothing
+   7. log.warn("link lost; returning to launch") -> nothing
+   8. drone.rtl -> nothing
+   9. log.warn("link lost; returning to launch") -> nothing
+  10. drone.rtl -> nothing
+  11. log.warn("link lost; returning to launch") -> nothing
+  12. drone.rtl -> nothing
+  13. log.warn("link lost; returning to launch") -> nothing
+  14. drone.rtl -> nothing
+  15. log.warn("link lost; returning to launch") -> nothing
+  16. drone.rtl -> nothing
+169 instructions, 169 fuel, 35 ticks

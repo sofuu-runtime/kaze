@@ -137,6 +137,12 @@ pub struct SimState {
     pub distance: f64,
     pub relays: Vec<(String, bool)>,
     pub memory: Vec<(String, String)>,
+    /// Virtual supervisor clock, advanced once per tick (v0.4).
+    pub now_ms: u64,
+    /// If set, the simulated link goes silent at this virtual time and stays
+    /// silent; the silence grows with `now_ms`. `None` means the link never
+    /// drops. `--sim link_lost_after=1500` sets it.
+    pub link_lost_after_ms: Option<u64>,
 }
 
 impl Default for SimState {
@@ -155,6 +161,8 @@ impl Default for SimState {
             distance: 2.0,
             relays: Vec::new(),
             memory: Vec::new(),
+            now_ms: 0,
+            link_lost_after_ms: None,
         }
     }
 }
@@ -189,6 +197,16 @@ impl SimState {
                 "lon" => self.lon = numeric(raw)?,
                 "armed" => self.armed = raw == "true" || raw == "1" || raw == "yes",
                 "on_ground" => self.on_ground = raw == "true" || raw == "1" || raw == "yes",
+                "link_lost_after" | "link-lost-after" | "link_lost" => {
+                    let t = numeric(raw)?;
+                    if !(0.0..=u64::MAX as f64).contains(&t) {
+                        return Err(format!(
+                            "--sim {}: '{}' is not a non-negative millisecond time",
+                            key, raw
+                        ));
+                    }
+                    self.link_lost_after_ms = Some(t as u64);
+                }
                 other => return Err(format!("--sim: unknown key '{}'", other)),
             }
         }
@@ -263,6 +281,17 @@ pub trait CapHost {
     ) -> Result<Value, String>;
     fn actions(&self) -> &[Action];
     fn logs(&self) -> &[(String, String)];
+
+    /// Advance the host's virtual clock. Called once per supervisor tick; the
+    /// simulator uses it so `link lost for N seconds` is deterministic, and a
+    /// live host ignores it in favour of the wall clock.
+    fn advance(&mut self, _now_ms: u64) {}
+
+    /// Milliseconds the link has been silent, or `None` when this host has no
+    /// link to lose. The VM's `LINK_LOST` opcode asks this question.
+    fn link_silent_ms(&self) -> Option<u64> {
+        None
+    }
 }
 
 pub struct SimHost {
@@ -325,6 +354,16 @@ impl CapHost for SimHost {
 
     fn logs(&self) -> &[(String, String)] {
         &self.logs
+    }
+
+    fn advance(&mut self, now_ms: u64) {
+        self.state.now_ms = now_ms;
+    }
+
+    fn link_silent_ms(&self) -> Option<u64> {
+        self.state
+            .link_lost_after_ms
+            .map(|at| self.state.now_ms.saturating_sub(at))
     }
 
     fn call(

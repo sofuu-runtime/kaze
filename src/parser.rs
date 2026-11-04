@@ -402,6 +402,33 @@ impl Parser {
             let body = self.block()?;
             return Ok(Stmt::While { cond, body, line });
         }
+        if self.at_ident("try") {
+            self.bump();
+            self.expect_punct(':')?;
+            let body = self.block()?;
+            if !self.at_ident("otherwise") {
+                let (l, c) = self.here();
+                return err(
+                    l,
+                    c,
+                    "'try' needs an 'otherwise:' block; a try that cannot recover is just a delay",
+                );
+            }
+            self.bump();
+            let mut error_name: Option<String> = None;
+            if self.at_ident("with") {
+                self.bump();
+                error_name = Some(self.expect_ident()?);
+            }
+            self.expect_punct(':')?;
+            self.push_scope();
+            if let Some(name) = &error_name {
+                self.bind(name);
+            }
+            let otherwise = self.block()?;
+            self.pop_scope();
+            return Ok(Stmt::Try { body, otherwise, error_name, line });
+        }
         if self.at_ident("return") {
             // `return to launch` is the drone verb; `return` alone ends the action.
             if matches!(self.peek_at(1), Tok::Ident(w) if w == "to") {
@@ -756,6 +783,32 @@ impl Parser {
                     self.bump();
                     let inner = self.add_expr()?;
                     return Ok(Expr::Len(Box::new(inner)));
+                }
+                // v0.4: `when link lost for 3 seconds:` — a read of the live
+                // link's liveness. `link` alone is still an ordinary name.
+                if word == "link" && matches!(self.peek_at(1), Tok::Ident(w) if w == "lost") {
+                    self.bump();
+                    self.bump();
+                    self.expect_word("for")?;
+                    let (num, unit) = self.number_with_unit()?;
+                    if unit != Unit::Sec {
+                        return err(
+                            line,
+                            col,
+                            "link lost needs a time, e.g. 'link lost for 3 seconds' or \
+                             'link lost for 1500 ms'",
+                        );
+                    }
+                    let after_ms = num * 1000.0;
+                    if !after_ms.is_finite() || after_ms < 1.0 || after_ms > u32::MAX as f64 {
+                        return err(
+                            line,
+                            col,
+                            "link lost needs at least 1 millisecond (and less than about 49 \
+                             days); a shorter window cannot be told apart from a healthy link",
+                        );
+                    }
+                    return Ok(Expr::LinkLost { after_ms, line });
                 }
                 // v0.3 maths. Recognised only where a variable of the same name
                 // could not be meant, so `let sin = 2` still shadows nothing.

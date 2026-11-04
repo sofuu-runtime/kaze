@@ -197,6 +197,60 @@ fn a_script_sets_a_duty_cycle_on_a_real_pwm_channel() {
 }
 
 #[test]
+fn a_non_numeric_duty_is_a_type_refusal_not_a_link_failure() {
+    let _ = pwm_root();
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["device".to_string(), "log".to_string()];
+    opts.pwm = vec![("fan".to_string(), 0u16, 0u16)];
+    opts.fuel = 50_000;
+    // A type refusal must keep its own code: `try` may not recover from it.
+    let source = "needs: fan, log\naction main():\n    try:\n        device.set_duty(\"fan\", \"hot\")\n    otherwise:\n        log warning \"caught\"\n";
+    let err = run_source(source, "pwm.kaze", &opts)
+        .expect_err("a non-numeric duty is a type refusal, not a link failure");
+    assert_eq!(err.code, "E_KAZE_TYPE", "{}", err.message);
+    assert!(
+        err.message.contains("needs a number for argument 2"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn a_live_link_reports_silence_after_the_vehicle_stops() {
+    use kaze::caps::{CapHost, SimState};
+    use kaze::host::LiveHost;
+    use kaze::link::{Core, DroneLink, Io};
+
+    /// A transport that accepts writes and never delivers a byte.
+    struct SilentIo;
+    impl Io for SilentIo {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    let link = DroneLink::with_io(
+        Core::new("silent"),
+        Box::new(SilentIo),
+        "silent".to_string(),
+        1,
+        1_000,
+    )
+    .expect("a silent link starts");
+    let host = LiveHost::with_link(SimState::default(), link);
+
+    let fresh = host.link_silent_ms().expect("a live host always answers");
+    assert!(fresh < 1_000, "a fresh link starts near zero: {}", fresh);
+
+    thread::sleep(Duration::from_millis(120));
+    let silent = host.link_silent_ms().expect("a live host always answers");
+    assert!(silent >= 100, "silence grows without frames: {}", silent);
+}
+
+#[test]
 fn a_duty_cycle_out_of_range_is_refused_by_the_gate() {
     let _ = pwm_root();
     let mut opts = RunOptions::default();

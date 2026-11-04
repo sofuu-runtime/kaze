@@ -4,8 +4,9 @@
 // crates/sofuu-core/src/domains/kaze/ and is specified by docs/KAZE-SPEC.md
 // (language v0.1, frozen). This tree is an earlier standalone prototype: it is
 // not a workspace member, make never builds it, CI never runs it, and its
-// surface has drifted ahead of the product (nine vector/trig opcodes, version
-// 0.3). scripts/kaze-drift-check.sh is the gate that keeps that drift visible.
+// surface has drifted ahead of the product (eleven vector/trig opcodes, three
+// fault-tolerance opcodes, version 0.4, module format 3).
+// scripts/kaze-drift-check.sh is the gate that keeps that drift visible.
 //
 // Kaze (風) is an ultra-friendly, Rust-secured scripting language designed for
 // robotics, drones, and ambient edge devices.
@@ -37,11 +38,14 @@ pub use vm::{Limits, Verdict, Vm};
 
 /// Language version reported by `kaze --version` / `kaze version`.
 ///
-/// 0.3 is the spatial release: a point is a value, so a script can measure a
-/// distance, take a bearing and scale an offset without a host call. 0.2 added
-/// live hardware behind `--cap`; the ISA grew 10 opcodes for the maths, which is
-/// why the module format version moved with it.
-pub const VERSION: &str = "0.3";
+/// 0.4 is the fault-tolerance release: `try ... otherwise` recovers from
+/// operational host failures, and `when link lost for N seconds` is a
+/// supervisor-level failsafe. Safety and budget stops stay fatal. The ISA grew
+/// three opcodes, so the module format moved to version 3.
+///
+/// 0.3 was the spatial release (points as values, distance/bearing maths), and
+/// 0.2 added live hardware behind `--cap`.
+pub const VERSION: &str = "0.4";
 
 #[derive(Debug, Clone)]
 pub struct KazeError {
@@ -149,6 +153,10 @@ pub struct RunOptions {
     /// Supervisor ticks after the entry finishes; each tick polls `when`/`every`.
     pub ticks: u32,
     pub tick_ms: u64,
+    /// Sleep for `tick_ms` between supervisor ticks. Off by default because
+    /// simulated ticks are virtual time; a live link-loss failsafe needs real
+    /// time to pass, so an operator running against hardware passes `--pace`.
+    pub pace_ticks: bool,
     pub sim: SimState,
     /// R7 policy layered over the hardware gate. `None` means "declaration and
     /// grant only", which is what the tests use.
@@ -171,6 +179,7 @@ impl Default for RunOptions {
             fuel: Limits::default().fuel,
             ticks: 0,
             tick_ms: 100,
+            pace_ticks: false,
             sim: SimState::default(),
             policy: None,
             backend: Vec::new(),
@@ -299,7 +308,16 @@ fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, Kaze
 
         // Supervisory ticks: `when` predicates and due `every` blocks.
         for tick in 0..opts.ticks {
+            // A real supervisor has to spend real time between polls, or a
+            // live link never accumulates the silence a failsafe waits for.
+            if tick > 0 && opts.pace_ticks && opts.tick_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(opts.tick_ms));
+            }
             let t_ms = tick as f64 * opts.tick_ms as f64;
+            // v0.4: let the host see the virtual clock before any predicate
+            // reads it, so `when link lost for 3 seconds` is deterministic in
+            // the simulator and unaffected in a live run.
+            vm.host.advance(t_ms as u64);
             for item in module.items.iter() {
                 let due = match item.tag {
                     isa::ItemTag::When => true,
@@ -314,6 +332,12 @@ fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, Kaze
                 })?;
             }
             report.ticks += 1;
+            // A supervisor may run for hours. The arena and heap belong to the
+            // run, not to the tick: reclaim them between ticks so a `when` or
+            // `every` hook cannot grow memory without bound. No Value survives
+            // a tick boundary — `run_item` rebuilds the locals and stack.
+            vm.arena.free_wholesale();
+            vm.heap.free_wholesale();
         }
 
         report.fuel_used = vm.fuel_used;

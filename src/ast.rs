@@ -107,6 +107,10 @@ pub enum Expr {
     /// A pure maths form: `vector(x, y, z)`, `distance between a and b`,
     /// `bearing to v`, `sin(x)`, `<x> in radians`. No capability, no host.
     Math { kind: MathKind, args: Vec<Expr>, line: u32 },
+    /// `link lost for 3 seconds` — true when the live link has been silent for
+    /// at least the given duration. A read, not an effect: it never crosses the
+    /// capability gate, and the checker requires `needs: drone`.
+    LinkLost { after_ms: f64, line: u32 },
 }
 
 /// The v0.3 maths forms. Each one is a pure function of its arguments.
@@ -139,7 +143,10 @@ pub enum MathKind {
 impl Expr {
     pub fn line(&self) -> u32 {
         match self {
-            Expr::Call { line, .. } | Expr::Field { line, .. } | Expr::Math { line, .. } => *line,
+            Expr::Call { line, .. }
+            | Expr::Field { line, .. }
+            | Expr::Math { line, .. }
+            | Expr::LinkLost { line, .. } => *line,
             _ => 0,
         }
     }
@@ -168,6 +175,17 @@ pub enum Stmt {
         body: Vec<Stmt>,
         line: u32,
     },
+    /// `try:` … `otherwise [with err]:` — recover from an operational host
+    /// failure (a link, a rejected command, an arming denial). Safety, range,
+    /// fuel and budget errors are never catchable.
+    Try {
+        body: Vec<Stmt>,
+        otherwise: Vec<Stmt>,
+        /// `otherwise with err:` binds the error record (`code`, `message`,
+        /// `line`) to this name inside the recovery block.
+        error_name: Option<String>,
+        line: u32,
+    },
     Return(Option<Expr>, u32),
 }
 
@@ -179,6 +197,7 @@ impl Stmt {
             | Stmt::Eval(_, l)
             | Stmt::ForEach { line: l, .. }
             | Stmt::While { line: l, .. }
+            | Stmt::Try { line: l, .. }
             | Stmt::Return(_, l) => *l,
             Stmt::If { line, .. } => *line,
         }
