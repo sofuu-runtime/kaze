@@ -253,7 +253,8 @@ impl<'a> Cx<'a> {
                 let op = match kind {
                     MathKind::Vector => Op::VecNew,
                     MathKind::Distance => Op::VecDist,
-                    MathKind::BearingTo => Op::VecBearing,
+                    MathKind::SlantDistance => Op::VecSlantDist,
+                    MathKind::BearingOf => Op::VecBearing,
                     MathKind::BearingFrom => Op::VecBearingBetween,
                     MathKind::Sin => Op::Sin,
                     MathKind::Cos => Op::Cos,

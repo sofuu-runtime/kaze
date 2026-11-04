@@ -80,6 +80,8 @@ pub enum Op {
     DegToRad = 41,
     /// pop radians, push degrees
     RadToDeg = 42,
+    /// pop two points, push the great-circle distance plus altitude change
+    VecSlantDist = 43,
 }
 
 impl Op {
@@ -128,6 +130,7 @@ impl Op {
             40 => Op::Sqrt,
             41 => Op::DegToRad,
             42 => Op::RadToDeg,
+            43 => Op::VecSlantDist,
             _ => return None,
         })
     }
@@ -191,6 +194,7 @@ impl Op {
             Op::Sqrt => "SQRT",
             Op::DegToRad => "DEG_TO_RAD",
             Op::RadToDeg => "RAD_TO_DEG",
+            Op::VecSlantDist => "VECSLANT_DIST",
         }
     }
 }

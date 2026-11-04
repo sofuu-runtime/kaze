@@ -6,9 +6,11 @@ needs: log
 
 action main():
     let home = vector(47.6000, 8.5000, 500)
-    let waypoint = vector(47.6004, 8.5004, 500)
+    let waypoint = vector(47.6004, 8.5004, 520)
     log "metres to the waypoint:"
     log distance between home and waypoint
+    log "metres over the 20 m climb:"
+    log slant distance between home and waypoint
     log "bearing to the waypoint, in degrees:"
     log bearing from home to waypoint
     let offset = waypoint - home
@@ -17,5 +19,7 @@ action main():
     log doubled
     log "its length in coordinate units:"
     log length of doubled
+    log "the doubled offset is north-east, so:"
+    log bearing of doubled
     log "sin of 30 degrees:"
     log sin(30 in radians)

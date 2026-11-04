@@ -376,7 +376,10 @@ fn infer_math(
     let want = match kind {
         // `vector(x, y)` is a 2-D point: z defaults to 0.
         MathKind::Vector => 2,
-        MathKind::Distance | MathKind::BearingFrom | MathKind::Atan2 => 2,
+        MathKind::Distance
+        | MathKind::SlantDistance
+        | MathKind::BearingFrom
+        | MathKind::Atan2 => 2,
         _ => 1,
     };
     let wrong_count = match kind {
@@ -384,10 +387,13 @@ fn infer_math(
         _ => tys.len() != want,
     };
     if wrong_count {
-        let range = if kind == MathKind::Vector { "2 or 3" } else { "exactly" };
+        let expected = match kind {
+            MathKind::Vector => "2 or 3 values".to_string(),
+            _ => format!("{} value(s)", want),
+        };
         errors.push(e(
             line,
-            format!("{:?} takes {} value(s), but {} were given", kind, range, tys.len()),
+            format!("{:?} takes {}, but {} were given", kind, expected, tys.len()),
         ));
         return Ty::Any;
     }
@@ -402,20 +408,23 @@ fn infer_math(
             }
             Ty::Point
         }
-        MathKind::Distance => {
+        MathKind::Distance | MathKind::SlantDistance => {
             for t in &tys {
                 if !point(*t) {
                     errors.push(e(
                         line,
-                        format!("'distance between' needs two points, but this is {}", t.label()),
+                        format!("{:?} needs two points, but this is {}", kind, t.label()),
                     ));
                 }
             }
             Ty::Num(Some(Unit::Meter))
         }
-        MathKind::BearingTo => {
+        MathKind::BearingOf => {
             if !point(tys[0]) {
-                errors.push(e(line, format!("'bearing to' needs a point, but this is {}", tys[0].label())));
+                errors.push(e(
+                    line,
+                    format!("'bearing of' needs a point, but this is {}", tys[0].label()),
+                ));
             }
             Ty::Num(Some(Unit::Deg))
         }

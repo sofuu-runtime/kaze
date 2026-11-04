@@ -184,14 +184,14 @@ impl<'a> Vm<'a> {
                     let v = self.heap.push_vec(parts);
                     self.push(v, item.line)?;
                 }
-                Op::VecDist | Op::VecBearingBetween => {
+                Op::VecDist | Op::VecSlantDist | Op::VecBearingBetween => {
                     let b = self.pop(item.line)?;
                     let a = self.pop(item.line)?;
-                    let (p, q) = (self.point(a, item.line)?, self.point(b, item.line)?);
-                    let n = if op == Op::VecDist {
-                        crate::geo::haversine_m(p, q)
-                    } else {
-                        crate::geo::bearing_deg(p, q)
+                    let (p, q) = (self.place(a, item.line)?, self.place(b, item.line)?);
+                    let n = match op {
+                        Op::VecDist => crate::geo::haversine_m(p, q),
+                        Op::VecSlantDist => crate::geo::slant_m(p, q),
+                        _ => crate::geo::bearing_deg(p, q),
                     };
                     self.push(Value::Num(n), item.line)?;
                 }
@@ -521,6 +521,27 @@ impl<'a> Vm<'a> {
                 line,
             }),
         }
+    }
+
+    /// A point used as a *place*. Ground distances and bearings only mean
+    /// something for a latitude and longitude, so a value that cannot be one is
+    /// refused here instead of quietly producing a plausible number.
+    fn place(&self, v: Value, line: u32) -> Result<[f64; 3], VmError> {
+        let p = self.point(v, line)?;
+        let (lat, lon) = (p[0], p[1]);
+        if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+            return Err(VmError {
+                code: "E_KAZE_RANGE",
+                msg: format!(
+                    "({}, {}, {}) is not a latitude and longitude; for a local offset use 'length of' or 'bearing of'",
+                    crate::arena::fmt_num(lat),
+                    crate::arena::fmt_num(lon),
+                    crate::arena::fmt_num(p[2])
+                ),
+                line,
+            });
+        }
+        Ok(p)
     }
 
     fn num_of(&self, v: Value, line: u32) -> Result<f64, VmError> {

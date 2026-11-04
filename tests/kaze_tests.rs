@@ -222,7 +222,7 @@ fn a_point_needs_two_or_three_numbers() {
     let src = "needs: log\naction main():\n    log vector(1)\n";
     let err = kaze::check_source(src, "<math>").unwrap_err();
     assert_eq!(err.code, "E_KAZE_CHECK");
-    assert!(err.message.contains("2 or 3 value(s)"), "{}", err.message);
+    assert!(err.message.contains("2 or 3 values"), "{}", err.message);
 }
 
 #[test]
@@ -313,4 +313,63 @@ fn a_v03_module_survives_serialization() {
     let from_bytes = kaze::run_module(reloaded, "kinematics.kazebc", &opts).unwrap();
     assert_eq!(from_source.actions, from_bytes.actions);
     assert_eq!(from_source.fuel_used, from_bytes.fuel_used);
+}
+
+// The rest of v0.3: a bearing from the machine's own position, an offset's
+// heading, slant range, and the refusals that keep them honest.
+
+#[test]
+fn bearing_to_measures_from_the_machines_own_position() {
+    let src = "needs: drone, log\naction main():\n    log bearing to vector(47.6004, 8.5004, 0)\n";
+    let mut sim = SimState::default();
+    sim.lat = 47.6;
+    sim.lon = 8.5;
+    let opts = RunOptions { grants: grants(&["drone", "log"]), sim, ..Default::default() };
+    let report = run_source(src, "<math>", &opts).expect("it runs");
+    let line = report
+        .actions
+        .iter()
+        .find(|a| a.contains("log.info"))
+        .expect("a log line");
+    let start = line.find('(').expect("a call") + 1;
+    let end = line.rfind(')').expect("a call");
+    let deg: f64 = line[start..end].parse().expect("a number");
+    assert!((deg - 33.99).abs() < 0.05, "{deg}");
+    // It read the position from the machine, visibly, rather than inventing one.
+    assert!(report.actions.iter().any(|a| a.contains("drone.telemetry(\"latitude\")")));
+}
+
+#[test]
+fn bearing_to_without_a_position_to_measure_from_says_what_to_write() {
+    let src = "needs: log\naction main():\n    log bearing to vector(47.6, 8.5, 0)\n";
+    let err = kaze::check_source(src, "<math>").unwrap_err();
+    assert_eq!(err.code, "E_KAZE_PARSE");
+    assert!(err.message.contains("bearing from here to target"), "{}", err.message);
+}
+
+#[test]
+fn bearing_of_an_offset_is_its_compass_direction() {
+    let out = one_log("needs: log\naction main():\n    log bearing of vector(1, 1, 0)\n");
+    let deg = number(&out);
+    assert!((deg - 45.0).abs() < 1e-6, "{deg}");
+}
+
+#[test]
+fn slant_distance_includes_the_climb() {
+    let out = logged(
+        "needs: log\naction main():\n    log distance between vector(47.6, 8.5, 0) and vector(47.6004, 8.5004, 30)\n    log slant distance between vector(47.6, 8.5, 0) and vector(47.6004, 8.5004, 30)\n",
+    );
+    let ground = number(&out[0]);
+    let slant = number(&out[1]);
+    assert!(slant > ground, "{slant} should exceed {ground}");
+    assert!((slant - (ground * ground + 900.0).sqrt()).abs() < 1e-6, "{slant}");
+}
+
+#[test]
+fn a_value_that_cannot_be_a_place_is_refused() {
+    let src = "needs: log\naction main():\n    log distance between vector(100, 200, 0) and vector(0, 0, 0)\n";
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let err = run_source(src, "<math>", &opts).unwrap_err();
+    assert_eq!(err.code, "E_KAZE_RANGE", "{}", err.message);
+    assert!(err.message.contains("not a latitude and longitude"), "{}", err.message);
 }

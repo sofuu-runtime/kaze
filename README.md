@@ -1,4 +1,18 @@
-# Kaze (風)
+# Kaze (風) — standalone prototype
+
+> **This crate is not the product.** The Kaze that ships is
+> `crates/sofuu-core/src/domains/kaze/`, compiled into the `sofuu` binary and
+> specified by [`docs/KAZE-SPEC.md`](../docs/KAZE-SPEC.md) (language v0.1,
+> frozen). This directory is an earlier, standalone prototype with its own
+> workspace, CLI and test suite; `make` and CI never build it.
+>
+> The two surfaces have diverged. The prototype carries nine vector/trig
+> opcodes (`VecNew`, `VecDist`, `VecBearing`, `VecBearingBetween`,
+> `Sin`, `Cos`, `Sqrt`, `DegToRad`, `RadToDeg`) and calls itself v0.3,
+> while the product is v0.1 and has none of them. Capability verbs are at
+> parity as of 2026-11-02. `scripts/kaze-drift-check.sh` (run by
+> `make test`) keeps that honest: do not treat anything in this README as a
+> description of the shipped runtime.
 
 [![CI](https://github.com/sofuu-runtime/kaze/actions/workflows/ci.yml/badge.svg)](https://github.com/sofuu-runtime/kaze/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -231,17 +245,25 @@ script — a mission can check its own geometry instead of asking a ground
 station:
 
 ```kaze
-needs: log
+needs: drone, log
 
 action main():
     let home = vector(47.6000, 8.5000, 500)
-    let waypoint = vector(47.6004, 8.5004, 500)
+    let waypoint = vector(47.6004, 8.5004, 520)
     log distance between home and waypoint        # 53.645 metres, Haversine
+    log slant distance between home and waypoint  # 57.25, the climb included
     log bearing from home to waypoint             # 33.99 degrees
+    log bearing to waypoint                       # from where the vehicle is now
     let offset = waypoint - home                  # points subtract to a point
+    log bearing of offset                         # the offset's own heading
     log sin(30 in radians)
     log atan2(1, 1) in degrees                    # 45
 ```
+
+`bearing to waypoint` reads the machine's own latitude and longitude (that is
+why the script declares `drone`); the trace shows those two reads, so the
+answer cannot come from nowhere. A script with no hardware declared gets a
+parse error naming both fixes rather than a guess.
 
 ```bash
 kaze run examples/kinematics.kaze --cap log=sim --plain
@@ -250,17 +272,23 @@ kaze run examples/kinematics.kaze --cap log=sim --plain
 * `vector(x, y, z)` makes a point, and `vector(x, y)` is a 2-D point (z = 0).
   Points add to points, a number scales one, `-p` flips one, and `p[0]`, `p[1]`,
   `p[2]` read the components back.
-* `distance between a and b` is great-circle metres on the WGS84 mean sphere.
-* `bearing to v` is the compass direction of a local vector; `bearing from a to b`
-  is the initial bearing towards a place. Degrees, 0 = north.
+* `distance between a and b` is great-circle metres on the WGS84 mean sphere;
+  `slant distance between a and b` adds the altitude difference.
+* Three bearing forms, all degrees, 0 = north: `bearing to place` measures from
+  the machine's own position, `bearing from a to b` names both ends, and
+  `bearing of offset` is the compass direction of a vector.
 * `length of p` is the 3-D magnitude; `sin`, `cos`, `atan2`, `sqrt` take radians;
   `<x> in radians` and `<x> in degrees` convert.
 * `sqrt` of a negative number stops the run (`E_KAZE_MATH`) instead of returning
   NaN.
+* A point handed to `distance between` or a bearing must be able to be a
+  latitude and longitude; `vector(100, 200, 0)` is refused (`E_KAZE_RANGE`)
+  rather than turned into a plausible-looking number.
 
-Honest limits: `distance between` ignores altitude (it is a ground distance;
-`length of (b - a)` is the 3-D one), and the coordinates of `vector` are not
-unit-checked, so mixing degrees and metres in one point is on you.
+Honest limits: `vector` components are not unit-checked, so mixing degrees and
+metres inside one point is on you; a local offset of a few thousandths of a
+degree still passes the place check because it is a valid coordinate — the
+check catches unit mistakes, not intent.
 
 ### Interactive REPL
 ```bash

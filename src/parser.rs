@@ -792,13 +792,60 @@ impl Parser {
                     let b = self.add_expr()?;
                     return Ok(Expr::Math { kind: MathKind::Distance, args: vec![a, b], line });
                 }
+                if word == "slant" && matches!(self.peek_at(1), Tok::Ident(w) if w == "distance")
+                    && matches!(self.peek_at(2), Tok::Ident(w) if w == "between")
+                {
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    let a = self.add_expr()?;
+                    self.expect_word("and")?;
+                    let b = self.add_expr()?;
+                    return Ok(Expr::Math { kind: MathKind::SlantDistance, args: vec![a, b], line });
+                }
                 if word == "bearing" {
                     match self.peek_at(1).clone() {
-                        Tok::Ident(w) if w == "to" => {
+                        Tok::Ident(w) if w == "of" => {
                             self.bump();
                             self.bump();
                             let v = self.add_expr()?;
-                            return Ok(Expr::Math { kind: MathKind::BearingTo, args: vec![v], line });
+                            return Ok(Expr::Math { kind: MathKind::BearingOf, args: vec![v], line });
+                        }
+                        Tok::Ident(w) if w == "to" => {
+                            self.bump();
+                            self.bump();
+                            let place = self.add_expr()?;
+                            // `bearing to` measures from where the machine is, so it
+                            // needs a position to measure from. That is the same
+                            // rule ambient telemetry uses: one hardware capability.
+                            let family = match self.ambient {
+                                Some(family) => family,
+                                None => {
+                                    return err(
+                                        line,
+                                        col,
+                                        "'bearing to' measures from where the machine is, but this \
+                                         script declares no single hardware capability to read a \
+                                         position from; declare one (needs: drone) or write \
+                                         'bearing from here to target'"
+                                            .to_string(),
+                                    )
+                                }
+                            };
+                            let here = Expr::Math {
+                                kind: MathKind::Vector,
+                                args: vec![
+                                    Expr::Ambient { field: "latitude".to_string(), family },
+                                    Expr::Ambient { field: "longitude".to_string(), family },
+                                    Expr::Num(0.0, Unit::None),
+                                ],
+                                line,
+                            };
+                            return Ok(Expr::Math {
+                                kind: MathKind::BearingFrom,
+                                args: vec![here, place],
+                                line,
+                            });
                         }
                         Tok::Ident(w) if w == "from" => {
                             self.bump();

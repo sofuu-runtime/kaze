@@ -1,4 +1,11 @@
-// lib.rs — the Kaze engine: source → checker → bytecode → VM.
+// lib.rs — the Kaze PROTOTYPE engine: source → checker → bytecode → VM.
+//
+// THIS CRATE IS NOT THE PRODUCT. The Kaze that ships lives in
+// crates/sofuu-core/src/domains/kaze/ and is specified by docs/KAZE-SPEC.md
+// (language v0.1, frozen). This tree is an earlier standalone prototype: it is
+// not a workspace member, make never builds it, CI never runs it, and its
+// surface has drifted ahead of the product (nine vector/trig opcodes, version
+// 0.3). scripts/kaze-drift-check.sh is the gate that keeps that drift visible.
 //
 // Kaze (風) is an ultra-friendly, Rust-secured scripting language designed for
 // robotics, drones, and ambient edge devices.

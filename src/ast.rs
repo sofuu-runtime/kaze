@@ -116,10 +116,13 @@ pub enum MathKind {
     Vector,
     /// `distance between a and b` — metres on the WGS84 sphere.
     Distance,
-    /// `bearing to v` — the compass direction of a local vector.
-    BearingTo,
-    /// `bearing from a to b` — the initial bearing to a place.
+    /// `bearing of v` — the compass direction of a local offset.
+    BearingOf,
+    /// `bearing from a to b` — the initial bearing to a place. `bearing to b`
+    /// is parsed into this, with `a` read from the machine's own position.
     BearingFrom,
+    /// `slant distance between a and b` — great circle plus altitude change.
+    SlantDistance,
     /// `sin(x)`, `cos(x)` — radians in, plain number out.
     Sin,
     Cos,

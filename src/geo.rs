@@ -24,6 +24,17 @@ pub fn haversine_m(a: [f64; 3], b: [f64; 3]) -> f64 {
     2.0 * EARTH_RADIUS_M * h.sqrt().min(1.0).asin()
 }
 
+/// Great-circle distance plus the altitude difference, in metres.
+///
+/// This is the distance a vehicle actually flies between two points when it
+/// changes height on the way: `distance between` is the ground track, this is
+/// the slant range.
+pub fn slant_m(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let ground = haversine_m(a, b);
+    let dz = b[2] - a[2];
+    (ground * ground + dz * dz).sqrt()
+}
+
 /// Initial bearing in degrees (0 = north, 90 = east) from `a` to `b`.
 pub fn bearing_deg(a: [f64; 3], b: [f64; 3]) -> f64 {
     let (lat1, lat2) = (a[0].to_radians(), b[0].to_radians());
@@ -132,6 +143,17 @@ mod tests {
         assert_eq!(magnitude([3.0, 4.0, 0.0]), 5.0);
         assert_eq!(magnitude([0.0, 0.0, 0.0]), 0.0);
         assert!(close(magnitude([1.0, 2.0, 2.0]), 3.0, 1e-9));
+    }
+
+    #[test]
+    fn a_climb_makes_the_slant_range_longer_than_the_ground_track() {
+        let a = [47.6, 8.5, 0.0];
+        let b = [47.6004, 8.5004, 30.0];
+        let ground = haversine_m(a, b);
+        let slant = slant_m(a, b);
+        assert!(slant > ground, "a climb is further: {slant} vs {ground}");
+        assert!(close(slant, (ground * ground + 900.0).sqrt(), 1e-6));
+        assert!(close(slant_m(a, a), 0.0, 1e-9), "the same point is zero apart");
     }
 
     #[test]
