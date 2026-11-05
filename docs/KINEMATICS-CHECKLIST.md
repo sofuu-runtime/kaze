@@ -1,7 +1,7 @@
 # Field Checklist — Kaze v0.3 Kinematics & Spatial Navigation
 
 Everything that can be checked deterministically without a vehicle is verified by
-`cargo test` (167 unit, integration, and live tests with default features). This
+`cargo test` (267 unit, integration, and live tests with default features). This
 checklist covers exercising spatial math and navigation against real flight
 controllers and SITL.
 

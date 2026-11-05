@@ -98,6 +98,55 @@ pub fn known_op(family: &str, op: &str) -> bool {
     op_arity(family, op).is_some()
 }
 
+/// Every `(family, op)` in the registry, for tooling (LSP completion and
+/// hover). Kept next to `op_arity`; `every_listed_op_is_known` keeps the two
+/// from drifting.
+pub const OPS: &[(&str, &str)] = &[
+    ("drone", "arm"),
+    ("drone", "land"),
+    ("drone", "rtl"),
+    ("drone", "hold"),
+    ("drone", "stop"),
+    ("drone", "takeoff"),
+    ("drone", "goto"),
+    ("drone", "telemetry"),
+    ("rover", "forward"),
+    ("rover", "backward"),
+    ("rover", "turn_left"),
+    ("rover", "turn_right"),
+    ("rover", "stop"),
+    ("rover", "telemetry"),
+    ("sensor", "temperature"),
+    ("sensor", "humidity"),
+    ("sensor", "distance"),
+    ("sensor", "front_distance"),
+    ("sensor", "read"),
+    ("sensor", "telemetry"),
+    ("device", "set_relay"),
+    ("device", "pulse"),
+    ("device", "read_gpio"),
+    ("device", "set_duty"),
+    ("memory", "save"),
+    ("memory", "recall"),
+    ("policy", "detects"),
+    ("policy", "detect"),
+    ("policy", "allow"),
+    ("policy", "reject"),
+    ("log", "info"),
+    ("log", "warn"),
+    ("log", "error"),
+    ("log", "debug"),
+    ("alert", "send"),
+];
+
+/// The operations of one capability family, in registry order.
+pub fn ops_of(family: &str) -> Vec<&'static str> {
+    OPS.iter()
+        .filter(|(f, _)| *f == family)
+        .map(|(_, op)| *op)
+        .collect()
+}
+
 /// One line of the execution trace. The trace is the evidence a mission review
 /// reads: every call, in order, with its arguments and its result.
 #[derive(Clone, Debug)]
@@ -505,7 +554,8 @@ impl CapHost for SimHost {
                     .filter(|(k, v)| k.to_lowercase().contains(&query) || v.to_lowercase().contains(&query))
                     .filter_map(|(_, v)| arena.alloc(v).ok().map(Value::Str))
                     .collect();
-                Ok(heap.push_array(hits))
+                heap.push_array(hits)
+                    .map_err(|msg| format!("E_KAZE_MEMORY: {}", msg))
             }
             ("policy", "detects") | ("policy", "detect") => {
                 let kind = str_at(args, 0, arena).to_lowercase();
@@ -583,6 +633,15 @@ pub fn detect(kind: &str, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_listed_op_is_known() {
+        for (family, op) in OPS {
+            assert!(known_op(family, op), "{}.{} is in OPS but not in op_arity", family, op);
+        }
+        assert!(!ops_of("drone").is_empty());
+        assert!(ops_of("nonsense").is_empty());
+    }
 
     #[test]
     fn the_guardrail_detectors_catch_the_shapes_they_claim_to() {

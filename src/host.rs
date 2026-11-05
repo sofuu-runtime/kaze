@@ -104,18 +104,20 @@ impl CapHost for LiveHost {
         arena: &mut Arena,
         heap: &mut Heap,
     ) -> Result<Value, String> {
-        if family == "drone" && self.link.is_some() {
-            let shown: Vec<String> = args.iter().map(|v| render_value(*v, arena, heap)).collect();
-            let mut link = self.link.take().expect("checked above");
-            let result = drone_op(&mut link, op, args, arena, heap);
-            self.link = Some(link);
-            let rendered = match &result {
-                Ok(value) => render_value(*value, arena, heap),
-                Err(e) => format!("error: {}", e),
-            };
-            self.sim.note("drone", op, &shown, rendered);
-            self.drain_notes();
-            return result;
+        if family == "drone" {
+            if let Some(mut link) = self.link.take() {
+                let shown: Vec<String> =
+                    args.iter().map(|v| render_value(*v, arena, heap)).collect();
+                let result = drone_op(&mut link, op, args, arena, heap);
+                self.link = Some(link);
+                let rendered = match &result {
+                    Ok(value) => render_value(*value, arena, heap),
+                    Err(e) => format!("error: {}", e),
+                };
+                self.sim.note("drone", op, &shown, rendered);
+                self.drain_notes();
+                return result;
+            }
         }
 
         // PWM belongs to the device family but has its own backend, so it is
@@ -149,17 +151,19 @@ impl CapHost for LiveHost {
             return result;
         }
 
-        if family == "device" && self.gpio.is_some() {
-            let shown: Vec<String> = args.iter().map(|v| render_value(*v, arena, heap)).collect();
-            let mut bus = self.gpio.take().expect("checked above");
-            let result = device_op(&mut bus, op, args, arena, heap);
-            self.gpio = Some(bus);
-            let rendered = match &result {
-                Ok(value) => render_value(*value, arena, heap),
-                Err(e) => format!("error: {}", e),
-            };
-            self.sim.note("device", op, &shown, rendered);
-            return result;
+        if family == "device" {
+            if let Some(mut bus) = self.gpio.take() {
+                let shown: Vec<String> =
+                    args.iter().map(|v| render_value(*v, arena, heap)).collect();
+                let result = device_op(&mut bus, op, args, arena, heap);
+                self.gpio = Some(bus);
+                let rendered = match &result {
+                    Ok(value) => render_value(*value, arena, heap),
+                    Err(e) => format!("error: {}", e),
+                };
+                self.sim.note("device", op, &shown, rendered);
+                return result;
+            }
         }
 
         self.sim.call(family, op, args, arena, heap)

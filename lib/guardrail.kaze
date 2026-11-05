@@ -1,0 +1,14 @@
+# Canonical prompt guardrail. Add `use "lib/guardrail.kaze"` and run the filter
+# explicitly (`--entry user_prompt --arg prompt='"…"'`).
+#
+# A filter must end every path in allow or reject. The checks are structural,
+# not a model: they are an auditable first line, not a complete content policy.
+
+needs: policy
+
+filter user_prompt(prompt):
+    if length of prompt > 2000:
+        reject with "prompt exceeds the maximum length"
+    if policy detects secrets in prompt:
+        reject with "prompt contains private credentials"
+    allow prompt

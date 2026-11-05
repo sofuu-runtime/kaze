@@ -1,0 +1,15 @@
+main -> nothing
+actions:
+   1. log.info("eight-waypoint survey") -> nothing
+   2. drone.arm -> nothing
+   3. drone.takeoff(15) -> nothing
+   4. drone.goto((47.6, 8.5, 15), 15) -> nothing
+   5. drone.goto((47.6002, 8.5, 15), 15) -> nothing
+   6. drone.goto((47.6002, 8.5002, 15), 15) -> nothing
+   7. drone.goto((47.6, 8.5002, 15), 15) -> nothing
+   8. drone.goto((47.6, 8.5004, 15), 15) -> nothing
+   9. drone.goto((47.6002, 8.5004, 15), 15) -> nothing
+  10. drone.goto((47.6004, 8.5004, 15), 15) -> nothing
+  11. drone.goto((47.6004, 8.5002, 15), 15) -> nothing
+  12. drone.rtl -> nothing
+205 instructions, 205 fuel, 0 ticks

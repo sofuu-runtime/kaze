@@ -5,7 +5,7 @@
 needs: log
 
 action main():
-    let home = vector(47.6000, 8.5000, 500)
+    let home = vector(47.6, 8.5, 500)
     let waypoint = vector(47.6004, 8.5004, 520)
     log "metres to the waypoint:"
     log distance between home and waypoint

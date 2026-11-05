@@ -25,13 +25,17 @@ use crate::value::{Heap, Value};
 pub struct Limits {
     pub fuel: u64,
     pub arena_bytes: usize,
+    /// Values the collection heap may hold at once. Fuel alone does not bound
+    /// a collection loop; this does.
+    pub heap_values: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         // 200k instructions is a few milliseconds of work and far more than any
-        // hardware routine needs; the point is that the bound exists.
-        Limits { fuel: 200_000, arena_bytes: 256 * 1024 }
+        // hardware routine needs; the point is that the bound exists. 65,536
+        // heap values is roughly 1 MiB of values plus vector overhead.
+        Limits { fuel: 200_000, arena_bytes: 256 * 1024, heap_values: 65_536 }
     }
 }
 
@@ -105,7 +109,7 @@ impl<'a> Vm<'a> {
         Vm {
             module,
             arena: Arena::new(limits.arena_bytes),
-            heap: Heap::new(),
+            heap: Heap::with_limit(limits.heap_values),
             host,
             declared,
             grants,
@@ -177,7 +181,10 @@ impl<'a> Vm<'a> {
                         items.push(self.pop(item.line)?);
                     }
                     items.reverse();
-                    let v = self.heap.push_array(items);
+                    let v = self
+                        .heap
+                        .push_array(items)
+                        .map_err(|msg| VmError { code: "E_KAZE_MEMORY", msg, line: item.line })?;
                     self.push(v, item.line)?;
                 }
                 Op::GetIndex => {
@@ -189,6 +196,9 @@ impl<'a> Vm<'a> {
                 Op::Len => {
                     let v = self.pop(item.line)?;
                     let n = self.length(v, item.line)?;
+                    if !n.is_finite() {
+                        return Err(overflow(item.line));
+                    }
                     self.push(Value::Num(n), item.line)?;
                 }
                 Op::VecNew => {
@@ -202,7 +212,13 @@ impl<'a> Vm<'a> {
                         let v = self.pop(item.line)?;
                         *slot = self.num_of(v, item.line)?;
                     }
-                    let v = self.heap.push_vec(parts);
+                    if parts.iter().any(|component| !component.is_finite()) {
+                        return Err(overflow(item.line));
+                    }
+                    let v = self
+                        .heap
+                        .push_vec(parts)
+                        .map_err(|msg| VmError { code: "E_KAZE_MEMORY", msg, line: item.line })?;
                     self.push(v, item.line)?;
                 }
                 Op::VecDist | Op::VecSlantDist | Op::VecBearingBetween => {
@@ -214,12 +230,19 @@ impl<'a> Vm<'a> {
                         Op::VecSlantDist => crate::geo::slant_m(p, q),
                         _ => crate::geo::bearing_deg(p, q),
                     };
+                    if !n.is_finite() {
+                        return Err(overflow(item.line));
+                    }
                     self.push(Value::Num(n), item.line)?;
                 }
                 Op::VecBearing => {
                     let v = self.pop(item.line)?;
                     let p = self.point(v, item.line)?;
-                    self.push(Value::Num(crate::geo::bearing_of(p)), item.line)?;
+                    let n = crate::geo::bearing_of(p);
+                    if !n.is_finite() {
+                        return Err(overflow(item.line));
+                    }
+                    self.push(Value::Num(n), item.line)?;
                 }
                 Op::Sin | Op::Cos | Op::Sqrt | Op::DegToRad | Op::RadToDeg => {
                     let v = self.pop(item.line)?;
@@ -240,13 +263,20 @@ impl<'a> Vm<'a> {
                         Op::DegToRad => crate::geo::to_radians(x),
                         _ => crate::geo::to_degrees(x),
                     };
+                    if !r.is_finite() {
+                        return Err(overflow(item.line));
+                    }
                     self.push(Value::Num(r), item.line)?;
                 }
                 Op::Atan2 => {
                     let x = self.pop(item.line)?;
                     let y = self.pop(item.line)?;
                     let (x, y) = (self.num_of(x, item.line)?, self.num_of(y, item.line)?);
-                    self.push(Value::Num(y.atan2(x)), item.line)?;
+                    let r = y.atan2(x);
+                    if !r.is_finite() {
+                        return Err(overflow(item.line));
+                    }
+                    self.push(Value::Num(r), item.line)?;
                 }
                 Op::GetField => {
                     let field = self.pop(item.line)?;
@@ -483,11 +513,13 @@ impl<'a> Vm<'a> {
         let key_code = self.alloc_text("code", err.line)?;
         let key_message = self.alloc_text("message", err.line)?;
         let key_line = self.alloc_text("line", err.line)?;
-        Ok(self.heap.push_map(vec![
-            (key_code, code),
-            (key_message, message),
-            (key_line, Value::Num(err.line as f64)),
-        ]))
+        self.heap
+            .push_map(vec![
+                (key_code, code),
+                (key_message, message),
+                (key_line, Value::Num(err.line as f64)),
+            ])
+            .map_err(|msg| VmError { code: "E_KAZE_MEMORY", msg, line: err.line })
     }
 
     fn alloc_text(&mut self, text: &str, line: u32) -> Result<Value, VmError> {
@@ -584,7 +616,12 @@ impl<'a> Vm<'a> {
             (Value::Vec(x), Value::Vec(y)) => {
                 let (p, q) = (self.point(Value::Vec(x), line)?, self.point(Value::Vec(y), line)?);
                 let sum = [p[0] + q[0], p[1] + q[1], p[2] + q[2]];
-                Ok(self.heap.push_vec(sum))
+                if sum.iter().any(|component| !component.is_finite()) {
+                    return Err(overflow(line));
+                }
+                self.heap
+                    .push_vec(sum)
+                    .map_err(|msg| VmError { code: "E_KAZE_MEMORY", msg, line })
             }
             (a, b) => Err(VmError {
                 code: "E_KAZE_TYPE",
@@ -628,7 +665,12 @@ impl<'a> Vm<'a> {
                 }
                 x % y
             }
-            _ => unreachable!(),
+            _ => {
+                return Err(VmError::new(
+                    "E_KAZE_BADCODE",
+                    "arithmetic ran with a non-arithmetic opcode",
+                ))
+            }
         };
         if !v.is_finite() {
             return Err(overflow(line));
@@ -740,7 +782,9 @@ impl<'a> Vm<'a> {
                 return Err(overflow(line));
             }
         }
-        Ok(self.heap.push_vec(out))
+        self.heap
+            .push_vec(out)
+            .map_err(|msg| VmError { code: "E_KAZE_MEMORY", msg, line })
     }
 
     fn compare(&self, op: Op, a: Value, b: Value, line: u32) -> Result<bool, VmError> {
@@ -765,7 +809,12 @@ impl<'a> Vm<'a> {
             Op::CmpLe => ord.is_le(),
             Op::CmpGt => ord.is_gt(),
             Op::CmpGe => ord.is_ge(),
-            _ => unreachable!(),
+            _ => {
+                return Err(VmError::new(
+                    "E_KAZE_BADCODE",
+                    "comparison ran with a non-comparison opcode",
+                ))
+            }
         })
     }
 

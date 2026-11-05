@@ -24,3 +24,27 @@ jobs:
       run: cargo test --all-features --verbose
     - name: Clippy
       run: cargo clippy --all-targets --all-features -- -D warnings
+    - name: Selftest
+      run: cargo run --quiet --bin kaze -- selftest
+    - name: Format check
+      run: scripts/fmt-check.sh
+
+  editor:
+    name: Editor Extension
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: JavaScript syntax and framing tests
+      run: |
+        node --check editors/vscode/extension.js
+        node --check editors/vscode/lsp.js
+        node editors/vscode/test/lsp.test.js
+    - name: Validate extension manifests
+      run: |
+        python3 -m json.tool editors/vscode/package.json > /dev/null
+        python3 -m json.tool editors/vscode/language-configuration.json > /dev/null
+        python3 -m json.tool editors/vscode/syntaxes/kaze.tmLanguage.json > /dev/null
+        python3 -m json.tool editors/vscode/snippets/kaze.json > /dev/null

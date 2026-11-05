@@ -8,6 +8,10 @@
 // same bytes on every machine — the determinism invariant (§2) has to include
 // the artefact, not just the run.
 
+use std::collections::{HashSet, VecDeque};
+
+use crate::caps;
+
 /// The v0.1 opcode set. Numbers are part of the on-disk format: never reuse one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -286,6 +290,10 @@ pub struct ItemCode {
     pub params: Vec<String>,
     pub code: Vec<u32>,
     pub line: u32,
+    /// The file this item came from. The compiler copies it for every item;
+    /// the VM uses it to attribute a run-time error. Empty only for a module
+    /// built without the loader.
+    pub origin: String,
     /// Period in milliseconds; 0 for everything but `every`.
     pub period_ms: f64,
     /// Number of local slots the item uses (parameters occupy the first ones).
@@ -295,6 +303,9 @@ pub struct ItemCode {
 #[derive(Clone, Debug, Default)]
 pub struct Module {
     pub needs: Vec<String>,
+    /// The root script's diagnostic origin (its file name). Items whose
+    /// `origin` equals this are the root file's own; the rest were imported.
+    pub root: String,
     pub consts: Vec<Const>,
     pub caps: Vec<CapRef>,
     pub items: Vec<ItemCode>,
@@ -312,10 +323,17 @@ impl Module {
 }
 
 const MAGIC: &[u8; 8] = b"KAZEBC1\0";
-/// 3 since v0.4 added `TryBegin`, `TryEnd` and `LinkLost`; bumping the version
-/// makes an older reader refuse the module up front instead of meeting an
-/// opcode it does not know. Format 2 (v0.3) modules must be recompiled.
-const VERSION: u16 = 3;
+/// 4 since v0.5 added the root name and the per-item source origin (for
+/// multi-file diagnostics and root-only entry resolution). Bumping the version
+/// makes an older reader refuse the module up front instead of misreading the
+/// new fields. Format 2 (v0.3) and 3 (v0.4) modules must be recompiled.
+const VERSION: u16 = 4;
+
+/// The on-disk module format, exposed for the compatibility lock.
+pub const FORMAT_VERSION: u16 = VERSION;
+
+/// The operand stack bound the VM enforces; the verifier proves it statically.
+pub const MAX_STACK: usize = 256;
 
 struct Writer {
     out: Vec<u8>,
@@ -382,6 +400,7 @@ pub fn serialize(m: &Module) -> Vec<u8> {
     let mut w = Writer { out: Vec::with_capacity(256) };
     w.out.extend_from_slice(MAGIC);
     w.u16(VERSION);
+    w.text(&m.root);
     w.u32(m.needs.len() as u32);
     for n in &m.needs {
         w.text(n);
@@ -416,6 +435,7 @@ pub fn serialize(m: &Module) -> Vec<u8> {
         w.u32(it.line);
         w.u8(it.slots);
         w.text(&it.name);
+        w.text(&it.origin);
         w.u32(it.params.len() as u32);
         for p in &it.params {
             w.text(p);
@@ -440,7 +460,8 @@ pub fn deserialize(bytes: &[u8]) -> Result<Module, String> {
         Some(other) => return Err(format!("this module was built by Kaze version {}, not {}", other, VERSION)),
         None => return Err("truncated module header".to_string()),
     }
-    let mut m = Module::default();
+    let root = r.text().ok_or("truncated module root")?;
+    let mut m = Module { root, ..Default::default() };
     let needs = r.u32().ok_or("truncated needs table")?;
     for _ in 0..needs {
         m.needs.push(r.text().ok_or("truncated needs entry")?);
@@ -468,6 +489,7 @@ pub fn deserialize(bytes: &[u8]) -> Result<Module, String> {
         let line = r.u32().ok_or("truncated item line")?;
         let slots = r.u8().ok_or("truncated item slots")?;
         let name = r.text().ok_or("truncated item name")?;
+        let origin = r.text().ok_or("truncated item origin")?;
         let nparams = r.u32().ok_or("truncated item parameters")?;
         let mut params = Vec::new();
         for _ in 0..nparams {
@@ -478,14 +500,309 @@ pub fn deserialize(bytes: &[u8]) -> Result<Module, String> {
         for _ in 0..ncode {
             code.push(r.u32().ok_or("truncated code word")?);
         }
-        m.items.push(ItemCode { name, tag, params, code, line, period_ms, slots });
+        m.items.push(ItemCode { name, tag, params, code, line, origin, period_ms, slots });
     }
+    verify(&m)?;
     Ok(m)
+}
+
+struct Insn {
+    at: usize,
+    op: Op,
+    a: u8,
+    imm: Option<u32>,
+    next: usize,
+}
+
+/// Verify a module before it is executed.
+///
+/// Structural checks prove every opcode and immediate is present, every table
+/// index is in range, every jump lands on an instruction boundary, and every
+/// local slot exists. A stack-depth dataflow then proves that no reachable
+/// instruction underflows the operand stack, that branches merge at the same
+/// depth, and that the depth never exceeds `MAX_STACK`. A module that passes
+/// cannot make the VM index outside its stack; a module that fails is refused
+/// before the first instruction runs.
+pub fn verify(module: &Module) -> Result<(), String> {
+    for item in &module.items {
+        verify_item(module, item)?;
+    }
+    Ok(())
+}
+
+fn verify_item(module: &Module, item: &ItemCode) -> Result<(), String> {
+    if item.params.len() > 255 {
+        return Err(format!("{}: more than 255 parameters", item.name));
+    }
+    let locals = item.slots.max(item.params.len() as u8) as usize;
+    let code = &item.code;
+    let mut insns: Vec<Insn> = Vec::new();
+    let mut index: Vec<Option<usize>> = vec![None; code.len() + 1];
+    let mut boundaries: HashSet<usize> = HashSet::new();
+    let mut at = 0usize;
+    while at < code.len() {
+        boundaries.insert(at);
+        let w = code[at];
+        let op = Op::from_u8(opcode(w))
+            .ok_or_else(|| format!("{}: unknown opcode {} at {}", item.name, opcode(w), at))?;
+        let imm = if op.has_immediate() {
+            Some(*code.get(at + 1).ok_or_else(|| {
+                format!("{}: {} at {} has no immediate", item.name, op.name(), at)
+            })?)
+        } else {
+            None
+        };
+        let next = at + 1 + usize::from(op.has_immediate());
+        index[at] = Some(insns.len());
+        insns.push(Insn { at, op, a: field_a(w), imm, next });
+        at = next;
+    }
+    boundaries.insert(code.len());
+
+    for insn in &insns {
+        verify_indices(module, item, insn, locals, &boundaries)?;
+    }
+    verify_stack(item, &insns, &index, code.len())
+}
+
+fn verify_indices(
+    module: &Module,
+    item: &ItemCode,
+    insn: &Insn,
+    locals: usize,
+    boundaries: &HashSet<usize>,
+) -> Result<(), String> {
+    let here = || format!("{} at instruction {}", item.name, insn.at);
+    match insn.op {
+        Op::LoadLocal | Op::StoreLocal => {
+            if insn.a as usize >= locals {
+                return Err(format!("{}: local slot {} is out of range", here(), insn.a));
+            }
+        }
+        Op::TryBegin => {
+            if insn.a != 255 && insn.a as usize >= locals {
+                return Err(format!("{}: error slot {} is out of range", here(), insn.a));
+            }
+            verify_jump(item, insn, boundaries)?;
+        }
+        Op::Const | Op::Trap => {
+            let imm = insn.imm.unwrap_or(u32::MAX) as usize;
+            if imm >= module.consts.len() {
+                return Err(format!("{}: constant {} is out of range", here(), imm));
+            }
+        }
+        Op::CallCap => {
+            let imm = insn.imm.unwrap_or(u32::MAX) as usize;
+            let cap = module
+                .caps
+                .get(imm)
+                .ok_or_else(|| format!("{}: capability {} is out of range", here(), imm))?;
+            if insn.a as usize != cap.argc as usize {
+                return Err(format!(
+                    "{}: CALL_CAP says {} arguments but cap[{}] says {}",
+                    here(),
+                    insn.a,
+                    imm,
+                    cap.argc
+                ));
+            }
+            if !caps::known_op(&cap.family, &cap.op) {
+                return Err(format!(
+                    "{}: {}.{} is not a registered capability",
+                    here(),
+                    cap.family,
+                    cap.op
+                ));
+            }
+            // The artifact's own `argc` is attacker-controlled; the registry
+            // is the authority. `drone.goto` with zero arguments passes the
+            // H-4 gate (a missing argument is not ranged) and would fly to
+            // telemetry defaults instead of being refused.
+            if let Some((min, max)) = caps::op_arity(&cap.family, &cap.op) {
+                let argc = insn.a as usize;
+                if argc < min || argc > max {
+                    return Err(format!(
+                        "{}: {}.{} takes {} to {} value(s), not {}",
+                        here(),
+                        cap.family,
+                        cap.op,
+                        min,
+                        max,
+                        argc
+                    ));
+                }
+            }
+        }
+        Op::VecNew => {
+            if insn.a != 2 && insn.a != 3 {
+                return Err(format!("{}: VECNEW width {} is not 2 or 3", here(), insn.a));
+            }
+        }
+        Op::Jmp | Op::JmpIfFalse | Op::JmpIfTrue | Op::Jeq | Op::Jne => {
+            verify_jump(item, insn, boundaries)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn verify_jump(
+    item: &ItemCode,
+    insn: &Insn,
+    boundaries: &HashSet<usize>,
+) -> Result<(), String> {
+    let target = jump_target(insn);
+    if target < 0 || target as usize > item.code.len() {
+        return Err(format!(
+            "{} at instruction {}: jump target {} is outside the item",
+            item.name, insn.at, target
+        ));
+    }
+    if (target as usize) < item.code.len() && !boundaries.contains(&(target as usize)) {
+        return Err(format!(
+            "{} at instruction {}: jump target {} is not an instruction boundary",
+            item.name, insn.at, target
+        ));
+    }
+    Ok(())
+}
+
+fn jump_target(insn: &Insn) -> i64 {
+    insn.next as i64 + insn.imm.unwrap_or(0) as i32 as i64
+}
+
+fn stack_effect(op: Op, a: u8) -> Option<(usize, usize)> {
+    let a = a as usize;
+    Some(match op {
+        Op::Const | Op::LoadLocal | Op::LinkLost => (0, 1),
+        Op::StoreLocal | Op::Pop | Op::JmpIfFalse | Op::JmpIfTrue | Op::PolicyStop | Op::Ret => {
+            (1, 0)
+        }
+        // Fused compare-and-branch: pop two, push nothing (unlike CMP_*).
+        Op::Jeq | Op::Jne => (2, 0),
+        Op::NewArr | Op::VecNew => (a, 1),
+        Op::GetIndex
+        | Op::GetField
+        | Op::Add
+        | Op::Sub
+        | Op::Mul
+        | Op::Div
+        | Op::Mod
+        | Op::CmpLt
+        | Op::CmpLe
+        | Op::CmpGt
+        | Op::CmpGe
+        | Op::CmpEq
+        | Op::CmpNe
+        | Op::VecDist
+        | Op::VecSlantDist
+        | Op::VecBearingBetween
+        | Op::Atan2 => (2, 1),
+        Op::Len
+        | Op::Neg
+        | Op::Not
+        | Op::VecBearing
+        | Op::Sin
+        | Op::Cos
+        | Op::Sqrt
+        | Op::DegToRad
+        | Op::RadToDeg => (1, 1),
+        Op::CallCap => (a, 1),
+        Op::Jmp | Op::FuelTick | Op::TryBegin | Op::TryEnd | Op::RetUnit | Op::Halt | Op::Trap => {
+            (0, 0)
+        }
+    })
+}
+
+fn successors(insn: &Insn) -> Vec<usize> {
+    match insn.op {
+        Op::Ret | Op::RetUnit | Op::PolicyStop | Op::Halt | Op::Trap => Vec::new(),
+        Op::Jmp => vec![jump_target(insn) as usize],
+        Op::JmpIfFalse | Op::JmpIfTrue | Op::Jeq | Op::Jne | Op::TryBegin => {
+            vec![jump_target(insn) as usize, insn.next]
+        }
+        _ => vec![insn.next],
+    }
+}
+
+fn verify_stack(
+    item: &ItemCode,
+    insns: &[Insn],
+    index: &[Option<usize>],
+    len: usize,
+) -> Result<(), String> {
+    if insns.is_empty() {
+        return Ok(());
+    }
+    let mut depth: Vec<Option<usize>> = vec![None; len + 1];
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    depth[0] = Some(0);
+    queue.push_back(0);
+    while let Some(pc) = queue.pop_front() {
+        let Some(slot) = index.get(pc).copied().flatten() else {
+            return Err(format!(
+                "{}: execution reaches {}, which is not an instruction",
+                item.name, pc
+            ));
+        };
+        let insn = &insns[slot];
+        let d = depth[pc].unwrap_or(0);
+        // A handler cannot restore a stack the VM has already popped below
+        // `TRY_BEGIN` (truncate cannot grow). The compiler emits TRY_BEGIN at a
+        // statement boundary, so depth 0 is the only sound placement.
+        if insn.op == Op::TryBegin && d != 0 {
+            return Err(format!(
+                "{}: TRY_BEGIN at stack depth {} (must be 0; the handler cannot restore a deeper stack)",
+                item.name, d
+            ));
+        }
+        let (pop, push) = stack_effect(insn.op, insn.a)
+            .ok_or_else(|| format!("{}: no stack effect for {}", item.name, insn.op.name()))?;
+        if d < pop {
+            return Err(format!(
+                "{}: stack underflow at {} ({} needs {}, has {})",
+                item.name,
+                pc,
+                insn.op.name(),
+                pop,
+                d
+            ));
+        }
+        let out = d - pop + push;
+        if out > MAX_STACK {
+            return Err(format!("{}: stack depth {} exceeds {}", item.name, out, MAX_STACK));
+        }
+        for succ in successors(insn) {
+            if succ > len {
+                return Err(format!("{}: successor {} is outside the item", item.name, succ));
+            }
+            if succ == len {
+                continue;
+            }
+            match depth[succ] {
+                None => {
+                    depth[succ] = Some(out);
+                    queue.push_back(succ);
+                }
+                Some(existing) if existing != out => {
+                    return Err(format!(
+                        "{}: inconsistent stack depth at {} ({} and {})",
+                        item.name, succ, existing, out
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Human-readable listing, for `sofuu script compile --disasm`.
 pub fn disassemble(m: &Module) -> String {
     let mut out = String::new();
+    if !m.root.is_empty() {
+        out.push_str(&format!("root: {}\n", m.root));
+    }
     out.push_str(&format!("needs: {}\n", m.needs.join(", ")));
     for (i, c) in m.caps.iter().enumerate() {
         out.push_str(&format!("cap[{}] = {}.{}/{}\n", i, c.family, c.op, c.argc));
@@ -498,7 +815,14 @@ pub fn disassemble(m: &Module) -> String {
         }
     }
     for it in &m.items {
-        out.push_str(&format!("\n{} {} ({} slots)\n", it.tag.label(), it.name, it.slots));
+        let origin = if it.origin.is_empty() { "" } else { it.origin.as_str() };
+        out.push_str(&format!(
+            "\n{} {} ({} slots) [{}]\n",
+            it.tag.label(),
+            it.name,
+            it.slots,
+            origin
+        ));
         let mut i = 0usize;
         while i < it.code.len() {
             let w = it.code[i];
@@ -536,6 +860,7 @@ mod tests {
     fn round_trips_a_module() {
         let m = Module {
             needs: vec!["drone".into()],
+            root: "patrol.kaze".into(),
             consts: vec![Const::Num(15.0), Const::Str("hello".into())],
             caps: vec![CapRef { family: "drone".into(), op: "takeoff".into(), argc: 1 }],
             items: vec![ItemCode {
@@ -544,6 +869,7 @@ mod tests {
                 params: vec!["points".into()],
                 code: vec![word(Op::Const, 0, 0, 0), 0, word(Op::Halt, 0, 0, 0)],
                 line: 3,
+                origin: "patrol.kaze".to_string(),
                 period_ms: 0.0,
                 slots: 2,
             }],
@@ -551,14 +877,43 @@ mod tests {
         let bytes = serialize(&m);
         let back = deserialize(&bytes).unwrap();
         assert_eq!(back.needs, m.needs);
+        assert_eq!(back.root, "patrol.kaze");
         assert_eq!(back.items[0].code, m.items[0].code);
+        assert_eq!(back.items[0].origin, "patrol.kaze");
         assert_eq!(back.consts, m.consts);
+    }
+
+    #[test]
+    fn a_truncated_item_origin_is_refused() {
+        let m = Module {
+            items: vec![ItemCode {
+                name: "a".into(),
+                tag: ItemTag::Action,
+                params: Vec::new(),
+                code: vec![word(Op::RetUnit, 0, 0, 0)],
+                line: 1,
+                origin: "lib/x.kaze".to_string(),
+                period_ms: 0.0,
+                slots: 0,
+            }],
+            ..Default::default()
+        };
+        let mut bytes = serialize(&m);
+        let needle = b"lib/x.kaze";
+        let at = bytes
+            .windows(needle.len())
+            .position(|w| w == &needle[..])
+            .expect("the origin is in the artifact");
+        bytes.truncate(at + 2);
+        let err = deserialize(&bytes).expect_err("a cut inside the origin is refused");
+        assert!(err.contains("truncated item origin"), "{}", err);
     }
 
     #[test]
     fn serialization_is_byte_identical_across_runs() {
         let m = Module {
             needs: vec!["log".into()],
+            root: "a.kaze".into(),
             consts: vec![Const::Str("x".into())],
             caps: vec![],
             items: vec![ItemCode {
@@ -567,6 +922,7 @@ mod tests {
                 params: vec![],
                 code: vec![word(Op::RetUnit, 0, 0, 0)],
                 line: 1,
+                origin: String::new(),
                 period_ms: 0.0,
                 slots: 0,
             }],
@@ -576,11 +932,14 @@ mod tests {
 
     #[test]
     fn an_older_module_format_is_refused_up_front() {
-        let mut bytes = serialize(&Module::default());
-        // MAGIC is 8 bytes; the format version is the next little-endian u16.
-        bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
-        let err = deserialize(&bytes).expect_err("a v0.3 artifact is not a v0.4 artifact");
-        assert!(err.contains("version"), "{}", err);
+        for old in [2u16, 3u16] {
+            let mut bytes = serialize(&Module::default());
+            // MAGIC is 8 bytes; the format version is the next little-endian u16.
+            bytes[8..10].copy_from_slice(&old.to_le_bytes());
+            let err = deserialize(&bytes)
+                .expect_err("a pre-v0.5 artifact is not a v0.5 artifact");
+            assert!(err.contains("version"), "{}", err);
+        }
     }
 
     #[test]

@@ -1,0 +1,26 @@
+# Canonical eight-waypoint survey. Add `use "lib/survey.kaze"` and select the
+# routine explicitly:
+#
+#   kaze run mission.kaze --entry eight_point_survey --cap drone --cap log
+#
+# Kaze v1.0 has no user-routine call syntax, so a library routine is reached by
+# --entry (or by a when/every hook), never implicitly.
+
+needs: drone, log
+
+action eight_point_survey():
+    log "eight-point survey"
+    arm drone
+    takeoff to 15 meters
+    for each point in [
+        vector(47.6, 8.5, 15),
+        vector(47.6002, 8.5, 15),
+        vector(47.6002, 8.5002, 15),
+        vector(47.6, 8.5002, 15),
+        vector(47.6, 8.5004, 15),
+        vector(47.6002, 8.5004, 15),
+        vector(47.6004, 8.5004, 15),
+        vector(47.6004, 8.5002, 15)
+    ]:
+        fly to point at 15 meters
+    return to launch

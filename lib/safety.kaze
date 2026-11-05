@@ -1,0 +1,21 @@
+# Canonical safety hooks. Add `use "lib/safety.kaze"` to a mission and run it
+# with supervisor ticks (`--ticks N --tick-ms M`).
+#
+# Battery and link-loss hooks are deliberately best-effort: the recovery RTL can
+# itself fail when the link is gone, so it is wrapped in `try ... otherwise`.
+
+needs: drone, log
+
+when battery < 20%:
+    log warning "battery low; returning to launch"
+    try:
+        return to launch
+    otherwise with err:
+        log warning err.code
+
+when link lost for 3 seconds:
+    log warning "link lost; returning to launch"
+    try:
+        return to launch
+    otherwise with err:
+        log warning err.code

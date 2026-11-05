@@ -942,6 +942,18 @@ mod tests {
     }
 
     #[test]
+    fn dropped_frames_do_not_desynchronise_the_stream() {
+        let mut p = Parser::new();
+        p.push(&encode(&msg_heartbeat(1, 255, 191)).unwrap());
+        // Frame 2 is lost in the network; frame 3 begins right after frame 1.
+        p.push(&encode(&msg_heartbeat(3, 255, 191)).unwrap());
+        assert_eq!(p.next().map(|f| f.seq), Some(1));
+        assert_eq!(p.next().map(|f| f.seq), Some(3));
+        assert!(p.next().is_none());
+        assert_eq!(p.stats().discarded_bytes, 0);
+    }
+
+    #[test]
     fn field_accessors_never_panic_past_the_end() {
         let f = Frame::new(40, 0, 1, 1).unwrap(); // MISSION_REQUEST, 5 bytes
         assert_eq!(f.u8_at(4), 0);

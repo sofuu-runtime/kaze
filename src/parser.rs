@@ -47,9 +47,16 @@ pub fn parse(src: &str) -> Result<Program, ParseError> {
         needs: Vec::new(),
         ambient: None,
         hook_seq: 0,
+        expr_depth: 0,
+        block_depth: 0,
     };
     p.program()
 }
+
+/// Untrusted source may be arbitrarily nested. These guards turn a hostile
+/// nesting depth into a parse error instead of a process stack overflow.
+const MAX_EXPR_DEPTH: usize = 64;
+const MAX_BLOCK_DEPTH: usize = 64;
 
 struct Parser {
     toks: Vec<Token>,
@@ -59,6 +66,8 @@ struct Parser {
     /// The script's single hardware family, when it declared exactly one.
     ambient: Option<&'static str>,
     hook_seq: u32,
+    expr_depth: usize,
+    block_depth: usize,
 }
 
 impl Parser {
@@ -167,25 +176,79 @@ impl Parser {
     // ── program ──────────────────────────────────────────────────────
     fn program(&mut self) -> Result<Program, ParseError> {
         self.skip_newlines();
-        if self.at_ident("needs") {
-            self.bump();
-            self.expect_punct(':')?;
-            loop {
-                let name = self.expect_ident()?;
-                if self.needs.contains(&name) {
+        let mut uses: Vec<Use> = Vec::new();
+        let mut needs_seen = false;
+        // A module header is `needs:` and any number of `use` lines, in any
+        // order, before the first item. `use` paths are resolved by the loader.
+        loop {
+            if self.at_ident("needs") {
+                if needs_seen {
                     let (l, c) = self.here();
-                    return err(l, c, format!("'{}' is declared twice in needs:", name));
+                    return err(
+                        l,
+                        c,
+                        "'needs:' can appear only once; put it with the other top-level lines",
+                    );
                 }
-                self.needs.push(name);
-                if !self.eat_punct(',') {
-                    break;
+                needs_seen = true;
+                self.bump();
+                self.expect_punct(':')?;
+                loop {
+                    let name = self.expect_ident()?;
+                    if self.needs.contains(&name) {
+                        let (l, c) = self.here();
+                        return err(l, c, format!("'{}' is declared twice in needs:", name));
+                    }
+                    self.needs.push(name);
+                    if !self.eat_punct(',') {
+                        break;
+                    }
                 }
+                if !matches!(self.peek(), Tok::Newline | Tok::Eof) {
+                    let (l, c) = self.here();
+                    return err(l, c, "expected the needs line to end after the capability list");
+                }
+                self.skip_newlines();
+                continue;
             }
-            if !matches!(self.peek(), Tok::Newline | Tok::Eof) {
-                let (l, c) = self.here();
-                return err(l, c, "expected the needs line to end after the capability list");
+            if self.at_ident("use") {
+                let (line, _) = self.here();
+                self.bump();
+                let path = match self.peek().clone() {
+                    Tok::Str(p) => {
+                        self.bump();
+                        p
+                    }
+                    other => {
+                        let (l, c) = self.here();
+                        return err(
+                            l,
+                            c,
+                            format!(
+                                "'use' needs a quoted .kaze path, e.g. use \"patterns/grid.kaze\"; \
+                                 found {}",
+                                describe(&other)
+                            ),
+                        );
+                    }
+                };
+                if !path.ends_with(".kaze") {
+                    let (l, c) = self.here();
+                    return err(
+                        l,
+                        c,
+                        format!("'{}' is not a .kaze module; imports must name a .kaze file", path),
+                    );
+                }
+                uses.push(Use { path, line });
+                if !matches!(self.peek(), Tok::Newline | Tok::Eof) {
+                    let (l, c) = self.here();
+                    return err(l, c, "expected the use line to end after the path");
+                }
+                self.skip_newlines();
+                continue;
             }
-            self.skip_newlines();
+            break;
         }
 
         // Exactly one hardware family means a bare `battery` is unambiguous.
@@ -211,13 +274,25 @@ impl Parser {
         }
 
         if items.is_empty() {
-            return err(1, 1, "this script is empty: add an action, check, filter, when or every block");
+            return err(
+                1,
+                1,
+                "this script is empty: add an action, check, filter, when or every block",
+            );
         }
-        Ok(Program { needs: self.needs.clone(), items })
+        Ok(Program { needs: self.needs.clone(), uses, root: String::new(), items })
     }
 
     fn item(&mut self) -> Result<Item, ParseError> {
         let (line, col) = self.here();
+        if self.at_ident("use") {
+            return err(
+                line,
+                col,
+                "'use' lines go before the first item; move it above every action/check/filter/\
+                 when/every block",
+            );
+        }
         if self.at_ident("when") {
             self.bump();
             let cond = self.expr()?;
@@ -227,7 +302,14 @@ impl Parser {
             self.push_scope();
             let body = self.block()?;
             self.pop_scope();
-            return Ok(Item { name, kind: ItemKind::When(cond), params: Vec::new(), body, line });
+            return Ok(Item {
+                name,
+                kind: ItemKind::When(cond),
+                params: Vec::new(),
+                body,
+                line,
+                origin: String::new(),
+            });
         }
         if self.at_ident("every") {
             self.bump();
@@ -248,7 +330,14 @@ impl Parser {
             self.push_scope();
             let body = self.block()?;
             self.pop_scope();
-            return Ok(Item { name, kind: ItemKind::Every(ms), params: Vec::new(), body, line });
+            return Ok(Item {
+                name,
+                kind: ItemKind::Every(ms),
+                params: Vec::new(),
+                body,
+                line,
+                origin: String::new(),
+            });
         }
 
         let kind = match self.peek().clone() {
@@ -295,10 +384,26 @@ impl Parser {
         if body.is_empty() {
             return err(line, col, format!("'{}' has an empty body", name));
         }
-        Ok(Item { name, kind, params, body, line })
+        Ok(Item { name, kind, params, body, line, origin: String::new() })
     }
 
     fn block(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        self.block_depth += 1;
+        if self.block_depth > MAX_BLOCK_DEPTH {
+            self.block_depth -= 1;
+            let (l, c) = self.here();
+            return err(
+                l,
+                c,
+                format!("this script nests more than {} blocks deep", MAX_BLOCK_DEPTH),
+            );
+        }
+        let out = self.block_inner();
+        self.block_depth -= 1;
+        out
+    }
+
+    fn block_inner(&mut self) -> Result<Vec<Stmt>, ParseError> {
         if !matches!(self.peek(), Tok::Newline) {
             let (l, c) = self.here();
             return err(l, c, "put the block on the next line, indented by four spaces");
@@ -349,6 +454,14 @@ impl Parser {
     // ── statements ───────────────────────────────────────────────────
     fn stmt(&mut self) -> Result<Stmt, ParseError> {
         let (line, col) = self.here();
+        if self.at_ident("use") {
+            return err(
+                line,
+                col,
+                "'use' is a top-level header; move it above every action/check/filter/when/every \
+                 block",
+            );
+        }
         if self.at_ident("let") {
             self.bump();
             let name = self.expect_ident()?;
@@ -640,8 +753,22 @@ impl Parser {
 
     fn not_expr(&mut self) -> Result<Expr, ParseError> {
         if self.eat_word("not") {
-            let inner = self.not_expr()?;
-            return Ok(Expr::Not(Box::new(inner)));
+            self.expr_depth += 1;
+            if self.expr_depth > MAX_EXPR_DEPTH {
+                self.expr_depth -= 1;
+                let (l, c) = self.here();
+                return err(
+                    l,
+                    c,
+                    format!(
+                        "this expression nests more than {} levels deep",
+                        MAX_EXPR_DEPTH
+                    ),
+                );
+            }
+            let inner = self.not_expr();
+            self.expr_depth -= 1;
+            return Ok(Expr::Not(Box::new(inner?)));
         }
         self.cmp_expr()
     }
@@ -704,7 +831,22 @@ impl Parser {
 
     fn unary_expr(&mut self) -> Result<Expr, ParseError> {
         if self.eat_punct('-') {
-            let inner = self.unary_expr()?;
+            self.expr_depth += 1;
+            if self.expr_depth > MAX_EXPR_DEPTH {
+                self.expr_depth -= 1;
+                let (l, c) = self.here();
+                return err(
+                    l,
+                    c,
+                    format!(
+                        "this expression nests more than {} levels deep",
+                        MAX_EXPR_DEPTH
+                    ),
+                );
+            }
+            let inner = self.unary_expr();
+            self.expr_depth -= 1;
+            let inner = inner?;
             return Ok(Expr::Bin(BinOp::Sub, Box::new(Expr::Num(0.0, Unit::None)), Box::new(inner)));
         }
         self.postfix_expr()
@@ -740,6 +882,25 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Result<Expr, ParseError> {
+        self.expr_depth += 1;
+        if self.expr_depth > MAX_EXPR_DEPTH {
+            self.expr_depth -= 1;
+            let (l, c) = self.here();
+            return err(
+                l,
+                c,
+                format!(
+                    "this expression nests more than {} levels deep",
+                    MAX_EXPR_DEPTH
+                ),
+            );
+        }
+        let out = self.primary_inner();
+        self.expr_depth -= 1;
+        out
+    }
+
+    fn primary_inner(&mut self) -> Result<Expr, ParseError> {
         let (line, col) = self.here();
         match self.peek().clone() {
             Tok::Num(n) => {

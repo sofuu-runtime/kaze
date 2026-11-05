@@ -27,6 +27,8 @@ fn every_example_matches_its_golden_trace() {
             "guardrail-reject" => include_str!("../examples/golden/guardrail-reject.txt"),
             "kinematics" => include_str!("../examples/golden/kinematics.txt"),
             "fault_tolerance" => include_str!("../examples/golden/fault_tolerance.txt"),
+            "modular" => include_str!("../examples/golden/modular.txt"),
+            "eight_waypoints" => include_str!("../examples/golden/eight_waypoints.txt"),
             other => panic!("no golden for {}", other),
         }
     }
@@ -68,7 +70,20 @@ fn every_example_matches_its_golden_trace() {
         ..Default::default()
     };
 
-    let cases: [(&str, &str, &RunOptions); 8] = [
+    let modular = RunOptions {
+        grants: grants(&["sensor", "log", "drone"]),
+        ticks: 2,
+        tick_ms: 100,
+        sim: SimState { temperature: 35.0, ..Default::default() },
+        ..Default::default()
+    };
+
+    let mission = RunOptions {
+        grants: grants(&["drone", "log"]),
+        ..Default::default()
+    };
+
+    let cases: [(&str, &str, &RunOptions); 10] = [
         ("hello", "hello.kaze", &RunOptions::default()),
         ("patrol", "patrol.kaze", &patrol),
         ("rover", "rover.kaze", &rover),
@@ -77,6 +92,8 @@ fn every_example_matches_its_golden_trace() {
         ("guardrail-reject", "guardrail.kaze", &reject),
         ("kinematics", "kinematics.kaze", &RunOptions::default()),
         ("fault_tolerance", "fault_tolerance.kaze", &fault),
+        ("modular", "modular/mission.kaze", &modular),
+        ("eight_waypoints", "missions/eight_waypoints.kaze", &mission),
     ];
 
     for (name, file, opts) in cases {
@@ -196,6 +213,46 @@ fn points_add_to_points_and_scale_by_numbers() {
 fn length_of_a_point_is_its_magnitude() {
     let out = one_log("needs: log\naction main():\n    log length of vector(3, 4, 0)\n");
     assert_eq!(out, "5");
+}
+
+#[test]
+fn a_non_finite_point_sum_stops_the_run() {
+    // 308 nines is finite; the sum of two such points is not.
+    let big = "9".repeat(308);
+    let src = format!(
+        "needs: log\naction main():\n    let a = vector({big}, 0, 0)\n    let b = vector({big}, 0, 0)\n    log length of (a + b)\n"
+    );
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let err = run_source(&src, "<math>", &opts).expect_err("an infinite point is refused");
+    assert_eq!(err.code, "E_KAZE_OVERFLOW");
+}
+
+#[test]
+fn a_non_finite_vector_math_result_stops_the_run() {
+    // Each component is finite; the magnitudes built from them are not.
+    let big = "9".repeat(308);
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let cases = [
+        format!("needs: log\naction main():\n    log length of vector({big}, {big}, 0)\n"),
+        format!("needs: log\naction main():\n    log {big} in degrees\n"),
+        format!(
+            "needs: log\naction main():\n    log slant distance between vector(0, 0, {big}) and vector(0, 0, 0)\n"
+        ),
+    ];
+    for src in cases {
+        let err = run_source(&src, "<math>", &opts).expect_err("an infinite result is refused");
+        assert_eq!(err.code, "E_KAZE_OVERFLOW", "{}", err.message);
+    }
+}
+
+#[test]
+fn a_number_literal_too_large_for_f64_is_a_lex_error() {
+    let big = "9".repeat(400);
+    let src = format!("needs: log\naction main():\n    log {big}\n");
+    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let err = run_source(&src, "<math>", &opts).expect_err("an infinite literal is refused");
+    assert_eq!(err.code, "E_KAZE_PARSE");
+    assert!(err.message.contains("too large"), "{}", err.message);
 }
 
 #[test]
@@ -484,6 +541,41 @@ fn a_missing_capability_grant_is_never_catchable() {
 }
 
 #[test]
+fn the_runtime_h1_gate_refuses_an_undeclared_family() {
+    // A hand-built module bypasses the checker, so this reaches the R7 H-1
+    // gate itself rather than the checker's static "declare it first" error.
+    let module = isa::Module {
+        needs: Vec::new(),
+        root: "h1.kazebc".into(),
+        consts: Vec::new(),
+        caps: vec![isa::CapRef {
+            family: "drone".into(),
+            op: "arm".into(),
+            argc: 0,
+        }],
+        items: vec![isa::ItemCode {
+            name: "main".into(),
+            tag: isa::ItemTag::Action,
+            params: Vec::new(),
+            code: vec![
+                isa::word(isa::Op::CallCap, 0, 0, 0),
+                0, // capability table index
+                isa::word(isa::Op::Pop, 0, 0, 0),
+                isa::word(isa::Op::RetUnit, 0, 0, 0),
+            ],
+            line: 1,
+            origin: "h1.kazebc".into(),
+            period_ms: 0.0,
+            slots: 0,
+        }],
+    };
+    let opts = RunOptions { grants: grants(&["drone"]), ..Default::default() };
+    let err = kaze::run_module(module, "h1.kazebc", &opts).expect_err("H-1 refuses");
+    assert_eq!(err.code, "E_CAP_UNDECLARED");
+    assert!(err.message.contains("not declared"), "{}", err.message);
+}
+
+#[test]
 fn a_policy_denial_is_never_catchable() {
     let src = "needs: drone, log\naction main():\n    try:\n        arm drone\n    otherwise:\n        log warning \"caught\"\n";
     let opts = RunOptions {
@@ -665,6 +757,36 @@ fn the_documented_cli_invocation_matches_the_golden() {
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         include_str!("../examples/golden/fault_tolerance.txt")
+    );
+}
+
+#[test]
+fn the_documented_modular_cli_invocation_matches_the_golden() {
+    let bin = env!("CARGO_BIN_EXE_kaze");
+    let out = std::process::Command::new(bin)
+        .arg("run")
+        .arg(example("modular/mission.kaze"))
+        .args([
+            "--cap",
+            "drone",
+            "--cap",
+            "sensor",
+            "--cap",
+            "log",
+            "--ticks",
+            "2",
+            "--tick-ms",
+            "100",
+            "--sim",
+            "temperature=35",
+            "--plain",
+        ])
+        .output()
+        .expect("the kaze binary runs");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        include_str!("../examples/golden/modular.txt")
     );
 }
 

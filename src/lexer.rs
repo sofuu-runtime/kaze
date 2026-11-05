@@ -209,6 +209,13 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
                 let n: f64 = text
                     .parse()
                     .map_err(|_| err(line, start_col, format!("'{}' is not a number", text)))?;
+                if !n.is_finite() {
+                    return Err(err(
+                        line,
+                        start_col,
+                        format!("'{}' is too large to be a Kaze number", text),
+                    ));
+                }
                 out.push(Token { tok: Tok::Num(n), line, col: start_col });
                 line_has_token = true;
             }

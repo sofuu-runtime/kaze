@@ -1,0 +1,85 @@
+{
+  "name": "kaze",
+  "displayName": "Kaze",
+  "description": "Kaze language support: diagnostics, completion, hover, symbols and formatting through kaze-lsp.",
+  "version": "1.0.0",
+  "publisher": "sofuu-runtime",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sofuu-runtime/kaze"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "kaze",
+    "robotics",
+    "drone",
+    "dsl",
+    "language-server"
+  ],
+  "activationEvents": [
+    "onLanguage:kaze",
+    "workspaceContains:**/*.kaze"
+  ],
+  "main": "./extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "kaze",
+        "aliases": [
+          "Kaze",
+          "kaze"
+        ],
+        "extensions": [
+          ".kaze"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kaze",
+        "scopeName": "source.kaze",
+        "path": "./syntaxes/kaze.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "kaze",
+        "path": "./snippets/kaze.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "kaze.restartServer",
+        "title": "Kaze: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Kaze",
+      "properties": {
+        "kaze.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the kaze-lsp binary. Empty means 'kaze-lsp' from PATH."
+        },
+        "kaze.lsp.trace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log JSON-RPC messages to the Kaze output channel."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node test/lsp.test.js"
+  }
+}

@@ -58,35 +58,69 @@ impl Value {
 /// an index is never reused while a Value could still refer to it. The
 /// supervisor clears the whole heap between ticks, when no Value survives a
 /// tick boundary, so a long `when`/`every` run cannot grow without bound.
-#[derive(Default)]
 pub struct Heap {
     pub arrays: Vec<Vec<Value>>,
     pub maps: Vec<Vec<(Value, Value)>>,
     /// Points and offsets: three `f64`s, no pointers, freed wholesale.
     pub vecs: Vec<[f64; 3]>,
+    /// Values held by the collections; `limit` is the run's budget.
+    values: usize,
+    limit: usize,
+}
+
+impl Default for Heap {
+    fn default() -> Self {
+        Heap {
+            arrays: Vec::new(),
+            maps: Vec::new(),
+            vecs: Vec::new(),
+            values: 0,
+            limit: usize::MAX,
+        }
+    }
 }
 
 impl Heap {
     pub fn new() -> Self {
-        Heap { arrays: Vec::new(), maps: Vec::new(), vecs: Vec::new() }
+        Self::default()
     }
 
-    pub fn push_array(&mut self, items: Vec<Value>) -> Value {
+    /// A heap with a hard value budget. The VM wires this from
+    /// `Limits::heap_values`; `push_*` returns `E_KAZE_MEMORY` when it is full.
+    pub fn with_limit(limit: usize) -> Self {
+        Heap { limit, ..Self::default() }
+    }
+
+    fn charge(&mut self, n: usize) -> Result<(), String> {
+        if self.values.saturating_add(n) > self.limit {
+            return Err(format!(
+                "the collection heap is full ({} values; limit {})",
+                self.values, self.limit
+            ));
+        }
+        self.values += n;
+        Ok(())
+    }
+
+    pub fn push_array(&mut self, items: Vec<Value>) -> Result<Value, String> {
+        self.charge(items.len())?;
         let idx = self.arrays.len() as u32;
         self.arrays.push(items);
-        Value::Arr(idx)
+        Ok(Value::Arr(idx))
     }
 
-    pub fn push_map(&mut self, entries: Vec<(Value, Value)>) -> Value {
+    pub fn push_map(&mut self, entries: Vec<(Value, Value)>) -> Result<Value, String> {
+        self.charge(entries.len().saturating_mul(2))?;
         let idx = self.maps.len() as u32;
         self.maps.push(entries);
-        Value::Map(idx)
+        Ok(Value::Map(idx))
     }
 
-    pub fn push_vec(&mut self, v: [f64; 3]) -> Value {
+    pub fn push_vec(&mut self, v: [f64; 3]) -> Result<Value, String> {
+        self.charge(3)?;
         let idx = self.vecs.len() as u32;
         self.vecs.push(v);
-        Value::Vec(idx)
+        Ok(Value::Vec(idx))
     }
 
     pub fn vec3(&self, idx: u32) -> Option<[f64; 3]> {
@@ -117,9 +151,11 @@ impl Heap {
         self.arrays.clear();
         self.maps.clear();
         self.vecs.clear();
+        self.values = 0;
     }
 
+    /// Values currently held by collections (the budget's accounting).
     pub fn used(&self) -> usize {
-        self.arrays.len() + self.maps.len() + self.vecs.len()
+        self.values
     }
 }

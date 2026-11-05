@@ -1,0 +1,79 @@
+{
+  "scopeName": "source.kaze",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#units" },
+    { "include": "#headers" },
+    { "include": "#keywords" },
+    { "include": "#capabilities" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.kaze"
+    },
+    "strings": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.kaze",
+      "patterns": [
+        {
+          "match": "\\\\(?:n|t|\"|\\\\)",
+          "name": "constant.character.escape.kaze"
+        }
+      ]
+    },
+    "numbers": {
+      "match": "\\b\\d+(?:\\.\\d+)?\\b",
+      "name": "constant.numeric.kaze"
+    },
+    "units": {
+      "match": "\\b(?:m/s|meters?|degrees?|seconds?|milliseconds?|ms|percent|radians?)\\b|%",
+      "name": "storage.type.unit.kaze"
+    },
+    "headers": {
+      "match": "^\\s*(needs|use)\\b",
+      "name": "keyword.other.header.kaze"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(?:action|check|filter|when|every|try|otherwise|with|let|set|if|for|each|in|while|return|allow|reject|remember|pulse|turn|arm|takeoff|fly|land|hold|stop|drive|recall|memories|matching|log|send|alert|vector|distance|between|slant|bearing|of|from|length|sin|cos|atan2|sqrt|radians|degrees|and|or|not)\\b",
+          "name": "keyword.control.kaze"
+        },
+        {
+          "match": "\\b(?:true|false|nothing)\\b",
+          "name": "constant.language.kaze"
+        }
+      ]
+    },
+    "capabilities": {
+      "patterns": [
+        {
+          "match": "\\b(?:drone|rover|sensor|device|memory|policy|log|alert)\\b",
+          "name": "support.class.capability.kaze"
+        },
+        {
+          "match": "\\b(?:battery|altitude|heading|speed|position|temperature|humidity|distance|armed|latitude|longitude|satellites)\\b",
+          "name": "variable.other.telemetry.kaze"
+        },
+        {
+          "match": "\\.([A-Za-z_][A-Za-z0-9_]*)",
+          "name": "entity.name.function.kaze"
+        }
+      ]
+    },
+    "operators": {
+      "match": "<=|>=|==|!=|[+*/%<>=-]",
+      "name": "keyword.operator.kaze"
+    },
+    "punctuation": {
+      "match": "[:(),.\\[\\]]",
+      "name": "punctuation.kaze"
+    }
+  }
+}

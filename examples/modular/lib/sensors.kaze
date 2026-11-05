@@ -1,0 +1,9 @@
+# A shared sensor routine and supervisor hook. `use` inlines this file.
+needs: sensor, log
+
+action report_temperature():
+    log sensor.temperature()
+
+every 100 ms:
+    if sensor.temperature() > 30:
+        log warning "sensor is hot"

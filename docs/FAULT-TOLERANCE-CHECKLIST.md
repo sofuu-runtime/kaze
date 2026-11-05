@@ -1,6 +1,6 @@
 # Field Checklist — Kaze v0.4 Fault Tolerance & Link-Loss Failsafes
 
-Everything deterministic is covered by `cargo test` (167 unit, integration and
+Everything deterministic is covered by `cargo test` (267 unit, integration and
 live tests with default features). This file covers the part only a flight
 controller and real elapsed time can answer.
 

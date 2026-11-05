@@ -225,12 +225,31 @@ pub struct Item {
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
     pub line: u32,
+    /// The file this item came from. `prepare`/`prepare_file` fill it for every
+    /// item (the root's own items use the root file name), so diagnostics name
+    /// the real file. Empty only for a program built directly from
+    /// `parser::parse` without the loader.
+    pub origin: String,
+}
+
+/// One `use "path"` line. Imports are resolved and inlined before checking and
+/// compilation; the compiled module has no imports left.
+#[derive(Clone, Debug)]
+pub struct Use {
+    pub path: String,
+    pub line: u32,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Program {
     /// Declared capabilities, exactly as written.
     pub needs: Vec<String>,
+    /// `use "path"` directives, in source order. Consumed by the loader.
+    pub uses: Vec<Use>,
+    /// The root module's diagnostic origin (its file name). The loader sets
+    /// this on the flattened program; the compiler carries it into the module
+    /// so implicit entry resolution can ignore imported routines.
+    pub root: String,
     pub items: Vec<Item>,
 }
 

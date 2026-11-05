@@ -7,12 +7,15 @@
 > workspace, CLI and test suite; `make` and CI never build it.
 >
 > The two surfaces have diverged. The prototype carries eleven vector/trig
-> opcodes (`VecNew` through `VecSlantDist`, including `Atan2`) and three
-> fault-tolerance opcodes (`TryBegin`, `TryEnd`, `LinkLost`), and calls itself
-> v0.4, while the product is v0.1 and has none of them. Capability verbs are at
-> parity as of 2026-11-02. `scripts/kaze-drift-check.sh` (run by
-> `make test`) keeps that honest: do not treat anything in this README as a
-> description of the shipped runtime.
+> opcodes (`VecNew` through `VecSlantDist`, including `Atan2`), three
+> fault-tolerance opcodes (`TryBegin`, `TryEnd`, `LinkLost`), compile-time
+> modules (`use "…"`), the v0.6 tooling (`kaze fmt`, `kaze-lsp`, the VS Code /
+> Cursor extension), the v0.7 verifier and fuzzers, the v0.8 mission
+> benchmarks, and the frozen v1.0 spec, standard library and certification
+> scorecard. It calls itself **v1.0**; the product is v0.1 and has none of
+> them. Capability verbs are at parity as of 2026-11-02.
+> `scripts/kaze-drift-check.sh` (run by `make test`) keeps that honest: do not
+> treat anything in this README as a description of the shipped runtime.
 
 [![CI](https://github.com/sofuu-runtime/kaze/actions/workflows/ci.yml/badge.svg)](https://github.com/sofuu-runtime/kaze/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -46,6 +49,8 @@ Modern autonomous AI agents and edge robotics face a fundamental execution dilem
 4. **Zero Ambient I/O (Structural Capability Security):** Kaze scripts have **zero built-in side-effects**. No ambient filesystem, clock, networking, or child processes. Every external effect requires an explicit `needs: ...` declaration and crosses a strict capability gate.
 5. **Deterministic by Construction (Zero GC Pauses):** Memory is sequentially allocated in a linear arena per run and reclaimed wholesale in one instant operation. There is zero garbage collector, zero stop-the-world stutter, and zero heap fragmentation.
 6. **Fuel-Bounded Always:** Every instruction decrements a fuel meter. Runaway loops or runaway math halt uncatchably and return a typed `E_TIMEOUT`. A Kaze script cannot hang a drone, freeze a rover, or stall an agent.
+
+> For a deep architectural breakdown of zero-GC memory allocation, inter-tick reclamation, and the strict two-tier error handling model, see [`docs/RELIABILITY-AND-MEMORY.md`](docs/RELIABILITY-AND-MEMORY.md).
 
 ---
 
@@ -385,12 +390,147 @@ the recovery to be idempotent (as the example does); a live host measures
 silence from its receive thread, so the first evaluation after a real dropout
 can be up to one tick late; the error record's `line` is the routine's line,
 not yet the individual call's line; and `.kazebc` files from v0.3 (module
-format 2) must be recompiled for format 3. The supervisor reclaims the run
+format 2) must be recompiled for the current format (4). The supervisor reclaims the run
 arena and heap between ticks, so a hook's evaluation stays bounded; the
 action/log trace is the mission record and still grows with the number of
 calls, so cap it for a very long run. See
 [`docs/FAULT-TOLERANCE-CHECKLIST.md`](docs/FAULT-TOLERANCE-CHECKLIST.md) for the
 SITL dropout drill.
+
+### Modules (v0.5)
+
+`use "path.kaze"` compiles another file into the same program. Imports are a
+header line, before the first item, and resolve **relative to the importing
+file**; nested imports are resolved relative to their own file:
+
+```kaze
+# examples/modular/mission.kaze
+use "lib/sensors.kaze"
+
+needs: drone, log
+
+action main():
+    log "mission starting"
+    arm drone
+    takeoff to 10 meters
+```
+
+```kaze
+# examples/modular/lib/sensors.kaze
+needs: sensor, log
+
+action report_temperature():
+    log sensor.temperature()
+
+every 100ms:
+    if sensor.temperature() > 30:
+        log warning "sensor is hot"
+```
+
+The compiler sees one program: `needs:` lines merge and deduplicate, and the
+library's items are inlined before the importer's. `kaze compile` emits one
+`.kazebc` with no imports left, so the artifact runs with no source files on the
+device:
+
+```bash
+kaze compile examples/modular/mission.kaze -o mission.kazebc
+kaze run mission.kazebc --cap drone --cap sensor --cap log \
+  --ticks 2 --tick-ms 100 --sim temperature=35 --plain
+```
+
+The rules:
+
+* A file is included **once**, even when two imports reach it (a diamond).
+* A cycle, a missing file, a non-`.kaze` path, a `use` after the first item and
+  a duplicate item name are errors, with the `use` site or both origins named.
+* Only `.kaze` modules are importable; imports are compile-time, not runtime
+  I/O.
+* Every inlined item keeps its file origin, so a checker, compiler or runtime
+  error names `lib/sensors.kaze:12`, not the root script.
+* Hook items (`when`/`every`) keep working; they are numbered module-wide.
+
+Honest limits: there are no namespaces, so two files cannot define the same
+item name (rename one); imports are unconditional (no `use ... if`); bare
+telemetry (`battery`, `bearing to`) is resolved per file at parse time, so the
+file that writes it must declare its hardware family — use an explicit
+`drone.telemetry("battery")` otherwise; and there is still no user-routine call
+syntax, so a library's routines are selected with `--entry` or reached through
+their `when`/`every` hooks — they are never the implicit entry, which is
+resolved from the root file's items only. A `.kazebc` from v0.4 (format 3) must
+be recompiled for format 4. See [`docs/MODULES.md`](docs/MODULES.md).
+
+### Developer Tooling (v0.6)
+
+```bash
+kaze fmt --check mission.kaze     # exit 1 when it is not canonical
+kaze fmt --write mission.kaze     # rewrite in place
+```
+
+The formatter parses first, preserves every comment, normalizes indentation and
+token spacing, and **refuses** if the result's token stream differs from the
+input. It is idempotent; every example is checked in `tests/fmt.rs`. Full rules:
+[`docs/TOOLING.md`](docs/TOOLING.md).
+
+```bash
+cargo build --release --bin kaze-lsp
+```
+
+`kaze-lsp` is a dependency-free JSON-RPC server over stdio: diagnostics,
+formatting, hover, completion and document symbols. `editors/vscode/` is a VS
+Code / Cursor extension (TextMate grammar, snippets, language configuration,
+and a small LSP client with no npm dependencies). See
+[`editors/vscode/README.md`](editors/vscode/README.md).
+
+### Security & Fuzzing (v0.7)
+
+- **Verifier** (`isa::verify`): every opcode and immediate, constant/capability
+  indices, local slots, jump targets on instruction boundaries, and a
+  stack-depth dataflow (no underflow, consistent merges, ≤256 deep). It runs on
+  `deserialize` **and** before every run, including hand-built modules.
+- **Fuzzing**: `tests/fuzz.rs` mutates 2,500 `.kazebc` artifacts and 2,500
+  random source inputs; a panic fails the suite.
+- **Memory bounds**: 64-level parser nesting, a 65,536-value collection heap
+  (`E_KAZE_MEMORY`, not catchable), and the 256 KiB string arena.
+- Reachable `expect`/`unreachable!` sites on the VM, host, UART and status-text
+  paths were converted to typed errors; the remaining sites are pinned
+  protocol-table invariants. Hostile nesting is a parse error at 64 expression
+  levels / 64 blocks. See [`docs/ZERO-PANIC.md`](docs/ZERO-PANIC.md).
+
+### Mission Benchmarks (v0.8)
+
+```bash
+kaze bench examples/missions/eight_waypoints.kaze --iterations 20 \
+  --cap drone --cap log
+```
+
+The deterministic mission arms, climbs, visits eight points and returns to
+launch — 12 actions, 205 instructions, identical trace every run. Packet-loss
+tests drop every second position frame and assert the mission still completes;
+the MAVLink parser decodes a stream with a missing frame. SITL and Raspberry Pi
+5 scripts are included and report a **skip** when the hardware is absent — see
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for what was and was not executed.
+
+### Release Candidate (v0.9)
+
+- [`docs/SPEC.md`](docs/SPEC.md) — the frozen language/ISA/module specification.
+- [`lib/`](lib/) — the canonical robotics library: `safety.kaze` (battery and
+  link-loss RTL hooks), `guardrail.kaze` (`filter user_prompt`), `survey.kaze`
+  (`eight_point_survey`). Compose with `use`, select with `--entry`.
+- [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) — format 4 and opcodes 0–46
+  are locked; `tests/fixtures/kaze-v1.0.kazebc.hex` must keep compiling and
+  running byte-for-byte.
+
+### Production GA / LTS (v1.0)
+
+```bash
+kaze selftest          # 11-check flight-readiness scorecard
+scripts/certify.sh     # full receipt: tests, clippy, selftest, format, editor
+```
+
+[`docs/STABILITY.md`](docs/STABILITY.md) is the long-term guarantee (semver,
+deprecation, platforms, gates); [`docs/CERTIFICATION.md`](docs/CERTIFICATION.md)
+maps every safety property to the test/command that proves it. The SITL and Pi
+5 rows are marked hardware-dependent and are not claimed by this checkout.
 
 ### Interactive REPL
 ```bash
@@ -405,7 +545,7 @@ Embed Kaze inside any Rust companion computer or robotics supervisor:
 
 ```toml
 [dependencies]
-kaze = "0.4.0"
+kaze = "1.0.0"
 ```
 
 ```rust
@@ -452,23 +592,6 @@ E_KAZE_RANGE: drone.takeoff got 900 meters, which is outside the permitted range
 ```
 
 A physical machine acting on clamped values is acting on a lie. Kaze halts uncatchably and allows the supervisor to initiate safe failsafes.
-
----
-
-## 🗺️ Roadmap to v1.0 Production Readiness
-
-| Phase | Milestone | Focus Areas |
-| :--- | :--- | :--- |
-| **v0.1** | **Core Foundation (Done)** | Fixed 4-byte ISA, clean-room lexer/parser/checker, arena allocator, fuel meter, CLI & REPL. |
-| **v0.2** | **Physical Hardware (P-K1) — shipped** | Live MAVLink over UDP & serial UART, Linux GPIO (sysfs + chardev v2 UAPI), Linux PWM (sysfs), 20 Hz receive thread with a 1 Hz heartbeat, ACK correlation. Measured against ArduCopter SITL. |
-| **v0.3** | **Spatial Kinematics (P-K2) — shipped** | Points as values (`vector`, arithmetic, `p[0..2]`, `p.x`/`p.lat`), WGS84 `distance between` and `slant distance between`, three bearing forms (`to` a place from the machine, `from … to …`, `of` an offset), `length of`, `sin`/`cos`/`atan2`/`sqrt`, degree/radian conversion, and a check that refuses a value that cannot be a coordinate. Eleven opcodes; module format version 2. Measured against ArduCopter SITL: bearing 33.97°, ground 53.659 m, slant 55.716 m from live telemetry. |
-| **v0.4** | **Fault Tolerance (P-K3) — shipped** | In-script `try ... otherwise [with err]` recovery from operational host failures (`E_KAZE_LINK`, `E_KAZE_LINK_TIMEOUT`, `E_COMMAND_REJECTED`, `E_ARMING_DENIED`, `E_KAZE_HOST`) while safety and budget stops stay fatal; `when link lost for N seconds:` failsafes with a deterministic simulated dropout (`--sim link_lost_after=…`). Three opcodes; module format version 3. |
-| **v0.5** | **Modular Composition (P-K4)** | `use "patterns/grid.kaze"` multi-file compilation with compile-time inlining into single `.kazebc`. |
-| **v0.6** | **Developer Tooling (P-K5)** | Language Server (`kaze-lsp`), VS Code / Cursor extensions, CLI code formatter (`kaze fmt`). |
-| **v0.7** | **Security & Fuzzing (P-K6)** | Bytecode verifier validation, malformed `.kazebc` differential fuzzing, zero-panic memory audit. |
-| **v0.8** | **Mission Benchmarks (P-K7)** | Automated 8-waypoint SITL drone mission, Raspberry Pi 5 hardware soak test, packet loss resilience. |
-| **v0.9** | **Release Candidate (P-K8)** | Spec freeze, canonical robotics skill standard library, ISA backward-compatibility lock. |
-| **v1.0** | **Production GA / LTS** | Formal specification, long-term stability guarantee, flight-certified baseline. |
 
 ---
 

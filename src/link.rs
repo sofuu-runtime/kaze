@@ -166,7 +166,9 @@ impl Io for UartIo {
         }
         let n = self.queued.len().min(buf.len());
         for slot in buf.iter_mut().take(n) {
-            *slot = self.queued.pop_front().expect("length counted");
+            if let Some(byte) = self.queued.pop_front() {
+                *slot = byte;
+            }
         }
         Ok(n)
     }
@@ -597,17 +599,18 @@ fn run_link(
                         let result = frame.u8_at(2);
                         if let Some((want, _, _)) = &pending {
                             if *want == command {
-                                let (_, reply, _) = pending.take().expect("checked above");
-                                let verdict = if result == 0 {
-                                    Ok(())
-                                } else {
-                                    Err(format!(
-                                        "E_COMMAND_REJECTED: the autopilot answered {} for {}",
-                                        mav_result_name(result),
-                                        command_name(command)
-                                    ))
-                                };
-                                let _ = reply.send(verdict);
+                                if let Some((_, reply, _)) = pending.take() {
+                                    let verdict = if result == 0 {
+                                        Ok(())
+                                    } else {
+                                        Err(format!(
+                                            "E_COMMAND_REJECTED: the autopilot answered {} for {}",
+                                            mav_result_name(result),
+                                            command_name(command)
+                                        ))
+                                    };
+                                    let _ = reply.send(verdict);
+                                }
                             }
                         }
                     } else if frame.msgid == 253 {
@@ -660,9 +663,12 @@ fn run_link(
             }
         }
 
-        if let Some((_, _, sent_at)) = &pending {
-            if sent_at.elapsed().as_millis() as u64 > ack_timeout_ms {
-                let (command, reply, _) = pending.take().expect("checked above");
+        let timed_out = pending
+            .as_ref()
+            .map(|(_, _, sent_at)| sent_at.elapsed().as_millis() as u64 > ack_timeout_ms)
+            .unwrap_or(false);
+        if timed_out {
+            if let Some((command, reply, _)) = pending.take() {
                 let _ = reply.send(Err(format!(
                     "E_KAZE_LINK_TIMEOUT: no COMMAND_ACK for {} within {} ms",
                     command_name(command),
@@ -708,7 +714,10 @@ pub fn mav_result_name(result: u8) -> &'static str {
 }
 
 fn statustext(frame: &Frame) -> String {
-    let raw = &frame.payload[1..51.min(frame.payload.len())];
+    let raw = frame
+        .payload
+        .get(1..51.min(frame.payload.len()))
+        .unwrap_or(&[]);
     let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
     String::from_utf8_lossy(&raw[..end]).trim().to_string()
 }

@@ -1,0 +1,10 @@
+main -> nothing
+actions:
+   1. log.info("mission starting") -> nothing
+   2. drone.arm -> nothing
+   3. drone.takeoff(10) -> nothing
+   4. sensor.temperature -> 35
+   5. log.warn("sensor is hot") -> nothing
+   6. sensor.temperature -> 35
+   7. log.warn("sensor is hot") -> nothing
+25 instructions, 25 fuel, 2 ticks

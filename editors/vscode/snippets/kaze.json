@@ -1,0 +1,76 @@
+{
+  "Kaze action": {
+    "prefix": "action",
+    "body": [
+      "action ${1:main}(${2:params}):",
+      "    ${3:log \"$4\"}",
+      "$0"
+    ],
+    "description": "An action routine."
+  },
+  "Kaze check": {
+    "prefix": "check",
+    "body": [
+      "check ${1:inspect}(${2:params}):",
+      "    ${3:log \"$4\"}",
+      "$0"
+    ],
+    "description": "A check routine."
+  },
+  "Kaze filter": {
+    "prefix": "filter",
+    "body": [
+      "filter ${1:guard}(prompt):",
+      "    if ${2:length of prompt > 2000}:",
+      "        reject with \"${3:too long}\"",
+      "    allow prompt",
+      "$0"
+    ],
+    "description": "A filter that must allow or reject."
+  },
+  "Kaze supervisor hook": {
+    "prefix": "when",
+    "body": [
+      "when ${1:battery < 20%}:",
+      "    ${2:log warning \"low battery\"}",
+      "$0"
+    ],
+    "description": "A when hook, evaluated on every tick."
+  },
+  "Kaze periodic hook": {
+    "prefix": "every",
+    "body": [
+      "every ${1:100ms}:",
+      "    ${2:log \"tick\"}",
+      "$0"
+    ],
+    "description": "An every hook."
+  },
+  "Kaze fault tolerance": {
+    "prefix": "try",
+    "body": [
+      "try:",
+      "    ${1:takeoff to 15 meters}",
+      "otherwise with err:",
+      "    log warning err.code",
+      "$0"
+    ],
+    "description": "Recover from an operational host failure."
+  },
+  "Kaze module header": {
+    "prefix": "use",
+    "body": [
+      "use \"${1:lib/helpers.kaze}\"",
+      "$0"
+    ],
+    "description": "Inline another Kaze module at compile time."
+  },
+  "Kaze capabilities": {
+    "prefix": "needs",
+    "body": [
+      "needs: ${1:drone, log}",
+      "$0"
+    ],
+    "description": "Declare capability families."
+  }
+}

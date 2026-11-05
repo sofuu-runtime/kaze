@@ -23,16 +23,20 @@ use crate::caps;
 pub struct CheckError {
     pub line: u32,
     pub msg: String,
+    /// The file this error belongs to when modules were inlined. Empty means
+    /// the root source; `render` then uses the caller's name.
+    pub origin: String,
 }
 
 impl CheckError {
     pub fn render(&self, source_name: &str) -> String {
-        format!("{}:{}: {}", source_name, self.line, self.msg)
+        let source = if self.origin.is_empty() { source_name } else { &self.origin };
+        format!("{}:{}: {}", source, self.line, self.msg)
     }
 }
 
 fn e(line: u32, msg: impl Into<String>) -> CheckError {
-    CheckError { line, msg: msg.into() }
+    CheckError { line, msg: msg.into(), origin: String::new() }
 }
 
 /// What the checker can prove about a value. `Any` is "the host decides".
@@ -70,6 +74,15 @@ impl Ty {
 
 /// The declared rows, so `filter` bodies can be checked for a verdict.
 pub fn check(p: &Program) -> Result<(), Vec<CheckError>> {
+    if let Some(u) = p.uses.first() {
+        // The loader consumes `use` lines. Reaching here means somebody called
+        // the checker on a parsed-but-unexpanded Program; refuse rather than
+        // silently ignore the imports.
+        return Err(vec![e(
+            u.line,
+            "unresolved 'use' directive: call prepare/prepare_file so imports are expanded",
+        )]);
+    }
     let mut errors: Vec<CheckError> = Vec::new();
     let declared: Vec<&str> = p.needs.iter().map(|s| s.as_str()).collect();
 
@@ -84,6 +97,7 @@ pub fn check(p: &Program) -> Result<(), Vec<CheckError>> {
     }
 
     for item in &p.items {
+        let before = errors.len();
         let mut scope: Vec<(String, Ty)> = Vec::new();
         for p in &item.params {
             scope.push((p.clone(), Ty::Any));
@@ -107,6 +121,12 @@ pub fn check(p: &Program) -> Result<(), Vec<CheckError>> {
                     item.name
                 ),
             ));
+        }
+        // Every error produced while checking this item belongs to its file.
+        for err in &mut errors[before..] {
+            if err.origin.is_empty() {
+                err.origin = item.origin.clone();
+            }
         }
     }
 

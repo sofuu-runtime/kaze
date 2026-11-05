@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+use kaze::link::COPTER_MODE_GUIDED;
 use kaze::mavlink::{encode, msg_heartbeat, Frame, Parser};
 use kaze::{run_source, RunOptions};
 
@@ -21,6 +22,16 @@ const ARM: u16 = 400;
 
 /// A stand-in autopilot: says hello, reports a position, ACKs every command.
 fn fake_autopilot(kaze_port: u16) -> (Arc<AtomicBool>, thread::JoinHandle<Vec<u16>>) {
+    fake_autopilot_lossy(kaze_port, 0)
+}
+
+/// Like [`fake_autopilot`], but drops every `drop_position_every`-th periodic
+/// position frame. Heartbeats and ACKs stay reliable, so this exercises a
+/// lossy telemetry stream without turning the test into a timeout race.
+fn fake_autopilot_lossy(
+    kaze_port: u16,
+    drop_position_every: u32,
+) -> (Arc<AtomicBool>, thread::JoinHandle<Vec<u16>>) {
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
     let handle = thread::spawn(move || {
@@ -31,14 +42,24 @@ fn fake_autopilot(kaze_port: u16) -> (Arc<AtomicBool>, thread::JoinHandle<Vec<u1
         let mut parser = Parser::new();
         let mut seen: Vec<u16> = Vec::new();
         let mut seq = 0u8;
+        let mut positions = 0u32;
         // A real vehicle repeats its position several times a second; the link
         // must not depend on catching the first one during connect.
         let mut peer: Option<std::net::SocketAddr> = None;
         let mut armed = false;
+        macro_rules! send_position {
+            ($bytes:expr, $to:expr) => {{
+                positions += 1;
+                if drop_position_every == 0 || positions % drop_position_every != 0 {
+                    let _ = sock.send_to(&$bytes, $to);
+                }
+            }};
+        }
         while !flag.load(Ordering::SeqCst) {
             // A UDP link has no peer until the vehicle speaks, so the vehicle
-            // speaks first. Once it accepts an arm, its heartbeat says so.
+            // speaks first. It reports GUIDED so takeoff/goto are testable.
             let mut hb = msg_heartbeat(seq, 7, 1);
+            hb.set_u32_at(0, COPTER_MODE_GUIDED as u32);
             if armed {
                 hb.set_u8_at(6, 0x80);
             }
@@ -54,7 +75,7 @@ fn fake_autopilot(kaze_port: u16) -> (Arc<AtomicBool>, thread::JoinHandle<Vec<u1
                     pos.set_i32_at(8, 85_000_000);
                     pos.set_i32_at(12, 500_000);
                     pos.set_i32_at(16, 120_000);
-                    let _ = sock.send_to(&encode(&pos).expect("position encodes"), peer);
+                    send_position!(encode(&pos).expect("position encodes"), peer);
                 }
                 continue;
             };
@@ -80,7 +101,7 @@ fn fake_autopilot(kaze_port: u16) -> (Arc<AtomicBool>, thread::JoinHandle<Vec<u1
             pos.set_i32_at(8, 85_000_000);
             pos.set_i32_at(12, 500_000);
             pos.set_i32_at(16, 120_000);
-            let _ = sock.send_to(&encode(&pos).expect("position encodes"), from);
+            send_position!(encode(&pos).expect("position encodes"), from);
         }
         seen
     });
@@ -248,6 +269,33 @@ fn a_live_link_reports_silence_after_the_vehicle_stops() {
     thread::sleep(Duration::from_millis(120));
     let silent = host.link_silent_ms().expect("a live host always answers");
     assert!(silent >= 100, "silence grows without frames: {}", silent);
+}
+
+#[test]
+fn a_lossy_position_stream_still_completes_a_mission() {
+    let port = free_udp_port();
+    let (stop, fc) = fake_autopilot_lossy(port, 2);
+
+    let mut opts = RunOptions::default();
+    opts.grants = vec!["drone".to_string()];
+    opts.backend = vec![("drone".to_string(), format!("udp:127.0.0.1:{}", port))];
+    opts.fuel = 50_000;
+    let source = "needs: drone, log\naction main():\n    arm drone\n    takeoff to 10 meters\n    fly to vector(47.6002, 8.5002, 20) at 20 meters\n    log drone.telemetry(\"altitude\")\n";
+    let outcome = run_source(source, "lossy.kaze", &opts);
+
+    stop.store(true, Ordering::SeqCst);
+    let _ = fc.join();
+
+    let report = outcome.expect("half the position frames may be lost; the mission still runs");
+    for verb in ["drone.arm", "drone.takeoff", "drone.goto"] {
+        assert!(
+            report.actions.iter().any(|a| a.contains(verb)),
+            "{} missing from {:?}",
+            verb,
+            report.actions
+        );
+    }
+    assert!(!report.logs.is_empty(), "a telemetry read survives the gaps");
 }
 
 #[test]

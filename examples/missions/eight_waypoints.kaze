@@ -1,0 +1,24 @@
+# An eight-waypoint survey. Run it in the simulator, or against SITL:
+#
+#   kaze run examples/missions/eight_waypoints.kaze --cap drone --cap log --plain
+#   kaze run examples/missions/eight_waypoints.kaze \
+#     --cap drone=udp:127.0.0.1:14550 --plain
+
+needs: drone, log
+
+action main():
+    log "eight-waypoint survey"
+    arm drone
+    takeoff to 15 meters
+    for each point in [
+        vector(47.6, 8.5, 15),
+        vector(47.6002, 8.5, 15),
+        vector(47.6002, 8.5002, 15),
+        vector(47.6, 8.5002, 15),
+        vector(47.6, 8.5004, 15),
+        vector(47.6002, 8.5004, 15),
+        vector(47.6004, 8.5004, 15),
+        vector(47.6004, 8.5002, 15)
+    ]:
+        fly to point at 15 meters
+    return to launch

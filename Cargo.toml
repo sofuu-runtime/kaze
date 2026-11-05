@@ -1,6 +1,7 @@
 [package]
 name = "kaze"
-version = "0.4.0"
+default-run = "kaze"
+version = "1.0.0"
 edition = "2021"
 authors = ["Priyanshu Boruah <priyanshu@sofuu.xyz>", "Sofuu Runtime Team <team@sofuu.xyz>"]
 description = "Kaze (風): the ultra-friendly, Rust-secured scripting language for robotics, drones, and ambient edge devices."
@@ -28,6 +29,10 @@ chardev = []
 [[bin]]
 name = "kaze"
 path = "src/main.rs"
+
+[[bin]]
+name = "kaze-lsp"
+path = "src/lsp_main.rs"
 
 [lib]
 name = "kaze"

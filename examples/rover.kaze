@@ -8,7 +8,7 @@
 
 needs: rover, lidar, log
 
-every 100ms:
+every 100 ms:
     let front = lidar.front_distance()
     if front < 0.5 meters:
         log warning "Obstacle detected ahead!"

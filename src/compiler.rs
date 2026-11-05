@@ -19,16 +19,20 @@ use crate::isa::{word, CapRef, Const, ItemCode, ItemTag, Module, Op};
 pub struct CompileError {
     pub line: u32,
     pub msg: String,
+    /// The file this error belongs to when modules were inlined. Empty means
+    /// the root source; `render` then uses the caller's name.
+    pub origin: String,
 }
 
 impl CompileError {
     pub fn render(&self, source_name: &str) -> String {
-        format!("{}:{}: {}", source_name, self.line, self.msg)
+        let source = if self.origin.is_empty() { source_name } else { &self.origin };
+        format!("{}:{}: {}", source, self.line, self.msg)
     }
 }
 
 fn e<T>(line: u32, msg: impl Into<String>) -> Result<T, CompileError> {
-    Err(CompileError { line, msg: msg.into() })
+    Err(CompileError { line, msg: msg.into(), origin: String::new() })
 }
 
 const MAX_SLOTS: u8 = 255;
@@ -36,55 +40,74 @@ const MAX_SLOTS: u8 = 255;
 const NO_ERROR_BINDING: u8 = 255;
 
 pub fn compile(program: &Program) -> Result<Module, CompileError> {
+    if let Some(u) = program.uses.first() {
+        return e(
+            u.line,
+            "unresolved 'use' directive: call prepare/prepare_file so imports are expanded",
+        );
+    }
     let mut module = Module {
         needs: program.needs.clone(),
+        root: program.root.clone(),
         ..Default::default()
     };
     for item in &program.items {
-        let mut cx = Cx {
-            consts: &mut module.consts,
-            caps: &mut module.caps,
-            code: Vec::new(),
-            scopes: vec![Vec::new()],
-            next_slot: 0,
-            item_name: item.name.clone(),
-        };
-        for p in &item.params {
-            cx.bind(p)?;
-        }
-        match &item.kind {
-            ItemKind::When(cond) => {
-                // `when` compiles the predicate into the item itself: the host
-                // polls it, and the body runs only when it is true.
-                cx.expr(cond)?;
-                let skip = cx.emit_wide(Op::JmpIfFalse, 0, 0);
-                cx.stmts(&item.body)?;
-                cx.emit(Op::RetUnit, 0, 0, 0);
-                cx.patch(skip);
-                cx.emit(Op::RetUnit, 0, 0, 0);
+        let built = (|| -> Result<ItemCode, CompileError> {
+            let mut cx = Cx {
+                consts: &mut module.consts,
+                caps: &mut module.caps,
+                code: Vec::new(),
+                scopes: vec![Vec::new()],
+                next_slot: 0,
+                item_name: item.name.clone(),
+            };
+            for p in &item.params {
+                cx.bind(p)?;
             }
-            _ => {
-                cx.stmts(&item.body)?;
-                cx.emit(Op::RetUnit, 0, 0, 0);
+            match &item.kind {
+                ItemKind::When(cond) => {
+                    // `when` compiles the predicate into the item itself: the host
+                    // polls it, and the body runs only when it is true.
+                    cx.expr(cond)?;
+                    let skip = cx.emit_wide(Op::JmpIfFalse, 0, 0);
+                    cx.stmts(&item.body)?;
+                    cx.emit(Op::RetUnit, 0, 0, 0);
+                    cx.patch(skip);
+                    cx.emit(Op::RetUnit, 0, 0, 0);
+                }
+                _ => {
+                    cx.stmts(&item.body)?;
+                    cx.emit(Op::RetUnit, 0, 0, 0);
+                }
+            }
+            let (tag, period) = match &item.kind {
+                ItemKind::Action => (ItemTag::Action, 0.0),
+                ItemKind::Check => (ItemTag::Check, 0.0),
+                ItemKind::Filter => (ItemTag::Filter, 0.0),
+                ItemKind::When(_) => (ItemTag::When, 0.0),
+                ItemKind::Every(ms) => (ItemTag::Every, *ms),
+            };
+            let slots = cx.next_slot.max(item.params.len() as u8);
+            Ok(ItemCode {
+                name: item.name.clone(),
+                tag,
+                params: item.params.clone(),
+                code: std::mem::take(&mut cx.code),
+                line: item.line,
+                origin: item.origin.clone(),
+                period_ms: period,
+                slots,
+            })
+        })();
+        match built {
+            Ok(code) => module.items.push(code),
+            Err(mut err) => {
+                if err.origin.is_empty() {
+                    err.origin = item.origin.clone();
+                }
+                return Err(err);
             }
         }
-        let (tag, period) = match &item.kind {
-            ItemKind::Action => (ItemTag::Action, 0.0),
-            ItemKind::Check => (ItemTag::Check, 0.0),
-            ItemKind::Filter => (ItemTag::Filter, 0.0),
-            ItemKind::When(_) => (ItemTag::When, 0.0),
-            ItemKind::Every(ms) => (ItemTag::Every, *ms),
-        };
-        let slots = cx.next_slot.max(item.params.len() as u8);
-        module.items.push(ItemCode {
-            name: item.name.clone(),
-            tag,
-            params: item.params.clone(),
-            code: std::mem::take(&mut cx.code),
-            line: item.line,
-            period_ms: period,
-            slots,
-        });
     }
     Ok(module)
 }
@@ -389,7 +412,9 @@ impl<'a> Cx<'a> {
                         BinOp::Ge => Op::CmpGe,
                         BinOp::Eq => Op::CmpEq,
                         BinOp::Ne => Op::CmpNe,
-                        BinOp::And | BinOp::Or => unreachable!(),
+                        BinOp::And | BinOp::Or => {
+                            return e(0, "internal: And/Or must be compiled as branches")
+                        }
                     };
                     self.emit(opcode, 0, 0, 0);
                 }

@@ -5,7 +5,7 @@
 // (language v0.1, frozen). This tree is an earlier standalone prototype: it is
 // not a workspace member, make never builds it, CI never runs it, and its
 // surface has drifted ahead of the product (eleven vector/trig opcodes, three
-// fault-tolerance opcodes, version 0.4, module format 3).
+// fault-tolerance opcodes, compile-time modules, v1.0 tooling, module format 4).
 // scripts/kaze-drift-check.sh is the gate that keeps that drift visible.
 //
 // Kaze (風) is an ultra-friendly, Rust-secured scripting language designed for
@@ -17,6 +17,7 @@ pub mod caps;
 pub mod checker;
 pub mod compiler;
 pub mod deadline;
+pub mod fmt;
 pub mod gpio;
 #[cfg(feature = "chardev")]
 pub mod gpio_chardev;
@@ -28,9 +29,13 @@ pub mod link;
 pub mod mavlink;
 pub mod pwm;
 pub mod lexer;
+pub mod lsp;
 pub mod parser;
 pub mod value;
 pub mod vm;
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 pub use caps::{Action, CapHost, SimHost, SimState};
 pub use isa::Module;
@@ -38,14 +43,15 @@ pub use vm::{Limits, Verdict, Vm};
 
 /// Language version reported by `kaze --version` / `kaze version`.
 ///
-/// 0.4 is the fault-tolerance release: `try ... otherwise` recovers from
-/// operational host failures, and `when link lost for N seconds` is a
-/// supervisor-level failsafe. Safety and budget stops stay fatal. The ISA grew
-/// three opcodes, so the module format moved to version 3.
+/// 1.0 is the production baseline. It accumulates:
+/// 0.6 developer tooling (`kaze fmt`, `kaze-lsp`, the editor extension),
+/// 0.7 the bytecode verifier and fuzz suites, 0.8 mission benchmarks and
+/// packet-loss resilience, 0.9 the frozen spec, standard library and ISA lock,
+/// and 1.0 the certification scorecard (`kaze selftest`).
 ///
-/// 0.3 was the spatial release (points as values, distance/bearing maths), and
-/// 0.2 added live hardware behind `--cap`.
-pub const VERSION: &str = "0.4";
+/// 0.5 added compile-time modules, 0.4 fault tolerance, 0.3 spatial maths, and
+/// 0.2 live hardware behind `--cap`. Module format 4 is frozen.
+pub const VERSION: &str = "1.0";
 
 #[derive(Debug, Clone)]
 pub struct KazeError {
@@ -75,6 +81,7 @@ impl std::fmt::Display for KazeError {
 impl std::error::Error for KazeError {}
 
 /// A compiled script plus the source name it came from.
+#[derive(Debug, Clone)]
 pub struct Prepared {
     pub module: Module,
     pub name: String,
@@ -94,32 +101,258 @@ pub fn read_source(path: &str) -> Result<String, KazeError> {
         .map_err(|e| KazeError::new("E_KAZE_IO", format!("cannot read '{}': {}", path, e)))
 }
 
+/// Expands `use "…"` directives into one flat program.
+///
+/// Dependencies are inlined depth-first, in use order, before the importing
+/// file's own items. A file is included once (a diamond imports it once); a
+/// cycle, a missing file, a non-`.kaze` path and a duplicate item name are
+/// errors. The compiled module has no imports left.
+#[derive(Default)]
+struct Loader {
+    seen: HashSet<PathBuf>,
+    /// (canonical path, origin) for the active import chain.
+    stack: Vec<(PathBuf, String)>,
+    /// Hooks get a module-wide number so two files cannot both define `when#1`.
+    hook_seq: u32,
+    /// The root module's directory. Item origins are reported relative to it,
+    /// so the compiled bytes do not depend on where the checkout lives.
+    root_base: PathBuf,
+    /// Canonical form of `root_base` when it exists. Origins are computed from
+    /// the canonical dependency path, which normalizes `..`, `.` and absolute
+    /// import spellings under the root.
+    root_canonical: Option<PathBuf>,
+}
+
+impl Loader {
+    fn new(root_base: PathBuf) -> Self {
+        let canonical_base = if root_base.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            root_base.clone()
+        };
+        Loader {
+            root_base,
+            root_canonical: std::fs::canonicalize(canonical_base).ok(),
+            ..Default::default()
+        }
+    }
+
+    /// A file's diagnostic origin: its path relative to the root module.
+    ///
+    /// The canonical path is preferred so `sub/../lib.kaze` and an absolute
+    /// import under the root both become `lib.kaze`. A module reached through
+    /// a symlink to somewhere outside the root keeps the path it was imported
+    /// by, which is the spelling the author can act on.
+    fn origin_of(&self, display: &Path, canonical: &Path) -> String {
+        if let Some(root) = &self.root_canonical {
+            if let Ok(rel) = canonical.strip_prefix(root) {
+                return rel.to_string_lossy().to_string();
+            }
+        }
+        display
+            .strip_prefix(&self.root_base)
+            .unwrap_or(display)
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn expand(
+        &mut self,
+        program: ast::Program,
+        origin: &str,
+        base: &Path,
+    ) -> Result<ast::Program, KazeError> {
+        let mut out = ast::Program::default();
+        let mut names: HashMap<String, String> = HashMap::new();
+        for u in &program.uses {
+            let (display, canonical) = resolve_import(base, &u.path, origin, u.line)?;
+            let dep_origin = self.origin_of(Path::new(&display), &canonical);
+            if self.stack.iter().any(|(c, _)| *c == canonical) {
+                let mut chain: Vec<String> = self.stack.iter().map(|(_, d)| d.clone()).collect();
+                chain.push(dep_origin.clone());
+                return Err(KazeError::new(
+                    "E_KAZE_IMPORT",
+                    format!("import cycle: {}", chain.join(" -> ")),
+                ));
+            }
+            if self.seen.contains(&canonical) {
+                continue;
+            }
+            self.stack.push((canonical.clone(), dep_origin.clone()));
+            let src = std::fs::read_to_string(&display).map_err(|e| {
+                KazeError::new(
+                    "E_KAZE_IO",
+                    format!("{}:{}: cannot read '{}': {}", origin, u.line, u.path, e),
+                )
+            })?;
+            let dep = parser::parse(&src)
+                .map_err(|e| KazeError::new("E_KAZE_PARSE", e.render(&dep_origin)))?;
+            let dep_base = Path::new(&display)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf();
+            let dep = self.expand(dep, &dep_origin, &dep_base)?;
+            self.stack.pop();
+            self.seen.insert(canonical);
+            self.merge_into(&mut out, dep, &dep_origin, &mut names)?;
+        }
+        let own = ast::Program {
+            needs: program.needs,
+            uses: Vec::new(),
+            root: String::new(),
+            items: program.items,
+        };
+        self.merge_into(&mut out, own, origin, &mut names)?;
+        // The top-level call records the root file; a dependency's value is
+        // ignored when its parent merges the items.
+        out.root = origin.to_string();
+        Ok(out)
+    }
+
+    fn merge_into(
+        &mut self,
+        out: &mut ast::Program,
+        mut dep: ast::Program,
+        origin: &str,
+        names: &mut HashMap<String, String>,
+    ) -> Result<(), KazeError> {
+        for need in dep.needs.drain(..) {
+            if !out.needs.contains(&need) {
+                out.needs.push(need);
+            }
+        }
+        for mut item in dep.items.drain(..) {
+            // Hooks are synthesized per file; number them across the whole
+            // module so two libraries cannot both define `when#1`. The `-`
+            // form cannot be produced by the parser, so a parent merge leaves
+            // an already-renamed hook alone.
+            if item.name.starts_with("when#") || item.name.starts_with("every#") {
+                let prefix = if item.name.starts_with("when#") { "when-" } else { "every-" };
+                self.hook_seq += 1;
+                item.name = format!("{}{}", prefix, self.hook_seq);
+            }
+            // A dependency returned by `expand` already carries the true origin
+            // of its own items and of everything it inlined. Only an item with
+            // no origin yet belongs to the file being merged at this level.
+            let item_origin = if item.origin.is_empty() {
+                origin.to_string()
+            } else {
+                item.origin.clone()
+            };
+            if let Some(previous) = names.get(&item.name) {
+                return Err(KazeError::new(
+                    "E_KAZE_IMPORT",
+                    format!(
+                        "'{}' is defined in both {} and {}",
+                        item.name, previous, item_origin
+                    ),
+                ));
+            }
+            names.insert(item.name.clone(), item_origin.clone());
+            item.origin = item_origin;
+            out.items.push(item);
+        }
+        Ok(())
+    }
+}
+
+fn resolve_import(
+    base: &Path,
+    path: &str,
+    origin: &str,
+    line: u32,
+) -> Result<(String, PathBuf), KazeError> {
+    let candidate = base.join(path);
+    if candidate.extension().and_then(|e| e.to_str()) != Some("kaze") {
+        return Err(KazeError::new(
+            "E_KAZE_IMPORT",
+            format!("{}:{}: '{}' is not a .kaze module", origin, line, path),
+        ));
+    }
+    let canonical = std::fs::canonicalize(&candidate).map_err(|e| {
+        KazeError::new(
+            "E_KAZE_IO",
+            format!("{}:{}: cannot resolve '{}': {}", origin, line, path, e),
+        )
+    })?;
+    Ok((candidate.to_string_lossy().to_string(), canonical))
+}
+
 /// Parse, check and compile. This is the whole front end in one call.
 pub fn prepare(src: &str, name: &str) -> Result<Prepared, KazeError> {
+    prepare_in(src, name, Path::new("."))
+}
+
+/// Prepare source text as if it lived at `name` inside `base_dir`. Imports are
+/// resolved relative to `base_dir`; `name` is the display name, and its file
+/// name is the serialized root origin. Used by the language server, where the
+/// buffer lives in memory but its imports live on disk.
+pub fn prepare_in(src: &str, name: &str, base_dir: &Path) -> Result<Prepared, KazeError> {
+    let mut loader = Loader::new(base_dir.to_path_buf());
+    // The serialized root origin is the file name, matching prepare_file, so
+    // compile_source and compile_file agree on the bytes for the same source.
+    let root_origin = Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.to_string());
+    prepare_with(src, name, &root_origin, base_dir, &mut loader)
+}
+
+fn prepare_with(
+    src: &str,
+    display_name: &str,
+    root_origin: &str,
+    base: &Path,
+    loader: &mut Loader,
+) -> Result<Prepared, KazeError> {
     let program = parser::parse(src).map_err(|e| {
-        KazeError::new("E_KAZE_PARSE", e.render(name))
+        KazeError::new("E_KAZE_PARSE", e.render(display_name))
     })?;
+    let program = loader.expand(program, root_origin, base)?;
     checker::check(&program).map_err(|errors| {
         let mut message = String::new();
         for (i, err) in errors.iter().enumerate() {
             if i > 0 {
                 message.push('\n');
             }
-            message.push_str(&err.render(name));
+            message.push_str(&err.render(display_name));
         }
         KazeError::new("E_KAZE_CHECK", message)
     })?;
     let module = compiler::compile(&program)
-        .map_err(|e| KazeError::new("E_KAZE_COMPILE", e.render(name)))?;
+        .map_err(|e| KazeError::new("E_KAZE_COMPILE", e.render(display_name)))?;
     Ok(Prepared {
         module,
-        name: name.to_string(),
+        name: display_name.to_string(),
     })
 }
 
 pub fn prepare_file(path: &str) -> Result<Prepared, KazeError> {
     let src = read_source(path)?;
-    prepare(&src, path)
+    let (base, root_origin) = if path == "-" {
+        (PathBuf::from("."), "-".to_string())
+    } else {
+        let base = Path::new(path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        // The item origin is the file name, not the checkout path, so the
+        // artifact's bytes stay identical wherever the tree lives.
+        let origin = Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+        (base, origin)
+    };
+    let mut loader = Loader::new(base.clone());
+    if path != "-" {
+        if let Ok(canonical) = std::fs::canonicalize(path) {
+            // Seed the active chain so a dependency importing this file is a
+            // cycle, not an infinite recursion.
+            loader.stack.push((canonical, root_origin.clone()));
+        }
+    }
+    prepare_with(&src, path, &root_origin, &base, &mut loader)
 }
 
 /// Front end only — what `kaze check` runs.
@@ -128,8 +361,7 @@ pub fn check_source(src: &str, name: &str) -> Result<(), KazeError> {
 }
 
 pub fn check_file(path: &str) -> Result<(), KazeError> {
-    let src = read_source(path)?;
-    check_source(&src, path)
+    prepare_file(path).map(|_| ())
 }
 
 pub fn compile_source(src: &str, name: &str) -> Result<Module, KazeError> {
@@ -137,14 +369,15 @@ pub fn compile_source(src: &str, name: &str) -> Result<Module, KazeError> {
 }
 
 pub fn compile_file(path: &str) -> Result<Module, KazeError> {
-    let src = read_source(path)?;
-    compile_source(&src, path)
+    prepare_file(path).map(|p| p.module)
 }
 
 /// Everything a run needs besides the script itself.
 #[derive(Debug, Clone)]
 pub struct RunOptions {
-    /// Item to run first. Default: `main`, else the only routine in the file.
+    /// Item to run first. Default: the root file's `main`, else the only
+    /// routine in the root file, else none (hooks only). Imported routines are
+    /// selected only when named explicitly.
     pub entry: Option<String>,
     pub args: serde_json::Map<String, serde_json::Value>,
     /// Capability families the host grants a backend for (`drone=sim` → "drone").
@@ -249,8 +482,32 @@ pub fn run_module(module: Module, name: &str, opts: &RunOptions) -> Result<RunRe
     run_prepared(Prepared { module, name: name.to_string() }, opts)
 }
 
-fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, KazeError> {
+/// Attribute a run-time failure to the item's own file when modules were
+/// inlined, and to the root script otherwise.
+fn item_error(
+    prepared_name: &str,
+    root_origin: &str,
+    item: &isa::ItemCode,
+    e: vm::VmError,
+) -> KazeError {
+    // A root item reports the path the operator used; an imported item reports
+    // its relative origin. Both are the same string for a hand-built module.
+    let source = if item.origin == root_origin { prepared_name } else { &item.origin };
+    KazeError::new(e.code, format!("{}: {} (line {})", source, e.msg, e.line))
+}
+
+/// Run an already-prepared script. `kaze bench` prepares once and reuses it so
+/// the measurement is verification plus execution, not the parser or a clone
+/// (every call still verifies the module by design).
+pub fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, KazeError> {
     let module = prepared.module;
+    // Every execution path, including a hand-built Module, passes the verifier.
+    if let Err(why) = isa::verify(&module) {
+        return Err(KazeError::new(
+            "E_KAZE_BADCODE",
+            format!("{}: {}", prepared.name, why),
+        ));
+    }
     let declared = module.needs.clone();
     // v0.2: a family granted a real device runs live; every other family keeps
     // the deterministic simulator.
@@ -301,7 +558,7 @@ fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, Kaze
             let args = bind_args(item.params.as_slice(), &opts.args, &mut vm);
             let value = vm
                 .run_item(item, &args)
-                .map_err(|e| KazeError::new(e.code, format!("{}: {} (line {})", prepared.name, e.msg, e.line)))?;
+                .map_err(|e| item_error(&prepared.name, &module.root, item, e))?;
             report.value = caps::render_value(value, &vm.arena, &vm.heap);
             report.verdict = vm.take_verdict();
         }
@@ -327,9 +584,8 @@ fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, Kaze
                 if !due {
                     continue;
                 }
-                vm.run_item(item, &[]).map_err(|e| {
-                    KazeError::new(e.code, format!("{}: {} (line {})", prepared.name, e.msg, e.line))
-                })?;
+                vm.run_item(item, &[])
+                    .map_err(|e| item_error(&prepared.name, &module.root, item, e))?;
             }
             report.ticks += 1;
             // A supervisor may run for hours. The arena and heap belong to the
@@ -353,24 +609,33 @@ fn resolve_entry(module: &Module, opts: &RunOptions) -> Result<Option<String>, K
     if let Some(name) = &opts.entry {
         return Ok(Some(name.clone()));
     }
-    if module.item("main").is_some() {
-        return Ok(Some("main".to_string()));
+    // Only the root file's items decide the implicit default. An imported
+    // library's routines are reachable with --entry, never by importing it.
+    let is_root = |item: &isa::ItemCode| module.root.is_empty() || item.origin == module.root;
+    if let Some(main) = module.item("main") {
+        if is_root(main) {
+            return Ok(Some("main".to_string()));
+        }
     }
     let routines: Vec<&isa::ItemCode> = module
         .items
         .iter()
-        .filter(|i| matches!(i.tag, isa::ItemTag::Action | isa::ItemTag::Check | isa::ItemTag::Filter))
+        .filter(|i| {
+            is_root(i)
+                && matches!(i.tag, isa::ItemTag::Action | isa::ItemTag::Check | isa::ItemTag::Filter)
+        })
         .collect();
     if routines.len() == 1 {
         return Ok(Some(routines[0].name.clone()));
     }
-    if routines.is_empty() && !module.items.is_empty() {
-        // Hooks only: the ticks are the program.
+    if routines.is_empty() && module.items.iter().any(is_root) {
+        // The root is hooks-only: the ticks are the program.
         return Ok(None);
     }
     Err(KazeError::new(
         "E_KAZE_ENTRY",
-        "this script has more than one routine; name the one to run with --entry (or add an action main())",
+        "this script's root file has more than one routine; name the one to run with --entry \
+         (or add an action main())",
     ))
 }
 
@@ -409,7 +674,7 @@ fn json_to_value(
                 .iter()
                 .map(|i| json_to_value(i, arena, heap))
                 .collect();
-            heap.push_array(vals)
+            heap.push_array(vals).unwrap_or(value::Value::Unit)
         }
         J::Object(map) => {
             let mut entries = Vec::with_capacity(map.len());
@@ -420,7 +685,7 @@ fn json_to_value(
                 };
                 entries.push((key, json_to_value(v, arena, heap)));
             }
-            heap.push_map(entries)
+            heap.push_map(entries).unwrap_or(value::Value::Unit)
         }
     }
 }
