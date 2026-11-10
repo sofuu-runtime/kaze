@@ -1,4 +1,5 @@
 main -> nothing
+simulation selected (testing only): drone
 actions:
    1. log.info("eight-waypoint survey") -> nothing
    2. drone.arm -> nothing

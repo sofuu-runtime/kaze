@@ -1,10 +1,10 @@
 # Kaze example — a rover obstacle loop that runs on a fixed tick.
 #
-#   sofuu script run examples/kaze/rover.kaze --cap rover=sim --cap lidar=sim \
-#       --ticks 5 --sim distance=0.3
+#   This syntax example needs a real lidar/sensor backend that is not yet
+#   available in the standalone built-in host; it must not simulate one.
 #
 # The loop body is bounded by fuel, so a stuck sensor cannot spin forever:
-# the run stops with E_FUEL instead of freezing the robot.
+# the run stops with E_TIMEOUT instead of freezing the robot.
 
 needs: rover, lidar, log
 

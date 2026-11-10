@@ -391,8 +391,8 @@ pub struct RunOptions {
     /// time to pass, so an operator running against hardware passes `--pace`.
     pub pace_ticks: bool,
     pub sim: SimState,
-    /// R7 policy layered over the hardware gate. `None` means "declaration and
-    /// grant only", which is what the tests use.
+    /// R7 policy layered over the capability gate. `None` denies capability
+    /// calls; pure computation can run without a policy.
     pub policy: Option<serde_json::Value>,
     /// `family -> device` from `--cap drone=udp:127.0.0.1:14550`. A device
     /// other than `sim` puts the live backend behind that family (v0.2).
@@ -434,6 +434,8 @@ pub struct RunReport {
     pub instructions: u64,
     pub ticks: u32,
     pub verdict: Option<Verdict>,
+    /// Explicit robotics simulators selected for this run (testing only).
+    pub simulated_families: Vec<String>,
 }
 
 impl RunReport {
@@ -444,6 +446,12 @@ impl RunReport {
         let mut out = String::new();
         if !self.entry.is_empty() {
             out.push_str(&format!("{} -> {}\n", self.entry, self.value));
+        }
+        if !self.simulated_families.is_empty() {
+            out.push_str(&format!(
+                "simulation selected (testing only): {}\n",
+                self.simulated_families.join(", ")
+            ));
         }
         if !self.actions.is_empty() {
             out.push_str("actions:\n");
@@ -509,20 +517,32 @@ pub fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, 
         ));
     }
     let declared = module.needs.clone();
-    // v0.2: a family granted a real device runs live; every other family keeps
-    // the deterministic simulator.
-    let live =
-        opts.backend.iter().any(|(_, d)| !d.is_empty() && d != "sim")
-            || !opts.pins.is_empty()
-            || !opts.pwm.is_empty();
-    let mut host: Box<dyn CapHost> = if live {
-        match crate::host::LiveHost::new(opts.sim.clone(), &opts.backend, &opts.pins, &opts.pwm) {
-            Ok(host) => Box::new(host),
-            Err(e) => return Err(KazeError::new("E_KAZE_LINK", format!("{}: {}", prepared.name, e))),
+    // Routing is explicit even when no live device is configured. In
+    // particular, an absent backend never selects the simulator implicitly.
+    let mut host: Box<dyn CapHost> = match crate::host::LiveHost::new(
+        opts.sim.clone(), &opts.backend, &opts.pins, &opts.pwm,
+    ) {
+        Ok(host) => Box::new(host),
+        Err(e) => {
+            let code = if e.starts_with("E_CAP_MISSING:") {
+                "E_CAP_MISSING"
+            } else if e.starts_with("E_CAP_DENIED:") {
+                "E_CAP_DENIED"
+            } else {
+                "E_KAZE_LINK"
+            };
+            return Err(KazeError::new(code, format!("{}: {}", prepared.name, e)));
         }
-    } else {
-        Box::new(SimHost::new(opts.sim.clone()))
     };
+    let mut simulated_families = Vec::new();
+    for (family, backend) in &opts.backend {
+        if backend.trim() == "sim" {
+            let family = caps::family_of(family).to_string();
+            if !simulated_families.contains(&family) {
+                simulated_families.push(family);
+            }
+        }
+    }
     let limits = Limits {
         fuel: opts.fuel.max(1),
         ..Limits::default()
@@ -539,6 +559,7 @@ pub fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, 
         instructions: 0,
         ticks: 0,
         verdict: None,
+        simulated_families,
     };
 
     {

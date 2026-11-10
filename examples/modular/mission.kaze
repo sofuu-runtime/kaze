@@ -1,7 +1,7 @@
 # examples/modular/mission.kaze — v0.5: one root, one library, one .kazebc.
 #
-#   kaze run examples/modular/mission.kaze --cap drone --cap sensor --cap log \
-#     --ticks 2 --tick-ms 100 --sim temperature=35 --plain
+#   This module compiles, but executing it requires a real sensor backend that
+#   is not yet available in the standalone built-in host.
 #
 # `use` is resolved relative to this file. The library's needs and items are
 # inlined before this file's own, and the compiled artifact has no imports.

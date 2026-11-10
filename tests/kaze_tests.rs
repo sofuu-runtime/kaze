@@ -10,24 +10,35 @@ fn grants(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
 }
 
+fn approved() -> RunOptions {
+    RunOptions { policy: Some(serde_json::json!({ "deny": [] })), ..Default::default() }
+}
+
+fn drone_sim() -> Vec<(String, String)> {
+    vec![("drone".into(), "sim".into())]
+}
+
+fn cli_policy_dir(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("kaze-examples-{}-{}", label, std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    std::fs::write(dir.join("policy.json"), r#"{"deny":[]}"#).expect("write policy");
+    dir
+}
+
 fn run(name: &str, opts: &RunOptions) -> RunReport {
     let path = example(name);
     run_file(&path, opts).unwrap_or_else(|e| panic!("{} failed: {}", name, e.render()))
 }
 
 #[test]
-fn every_example_matches_its_golden_trace() {
+fn supported_examples_match_their_golden_traces() {
     fn golden(name: &str) -> &'static str {
         match name {
             "hello" => include_str!("../examples/golden/hello.txt"),
             "patrol" => include_str!("../examples/golden/patrol.txt"),
-            "rover" => include_str!("../examples/golden/rover.txt"),
-            "greenhouse" => include_str!("../examples/golden/greenhouse.txt"),
-            "guardrail" => include_str!("../examples/golden/guardrail.txt"),
             "guardrail-reject" => include_str!("../examples/golden/guardrail-reject.txt"),
             "kinematics" => include_str!("../examples/golden/kinematics.txt"),
             "fault_tolerance" => include_str!("../examples/golden/fault_tolerance.txt"),
-            "modular" => include_str!("../examples/golden/modular.txt"),
             "eight_waypoints" => include_str!("../examples/golden/eight_waypoints.txt"),
             other => panic!("no golden for {}", other),
         }
@@ -35,69 +46,42 @@ fn every_example_matches_its_golden_trace() {
 
     let mut args = serde_json::Map::new();
     args.insert("points".into(), serde_json::json!([1, 2]));
-    let patrol = RunOptions { args, grants: grants(&["drone"]), ..Default::default() };
-
-    let sim = SimState { distance: 0.3, ..Default::default() };
-    let rover = RunOptions {
-        grants: grants(&["rover", "lidar"]),
-        ticks: 1,
-        sim,
-        ..Default::default()
-    };
-
-    let mut args = serde_json::Map::new();
-    args.insert("target_temp".into(), serde_json::json!(28));
-    args.insert("target_humidity".into(), serde_json::json!(60));
-    let greenhouse = RunOptions {
-        args,
-        grants: grants(&["sensor", "device", "alert"]),
-        ..Default::default()
-    };
-
-    let mut args = serde_json::Map::new();
-    args.insert("prompt".into(), serde_json::json!("what is the weather"));
-    let allow = RunOptions { args, ..Default::default() };
+    let patrol = RunOptions { args, grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
 
     let mut args = serde_json::Map::new();
     args.insert("prompt".into(), serde_json::json!("my api_key is sk-live-9"));
-    let reject = RunOptions { args, ..Default::default() };
+    let reject = RunOptions { args, grants: grants(&["policy"]), ..approved() };
 
     let fault = RunOptions {
         grants: grants(&["drone", "log"]),
+        backend: drone_sim(),
         ticks: 35,
         tick_ms: 100,
         sim: SimState { link_lost_after_ms: Some(0), ..Default::default() },
-        ..Default::default()
-    };
-
-    let modular = RunOptions {
-        grants: grants(&["sensor", "log", "drone"]),
-        ticks: 2,
-        tick_ms: 100,
-        sim: SimState { temperature: 35.0, ..Default::default() },
-        ..Default::default()
+        ..approved()
     };
 
     let mission = RunOptions {
         grants: grants(&["drone", "log"]),
-        ..Default::default()
+        backend: drone_sim(),
+        ..approved()
     };
+    let local = RunOptions { grants: grants(&["log"]), ..approved() };
 
-    let cases: [(&str, &str, &RunOptions); 10] = [
-        ("hello", "hello.kaze", &RunOptions::default()),
+    let cases: [(&str, &str, &RunOptions); 6] = [
+        ("hello", "hello.kaze", &local),
         ("patrol", "patrol.kaze", &patrol),
-        ("rover", "rover.kaze", &rover),
-        ("greenhouse", "greenhouse.kaze", &greenhouse),
-        ("guardrail", "guardrail.kaze", &allow),
         ("guardrail-reject", "guardrail.kaze", &reject),
-        ("kinematics", "kinematics.kaze", &RunOptions::default()),
+        ("kinematics", "kinematics.kaze", &local),
         ("fault_tolerance", "fault_tolerance.kaze", &fault),
-        ("modular", "modular/mission.kaze", &modular),
         ("eight_waypoints", "missions/eight_waypoints.kaze", &mission),
     ];
 
     for (name, file, opts) in cases {
         let report = run(file, opts);
+        if !opts.backend.is_empty() {
+            assert_eq!(report.simulated_families, vec!["drone"]);
+        }
         let actual = report.render_plain();
         let expected = golden(name);
         assert_eq!(
@@ -105,6 +89,30 @@ fn every_example_matches_its_golden_trace() {
             "trace mismatch for {}:\n--- actual ---\n{}\n--- expected ---\n{}",
             name, actual, expected
         );
+    }
+}
+
+#[test]
+fn examples_requiring_unavailable_nonrobotics_backends_refuse() {
+    let mut greenhouse_args = serde_json::Map::new();
+    greenhouse_args.insert("target_temp".into(), serde_json::json!(28));
+    greenhouse_args.insert("target_humidity".into(), serde_json::json!(60));
+    let greenhouse = RunOptions {
+        args: greenhouse_args,
+        grants: grants(&["sensor", "device", "alert"]),
+        ..approved()
+    };
+    let mut guardrail_args = serde_json::Map::new();
+    guardrail_args.insert("prompt".into(), serde_json::json!("what is the weather"));
+    let guardrail = RunOptions {
+        args: guardrail_args,
+        grants: grants(&["policy", "memory"]),
+        ..approved()
+    };
+    let rover = RunOptions { grants: grants(&["rover", "sensor", "log"]), ticks: 1, ..approved() };
+    for (file, opts) in [("greenhouse.kaze", greenhouse), ("guardrail.kaze", guardrail), ("rover.kaze", rover)] {
+        let err = run_file(&example(file), &opts).expect_err("unavailable real backend must refuse");
+        assert_eq!(err.code, "E_CAP_MISSING", "{file}: {}", err.message);
     }
 }
 
@@ -119,7 +127,7 @@ fn compiled_bytes_are_stable_and_reload_into_the_same_program() {
     let reloaded = isa::deserialize(&bytes_a).expect("module should deserialize");
     let mut args = serde_json::Map::new();
     args.insert("points".into(), serde_json::json!([1, 2]));
-    let opts = RunOptions { args, grants: grants(&["drone"]), ..Default::default() };
+    let opts = RunOptions { args, grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
     let rep_source = run("patrol.kaze", &opts);
     let rep_bc = kaze::run_module(reloaded, "patrol.kazebc", &opts).unwrap();
     assert_eq!(rep_source.actions, rep_bc.actions);
@@ -129,7 +137,7 @@ fn compiled_bytes_are_stable_and_reload_into_the_same_program() {
 #[test]
 fn fuel_stops_runaway_loop() {
     let src = "action loop():\n    while 1 == 1:\n        let x = 1\n";
-    let opts = RunOptions { fuel: 50, ..Default::default() };
+    let opts = RunOptions { fuel: 50, ..approved() };
     let err = run_source(src, "<test>", &opts).unwrap_err();
     assert_eq!(err.code, "E_TIMEOUT");
     assert!(err.message.contains("fuel, not wall time"));
@@ -146,7 +154,7 @@ fn undeclared_capability_fails_checker() {
 #[test]
 fn range_violations_are_rejected_not_clamped() {
     let src = "needs: drone\naction test():\n    takeoff to 900 meters\n";
-    let opts = RunOptions { grants: grants(&["drone"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone"]), backend: drone_sim(), ..approved() };
     let err = run_source(src, "<test>", &opts).unwrap_err();
     assert_eq!(err.code, "E_KAZE_RANGE");
     assert!(err.message.contains("rejected, not clamped"));
@@ -158,7 +166,7 @@ fn range_violations_are_rejected_not_clamped() {
 /// The argument of every traced `log` line, in order. A trace line reads
 /// `1. log.info(X) -> nothing`, so the value is what sits inside the parens.
 fn logged(src: &str) -> Vec<String> {
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let report = run_source(src, "<math>", &opts).expect("the script should run");
     report
         .actions
@@ -222,7 +230,7 @@ fn a_non_finite_point_sum_stops_the_run() {
     let src = format!(
         "needs: log\naction main():\n    let a = vector({big}, 0, 0)\n    let b = vector({big}, 0, 0)\n    log length of (a + b)\n"
     );
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let err = run_source(&src, "<math>", &opts).expect_err("an infinite point is refused");
     assert_eq!(err.code, "E_KAZE_OVERFLOW");
 }
@@ -231,7 +239,7 @@ fn a_non_finite_point_sum_stops_the_run() {
 fn a_non_finite_vector_math_result_stops_the_run() {
     // Each component is finite; the magnitudes built from them are not.
     let big = "9".repeat(308);
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let cases = [
         format!("needs: log\naction main():\n    log length of vector({big}, {big}, 0)\n"),
         format!("needs: log\naction main():\n    log {big} in degrees\n"),
@@ -249,7 +257,7 @@ fn a_non_finite_vector_math_result_stops_the_run() {
 fn a_number_literal_too_large_for_f64_is_a_lex_error() {
     let big = "9".repeat(400);
     let src = format!("needs: log\naction main():\n    log {big}\n");
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let err = run_source(&src, "<math>", &opts).expect_err("an infinite literal is refused");
     assert_eq!(err.code, "E_KAZE_PARSE");
     assert!(err.message.contains("too large"), "{}", err.message);
@@ -294,7 +302,7 @@ fn a_point_needs_two_or_three_numbers() {
 #[test]
 fn the_square_root_of_a_negative_number_stops_the_run() {
     let src = "needs: log\naction main():\n    log sqrt(0 - 4)\n";
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let err = run_source(src, "<math>", &opts).unwrap_err();
     assert_eq!(err.code, "E_KAZE_MATH");
     assert!(err.message.contains("no real answer"), "{}", err.message);
@@ -311,7 +319,7 @@ fn distance_needs_the_word_and() {
 fn a_point_can_be_built_from_the_vehicles_own_position() {
     let src = "needs: drone, log\naction main():\n    let here = vector(latitude, longitude, 0)\n    let waypoint = vector(47.6004, 8.5004, 0)\n    log distance between here and waypoint\n";
     let sim = SimState { lat: 47.6, lon: 8.5, ..Default::default() };
-    let opts = RunOptions { grants: grants(&["drone", "log"]), sim, ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), sim, backend: drone_sim(), ..approved() };
     let report = run_source(src, "<math>", &opts).expect("the script should run");
     // Ambient telemetry reads are traced too, so find the log line rather than
     // assuming it is the first action.
@@ -345,7 +353,7 @@ fn a_points_components_can_be_read_back() {
 #[test]
 fn a_component_past_the_third_is_out_of_bounds() {
     let src = "needs: log\naction main():\n    let p = vector(1, 2, 3)\n    log p[3]\n";
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let err = run_source(src, "<math>", &opts).unwrap_err();
     assert_eq!(err.code, "E_KAZE_BOUNDS", "{}", err.message);
     assert!(err.message.contains("components 0, 1 and 2"), "{}", err.message);
@@ -360,7 +368,7 @@ fn negating_a_point_flips_every_component() {
 #[test]
 fn a_point_in_a_log_line_is_not_a_question_mark() {
     let src = "needs: log\naction main():\n    log vector(1, 2, 3)\n";
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let report = run_source(src, "<math>", &opts).expect("it runs");
     assert_eq!(report.logs.len(), 1);
     assert_eq!(report.logs[0].1, "(1, 2, 3)", "a point must render, not (?, ?, ?)");
@@ -372,7 +380,7 @@ fn a_v03_module_survives_serialization() {
     let prep = kaze::prepare(&src, "kinematics.kaze").unwrap();
     let bytes = isa::serialize(&prep.module);
     let reloaded = isa::deserialize(&bytes).expect("a v0.3 module must reload");
-    let opts = RunOptions::default();
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let from_source = run("kinematics.kaze", &opts);
     let from_bytes = kaze::run_module(reloaded, "kinematics.kazebc", &opts).unwrap();
     assert_eq!(from_source.actions, from_bytes.actions);
@@ -386,7 +394,7 @@ fn a_v03_module_survives_serialization() {
 fn bearing_to_measures_from_the_machines_own_position() {
     let src = "needs: drone, log\naction main():\n    log bearing to vector(47.6004, 8.5004, 0)\n";
     let sim = SimState { lat: 47.6, lon: 8.5, ..Default::default() };
-    let opts = RunOptions { grants: grants(&["drone", "log"]), sim, ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), sim, backend: drone_sim(), ..approved() };
     let report = run_source(src, "<math>", &opts).expect("it runs");
     let line = report
         .actions
@@ -430,7 +438,7 @@ fn slant_distance_includes_the_climb() {
 #[test]
 fn a_value_that_cannot_be_a_place_is_refused() {
     let src = "needs: log\naction main():\n    log distance between vector(100, 200, 0) and vector(0, 0, 0)\n";
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let err = run_source(src, "<math>", &opts).unwrap_err();
     assert_eq!(err.code, "E_KAZE_RANGE", "{}", err.message);
     assert!(err.message.contains("not a latitude and longitude"), "{}", err.message);
@@ -439,7 +447,7 @@ fn a_value_that_cannot_be_a_place_is_refused() {
 #[test]
 fn fly_to_a_vector_updates_simulator_position() {
     let src = "needs: drone, log\naction main():\n    arm drone\n    takeoff to 10 meters\n    fly to vector(47.6004, 8.5004, 25)\n    log latitude\n    log longitude\n    log altitude\n";
-    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
     let report = run_source(src, "<nav>", &opts).expect("it runs");
     let logs: Vec<String> = report
         .actions
@@ -454,7 +462,7 @@ fn fly_to_a_vector_updates_simulator_position() {
 
 #[test]
 fn a_three_argument_goto_bounds_the_altitude_not_the_longitude() {
-    let opts = RunOptions { grants: grants(&["drone"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone"]), backend: drone_sim(), ..approved() };
     let too_high = "needs: drone\naction main():\n    arm drone\n    takeoff to 10 meters\n    drone.goto(-33.9, 151.2, 900)\n";
     let err = run_source(too_high, "<nav>", &opts).expect_err("900 m is outside the ceiling");
     assert_eq!(err.code, "E_KAZE_RANGE");
@@ -467,7 +475,7 @@ fn a_three_argument_goto_bounds_the_altitude_not_the_longitude() {
 #[test]
 fn a_vector_gotos_own_altitude_is_bounded() {
     let src = "needs: drone\naction main():\n    arm drone\n    takeoff to 10 meters\n    fly to vector(47.6, 8.5, 900)\n";
-    let opts = RunOptions { grants: grants(&["drone"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone"]), backend: drone_sim(), ..approved() };
     let err = run_source(src, "<nav>", &opts).expect_err("the point's z is an altitude");
     assert_eq!(err.code, "E_KAZE_RANGE");
     assert!(err.message.contains("900"), "{}", err.message);
@@ -476,7 +484,7 @@ fn a_vector_gotos_own_altitude_is_bounded() {
 #[test]
 fn fly_to_a_vector_at_altitude_overrides_vector_z() {
     let src = "needs: drone, log\naction main():\n    arm drone\n    takeoff to 10 meters\n    fly to vector(47.6004, 8.5004, 25) at 40 meters\n    log altitude\n";
-    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
     let report = run_source(src, "<nav>", &opts).expect("it runs");
     let line = report.actions.iter().find(|a| a.contains("log.info")).expect("log");
     assert!(line.contains("40"), "{}", line);
@@ -506,10 +514,10 @@ fn invalid_point_field_is_refused_at_check_time() {
 
 #[test]
 fn try_recovers_from_a_host_failure_and_binds_the_error() {
-    // Not arming first makes SimHost refuse takeoff with a host error; that is
+    // Not arming first makes the explicitly selected drone simulator refuse takeoff; that is
     // exactly the class `try` exists to recover from.
     let src = "needs: drone, log\naction main():\n    try:\n        takeoff to 10 meters\n    otherwise with err:\n        log warning err.code\n        log warning err.message\n        log warning err.line\n";
-    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
     let report = run_source(src, "<fault>", &opts).expect("the host failure is recoverable");
 
     assert!(
@@ -518,7 +526,7 @@ fn try_recovers_from_a_host_failure_and_binds_the_error() {
         report.actions
     );
     assert_eq!(report.logs.len(), 3, "{:?}", report.logs);
-    assert_eq!(report.logs[0].1, "E_KAZE_HOST");
+    assert_eq!(report.logs[0].1, "E_ARMING_DENIED");
     assert!(report.logs[1].1.contains("not armed"), "{:?}", report.logs);
     assert_eq!(report.logs[2].1, "2", "the error record names the action's line");
 }
@@ -526,7 +534,7 @@ fn try_recovers_from_a_host_failure_and_binds_the_error() {
 #[test]
 fn a_range_violation_is_never_catchable() {
     let src = "needs: drone, log\naction main():\n    try:\n        takeoff to 900 meters\n    otherwise:\n        log warning \"caught\"\n";
-    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
     let err = run_source(src, "<fault>", &opts).expect_err("safety still stops the run");
     assert_eq!(err.code, "E_KAZE_RANGE");
     assert!(err.message.contains("rejected, not clamped"), "{}", err.message);
@@ -535,7 +543,7 @@ fn a_range_violation_is_never_catchable() {
 #[test]
 fn a_missing_capability_grant_is_never_catchable() {
     let src = "needs: drone, log\naction main():\n    try:\n        arm drone\n    otherwise:\n        log warning \"caught\"\n";
-    let opts = RunOptions { grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["log"]), ..approved() };
     let err = run_source(src, "<fault>", &opts).expect_err("an ungranted backend still stops");
     assert_eq!(err.code, "E_CAP_MISSING");
 }
@@ -569,7 +577,7 @@ fn the_runtime_h1_gate_refuses_an_undeclared_family() {
             slots: 0,
         }],
     };
-    let opts = RunOptions { grants: grants(&["drone"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone"]), backend: drone_sim(), ..approved() };
     let err = kaze::run_module(module, "h1.kazebc", &opts).expect_err("H-1 refuses");
     assert_eq!(err.code, "E_CAP_UNDECLARED");
     assert!(err.message.contains("not declared"), "{}", err.message);
@@ -581,7 +589,7 @@ fn a_policy_denial_is_never_catchable() {
     let opts = RunOptions {
         grants: grants(&["drone", "log"]),
         policy: Some(serde_json::json!({ "deny": ["drone.*"] })),
-        ..Default::default()
+        ..approved()
     };
     let err = run_source(src, "<fault>", &opts).expect_err("a policy denial still stops");
     assert_eq!(err.code, "E_CAP_DENIED");
@@ -590,7 +598,7 @@ fn a_policy_denial_is_never_catchable() {
 #[test]
 fn fuel_exhaustion_is_never_catchable() {
     let src = "needs: log\naction main():\n    try:\n        while 1 == 1:\n            log \"x\"\n    otherwise:\n        log \"caught\"\n";
-    let opts = RunOptions { fuel: 60, grants: grants(&["log"]), ..Default::default() };
+    let opts = RunOptions { fuel: 60, grants: grants(&["log"]), ..approved() };
     let err = run_source(src, "<fault>", &opts).expect_err("the budget still stops the run");
     assert_eq!(err.code, "E_TIMEOUT");
 }
@@ -600,31 +608,32 @@ fn a_try_inside_a_when_hook_recovers_on_every_tick() {
     let src = "needs: drone, log\nwhen battery < 101:\n    try:\n        takeoff to 10 meters\n    otherwise with err:\n        log warning err.code\n";
     let opts = RunOptions {
         grants: grants(&["drone", "log"]),
+        backend: drone_sim(),
         ticks: 2,
         tick_ms: 100,
-        ..Default::default()
+        ..approved()
     };
     let report = run_source(src, "<fault>", &opts).expect("each tick recovers");
-    let caught = report.logs.iter().filter(|(_, t)| t == "E_KAZE_HOST").count();
+    let caught = report.logs.iter().filter(|(_, t)| t == "E_ARMING_DENIED").count();
     assert_eq!(caught, 2, "{:?}", report.logs);
 }
 
 #[test]
 fn a_try_inside_a_loop_rearms_its_handler() {
     let src = "needs: drone, log\naction main():\n    for each i in [1, 2, 3]:\n        try:\n            takeoff to 10 meters\n        otherwise with err:\n            log warning err.code\n";
-    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
     let report = run_source(src, "<fault>", &opts).expect("every iteration recovers");
-    let caught = report.logs.iter().filter(|(_, t)| t == "E_KAZE_HOST").count();
+    let caught = report.logs.iter().filter(|(_, t)| t == "E_ARMING_DENIED").count();
     assert_eq!(caught, 3, "{:?}", report.logs);
 }
 
 #[test]
 fn a_nested_try_uses_the_innermost_handler() {
     let src = "needs: drone, log\naction main():\n    try:\n        try:\n            takeoff to 10 meters\n        otherwise with inner:\n            log warning \"inner\"\n            takeoff to 20 meters\n    otherwise with outer:\n        log warning \"outer\"\n        log warning outer.code\n";
-    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
     let report = run_source(src, "<fault>", &opts).expect("both failures are recoverable");
     let texts: Vec<&str> = report.logs.iter().map(|(_, t)| t.as_str()).collect();
-    assert_eq!(texts, vec!["inner", "outer", "E_KAZE_HOST"], "{:?}", report.logs);
+    assert_eq!(texts, vec!["inner", "outer", "E_ARMING_DENIED"], "{:?}", report.logs);
 }
 
 #[test]
@@ -649,10 +658,11 @@ fn link_loss_fires_only_after_the_threshold() {
     let fired = |ticks: u32, lost_after: u64| -> usize {
         let opts = RunOptions {
             grants: grants(&["drone", "log"]),
+            backend: drone_sim(),
             ticks,
             tick_ms: 100,
             sim: SimState { link_lost_after_ms: Some(lost_after), ..Default::default() },
-            ..Default::default()
+            ..approved()
         };
         let report = run_source(src, "<fault>", &opts).expect("the hook runs");
         report.logs.iter().filter(|(_, t)| t == "link lost").count()
@@ -703,7 +713,7 @@ fn a_caught_failure_does_not_keep_a_stale_filter_verdict() {
     let src = "needs: policy, drone, log\nfilter f(p):\n    try:\n        let ok = policy.allow(p)\n        takeoff to 10 meters\n        reject with \"should not fly\"\n    otherwise:\n        return\n";
     let mut args = serde_json::Map::new();
     args.insert("p".into(), serde_json::json!("hello"));
-    let opts = RunOptions { args, grants: grants(&["drone"]), ..Default::default() };
+    let opts = RunOptions { args, grants: grants(&["drone", "policy"]), backend: drone_sim(), ..approved() };
     let report = run_source(src, "<filter>", &opts).expect("the failure is recovered");
     assert!(
         report.verdict.is_none(),
@@ -720,7 +730,7 @@ fn paced_ticks_spend_real_time() {
         ticks: 4,
         tick_ms: 50,
         pace_ticks: true,
-        ..Default::default()
+        ..approved()
     };
     let start = std::time::Instant::now();
     let report = run_source(src, "<pace>", &opts).expect("paced ticks run");
@@ -735,12 +745,14 @@ fn paced_ticks_spend_real_time() {
 #[test]
 fn the_documented_cli_invocation_matches_the_golden() {
     let bin = env!("CARGO_BIN_EXE_kaze");
+    let dir = cli_policy_dir("golden");
     let out = std::process::Command::new(bin)
+        .current_dir(&dir)
         .arg("run")
         .arg(example("fault_tolerance.kaze"))
         .args([
             "--cap",
-            "drone",
+            "drone=sim",
             "--cap",
             "log",
             "--ticks",
@@ -753,6 +765,7 @@ fn the_documented_cli_invocation_matches_the_golden() {
         ])
         .output()
         .expect("the kaze binary runs");
+    std::fs::remove_dir_all(&dir).expect("remove test directory");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
@@ -761,14 +774,16 @@ fn the_documented_cli_invocation_matches_the_golden() {
 }
 
 #[test]
-fn the_documented_modular_cli_invocation_matches_the_golden() {
+fn the_modular_example_refuses_an_unavailable_sensor_backend() {
     let bin = env!("CARGO_BIN_EXE_kaze");
+    let dir = cli_policy_dir("modular");
     let out = std::process::Command::new(bin)
+        .current_dir(&dir)
         .arg("run")
         .arg(example("modular/mission.kaze"))
         .args([
             "--cap",
-            "drone",
+            "drone=sim",
             "--cap",
             "sensor",
             "--cap",
@@ -777,29 +792,29 @@ fn the_documented_modular_cli_invocation_matches_the_golden() {
             "2",
             "--tick-ms",
             "100",
-            "--sim",
-            "temperature=35",
             "--plain",
         ])
         .output()
         .expect("the kaze binary runs");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        include_str!("../examples/golden/modular.txt")
-    );
+    std::fs::remove_dir_all(&dir).expect("remove test directory");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("E_CAP_MISSING"), "{stderr}");
+    assert!(stderr.contains("simulation selected (testing only): drone"), "{stderr}");
 }
 
 #[test]
 fn the_cli_pace_flag_spends_real_time() {
     let bin = env!("CARGO_BIN_EXE_kaze");
+    let dir = cli_policy_dir("pace");
     let start = std::time::Instant::now();
     let out = std::process::Command::new(bin)
+        .current_dir(&dir)
         .arg("run")
         .arg(example("fault_tolerance.kaze"))
         .args([
             "--cap",
-            "drone",
+            "drone=sim",
             "--cap",
             "log",
             "--ticks",
@@ -813,7 +828,9 @@ fn the_cli_pace_flag_spends_real_time() {
         ])
         .output()
         .expect("the kaze binary runs");
+    std::fs::remove_dir_all(&dir).expect("remove test directory");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("simulation selected (testing only): drone"));
     assert!(
         start.elapsed() >= std::time::Duration::from_millis(50),
         "--pace did not sleep: {:?}",
@@ -832,7 +849,7 @@ fn a_long_supervisor_reclaims_the_run_arena_between_ticks() {
         grants: grants(&["log"]),
         ticks: 3000,
         tick_ms: 100,
-        ..Default::default()
+        ..approved()
     };
     let report = run_source(&src, "<supervisor>", &opts)
         .expect("a long supervisor must stay inside its arena");
@@ -845,7 +862,7 @@ fn a_try_module_round_trips_through_bytecode() {
     let module = kaze::compile_source(src, "<fault>").expect("it compiles");
     let bytes = isa::serialize(&module);
     let reloaded = isa::deserialize(&bytes).expect("v0.4 modules deserialize");
-    let opts = RunOptions { grants: grants(&["drone", "log"]), ..Default::default() };
+    let opts = RunOptions { grants: grants(&["drone", "log"]), backend: drone_sim(), ..approved() };
     let report = kaze::run_module(reloaded, "<fault>.kazebc", &opts).expect("it runs from bytecode");
-    assert_eq!(report.logs[0].1, "E_KAZE_HOST");
+    assert_eq!(report.logs[0].1, "E_ARMING_DENIED");
 }

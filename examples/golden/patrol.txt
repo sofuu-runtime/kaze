@@ -1,4 +1,5 @@
 patrol -> nothing
+simulation selected (testing only): drone
 actions:
    1. log.info("Starting automated perimeter patrol") -> nothing
    2. drone.arm -> nothing

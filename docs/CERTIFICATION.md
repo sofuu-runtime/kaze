@@ -1,5 +1,12 @@
 # Kaze Flight-Readiness Certification (v1.0)
 
+> **Historical evidence, not current certification.** The table below records a
+> prior revision. The present working tree has changed capability behavior,
+> and full release gates and physical hardware have not been verified. The live
+> drone path also lacks the required 1.5-second heartbeat and per-field
+> telemetry freshness veto, so live drone actuation is disabled. See
+> [the current reference](KAZE-1.0-REFERENCE.md).
+
 This is the **evidence bundle**, not a certificate from an aviation authority.
 Every row names the command or test that proves the property and the status of
 that evidence on this machine (2026-11-05). Rows marked **HARDWARE** require a

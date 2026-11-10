@@ -1,7 +1,7 @@
 # Canonical eight-waypoint survey. Add `use "lib/survey.kaze"` and select the
 # routine explicitly:
 #
-#   kaze run mission.kaze --entry eight_point_survey --cap drone --cap log
+#   kaze run mission.kaze --entry eight_point_survey --cap drone=sim --cap log
 #
 # Kaze v1.0 has no user-routine call syntax, so a library routine is reached by
 # --entry (or by a when/every hook), never implicitly.

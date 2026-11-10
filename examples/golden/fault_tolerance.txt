@@ -1,8 +1,9 @@
 main -> nothing
+simulation selected (testing only): drone
 actions:
-   1. drone.takeoff(15) -> error: the drone is not armed; write 'arm drone' first
-   2. log.warn("E_KAZE_HOST") -> nothing
-   3. log.warn("the drone is not armed; write 'arm drone' first") -> nothing
+   1. drone.takeoff(15) -> error: E_ARMING_DENIED: the simulated drone is not armed; write 'arm drone' first
+   2. log.warn("E_ARMING_DENIED") -> nothing
+   3. log.warn("the simulated drone is not armed; write 'arm drone' first") -> nothing
    4. log.warn(13) -> nothing
    5. drone.arm -> nothing
    6. drone.takeoff(15) -> nothing

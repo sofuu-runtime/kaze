@@ -1,4 +1,5 @@
-// v1.0: the certification scorecard an operator runs before flight.
+// The software scorecard checks pure computation and gate refusals; it does
+// not certify live hardware or flight readiness.
 
 use std::process::Command;
 

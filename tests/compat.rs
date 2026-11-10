@@ -28,6 +28,7 @@ fn the_v1_artifact_bytes_are_frozen() {
     let module = isa::deserialize(&bytes).expect("the frozen artifact still loads");
     let opts = RunOptions {
         grants: vec!["log".to_string()],
+        policy: Some(serde_json::json!({ "deny": [] })),
         ..Default::default()
     };
     let report = run_module(module, "lock.kazebc", &opts).expect("the frozen artifact still runs");

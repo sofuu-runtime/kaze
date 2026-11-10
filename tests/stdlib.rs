@@ -47,10 +47,13 @@ fn a_mission_composes_safety_and_survey() {
 
     let opts = RunOptions {
         grants: vec!["drone".to_string(), "log".to_string()],
+        policy: Some(serde_json::json!({ "deny": [] })),
+        backend: vec![("drone".into(), "sim".into())],
         entry: Some("eight_point_survey".into()),
         ..Default::default()
     };
     let report = run_file(&path, &opts).expect("the composed mission runs");
+    assert_eq!(report.simulated_families, vec!["drone"]);
     assert_eq!(report.actions.len(), 12, "{:?}", report.actions);
 }
 
@@ -63,6 +66,8 @@ fn the_guardrail_allows_and_rejects() {
     let path = write_mission("guard", &src);
 
     let allow = RunOptions {
+        grants: vec!["policy".into()],
+        policy: Some(serde_json::json!({ "deny": [] })),
         entry: Some("user_prompt".into()),
         args: serde_json::Map::from_iter([(
             "prompt".to_string(),
@@ -78,6 +83,8 @@ fn the_guardrail_allows_and_rejects() {
     );
 
     let reject = RunOptions {
+        grants: vec!["policy".into()],
+        policy: Some(serde_json::json!({ "deny": [] })),
         entry: Some("user_prompt".into()),
         args: serde_json::Map::from_iter([(
             "prompt".to_string(),

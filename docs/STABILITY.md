@@ -1,5 +1,10 @@
 # Kaze Stability Guarantee (v1.0 LTS)
 
+> **Current-source note:** Capability behavior and the public run report have
+> changed from the frozen baseline. The release/compatibility decision is
+> pending; the present tree has not passed all release gates or physical
+> hardware verification. See [the current reference](KAZE-1.0-REFERENCE.md).
+
 > **Scope.** This guarantee covers the standalone Kaze prototype in this
 > repository. The Kaze engine inside `sofuu` is a separate, frozen v0.1 surface
 > (`docs/KAZE-SPEC.md`) with its own policy.
@@ -49,9 +54,10 @@ No deprecation removes a safety guarantee.
   flying a Linux arm64 build.
 - **Build from source:** any Rust 2021 toolchain. `cargo test --all-features`
   is the compatibility gate.
-- **Live hardware** (UDP MAVLink, UART, GPIO, PWM) is exercised by the live test
-  suite with stand-ins and a fake sysfs, and by the SITL/Pi scripts where that
-  hardware exists. See `docs/BENCHMARKS.md` for what was and was not executed.
+- **Live hardware** requires separate verification on the actual devices. The
+  older suite uses non-robotics stand-ins and fake sysfs, which must be migrated
+  before it can run under `RULES.md` §1.9. See `docs/BENCHMARKS.md` for
+  historical evidence, not verification of this working tree.
 
 ## 5. Quality gates
 

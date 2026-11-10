@@ -1,12 +1,12 @@
 # Kaze example — a drone perimeter patrol.
 #
 # Run it:
-#   sofuu script run examples/kaze/patrol.kaze --cap drone=sim \
+#   kaze run examples/patrol.kaze --cap drone=sim --cap log \
 #       --arg 'points=[1,2,3,4]' --ticks 3 --sim battery=15
 #
-# Every line is checked before anything moves. `needs` is the whole
-# permission story: without a host grant for `drone`, `arm drone` is refused
-# and no action is ever taken.
+# This is an explicitly selected drone simulation for testing. A valid
+# policy.json plus separate drone and log grants are required before calls.
+# Simulation results are not physical hardware results.
 
 needs: drone, log
 

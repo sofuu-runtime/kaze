@@ -1,6 +1,7 @@
-# The smallest useful script: no devices, no grants, no effects.
+# A small script using local logging, with no device backend.
 #
-#   sofuu script run examples/kaze/hello.kaze
+#   kaze run examples/hello.kaze --cap log
+# A valid policy.json is required for the log capability.
 
 needs: log
 

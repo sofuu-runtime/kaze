@@ -427,19 +427,20 @@ impl<'a> Vm<'a> {
                     }
                 }
                 Op::LinkLost => {
-                    // The checker enforces this for source. Enforcing it here
-                    // too keeps a hand-built `.kazebc` on the same H-1 rule.
-                    if !self
-                        .declared
-                        .iter()
-                        .any(|d| crate::caps::family_of(d) == "drone")
-                    {
-                        return Err(VmError {
-                            code: "E_CAP_UNDECLARED",
-                            msg: "'link lost' reads the drone link; add 'needs: drone'".to_string(),
-                            line: item.line,
-                        });
-                    }
+                    // Link monitoring is a host read and must cross the same
+                    // declaration, grant, and policy gate as other reads.
+                    crate::hardware::authorise(
+                        self.declared,
+                        self.grants,
+                        self.policy,
+                        "drone",
+                        "link_lost",
+                    )
+                    .map_err(|d| VmError {
+                        code: d.code,
+                        msg: format!("{} ({})", d.reason, d.rule),
+                        line: item.line,
+                    })?;
                     let after_ms = self.imm(code, pc, item.line)? as u64;
                     pc += 1;
                     if after_ms == 0 {
@@ -448,11 +449,13 @@ impl<'a> Vm<'a> {
                             "LINK_LOST with a zero window would always be true",
                         ));
                     }
-                    // No live link means "never lost": the hook stays quiet
-                    // rather than firing in a simulator that has no link.
                     let lost = self
                         .host
-                        .link_silent_ms()
+                        .read_link_silence_ms()
+                        .map_err(|msg| {
+                            let (code, msg) = split_host_code(msg);
+                            VmError { code, msg, line: item.line }
+                        })?
                         .is_some_and(|silent| silent >= after_ms);
                     self.push(Value::Bool(lost), item.line)?;
                 }
@@ -1021,10 +1024,20 @@ const HOST_CODES: &[&str] = &[
     "E_KAZE_LINK_TIMEOUT",
     "E_COMMAND_REJECTED",
     "E_ARMING_DENIED",
+    "E_KAZE_HOST",
     // Safety/budget codes a backend might name. They keep their identity so
     // is_catchable can refuse them; an unknown code must never become
     // E_KAZE_HOST, which is recoverable.
     "E_SAFETY_VIOLATION",
+    "E_CAP_UNDECLARED",
+    "E_CAP_MISSING",
+    "E_CAP_DENIED",
+    "E_KAZE_BADCODE",
+    "E_KAZE_BOUNDS",
+    "E_KAZE_DIV0",
+    "E_KAZE_OVERFLOW",
+    "E_KAZE_STACK",
+    "E_KAZE_TRAP",
     "E_KAZE_RANGE",
     "E_KAZE_MEMORY",
     "E_KAZE_TYPE",
@@ -1032,7 +1045,7 @@ const HOST_CODES: &[&str] = &[
     "E_TIMEOUT",
 ];
 
-/// Split `CODE: message` so the code survives; anything else is a host error.
+/// Unknown or unclassified host failures are fatal rather than catchable.
 fn split_host_code(msg: String) -> (&'static str, String) {
     if let Some((head, rest)) = msg.split_once(':') {
         for code in HOST_CODES {
@@ -1041,7 +1054,7 @@ fn split_host_code(msg: String) -> (&'static str, String) {
             }
         }
     }
-    ("E_KAZE_HOST", msg)
+    ("E_KAZE_HOST_UNCLASSIFIED", msg)
 }
 
 fn jump(pc: usize, imm: i32, len: usize, line: u32) -> Result<usize, VmError> {
@@ -1085,6 +1098,22 @@ fn render(v: &Value, arena: &Arena, heap: &Heap) -> String {
 mod tests {
     use super::*;
     use crate::caps::{Action, CapHost};
+
+    #[test]
+    fn unclassified_host_errors_are_fatal() {
+        for message in ["E_FUTURE_SAFETY: refused", "untyped failure", "E_CAP_FUTURE: denied"] {
+            let (code, detail) = split_host_code(message.to_string());
+            assert_eq!(code, "E_KAZE_HOST_UNCLASSIFIED");
+            assert_eq!(detail, message);
+            assert!(!is_catchable(code));
+        }
+        let (code, _) = split_host_code("E_CAP_DENIED: denied".to_string());
+        assert_eq!(code, "E_CAP_DENIED");
+        assert!(!is_catchable(code));
+        let (code, _) = split_host_code("E_KAZE_HOST: operational failure".to_string());
+        assert_eq!(code, "E_KAZE_HOST");
+        assert!(is_catchable(code));
+    }
 
     /// A host that fails every non-log call with a chosen code.
     struct FakeHost {
@@ -1131,8 +1160,9 @@ mod tests {
         let declared = vec!["drone".to_string(), "log".to_string()];
         let grants = vec!["drone".to_string()];
         let mut host = FakeHost { reply: reply.to_string(), logs: Vec::new() };
+        let default_policy = serde_json::json!({ "deny": [] });
         let result = {
-            let mut vm = Vm::new(&module, &mut host, &declared, &grants, None, Limits::default());
+            let mut vm = Vm::new(&module, &mut host, &declared, &grants, Some(&default_policy), Limits::default());
             let item = module.item("main").expect("main");
             vm.run_item(item, &[]).map(|_| ())
         };

@@ -33,6 +33,7 @@ fn path(dir: &Path, name: &str) -> String {
 fn opts(grants: &[&str]) -> RunOptions {
     RunOptions {
         grants: grants.iter().map(|s| s.to_string()).collect(),
+        policy: Some(serde_json::json!({ "deny": [] })),
         ..Default::default()
     }
 }
@@ -368,13 +369,16 @@ fn the_cli_compiles_a_module_to_one_self_contained_artifact() {
 
     // The artifact must not need any of the sources beside it.
     std::fs::remove_dir_all(&dir).expect("remove the source tree");
+    let policy_dir = fixture(&[("policy.json", r#"{"deny":[]}"#)]);
     let run = std::process::Command::new(bin)
+        .current_dir(&policy_dir)
         .arg("run")
         .arg(&artifact)
         .args(["--cap", "log", "--entry", "lib_action", "--plain"])
         .output()
         .expect("kaze run runs");
     let _ = std::fs::remove_file(&artifact);
+    let _ = std::fs::remove_dir_all(&policy_dir);
     assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(stdout.contains("log.info(\"lib\")"), "{}", stdout);

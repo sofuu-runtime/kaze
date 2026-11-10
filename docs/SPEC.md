@@ -8,6 +8,13 @@
 >
 > Changes to this document require a minor/major release decision and a format
 > bump where they alter the artifact or the ISA. See `docs/STABILITY.md`.
+>
+> **Capability-safety note (2026-11-10):** Capability grants, missing-policy handling,
+> unavailable backends, simulation selection, and host-error classification
+> have been tightened since this frozen baseline. See
+> [`KAZE-1.0-REFERENCE.md`](KAZE-1.0-REFERENCE.md) for current behavior. The
+> release and compatibility decision for these behavioral changes remains open;
+> the module format remains 4.
 
 ## 1. Conformance
 

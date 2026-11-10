@@ -6,21 +6,25 @@
 // unrepresentable, and one the host did not grant is refused by
 // `rt/hardware.rs` before this module is ever reached.
 //
-// The v1 backend is `sim`: a deterministic machine model with no timers and no
-// entropy, so a mission that passes here produces the same action trace on
-// every machine. A real MAVLink/serial backend implements the same `call`
-// shape (PLAN-DRONES-MAVLINK) without the language changing.
+// The simulator is for explicitly selected robotics/drone testing. Non-robotic
+// capabilities must have a real implementation or return an unavailable error.
 
 use crate::arena::{fmt_num, Arena};
 use crate::value::{Heap, Value};
 
 /// Capability families the language knows. Anything else written in `needs:`
 /// or before a dot is a **device instance name** (`fan`, `mister`, `lidar`).
-pub const FAMILIES: &[&str] = &["drone", "rover", "sensor", "device", "memory", "policy", "log", "alert"];
+pub const FAMILIES: &[&str] = &[
+    "drone", "rover", "sensor", "device", "memory", "policy", "log", "alert", "ai", "tool",
+];
 
 /// Instance names that are common enough to be worth resolving to a family
 /// instead of falling back to `device`.
 pub const ALIASES: &[(&str, &str)] = &[
+    ("tools", "tool"),
+    ("agent", "ai"),
+    ("model", "ai"),
+    ("llm", "ai"),
     ("lidar", "sensor"),
     ("camera", "sensor"),
     ("thermostat", "sensor"),
@@ -90,6 +94,9 @@ pub fn op_arity(family: &str, op: &str) -> Option<(usize, usize)> {
         ("policy", "reject") => Some((1, 1)),
         ("log", "info" | "warn" | "error" | "debug") => Some((1, 1)),
         ("alert", "send") => Some((1, 1)),
+        ("ai", "prompt" | "complete") => Some((1, 1)),
+        ("ai", "classify") => Some((2, 2)),
+        ("tool", "call" | "run") => Some((1, 2)),
         _ => None,
     }
 }
@@ -137,6 +144,11 @@ pub const OPS: &[(&str, &str)] = &[
     ("log", "error"),
     ("log", "debug"),
     ("alert", "send"),
+    ("ai", "prompt"),
+    ("ai", "complete"),
+    ("ai", "classify"),
+    ("tool", "call"),
+    ("tool", "run"),
 ];
 
 /// The operations of one capability family, in registry order.
@@ -341,6 +353,13 @@ pub trait CapHost {
     fn link_silent_ms(&self) -> Option<u64> {
         None
     }
+
+    /// Read link silence without turning a missing backend into a healthy link.
+    fn read_link_silence_ms(&mut self) -> Result<Option<u64>, String> {
+        self.link_silent_ms().map(Some).ok_or_else(|| {
+            "E_CAP_MISSING: no drone link is configured for link-loss monitoring".to_string()
+        })
+    }
 }
 
 pub struct SimHost {
@@ -369,14 +388,6 @@ impl SimHost {
             args: args.to_vec(),
             result,
         });
-    }
-
-    fn relay(&mut self, name: &str) -> Option<&mut bool> {
-        self.state
-            .relays
-            .iter_mut()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v)
     }
 
     fn telemetry(&self, field: &str) -> Value {
@@ -415,6 +426,10 @@ impl CapHost for SimHost {
             .map(|at| self.state.now_ms.saturating_sub(at))
     }
 
+    fn read_link_silence_ms(&mut self) -> Result<Option<u64>, String> {
+        Ok(self.link_silent_ms())
+    }
+
     fn call(
         &mut self,
         family: &str,
@@ -432,7 +447,7 @@ impl CapHost for SimHost {
             }
             ("drone", "takeoff") => {
                 if !self.state.armed {
-                    Err("the drone is not armed; write 'arm drone' first".to_string())
+                    Err("E_ARMING_DENIED: the simulated drone is not armed; write 'arm drone' first".to_string())
                 } else {
                     self.state.altitude_m = num_at(args, 0, 0.0);
                     self.state.on_ground = false;
@@ -474,7 +489,7 @@ impl CapHost for SimHost {
                     self.state.drain(1.0);
                     Ok(Value::Unit)
                 } else {
-                    Err("the drone is on the ground; take off before flying to a point".to_string())
+                    Err("E_COMMAND_REJECTED: the simulated drone is on the ground; take off before flying to a point".to_string())
                 }
             }
             ("drone", "rtl") | ("drone", "land") => {
@@ -491,7 +506,7 @@ impl CapHost for SimHost {
                 self.state.speed = 0.0;
                 Ok(Value::Unit)
             }
-            ("drone", "telemetry") | ("rover", "telemetry") | ("sensor", "telemetry") => {
+            ("drone", "telemetry") | ("rover", "telemetry") => {
                 Ok(self.telemetry(&str_at(args, 0, arena)))
             }
             ("rover", "forward") => {
@@ -510,56 +525,12 @@ impl CapHost for SimHost {
                 self.state.heading = (self.state.heading - num_at(args, 0, 0.0)) % 360.0;
                 Ok(Value::Unit)
             }
-            ("sensor", "temperature") => Ok(Value::Num(self.state.temperature)),
-            ("sensor", "humidity") => Ok(Value::Num(self.state.humidity)),
-            ("sensor", "distance") | ("sensor", "front_distance") => Ok(Value::Num(self.state.distance)),
-            // The simulator has no ADC: a named pin reads that telemetry field,
-            // a numeric pin reads 0. Deterministic either way, and a script that
-            // names what it wants gets a real answer.
-            ("sensor", "read") | ("device", "read_gpio") => {
-                let reading = match args.first() {
-                    Some(Value::Str(_)) => self.telemetry(&str_at(args, 0, arena)),
-                    _ => Value::Num(0.0),
-                };
-                Ok(reading)
-            }
-            ("device", "set_relay") => {
-                let name = str_at(args, 0, arena);
-                let on = matches!(args.get(1), Some(Value::Bool(true)))
-                    || matches!(args.get(1), Some(Value::Num(n)) if *n != 0.0);
-                match self.relay(&name) {
-                    Some(slot) => *slot = on,
-                    None => self.state.relays.push((name, on)),
-                }
-                Ok(Value::Unit)
-            }
-            ("device", "pulse") => Ok(Value::Unit),
-            // The simulator has no PWM: the call is traced and accepted so a
-            // script can be exercised end to end; only a live backend actually
-            // drives a channel.
-            ("device", "set_duty") => Ok(Value::Unit),
-
-            ("memory", "save") => {
-                let key = str_at(args, 0, arena);
-                let value = args.get(1).map(|v| render_value(*v, arena, heap)).unwrap_or_default();
-                self.state.memory.push((key, value));
-                Ok(Value::Unit)
-            }
-            ("memory", "recall") => {
-                let query = str_at(args, 0, arena).to_lowercase();
-                let hits: Vec<Value> = self
-                    .state
-                    .memory
-                    .iter()
-                    .filter(|(k, v)| k.to_lowercase().contains(&query) || v.to_lowercase().contains(&query))
-                    .filter_map(|(_, v)| arena.alloc(v).ok().map(Value::Str))
-                    .collect();
-                heap.push_array(hits)
-                    .map_err(|msg| format!("E_KAZE_MEMORY: {}", msg))
-            }
             ("policy", "detects") | ("policy", "detect") => {
                 let kind = str_at(args, 0, arena).to_lowercase();
                 let text = str_at(args, 1, arena);
+                if !matches!(kind.as_str(), "secrets" | "prompt_injection") {
+                    return Err(format!("E_CAP_MISSING: no policy detector is available for '{}'", kind));
+                }
                 Ok(Value::Bool(detect(&kind, &text)))
             }
             ("policy", "allow") => Ok(args.first().copied().unwrap_or(Value::Unit)),
@@ -581,8 +552,10 @@ impl CapHost for SimHost {
                 self.logs.push((level.to_string(), msg.clone()));
                 Ok(Value::Unit)
             }
-            ("alert", "send") => Ok(Value::Unit),
-            _ => Err(format!("{} is not a capability this host knows", family)),
+            _ => Err(format!(
+                "E_CAP_MISSING: no real backend is configured for {}.{}",
+                family, op
+            )),
         };
         let rendered = match &result {
             Ok(v) => render_value(*v, arena, heap),

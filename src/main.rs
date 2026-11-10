@@ -16,7 +16,7 @@ pub fn print_help() {
          \x20 compile <file.kaze>  Emit the .kazebc module (deterministic bytes)\n\
          \x20 fmt <file.kaze>      Format source; prints to stdout by default\n\
          \x20 bench <file.kaze>    Run a mission repeatedly and report timings\n\
-         \x20 selftest             Run the flight-readiness scorecard\n\
+         \x20 selftest             Run the software checks\n\
          \x20 repl                 Interactive session: define routines, then .run\n\
          \x20 version              Print the Kaze language version\n\n\
          fmt options:\n\
@@ -26,10 +26,12 @@ pub fn print_help() {
          \x20 --iterations <n>     Number of runs (default 20)\n\
          \x20 --json               Machine-readable timings\n\n\
          run options:\n\
-         \x20 --cap <family>[=<device>]  Grant a backend. `sim` (default) is the\n\
-         \x20                        simulator; `drone=udp:127.0.0.1:14550` or\n\
+         \x20 --cap <family>[=<device>]  Grant a capability. Select `drone=sim` or\n\
+         \x20                        `rover=sim` explicitly for simulation tests;\n\
+         \x20                        `drone=udp:127.0.0.1:14550` or\n\
          \x20                        `drone=uart:/dev/ttyAMA0@57600` is a real\n\
-         \x20                        autopilot (v0.2, serial needs --features uart)\n\
+         \x20                        autopilot (serial needs --features uart). Live\n\
+         \x20                        drone actuation is currently disabled.\n\
          \x20 --pin <name>=<line>   Name a GPIO line the device family may drive\n\
          \x20                        (v0.2, e.g. --pin fan=17)\n\
          \x20 --pwm <name>=<chip>:<channel>  Name a PWM channel for set_duty\n\
@@ -45,7 +47,7 @@ pub fn print_help() {
          \x20                        are virtual time and run instantly\n\
          \x20 --sim <k=v,k=v>        Initial machine state (battery=15,armed=true,\n\
          \x20                        link_lost_after=1500 for a simulated dropout)\n\
-         \x20 --no-policy            Skip local policy layer\n\
+         \x20 --no-policy            Disable policy loading; capability calls are denied\n\
          \x20 --json                 Machine-readable report\n",
         kaze::VERSION
     );
@@ -202,18 +204,43 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
     Ok(f)
 }
 
+// Deserialize the policy as a struct rather than a JSON map. A map silently
+// accepts repeated keys, so {"deny":["*"],"deny":[]} could otherwise erase a
+// denial. Serde rejects duplicate fields, missing fields, and unknown fields.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoadedPolicy {
+    deny: Vec<String>,
+}
+
 fn policy_layer(no_policy: bool) -> Option<serde_json::Value> {
     if no_policy {
         return None;
     }
-    std::fs::read_to_string("policy.json")
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+    let path = std::path::Path::new("policy.json");
+    if !path.exists() {
+        return None;
+    }
+    match std::fs::read_to_string(path) {
+        // Serde also permits a struct to be represented as a JSON array;
+        // policies have exactly one supported top-level shape: an object.
+        Ok(s) if !s.trim_start().starts_with('{') => Some(serde_json::json!({ "__malformed": true })),
+        Ok(s) => match serde_json::from_str::<LoadedPolicy>(&s) {
+            Ok(v) => Some(serde_json::json!({ "deny": v.deny })),
+            Err(_) => Some(serde_json::json!({ "__malformed": true })),
+        },
+        Err(_) => Some(serde_json::json!({ "__malformed": true })),
+    }
 }
 
 fn options_from(f: &Flags) -> Result<RunOptions, String> {
     let mut sim = SimState::default();
     if !f.sim.is_empty() {
+        if !f.backend.iter().any(|(family, backend)| {
+            backend == "sim" && matches!(kaze::caps::family_of(family), "drone" | "rover")
+        }) {
+            return Err("--sim requires an explicit --cap drone=sim or --cap rover=sim testing backend".to_string());
+        }
         sim.apply_overrides(&f.sim)?;
     }
     Ok(RunOptions {
@@ -230,6 +257,16 @@ fn options_from(f: &Flags) -> Result<RunOptions, String> {
         pins: f.pins.clone(),
         pwm: f.pwm.clone(),
     })
+}
+
+fn report_simulation_on_failure(opts: &RunOptions) {
+    let families: Vec<&str> = opts.backend.iter()
+        .filter(|(_, backend)| backend.trim() == "sim")
+        .map(|(family, _)| family.as_str())
+        .collect();
+    if !families.is_empty() {
+        eprintln!("simulation selected (testing only): {}", families.join(", "));
+    }
 }
 
 fn is_compiled_module(path: &str) -> bool {
@@ -283,6 +320,9 @@ fn cmd_run(argv: &[String]) -> i32 {
                 print!("{}", report.render_plain());
             } else {
                 println!("{} \x1b[32m->\x1b[0m {}", report.entry, report.value);
+                if !report.simulated_families.is_empty() {
+                    println!("simulation selected (testing only): {}", report.simulated_families.join(", "));
+                }
                 if !report.actions.is_empty() {
                     println!("\x1b[1mactions:\x1b[0m");
                     for (i, a) in report.actions.iter().enumerate() {
@@ -297,6 +337,7 @@ fn cmd_run(argv: &[String]) -> i32 {
             0
         }
         Err(err) => {
+            report_simulation_on_failure(&opts);
             eprintln!("\x1b[31mError:\x1b[0m {}", err.render());
             1
         }
@@ -509,6 +550,7 @@ fn cmd_bench(argv: &[String]) -> i32 {
         let report = match outcome {
             Ok(report) => report,
             Err(e) => {
+                report_simulation_on_failure(&opts);
                 eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
                 return 1;
             }
@@ -553,6 +595,7 @@ fn cmd_bench(argv: &[String]) -> i32 {
                 "instructions": report.instructions,
                 "fuel": report.fuel_used,
                 "ticks": report.ticks,
+                "simulated_families": report.simulated_families,
                 "min_ms": min,
                 "median_ms": median,
                 "p95_ms": p95,
@@ -565,6 +608,9 @@ fn cmd_bench(argv: &[String]) -> i32 {
         );
     } else {
         println!("{}: {} iterations", path, iterations);
+        if !report.simulated_families.is_empty() {
+            println!("simulation selected (testing only): {}", report.simulated_families.join(", "));
+        }
         println!(
             "actions {} · instructions {} · fuel {} · ticks {}",
             report.actions.len(),
@@ -637,29 +683,21 @@ fn cmd_selftest(argv: &[String]) -> i32 {
         }
     };
 
-    let opts = RunOptions {
-        grants: vec!["drone".into(), "log".into()],
-        ..Default::default()
-    };
-    let (run_ok, run_detail) = match &prepared {
-        Some(prepared) => {
-            match (
-                kaze::run_prepared(prepared.clone(), &opts),
-                kaze::run_prepared(prepared.clone(), &opts),
-            ) {
-                (Ok(first), Ok(second)) => {
-                    let same = first.render_plain() == second.render_plain();
-                    (
-                        first.actions.len() == 12 && same,
-                        format!("{} actions, deterministic {}", first.actions.len(), if same { "yes" } else { "no" }),
-                    )
-                }
-                (Err(e), _) | (_, Err(e)) => (false, e.render()),
-            }
+    // The default scorecard executes only pure computation. Robotics
+    // simulation requires an explicit testing selection from the operator.
+    const PURE: &str = "action main():\n    return 2 + 3\n";
+    let opts = RunOptions::default();
+    let (run_ok, run_detail) = match (
+        kaze::run_source(PURE, "selftest-pure.kaze", &opts),
+        kaze::run_source(PURE, "selftest-pure.kaze", &opts),
+    ) {
+        (Ok(first), Ok(second)) => {
+            let same = first.render_plain() == second.render_plain();
+            (first.value == "5" && same, format!("value {}, deterministic {}", first.value, if same { "yes" } else { "no" }))
         }
-        None => (false, "the mission did not prepare".into()),
+        (Err(e), _) | (_, Err(e)) => (false, e.render()),
     };
-    checks.push(("mission runs deterministically".into(), run_ok, run_detail));
+    checks.push(("pure computation runs deterministically".into(), run_ok, run_detail));
 
     let fmt_ok = match kaze::fmt::format_source(MISSION, "selftest.kaze") {
         Ok(once) => kaze::fmt::format_source(&once, "selftest.kaze")
@@ -672,12 +710,7 @@ fn cmd_selftest(argv: &[String]) -> i32 {
     let round_trip_ok = match &prepared {
         Some(prepared) => {
             let bytes = isa::serialize(&prepared.module);
-            match isa::deserialize(&bytes) {
-                Ok(module) => kaze::run_module(module, "selftest.kazebc", &opts)
-                    .map(|report| report.actions.len() == 12)
-                    .unwrap_or(false),
-                Err(_) => false,
-            }
+            isa::deserialize(&bytes).and_then(|module| isa::verify(&module)).is_ok()
         }
         None => false,
     };
@@ -715,6 +748,7 @@ fn cmd_selftest(argv: &[String]) -> i32 {
         "selftest.kaze",
         &RunOptions {
             grants: vec!["drone".into()],
+            policy: Some(serde_json::json!({ "deny": [] })),
             ..Default::default()
         },
     );
@@ -852,6 +886,7 @@ fn cmd_repl(_argv: &[String]) -> i32 {
     let mut buffer = String::new();
     let mut needs = Vec::new();
     let mut grants = Vec::new();
+    let mut backends = Vec::new();
 
     loop {
         print!("kaze> ");
@@ -866,7 +901,7 @@ fn cmd_repl(_argv: &[String]) -> i32 {
         }
         if trimmed == ".help" {
             println!(".needs <family, ...>  Declare capabilities");
-            println!(".cap <family>        Grant simulated backend");
+            println!(".cap <family>[=backend]  Grant a family; select drone=sim or rover=sim explicitly for tests");
             println!(".run [routine]       Compile and run the buffered program");
             println!(".clear               Clear REPL session buffer");
             println!(".list                Print current buffer");
@@ -885,9 +920,15 @@ fn cmd_repl(_argv: &[String]) -> i32 {
         }
         if let Some(rest) = trimmed.strip_prefix(".cap ") {
             for fam in rest.split(',') {
-                let f = fam.trim().to_string();
+                let (f, backend) = match fam.trim().split_once('=') {
+                    Some((family, backend)) => (family.trim().to_string(), Some(backend.trim().to_string())),
+                    None => (fam.trim().to_string(), None),
+                };
                 if !f.is_empty() && !grants.contains(&f) {
-                    grants.push(f);
+                    grants.push(f.clone());
+                }
+                if let Some(backend) = backend {
+                    backends.push((f, backend));
                 }
             }
             println!("granted: {}", grants.join(", "));
@@ -916,10 +957,15 @@ fn cmd_repl(_argv: &[String]) -> i32 {
             let opts = RunOptions {
                 entry: if entry.is_empty() { None } else { Some(entry.to_string()) },
                 grants: grants.clone(),
+                backend: backends.clone(),
+                policy: policy_layer(false),
                 ..Default::default()
             };
             match kaze::run_source(&source, "<repl>", &opts) {
                 Ok(report) => {
+                    if !report.simulated_families.is_empty() {
+                        println!("simulation selected (testing only): {}", report.simulated_families.join(", "));
+                    }
                     for (level, msg) in &report.logs {
                         println!("[{}] {}", level, msg);
                     }
@@ -934,7 +980,10 @@ fn cmd_repl(_argv: &[String]) -> i32 {
                         report.instructions, report.fuel_used, report.ticks
                     );
                 }
-                Err(err) => eprintln!("\x1b[31m{}\x1b[0m", err),
+                Err(err) => {
+                    report_simulation_on_failure(&opts);
+                    eprintln!("\x1b[31m{}\x1b[0m", err);
+                }
             }
             continue;
         }
@@ -942,6 +991,7 @@ fn cmd_repl(_argv: &[String]) -> i32 {
             buffer.clear();
             needs.clear();
             grants.clear();
+            backends.clear();
             println!("session cleared");
             continue;
         }

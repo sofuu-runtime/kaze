@@ -1,8 +1,8 @@
 # An eight-waypoint survey. Run it in the simulator, or against SITL:
 #
-#   kaze run examples/missions/eight_waypoints.kaze --cap drone --cap log --plain
+#   kaze run examples/missions/eight_waypoints.kaze --cap drone=sim --cap log --plain
 #   kaze run examples/missions/eight_waypoints.kaze \
-#     --cap drone=udp:127.0.0.1:14550 --plain
+#     --cap drone=udp:127.0.0.1:14550 --cap log --plain
 
 needs: drone, log
 

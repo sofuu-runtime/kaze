@@ -1,11 +1,11 @@
 # Kaze example — a prompt guardrail.
 #
-#   sofuu script run examples/kaze/guardrail.kaze --arg prompt='"hello"'
+#   This example requires a real memory backend, not available in the
 #
-# A `filter` is the one routine that answers instead of acting: it ends in
-# `allow` or `reject`, and the checker refuses to compile a filter that can
-# fall off the end without deciding. Nothing here reaches a network — the
-# verdict is returned to the caller (here: a JS tool).
+# standalone built-in host. A filter is intended to return an `allow` or
+# `reject` verdict, but the current checker also accepts a plain `return`.
+# Capability calls require explicit grants and a valid policy.
+# Nothing in the syntax itself establishes an external memory backend.
 
 needs: memory, policy
 

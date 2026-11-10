@@ -2,7 +2,7 @@
 
 > **This crate is not the product.** The Kaze that ships is
 > `crates/sofuu-core/src/domains/kaze/`, compiled into the `sofuu` binary and
-> specified by [`docs/KAZE-SPEC.md`](../docs/KAZE-SPEC.md) (language v0.1,
+> described in the Sofuu workspace's local `docs/KAZE-SPEC.md` (language v0.1,
 > frozen). This directory is an earlier, standalone prototype with its own
 > workspace, CLI and test suite; `make` and CI never build it.
 >
@@ -12,10 +12,22 @@
 > modules (`use "…"`), the v0.6 tooling (`kaze fmt`, `kaze-lsp`, the VS Code /
 > Cursor extension), the v0.7 verifier and fuzzers, the v0.8 mission
 > benchmarks, and the frozen v1.0 spec, standard library and certification
-> scorecard. It calls itself **v1.0**; the product is v0.1 and has none of
-> them. Capability verbs are at parity as of 2026-11-02.
+> scorecard. It calls itself **v1.0**; the separately implemented engine in
+> the product reports v0.1 and has a different surface and bytecode format.
 > `scripts/kaze-drift-check.sh` (run by `make test`) keeps that honest: do not
 > treat anything in this README as a description of the shipped runtime.
+>
+> **Current standalone source:** Capability calls require an explicit
+> grant and a valid `policy.json`. Unavailable AI, tool, memory, sensor, and
+> alert backends return errors. Drone/rover simulation is explicit and labelled
+> for testing. Some examples below illustrate planned behavior; see the
+> [tagged 1.0 reference](docs/KAZE-1.0-REFERENCE.md) for current support.
+> Live drone actuation is disabled until the required 1.5-second heartbeat and
+> per-field telemetry freshness checks are implemented. Physical hardware has
+> not been verified in this working tree.
+
+The [roadmap](docs/ROADMAP.md) tracks the remaining safety and compatibility
+work and the proposed upgrades after it.
 
 [![CI](https://github.com/sofuu-runtime/kaze/actions/workflows/ci.yml/badge.svg)](https://github.com/sofuu-runtime/kaze/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -45,7 +57,7 @@ Modern autonomous AI agents and edge robotics face a fundamental execution dilem
 
 1. **Natural Phrasing, Zero Syntax Friction:** Designed for effortless human auditability and zero-shot LLM synthesis. Clean natural English phrasing (`needs: memory, tools`, `if x > 10: ... otherwise: ...`) compiles into strict bytecode without indentation traps or missing imports.
 2. **First-Class Substrate for AI Agents:** Agents can synthesize a single Kaze script to execute multi-tool pipelines and conditional logic locally in <1ms, replacing 5 sequential JSON chat completions with one deterministic atomic turn.
-3. **First-Class Physical Units:** Units like `meters`, `m/s`, `degrees`, `seconds`, `ms`, and `%` are native tokens. Dimensional conflicts and unit mismatches (e.g. feet vs. meters) are caught at check time.
+3. **Physical Unit Tokens:** Units like `meters`, `m/s`, `degrees`, `seconds`, `ms`, and `%` are accepted. The current checker does not reliably reject mismatched units; see the tagged reference.
 4. **Zero Ambient I/O (Structural Capability Security):** Kaze scripts have **zero built-in side-effects**. No ambient filesystem, clock, networking, or child processes. Every external effect requires an explicit `needs: ...` declaration and crosses a strict capability gate.
 5. **Deterministic by Construction (Zero GC Pauses):** Memory is sequentially allocated in a linear arena per run and reclaimed wholesale in one instant operation. There is zero garbage collector, zero stop-the-world stutter, and zero heap fragmentation.
 6. **Fuel-Bounded Always:** Every instruction decrements a fuel meter. Runaway loops or runaway math halt uncatchably and return a typed `E_TIMEOUT`. A Kaze script cannot hang a drone, freeze a rover, or stall an agent.
@@ -149,7 +161,9 @@ filter user_prompt(prompt):
     allow prompt
 ```
 
-### 5. Autonomous AI Agent Decision Logic (`agent_pipeline.kaze`)
+### 5. Autonomous AI Agent Decision Logic (`agent_pipeline.kaze`, planned illustration)
+This illustration includes unsupported syntax and unavailable standalone AI,
+tool, and memory backends; it is not an executable current example.
 ```kaze
 needs: memory, tools, alert, policy
 
@@ -185,12 +199,18 @@ cargo install --path .
 ```
 
 ### Run a Script
-```bash
-# Run a drone script against the simulated flight backend
-kaze run examples/patrol.kaze --cap drone=sim --arg 'points=[1, 2, 3]'
 
-# Run a rover script with virtual time ticks
-kaze run examples/rover.kaze --cap rover=sim,lidar=sim --ticks 3
+For capability calls, place a policy such as the following in `policy.json` in
+the working directory. An empty deny list leaves declarations and grants as the
+caller-controlled boundary; add deny rules appropriate to your environment.
+
+```json
+{"deny": []}
+```
+
+```bash
+# Explicitly labelled drone simulation for testing
+kaze run examples/patrol.kaze --cap drone=sim --cap log --arg 'points=[1, 2, 3]'
 ```
 
 ### Verify & Typecheck (Front-End Only)
@@ -208,25 +228,28 @@ kaze compile examples/patrol.kaze -o patrol.kazebc
 kaze compile examples/patrol.kaze --disasm
 
 # Execute directly from bytecode without parsing
-kaze run patrol.kazebc --cap drone=sim --arg 'points=[1, 2]'
+kaze run patrol.kazebc --cap drone=sim --cap log --arg 'points=[1, 2]'
 ```
 
 ### Live Hardware (v0.2)
-A family granted a device runs against real hardware; every other family keeps
-the simulator. Nothing is guessed: a device the operator did not name is refused.
+A configured device can use real hardware paths, but live drone actuation is
+currently disabled pending freshness checks. An unavailable backend is refused;
+simulation requires an explicit testing selection and is limited to drone/rover
+families.
 
 ```bash
-# A real autopilot: binds this UDP endpoint and replies to whoever speaks first
-kaze run examples/patrol.kaze --cap drone=udp:127.0.0.1:14550
+# Live drone examples below are disabled until freshness checks are implemented
+# UDP would bind this endpoint and reply to whoever speaks first
+kaze run examples/patrol.kaze --cap drone=udp:127.0.0.1:14550 --cap log --arg 'points=[1, 2]'
 
 # A serial flight controller (build with --features uart)
-kaze run examples/patrol.kaze --cap drone=uart:/dev/ttyAMA0@57600
+kaze run examples/patrol.kaze --cap drone=uart:/dev/ttyAMA0@57600 --cap log --arg 'points=[1, 2]'
 
 # Real GPIO lines, named by the operator
-kaze run examples/greenhouse.kaze --cap device=gpio --pin fan=17 --pin mister=27
+kaze run your-device.kaze --cap device=gpio --pin fan=17 --pin mister=27
 
 # Real PWM: name a channel as chip:channel, then set a duty cycle
-kaze run examples/greenhouse.kaze --cap device=gpio --pwm fan=0:0
+kaze run your-device.kaze --cap device=gpio --pwm fan=0:0
 ```
 
 ```kaze
@@ -244,15 +267,16 @@ spinning at a speed nobody asked for is a safety problem, not a rounding one.
 What the link does on its own: a 1 Hz HEARTBEAT, a 20 Hz receive loop on its
 own thread, `MAV_CMD_SET_MESSAGE_INTERVAL` for the telemetry a flight needs,
 COMMAND_LONG↔COMMAND_ACK correlation, and arming confirmed from the vehicle's
-heartbeat rather than from the ACK alone. Six commands can leave the process —
-arm, takeoff, land, RTL, loiter, set-mode — plus a position target for
-`drone.goto`. A refusal keeps its cause: `E_COMMAND_REJECTED`,
-`E_ARMING_DENIED`, `E_KAZE_LINK`, `E_KAZE_LINK_TIMEOUT`. Two seconds of
-silence makes the link refuse instead of waiting on an answer that is never
-coming, and hardware the operator did not name is never simulated.
+heartbeat rather than from the ACK alone. The code contains paths for arm,
+takeoff, land, RTL, loiter, set-mode, and `drone.goto`, but those actuation
+paths are currently disabled. Other refusals retain their cause, such as `E_COMMAND_REJECTED`,
+`E_ARMING_DENIED`, `E_KAZE_LINK`, `E_KAZE_LINK_TIMEOUT`. The existing link
+refuses after two seconds without received bytes; it does not yet meet the
+required 1.5-second heartbeat and per-field telemetry freshness rule. Live
+telemetry and link-silence readings must not be used as proof of freshness.
 
-Measured against ArduCopter SITL over UDP: `arm` → GUIDED → `takeoff to 15
-meters` → `drone.goto(...)` → `return to launch` in one script, exit 0.
+An earlier revision was measured against ArduCopter SITL over UDP. That result
+does not verify this working tree or physical hardware.
 
 GPIO defaults to sysfs (`/sys/class/gpio`). A board that dropped sysfs — a
 Raspberry Pi 5, for instance — needs the character-device ABI:
@@ -298,7 +322,7 @@ answer cannot come from nowhere. A script with no hardware declared gets a
 parse error naming both fixes rather than a guess.
 
 ```bash
-kaze run examples/kinematics.kaze --cap log=sim --plain
+kaze run examples/kinematics.kaze --cap log --plain
 ```
 
 * `vector(x, y, z)` makes a point, and `vector(x, y)` is a 2-D point (z = 0).
@@ -381,7 +405,7 @@ virtual millisecond 1500, so the hook is deterministic offline (no `--pace`
 needed):
 
 ```bash
-kaze run examples/fault_tolerance.kaze --cap drone --cap log \
+kaze run examples/fault_tolerance.kaze --cap drone=sim --cap log \
   --ticks 35 --tick-ms 100 --sim link_lost_after=0 --plain
 ```
 
@@ -434,9 +458,10 @@ device:
 
 ```bash
 kaze compile examples/modular/mission.kaze -o mission.kazebc
-kaze run mission.kazebc --cap drone --cap sensor --cap log \
-  --ticks 2 --tick-ms 100 --sim temperature=35 --plain
 ```
+
+Running this mission also requires a real sensor backend; the built-in
+standalone host currently refuses sensor operations.
 
 The rules:
 
@@ -500,7 +525,7 @@ and a small LSP client with no npm dependencies). See
 
 ```bash
 kaze bench examples/missions/eight_waypoints.kaze --iterations 20 \
-  --cap drone --cap log
+  --cap drone=sim --cap log
 ```
 
 The deterministic mission arms, climbs, visits eight points and returns to
@@ -523,14 +548,13 @@ the MAVLink parser decodes a stream with a missing frame. SITL and Raspberry Pi
 ### Production GA / LTS (v1.0)
 
 ```bash
-kaze selftest          # 11-check flight-readiness scorecard
+kaze selftest          # 11 software checks; not hardware certification
 scripts/certify.sh     # full receipt: tests, clippy, selftest, format, editor
 ```
 
-[`docs/STABILITY.md`](docs/STABILITY.md) is the long-term guarantee (semver,
-deprecation, platforms, gates); [`docs/CERTIFICATION.md`](docs/CERTIFICATION.md)
-maps every safety property to the test/command that proves it. The SITL and Pi
-5 rows are marked hardware-dependent and are not claimed by this checkout.
+[`docs/STABILITY.md`](docs/STABILITY.md) records the frozen baseline and its
+compatibility rules; [`docs/CERTIFICATION.md`](docs/CERTIFICATION.md) records a
+historical scorecard. Neither establishes current hardware or release readiness.
 
 ### Interactive REPL
 ```bash
@@ -546,29 +570,33 @@ Embed Kaze inside any Rust companion computer or robotics supervisor:
 ```toml
 [dependencies]
 kaze = "1.0.0"
+serde_json = "1"
 ```
 
 ```rust
 use kaze::{run_source, RunOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let script = r#"
-        needs: drone, log
-        action main():
-            log "Mission launched"
-            arm drone
-            takeoff to 10 meters
-            return to launch
-    "#;
+    let script = r#"needs: drone, log
+action main():
+    log "Mission launched"
+    arm drone
+    takeoff to 10 meters
+    return to launch
+"#;
 
     let opts = RunOptions {
-        grants: vec!["drone".to_string()],
+        grants: vec!["drone".to_string(), "log".to_string()],
+        policy: Some(serde_json::json!({ "deny": [] })),
+        // Explicit drone simulation for testing; the report labels it.
+        backend: vec![("drone".to_string(), "sim".to_string())],
         fuel: 50_000,
         ..Default::default()
     };
 
     let report = run_source(script, "mission.kaze", &opts)?;
     
+    println!("Simulated families: {:?}", report.simulated_families);
     println!("Result: {}", report.value);
     println!("Fuel consumed: {}", report.fuel_used);
     for action in report.actions {
@@ -598,4 +626,4 @@ A physical machine acting on clamped values is acting on a lie. Kaze halts uncat
 ## 📄 License
 
 Licensed under the [MIT License](LICENSE).  
-Maintained by the **[Sofuu Runtime Team](https://sofuu.xyz)** and open-source contributors.
+Maintained exclusively by the author and the **[Sofuu Runtime Team](https://sofuu.xyz)**. External pull requests are not accepted.

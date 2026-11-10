@@ -64,10 +64,14 @@ fn blank_lines_and_err_line_survive_formatting() {
 
     let opts = kaze::RunOptions {
         grants: vec!["drone".into(), "log".into()],
+        backend: vec![("drone".into(), "sim".into())],
+        policy: Some(serde_json::json!({ "deny": [] })),
         ..Default::default()
     };
     let before = kaze::run_source(src, "<before>", &opts).expect("runs");
     let after = kaze::run_source(&formatted, "<after>", &opts).expect("runs");
+    assert_eq!(before.simulated_families, ["drone"]);
+    assert_eq!(after.simulated_families, ["drone"]);
     assert_eq!(
         before.logs.first().map(|(_, text)| text.as_str()),
         after.logs.first().map(|(_, text)| text.as_str()),

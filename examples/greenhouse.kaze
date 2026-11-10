@@ -1,7 +1,7 @@
 # Kaze example — greenhouse climate control.
 #
-#   sofuu script run examples/kaze/greenhouse.kaze --cap sensor=sim \
-#       --cap device=sim --cap alert=sim --arg target_temp=28 --arg target_humidity=60
+#   This syntax example needs real sensor and alert backends that are not yet
+#   available in the standalone built-in host; it must not simulate them.
 #
 # `fan` and `mister` are instances of the `device` family, so one grant
 # covers both relays.
