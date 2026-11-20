@@ -19,7 +19,10 @@ Both domains face a critical execution dilemma with existing runtime languages:
 | **Rust / C++** | LLMs struggle to synthesize valid borrow-checked, lifetime-annotated (`'a`) code zero-shot. Requires compilation steps before execution. | High engineering friction for rapid mission iteration; recompilation required for minor flight path tweaks. |
 | **Lua / WASM** | Vulnerable to ambient I/O without extensive embedding glue; complex memory management for long-running supervisors. | Heavy runtime wrappers or lack of native physical unit tokens. |
 
-**Kaze (風)** resolves this dilemma as a domain scripting language hand-rolled in pure Rust. It delivers **all of Rust's security, determinism, and zero-GC performance, paired with the effortless, human-readable scripting experience of Python**.
+**Kaze (風)** is a custom language implemented in Rust, intended to be
+general-purpose within AI across software and physical systems. This document
+discusses its memory and reliability design; it does not establish universal
+security, determinism, performance, or support for every AI application.
 
 ---
 

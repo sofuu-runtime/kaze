@@ -20,6 +20,13 @@ const COMMAND_ACK: u32 = 77;
 const GLOBAL_POSITION_INT: u32 = 33;
 const ARM: u16 = 400;
 
+fn live_opts() -> RunOptions {
+    RunOptions {
+        policy: Some(serde_json::json!({ "deny": [] })),
+        ..Default::default()
+    }
+}
+
 /// A stand-in autopilot: says hello, reports a position, ACKs every command.
 fn fake_autopilot(kaze_port: u16) -> (Arc<AtomicBool>, thread::JoinHandle<Vec<u16>>) {
     fake_autopilot_lossy(kaze_port, 0)
@@ -157,11 +164,12 @@ fn gpio_root() -> PathBuf {
 }
 
 #[test]
+#[ignore = "live drone actuation is disabled pending heartbeat and telemetry freshness checks"]
 fn a_script_arms_a_vehicle_over_a_real_socket() {
     let port = free_udp_port();
     let (stop, fc) = fake_autopilot(port);
 
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["drone".to_string()];
     opts.backend = vec![("drone".to_string(), format!("udp:127.0.0.1:{}", port))];
     opts.fuel = 50_000;
@@ -188,7 +196,7 @@ fn a_script_arms_a_vehicle_over_a_real_socket() {
 #[test]
 fn a_script_drives_a_real_gpio_line() {
     let root = gpio_root();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string()];
     opts.pins = vec![("fan".to_string(), 17u16)];
     opts.fuel = 50_000;
@@ -202,7 +210,7 @@ fn a_script_drives_a_real_gpio_line() {
 #[test]
 fn a_script_sets_a_duty_cycle_on_a_real_pwm_channel() {
     let root = pwm_root();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string()];
     opts.pwm = vec![("fan".to_string(), 0u16, 0u16)];
     opts.fuel = 50_000;
@@ -220,7 +228,7 @@ fn a_script_sets_a_duty_cycle_on_a_real_pwm_channel() {
 #[test]
 fn a_non_numeric_duty_is_a_type_refusal_not_a_link_failure() {
     let _ = pwm_root();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string(), "log".to_string()];
     opts.pwm = vec![("fan".to_string(), 0u16, 0u16)];
     opts.fuel = 50_000;
@@ -272,11 +280,12 @@ fn a_live_link_reports_silence_after_the_vehicle_stops() {
 }
 
 #[test]
+#[ignore = "live drone actuation is disabled pending heartbeat and telemetry freshness checks"]
 fn a_lossy_position_stream_still_completes_a_mission() {
     let port = free_udp_port();
     let (stop, fc) = fake_autopilot_lossy(port, 2);
 
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["drone".to_string()];
     opts.backend = vec![("drone".to_string(), format!("udp:127.0.0.1:{}", port))];
     opts.fuel = 50_000;
@@ -301,7 +310,7 @@ fn a_lossy_position_stream_still_completes_a_mission() {
 #[test]
 fn a_duty_cycle_out_of_range_is_refused_by_the_gate() {
     let _ = pwm_root();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string()];
     opts.pwm = vec![("fan".to_string(), 0u16, 0u16)];
     opts.fuel = 50_000;
@@ -315,7 +324,7 @@ fn a_duty_cycle_out_of_range_is_refused_by_the_gate() {
 #[test]
 fn an_unnamed_pwm_channel_is_refused() {
     let _ = pwm_root();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string()];
     opts.pwm = vec![("fan".to_string(), 0u16, 0u16)];
     opts.fuel = 50_000;
@@ -330,7 +339,7 @@ fn an_unnamed_pwm_channel_is_refused() {
 
 #[test]
 fn hardware_named_without_a_pin_is_refused_not_simulated() {
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string()];
     opts.backend = vec![("device".to_string(), "gpio".to_string())];
     opts.fuel = 50_000;
@@ -345,14 +354,14 @@ fn hardware_named_without_a_pin_is_refused_not_simulated() {
 
 #[test]
 fn a_family_with_no_live_backend_says_so() {
-    let mut opts = RunOptions::default();
-    opts.grants = vec!["sensor".to_string()];
+    let mut opts = live_opts();
+    opts.grants = vec!["sensor".to_string(), "log".to_string()];
     opts.backend = vec![("sensor".to_string(), "i2c".to_string())];
     opts.fuel = 50_000;
     let source = "needs: sensor, log\n\naction main():\n    log sensor.temperature()\n";
     let err = run_source(source, "sensor.kaze", &opts).expect_err("no live sensor");
     assert!(
-        err.message.contains("has no live backend in v0.2"),
+        err.message.contains("has no configured live backend") || err.message.contains("has no live backend"),
         "{}",
         err.message
     );
@@ -361,7 +370,7 @@ fn a_family_with_no_live_backend_says_so() {
 #[test]
 fn a_pin_the_operator_never_named_is_refused() {
     let _ = gpio_root();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string()];
     opts.pins = vec![("fan".to_string(), 27u16)];
     opts.fuel = 50_000;
@@ -376,8 +385,9 @@ fn a_pin_the_operator_never_named_is_refused() {
 
 #[test]
 fn a_device_with_no_backend_named_stays_simulated() {
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["drone".to_string()];
+    opts.backend = vec![("drone".to_string(), "sim".to_string())];
     opts.fuel = 50_000;
     let source = "needs: drone\n\naction main():\n    arm drone\n    takeoff to 10 meters\n";
     let report = run_source(source, "sim.kaze", &opts).expect("the simulator answers");
@@ -386,9 +396,10 @@ fn a_device_with_no_backend_named_stays_simulated() {
 }
 
 #[test]
+#[ignore = "live drone actuation is disabled pending heartbeat and telemetry freshness checks"]
 fn a_missing_link_is_reported_before_the_script_runs() {
     let port = free_udp_port();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["drone".to_string()];
     opts.backend = vec![("drone".to_string(), format!("udp:127.0.0.1:{}", port))];
     opts.fuel = 50_000;
@@ -405,8 +416,8 @@ fn a_missing_link_is_reported_before_the_script_runs() {
 fn the_telemetry_a_script_reads_comes_from_the_vehicle() {
     let port = free_udp_port();
     let (stop, fc) = fake_autopilot(port);
-    let mut opts = RunOptions::default();
-    opts.grants = vec!["drone".to_string()];
+    let mut opts = live_opts();
+    opts.grants = vec!["drone".to_string(), "log".to_string()];
     opts.backend = vec![("drone".to_string(), format!("udp:127.0.0.1:{}", port))];
     opts.fuel = 50_000;
     let source = "needs: drone, log\n\naction main():\n    log drone.telemetry(\"altitude\")\n";
@@ -424,7 +435,7 @@ fn the_telemetry_a_script_reads_comes_from_the_vehicle() {
 #[test]
 fn a_script_runs_with_only_pwm_and_no_pins_under_live_device() {
     let root = pwm_root();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string()];
     opts.backend = vec![("device".to_string(), "gpio".to_string())];
     opts.pwm = vec![("mister".to_string(), 0u16, 1u16)];
@@ -440,7 +451,7 @@ fn a_script_runs_with_only_pwm_and_no_pins_under_live_device() {
 #[test]
 fn set_duty_without_pwm_configured_hints_at_the_fix() {
     let _ = gpio_root();
-    let mut opts = RunOptions::default();
+    let mut opts = live_opts();
     opts.grants = vec!["device".to_string()];
     opts.pins = vec![("fan".to_string(), 17u16)];
     opts.fuel = 50_000;

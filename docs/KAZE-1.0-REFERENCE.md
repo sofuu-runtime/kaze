@@ -1,15 +1,28 @@
 # Kaze 1.0 — tagged language and runtime reference
 
+**Vision:** Kaze is intended to be general-purpose within AI, spanning AI
+software and AI-powered physical systems, not general computing outside AI.
+That goal does not expand the implementation claims in this dated inventory.
+
+**Planned source forms:** One Kaze language is intended to have human-oriented
+and machine-oriented syntaxes with shared semantics and authorization. Machine
+syntax, conversion and parity are not implemented in this inventory; design
+details remain open.
+
 **Snapshot:** 2026-11-10. This inventory describes the current standalone
 `kaze/` source and its CLI after the capability-safety changes. It does
 not establish the contents of a published release, the behavior of a different
 checkout, or successful operation on physical hardware.
 
 Standalone **Kaze is 1.0** (`kaze --version`); the Rust package is `1.0.0` and
-its bytecode format is **4**. Sofuu also has a separate embedded Kaze engine
-that reports **0.1**; its current source writes format **2** and reads legacy
-format **1**. Their features and bytecode are not interchangeable. This document is for standalone Kaze 1.0. The embedded
-engine has a separate `docs/KAZE-CURRENT-SURFACE.md` inventory in the Sofuu workspace.
+its bytecode format is **4**. Sofuu's embedded Kaze engine also reports **1.0**;
+its source writes format **2** (with line mapping) and reads formats **1**, **2**,
+and **4** (including Format 4 modules from standalone). Both engines implement the
+unified Kaze 1.0 language contract (47 opcodes, 17 capabilities, 0 drift).
+
+**Version alignment:** Standalone Kaze and Sofuu are fully aligned on the Kaze 1.0
+contract. See the [version alignment plan](VERSION-ALIGNMENT.md) for verification receipts
+and compatibility specifications.
 
 ## Tag key
 
@@ -473,7 +486,7 @@ parsing can also produce unstructured usage text without a Kaze error code.
 | `.kazebc` format | `[IMPLEMENTED]` `[VERIFIED]` | Standalone version `4`; a compiled module contains flattened items, not runtime imports. |
 | Bytecode verifier | `[IMPLEMENTED]` | Deserialization and execution validate structure, opcodes, indices, jumps, capability arity, and stack flow before execution. |
 | Deterministic artifact | `[IMPLEMENTED]` `[VERIFIED]` | Repeated compilation of the same source/layout produced identical bytes locally; recorded external absolute paths can affect artifact origins. |
-| Sofuu embedded artifact | `[UNSUPPORTED]` | Embedded source format `2` (and legacy format `1`) and standalone format `4` are not directly interchangeable. |
+| Sofuu embedded artifact | `[IMPLEMENTED]` | Sofuu's embedded engine accepts Format 4 artifacts emitted by `kaze compile` and deserializes them cleanly alongside its native Format 2. |
 | Security compatibility | `[POST-BASELINE]` | The new gate and host defaults change which previously accepted runs succeed; bytecode format remains `4`. A release/version compatibility decision remains open. |
 
 ## 7. Configuration and command line

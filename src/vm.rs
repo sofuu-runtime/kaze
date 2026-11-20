@@ -1158,7 +1158,7 @@ mod tests {
         crate::checker::check(&program).expect("check");
         let module = crate::compiler::compile(&program).expect("compile");
         let declared = vec!["drone".to_string(), "log".to_string()];
-        let grants = vec!["drone".to_string()];
+        let grants = vec!["drone".to_string(), "log".to_string()];
         let mut host = FakeHost { reply: reply.to_string(), logs: Vec::new() };
         let default_policy = serde_json::json!({ "deny": [] });
         let result = {

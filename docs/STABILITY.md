@@ -6,8 +6,8 @@
 > hardware verification. See [the current reference](KAZE-1.0-REFERENCE.md).
 
 > **Scope.** This guarantee covers the standalone Kaze prototype in this
-> repository. The Kaze engine inside `sofuu` is a separate, frozen v0.1 surface
-> (`docs/KAZE-SPEC.md`) with its own policy.
+> repository. The Kaze engine inside `sofuu` is aligned on the same v1.0
+> language contract (47 opcodes and 17 capability verbs).
 
 ## 1. Versioning
 

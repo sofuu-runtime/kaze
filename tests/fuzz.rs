@@ -57,7 +57,16 @@ fn mutated_bytecode_never_panics() {
         })
         .collect();
 
-    let opts = RunOptions { grants: grants(), fuel: 300, ..Default::default() };
+    let opts = RunOptions {
+        grants: grants(),
+        backend: vec![
+            ("drone".into(), "sim".into()),
+            ("rover".into(), "sim".into()),
+        ],
+        policy: Some(serde_json::json!({ "deny": [] })),
+        fuel: 300,
+        ..Default::default()
+    };
     let mut rng = Rng::new(0x9e37_79b9_7f4a_7c15);
     let mut accepted = 0usize;
     let mut executed = 0usize;

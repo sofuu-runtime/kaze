@@ -41,14 +41,15 @@ is broken.
 - `run_module` verifies again, so a hand-built `Module` gets the same guarantee
   as a file.
 
-## 4. The product is a separate surface
+## 4. Sofuu embedded engine alignment
 
-The shipped `sofuu` engine (`crates/sofuu-core/src/domains/kaze/`) is language
-**v0.1**, module format **1**, specified by `docs/KAZE-SPEC.md`. It is not
-covered by this document. `scripts/kaze-drift-check.sh` reports the divergence
-(prototype ahead) on every run, and the README says so at the top. A v1.0
-`.kazebc` does **not** run on the product, and a product v0.1 module does not
-run here; both readers refuse the other's version rather than misread it.
+The embedded `sofuu` engine (`crates/sofuu-core/src/domains/kaze/`) is aligned on
+language **v1.0**, sharing the identical 47-opcode instruction set and 17 capability
+verbs (0 drift under `./scripts/kaze-drift-check.sh --strict`). The embedded engine
+writes Format 2 bytecode (incorporating per-item statement line maps for runtime
+diagnostics) and seamlessly deserializes Format 1, Format 2, and standalone Format 4
+modules (`.kazebc`). Standalone Format 4 modules compile cleanly and execute directly
+inside Sofuu.
 
 ## 5. Compatibility checklist for a release
 

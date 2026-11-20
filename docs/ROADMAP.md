@@ -25,7 +25,53 @@ The proposed upgrades below remain future work.
 
 ---
 
+## Completed: unified Kaze 1.0 language version
+
+Standalone Kaze and Sofuu's embedded engine both report language version **1.0**
+and implement the unified 47-opcode contract with 0 drift (spatial kinematics,
+vectors, trigonometric math, and try/otherwise recovery).
+
+The [version alignment plan](VERSION-ALIGNMENT.md) records the verified state,
+reconciliation of opcodes, Format 1/2/4 bytecode deserialization, and all passing
+gates across both engines.
+
+The shared language is also intended to have human-oriented and
+machine-oriented source syntaxes. Both must share applicable semantics and
+authorization; machine syntax and conversion are planned. Grammar,
+initial engine, compatibility and release scope remain open in the Sofuu
+workspace's local `docs/plans/PLAN-KAZE-DUAL-SYNTAX.md`.
+
+- [x] Define the shared 1.0 contract and reconcile the existing language gaps.
+- [ ] Design both syntaxes against that contract and verify equivalent behavior
+      and authority without claiming parity ahead of conformance evidence.
+- [ ] Evaluate machine candidates and address human grammar ambiguities,
+      composition and structured data under an explicit compatibility plan.
+- [x] Integrate the agreed core and fail-closed capability behavior in Sofuu.
+- [x] Decide and test bytecode and API migration for existing consumers.
+- [x] Verify the same language contract on both surfaces and release artifacts
+      before changing Sofuu's reported language version.
+
+---
+
 ## Overview & Guiding Philosophy
+
+Kaze's intended scope is general-purpose within AI, across AI software and
+AI-powered physical systems, rather than general-purpose across all computing.
+Agents and robotics are examples, not the limits of the vision. This roadmap
+describes proposed work and does not establish support for every AI workload.
+
+The Kaze language core is independently designed and implemented without
+copying other projects' code or exact implementation. Documented external OS,
+hardware, security, build, and host providers remain permitted dependencies,
+not Kaze-owned code. Review existing core dependencies individually and
+consider verified Kaze-owned replacements where useful, without prematurely
+removing working dependencies.
+
+**Long-term self-hosting direction:** Explore an independently authored
+Kaze-written compiler bootstrapped by the existing Rust implementation after
+the language can support it. Establish conformance before claiming
+self-hosting. A Kaze-written VM or other components are separate decisions;
+this roadmap does not claim any of that work is implemented.
 
 The standalone project identifies its frozen baseline as **Kaze v1.0.0**. Its
 source has a fixed-width ISA, a specification, an arena-based VM, and
@@ -49,7 +95,9 @@ Every future upgrade must strictly preserve Kaze's core invariants:
 
 ## Pillar 1: AI Agent Substrate & Ecosystem Integration
 
-Kaze serves as a safe, containerless execution substrate for autonomous AI agents. Future upgrades will streamline how LLMs synthesize, validate, and execute Kaze scripts in-process.
+This pillar focuses on autonomous AI agents within Kaze's broader AI scope.
+Future upgrades aim to streamline how LLMs synthesize, validate, and execute
+Kaze programs in-process; safety and supported capabilities require evidence.
 
 ### 1. Native Language Bindings (FFI SDKs)
 * **Python Bindings (`kaze-py` via PyO3):**

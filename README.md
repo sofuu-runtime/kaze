@@ -2,20 +2,21 @@
 
 > **This crate is not the product.** The Kaze that ships is
 > `crates/sofuu-core/src/domains/kaze/`, compiled into the `sofuu` binary and
-> described in the Sofuu workspace's local `docs/KAZE-SPEC.md` (language v0.1,
-> frozen). This directory is an earlier, standalone prototype with its own
+> described in the Sofuu workspace's `KAZE-EMBEDDED.md` and historical
+> `docs/specs/KAZE-SPEC.md`. This directory is a separate standalone prototype with its own
 > workspace, CLI and test suite; `make` and CI never build it.
 >
-> The two surfaces have diverged. The prototype carries eleven vector/trig
-> opcodes (`VecNew` through `VecSlantDist`, including `Atan2`), three
-> fault-tolerance opcodes (`TryBegin`, `TryEnd`, `LinkLost`), compile-time
-> modules (`use "…"`), the v0.6 tooling (`kaze fmt`, `kaze-lsp`, the VS Code /
-> Cursor extension), the v0.7 verifier and fuzzers, the v0.8 mission
-> benchmarks, and the frozen v1.0 spec, standard library and certification
-> scorecard. It calls itself **v1.0**; the separately implemented engine in
-> the product reports v0.1 and has a different surface and bytecode format.
-> `scripts/kaze-drift-check.sh` (run by `make test`) keeps that honest: do not
-> treat anything in this README as a description of the shipped runtime.
+> **Unified Kaze 1.0 Contract:** The language contract and opcode sets are
+> aligned across this standalone prototype and the embedded engine in Sofuu
+> (`crates/sofuu-core/src/domains/kaze/`). Both report language version **1.0**
+> with 0 opcode drift (47 opcodes: spatial kinematics, vectors, trigonometric math,
+> and try/otherwise fault tolerance) and 0 verb drift (17 capabilities), verified
+> by `./scripts/kaze-drift-check.sh --strict`.
+>
+> The embedded engine writes format 2 (with per-item statement line maps) and
+> reads formats 1, 2, and 4 (including format 4 modules emitted by standalone `kaze compile`).
+> This directory remains a standalone prototype with its own workspace, CLI,
+> LSP, and test suite.
 >
 > **Current standalone source:** Capability calls require an explicit
 > grant and a valid `policy.json`. Unavailable AI, tool, memory, sensor, and
@@ -29,38 +30,67 @@
 The [roadmap](docs/ROADMAP.md) tracks the remaining safety and compatibility
 work and the proposed upgrades after it.
 
+The shared Kaze 1.0 language contract is unified across this project and
+Sofuu. The [version alignment plan](docs/VERSION-ALIGNMENT.md) records the verified
+reconciliation of opcodes, bytecode deserialization, and test gates.
+
+The intended language has two source syntaxes: one for humans and one for
+machines, including AI. They share semantics and authorization; neither is a
+separate language or privileged execution path. Machine syntax, conversion and
+parity are planned, not implemented. Grammar and rollout remain open in the
+Sofuu workspace's local `docs/plans/PLAN-KAZE-DUAL-SYNTAX.md`.
+
 [![CI](https://github.com/sofuu-runtime/kaze/actions/workflows/ci.yml/badge.svg)](https://github.com/sofuu-runtime/kaze/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](Cargo.toml)
 [![Zero GC](https://img.shields.io/badge/Memory-Zero--GC_Arena-green.svg)](#memory-model)
 [![Fixed ISA](https://img.shields.io/badge/Bytecode-4--Byte_Fixed_ISA-purple.svg)](#bytecode-isa)
 
-> **The ultra-friendly, Rust-secured scripting language for AI agents, robotics, drones, and ambient edge devices.**
+> **A custom language intended for AI software and AI-powered physical systems.**
 
-Kaze (風, "wind" — *the wind of [Sofuu](https://sofuu.xyz)*) delivers **all of Rust's security, determinism, and zero-GC performance, paired with the effortless, human-readable scripting experience of Python.**
+Kaze's vision is general-purpose within the AI domain: agents, AI apps,
+workflows, robotics, drones, devices, and other AI applications. It is not
+intended as a general-purpose language for all computing. This is a direction,
+not a claim that every application or capability is currently supported.
+
+Kaze's language core is independently designed and implemented without copying
+other projects' code or exact implementation. External OS, hardware, security,
+build, and host providers may be used at documented boundaries and remain
+external dependencies. Review existing core dependencies individually; a
+verified Kaze-owned replacement may be considered without prematurely removing
+working dependencies. A Kaze-written compiler is a long-term self-hosting goal;
+the present implementation is Rust, not a self-hosted compiler.
+
+Kaze (風, "wind" — *the wind of [Sofuu](https://sofuu.xyz)*) uses an
+arena-based VM, explicit capability gates and fuel limits. These mechanisms do
+not guarantee security, hard real-time behavior or performance on every system.
 
 ---
 
 ## 🌪️ Why Kaze?
 
-Modern autonomous AI agents and edge robotics face a fundamental execution dilemma:
-* **For AI Agents:** Writing multi-step decision and tool logic in Python or JavaScript is broken. Python's ambient I/O (`os`, `subprocess`, `open`) requires heavy Docker/gVisor sandboxes to prevent prompt injection or disk wiping. JavaScript suffers from async/await race conditions and unhandled Promise rejections. Furthermore, chaining 5 tools currently takes 5 slow, expensive LLM round-trips over JSON.
-* **For Robotics & Physical Systems:** Python's non-deterministic garbage collection (stop-the-world pauses) causes actuator stutter or vehicle crashes in 10 Hz control loops. Rust provides bare-metal speed, but forces developers and LLMs to fight borrow checkers, lifetime annotations (`'a`), and verbose error handling just to script a simple patrol mission.
+AI applications and physical systems need clear control over effects, errors,
+resources and host integrations. Kaze explores these concerns without assuming
+that another language or deployment architecture is inherently unsafe.
 
-**Kaze solves both as a dual-pillar domain scripting language hand-rolled in pure Rust.**
-1. **For AI Agents:** A natural-language execution substrate where LLMs can generate multi-step tool logic, data processing, and guardrails with zero syntax errors, zero container overhead, and fuel-bounded execution.
-2. **For Robotics & Drones:** Hard real-time determinism, zero GC stutter, first-class physical units, and capability-isolated hardware control.
+**Kaze is a custom language implemented in Rust. Agents and physical systems are two examples of its broader AI scope.**
+1. **For AI Agents:** Explore readable, fuel-bounded routines with explicit
+   capabilities. AI-generated source still requires parsing and review; the
+   standalone engine does not establish working AI or tool backends.
+2. **For Robotics & Drones:** Explore unit-aware syntax and capability-gated
+   operations. Simulation is for testing, and live drone actuation is disabled;
+   no hard real-time or physical safety certification is claimed.
 
 ---
 
 ## ⚡ The Six Doctrines
 
-1. **Natural Phrasing, Zero Syntax Friction:** Designed for effortless human auditability and zero-shot LLM synthesis. Clean natural English phrasing (`needs: memory, tools`, `if x > 10: ... otherwise: ...`) compiles into strict bytecode without indentation traps or missing imports.
-2. **First-Class Substrate for AI Agents:** Agents can synthesize a single Kaze script to execute multi-tool pipelines and conditional logic locally in <1ms, replacing 5 sequential JSON chat completions with one deterministic atomic turn.
+1. **Readable Phrasing:** The existing source syntax aims to be readable, but invalid indentation, imports or generated source can still fail.
+2. **AI Application Direction:** Explore multi-step logic with explicit effects. Model and tool execution depends on an available, authorized host; no latency or atomic-turn guarantee is made.
 3. **Physical Unit Tokens:** Units like `meters`, `m/s`, `degrees`, `seconds`, `ms`, and `%` are accepted. The current checker does not reliably reject mismatched units; see the tagged reference.
 4. **Zero Ambient I/O (Structural Capability Security):** Kaze scripts have **zero built-in side-effects**. No ambient filesystem, clock, networking, or child processes. Every external effect requires an explicit `needs: ...` declaration and crosses a strict capability gate.
-5. **Deterministic by Construction (Zero GC Pauses):** Memory is sequentially allocated in a linear arena per run and reclaimed wholesale in one instant operation. There is zero garbage collector, zero stop-the-world stutter, and zero heap fragmentation.
-6. **Fuel-Bounded Always:** Every instruction decrements a fuel meter. Runaway loops or runaway math halt uncatchably and return a typed `E_TIMEOUT`. A Kaze script cannot hang a drone, freeze a rover, or stall an agent.
+5. **Arena-Based Memory:** The VM uses bounded arena allocation without a tracing garbage collector. This is not a guarantee about all host allocations or scheduling pauses.
+6. **Fuel-Bounded VM:** Instructions are metered and exhaustion returns `E_TIMEOUT`. Fuel does not bound a blocking host call or prove that a whole system cannot stall.
 
 > For a deep architectural breakdown of zero-GC memory allocation, inter-tick reclamation, and the strict two-tier error handling model, see [`docs/RELIABILITY-AND-MEMORY.md`](docs/RELIABILITY-AND-MEMORY.md).
 
@@ -168,7 +198,7 @@ tool, and memory backends; it is not an executable current example.
 needs: memory, tools, alert, policy
 
 action process_lead(lead):
-    # Safe semantic/structured recall with zero injection risks
+    # Illustrative recall; untrusted data still requires validation
     let history = recall lead.company_name
 
     if history is nothing:
@@ -545,7 +575,7 @@ the MAVLink parser decodes a stream with a missing frame. SITL and Raspberry Pi
   are locked; `tests/fixtures/kaze-v1.0.kazebc.hex` must keep compiling and
   running byte-for-byte.
 
-### Production GA / LTS (v1.0)
+### Historical v1.0 Release Checks
 
 ```bash
 kaze selftest          # 11 software checks; not hardware certification

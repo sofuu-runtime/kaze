@@ -1,10 +1,10 @@
 # Kaze Language Specification — v1.0
 
-> **Status: FROZEN 2026-11-05.** This is the normative specification of the
-> standalone Kaze prototype in this repository. It is *not* the specification of
-> the Kaze engine shipped inside `sofuu` (`crates/sofuu-core/src/domains/kaze/`,
-> language v0.1, frozen separately in `docs/KAZE-SPEC.md`). The two surfaces
-> have deliberately diverged; see `docs/COMPATIBILITY.md`.
+> **Status: FROZEN 2026-11-05 (ALIGNED 2026-11-21).** This is the normative specification of the
+> Kaze 1.0 language contract, unified across standalone Kaze and the embedded
+> engine in `sofuu` (`crates/sofuu-core/src/domains/kaze/`). Both implementations
+> share the 47-opcode instruction set, fail-closed capability gates, and spatial math.
+> See `docs/COMPATIBILITY.md` and `docs/VERSION-ALIGNMENT.md`.
 >
 > Changes to this document require a minor/major release decision and a format
 > bump where they alter the artifact or the ISA. See `docs/STABILITY.md`.

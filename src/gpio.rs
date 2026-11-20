@@ -104,7 +104,9 @@ impl GpioBus {
                 .name(format!("kaze-gpio-pulse-{}", pin))
                 .spawn(move || {
                     thread::sleep(Duration::from_millis(ms));
-                    let _ = line.set(false);
+                    if let Err(e) = line.set(false) {
+                        eprintln!("[kaze:actuator_safety] CRITICAL: pulse timer failed to de-assert pin {}: {}", pin, e);
+                    }
                 })
                 .map_err(|e| format!("E_KAZE_LINK: cannot start the pulse timer: {}", e))?;
             return Ok(());
@@ -116,7 +118,9 @@ impl GpioBus {
             .name(format!("kaze-gpio-pulse-{}", pin))
             .spawn(move || {
                 thread::sleep(Duration::from_millis(ms));
-                let _ = write_value(&root.join(format!("gpio{}", pin)).join("value"), "0");
+                if let Err(e) = write_value(&root.join(format!("gpio{}", pin)).join("value"), "0") {
+                    eprintln!("[kaze:actuator_safety] CRITICAL: pulse timer failed to de-assert sysfs gpio{}: {}", pin, e);
+                }
             })
             .map_err(|e| format!("E_KAZE_LINK: cannot start the pulse timer: {}", e))?;
         Ok(())
