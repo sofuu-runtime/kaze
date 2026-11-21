@@ -30,6 +30,7 @@ pub mod mavlink;
 pub mod pwm;
 pub mod lexer;
 pub mod lsp;
+pub mod machine;
 pub mod parser;
 pub mod value;
 pub mod vm;
@@ -79,6 +80,12 @@ impl std::fmt::Display for KazeError {
 }
 
 impl std::error::Error for KazeError {}
+
+impl From<parser::ParseError> for KazeError {
+    fn from(err: parser::ParseError) -> Self {
+        KazeError::new("E_KAZE_PARSE", err.render("<source>"))
+    }
+}
 
 /// A compiled script plus the source name it came from.
 #[derive(Debug, Clone)]
