@@ -1,0 +1,1374 @@
+# token.kaze — Kaze Token representations
+
+record Token:
+    kind: str
+    text: str
+    line: num
+    col: num
+
+action make_token(k, t, l, c):
+    return Token(kind: k, text: t, line: l, col: c)
+# ast.kaze — Kaze AST node representations
+
+record AstNode:
+    kind: str
+    name: str
+    val_str: str
+    val_num: num
+    children: list
+    line: num
+
+action make_node(k, n, vs, vn, ch, l):
+    return AstNode(kind: k, name: n, val_str: vs, val_num: vn, children: ch, line: l)
+
+action make_ident(name, l):
+    return AstNode(kind: "IDENT", name: name, val_str: "", val_num: 0, children: [], line: l)
+
+action make_num(n, l):
+    return AstNode(kind: "NUM", name: "", val_str: "", val_num: n, children: [], line: l)
+
+action make_str(s, l):
+    return AstNode(kind: "STR", name: "", val_str: s, val_num: 0, children: [], line: l)
+
+action make_bool(b, l):
+    let vs = "false"
+    if b:
+        set vs to "true"
+    return AstNode(kind: "BOOL", name: "", val_str: vs, val_num: 0, children: [], line: l)
+
+action make_bin(op, left, right, l):
+    return AstNode(kind: "BIN", name: op, val_str: "", val_num: 0, children: [left, right], line: l)
+
+action make_call(target, args, l):
+    return AstNode(kind: "CALL", name: target, val_str: "", val_num: 0, children: args, line: l)
+
+action make_field(base, field, l):
+    return AstNode(kind: "FIELD", name: field, val_str: "", val_num: 0, children: [base], line: l)
+
+action make_index(coll, idx, l):
+    return AstNode(kind: "INDEX", name: "", val_str: "", val_num: 0, children: [coll, idx], line: l)
+
+action make_len(inner, l):
+    return AstNode(kind: "LEN", name: "", val_str: "", val_num: 0, children: [inner], line: l)
+
+action make_list_expr(items, l):
+    return AstNode(kind: "LIST", name: "", val_str: "", val_num: 0, children: items, line: l)
+
+action make_stmt(kind, name, children, l):
+    return AstNode(kind: kind, name: name, val_str: "", val_num: 0, children: children, line: l)
+
+action make_item(kind, name, params, body, l):
+    return AstNode(kind: kind, name: name, val_str: "", val_num: 0, children: [params, body], line: l)
+# lexer.kaze — Pure Kaze Tokenizer
+
+action is_alpha(c):
+    if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_":
+        return 1
+    return 0
+
+action is_digit(c):
+    if c >= "0" and c <= "9":
+        return 1
+    return 0
+
+action is_alphanumeric(c):
+    if is_alpha(c) == 1 or is_digit(c) == 1:
+        return 1
+    return 0
+
+action tokenize(src):
+    let tokens = []
+    let len = length of src
+    let i = 0
+    let line = 1
+    let col = 1
+
+    let indent_stack = [0]
+
+    while i < len:
+        let c = src[i]
+
+        # 1. Skip spaces and tabs
+        if c == " " or c == "\t":
+            set i to i + 1
+            set col to col + 1
+
+        # 2. Comments
+        otherwise:
+            if c == "#":
+                while i < len and src[i] != "\n":
+                    set i to i + 1
+                # The newline itself will be processed next
+
+            # 3. Newlines and Indentation
+            otherwise:
+                if c == "\n":
+                    let nl_tok = make_token("NEWLINE", "\n", line, col)
+                    set tokens to tokens + [nl_tok]
+                    set i to i + 1
+                    set line to line + 1
+                    set col to 1
+
+                    # Count leading spaces on the next line
+                    let spaces = 0
+                    while i < len and src[i] == " ":
+                        set spaces to spaces + 1
+                        set i to i + 1
+                        set col to col + 1
+
+                    # Ignore blank or comment-only lines
+                    if i < len and src[i] != "\n" and src[i] != "#":
+                        let curr_ind = indent_stack[(length of indent_stack) - 1]
+                        if spaces > curr_ind:
+                            let ind_tok = make_token("INDENT", "", line, col)
+                            set tokens to tokens + [ind_tok]
+                            set indent_stack to indent_stack + [spaces]
+                        otherwise:
+                            if spaces < curr_ind:
+                                while (length of indent_stack) > 1 and indent_stack[(length of indent_stack) - 1] > spaces:
+                                    let ded_tok = make_token("DEDENT", "", line, col)
+                                    set tokens to tokens + [ded_tok]
+                                    # pop indent stack by slicing or list rebuild
+                                    let new_stack = []
+                                    let stk_len = (length of indent_stack) - 1
+                                    let si = 0
+                                    while si < stk_len:
+                                        set new_stack to new_stack + [indent_stack[si]]
+                                        set si to si + 1
+                                    set indent_stack to new_stack
+
+                # 4. String literal
+                otherwise:
+                    if c == "\"":
+                        let start_col = col
+                        set i to i + 1
+                        set col to col + 1
+                        let text = ""
+                        while i < len and src[i] != "\"":
+                            if src[i] == "\\":
+                                set i to i + 1
+                                set col to col + 1
+                                if i < len:
+                                    if src[i] == "n":
+                                        set text to text + "\n"
+                                    otherwise:
+                                        if src[i] == "t":
+                                            set text to text + "\t"
+                                        otherwise:
+                                            set text to text + src[i]
+                            otherwise:
+                                set text to text + src[i]
+                            set i to i + 1
+                            set col to col + 1
+                        if i < len and src[i] == "\"":
+                            set i to i + 1
+                            set col to col + 1
+                        let tok = make_token("STR", text, line, start_col)
+                        set tokens to tokens + [tok]
+
+                    # 5. Number literal
+                    otherwise:
+                        if is_digit(c) == 1:
+                            let start_col = col
+                            let text = ""
+                            while i < len and (is_digit(src[i]) == 1 or src[i] == "."):
+                                set text to text + src[i]
+                                set i to i + 1
+                                set col to col + 1
+                            let tok = make_token("NUM", text, line, start_col)
+                            set tokens to tokens + [tok]
+
+                        # 6. Identifier or Keyword
+                        otherwise:
+                            if is_alpha(c) == 1:
+                                let start_col = col
+                                let text = ""
+                                while i < len and is_alphanumeric(src[i]) == 1:
+                                    set text to text + src[i]
+                                    set i to i + 1
+                                    set col to col + 1
+                                let tok = make_token("IDENT", text, line, start_col)
+                                set tokens to tokens + [tok]
+
+                            # 7. Two-character operators
+                            otherwise:
+                                let is_two = 0
+                                if i + 1 < len:
+                                    let next_c = src[i + 1]
+                                    let two_s = c + next_c
+                                    if two_s == "==" or two_s == "!=" or two_s == "<=" or two_s == ">=":
+                                        let tok = make_token("OP", two_s, line, col)
+                                        set tokens to tokens + [tok]
+                                        set i to i + 2
+                                        set col to col + 2
+                                        set is_two to 1
+
+                                # 8. Single-character symbols
+                                if is_two == 0:
+                                    let tok = make_token("SYM", c, line, col)
+                                    set tokens to tokens + [tok]
+                                    set i to i + 1
+                                    set col to col + 1
+
+    # Emit remaining DEDENT tokens at EOF
+    while (length of indent_stack) > 1:
+        let ded_tok = make_token("DEDENT", "", line, col)
+        set tokens to tokens + [ded_tok]
+        let new_stack = []
+        let stk_len = (length of indent_stack) - 1
+        let si = 0
+        while si < stk_len:
+            set new_stack to new_stack + [indent_stack[si]]
+            set si to si + 1
+        set indent_stack to new_stack
+
+    let eof_tok = make_token("EOF", "", line, col)
+    set tokens to tokens + [eof_tok]
+    return tokens
+# parser.kaze — Pure Kaze Recursive Descent Parser
+
+action get_token(tokens, pos):
+    return tokens[pos]
+
+action token_kind(tokens, pos):
+    let t = tokens[pos]
+    return t.kind
+
+action token_text(tokens, pos):
+    let t = tokens[pos]
+    return t.text
+
+action token_line(tokens, pos):
+    let t = tokens[pos]
+    return t.line
+
+action is_token(tokens, pos, k, txt):
+    let t = tokens[pos]
+    if t.kind == k and t.text == txt:
+        return 1
+    return 0
+
+action skip_nl(tokens, pos):
+    let len = length of tokens
+    while pos < len:
+        let t = tokens[pos]
+        if t.kind == "NEWLINE":
+            set pos to pos + 1
+        otherwise:
+            return pos
+    return pos
+
+action parse_primary(tokens, pos):
+    let set_pos = skip_nl(tokens, pos)
+    set pos to set_pos
+    let t = tokens[pos]
+
+    # 1. Number
+    if t.kind == "NUM":
+        let n = make_num(t.text, t.line)
+        return [n, pos + 1]
+
+    # 2. String
+    if t.kind == "STR":
+        let s = make_str(t.text, t.line)
+        return [s, pos + 1]
+
+    # 3. List Literal [a, b, c]
+    if t.kind == "SYM" and t.text == "[":
+        set pos to pos + 1
+        let items = []
+        let done = 0
+        while pos < (length of tokens) and done == 0:
+            let sk = skip_nl(tokens, pos)
+            set pos to sk
+            if is_token(tokens, pos, "SYM", "]") == 1:
+                set pos to pos + 1
+                set done to 1
+            otherwise:
+                let elem_res = parse_expr(tokens, pos)
+                set items to items + [elem_res[0]]
+                set pos to elem_res[1]
+                let sk2 = skip_nl(tokens, pos)
+                set pos to sk2
+                if is_token(tokens, pos, "SYM", ",") == 1:
+                    set pos to pos + 1
+        let l_node = make_list_expr(items, t.line)
+        return [l_node, pos]
+
+    # 4. Parenthesized expression (expr)
+    if t.kind == "SYM" and t.text == "(":
+        set pos to pos + 1
+        let res = parse_expr(tokens, pos)
+        let inner = res[0]
+        set pos to res[1]
+        let sk = skip_nl(tokens, pos)
+        set pos to sk
+        if is_token(tokens, pos, "SYM", ")") == 1:
+            set pos to pos + 1
+        return [inner, pos]
+
+    # 5. Length of x
+    if t.kind == "IDENT" and t.text == "length":
+        if pos + 1 < (length of tokens):
+            let t_next = tokens[pos + 1]
+            if t_next.text == "of":
+                set pos to pos + 2
+                let res = parse_primary(tokens, pos)
+                let len_node = make_len(res[0], t.line)
+                return [len_node, res[1]]
+
+    # 6. Identifiers, booleans, and calls
+    if t.kind == "IDENT":
+        if t.text == "true":
+            return [make_bool(true, t.line), pos + 1]
+        if t.text == "false":
+            return [make_bool(false, t.line), pos + 1]
+
+        let name = t.text
+        set pos to pos + 1
+
+        # Check for function call or record init: name(...)
+        if pos < (length of tokens) and is_token(tokens, pos, "SYM", "(") == 1:
+            set pos to pos + 1
+            let args = []
+            let call_done = 0
+            while pos < (length of tokens) and call_done == 0:
+                let sk = skip_nl(tokens, pos)
+                set pos to sk
+                if is_token(tokens, pos, "SYM", ")") == 1:
+                    set pos to pos + 1
+                    set call_done to 1
+                otherwise:
+                    # check for named argument: field_name: expr
+                    let is_named = 0
+                    if pos + 1 < (length of tokens):
+                        let tk0 = tokens[pos]
+                        let tk1 = tokens[pos + 1]
+                        if tk0.kind == "IDENT" and tk1.kind == "SYM" and tk1.text == ":":
+                            set is_named = 1
+                    if is_named == 1:
+                        let tk_name = tokens[pos]
+                        let fname = tk_name.text
+                        set pos to pos + 2
+                        let val_res = parse_expr(tokens, pos)
+                        let named_node = make_bin(":", make_ident(fname, t.line), val_res[0], t.line)
+                        set args to args + [named_node]
+                        set pos to val_res[1]
+                    otherwise:
+                        let arg_res = parse_expr(tokens, pos)
+                        set args to args + [arg_res[0]]
+                        set pos to arg_res[1]
+
+                    let sk2 = skip_nl(tokens, pos)
+                    set pos to sk2
+                    if is_token(tokens, pos, "SYM", ",") == 1:
+                        set pos to pos + 1
+
+            let call_node = make_call(name, args, t.line)
+            return [call_node, pos]
+
+        return [make_ident(name, t.line), pos]
+
+    return [make_ident("unknown", t.line), pos + 1]
+
+action parse_postfix(tokens, pos):
+    let res = parse_primary(tokens, pos)
+    let node = res[0]
+    set pos to res[1]
+
+    let loop_done = 0
+    while pos < (length of tokens) and loop_done == 0:
+        # Field access: node.field
+        if is_token(tokens, pos, "SYM", ".") == 1:
+            set pos to pos + 1
+            let tk_field = tokens[pos]
+            let field_name = tk_field.text
+            set pos to pos + 1
+            set node to make_field(node, field_name, tk_field.line)
+
+        # Index access: node[idx]
+        otherwise:
+            if is_token(tokens, pos, "SYM", "[") == 1:
+                set pos to pos + 1
+                let idx_res = parse_expr(tokens, pos)
+                let idx_node = idx_res[0]
+                set pos to idx_res[1]
+                let sk = skip_nl(tokens, pos)
+                set pos to sk
+                if is_token(tokens, pos, "SYM", "]") == 1:
+                    set pos to pos + 1
+                set node to make_index(node, idx_node, token_line(tokens, pos - 1))
+            otherwise:
+                set loop_done to 1
+
+    return [node, pos]
+
+action parse_unary(tokens, pos):
+    let sk = skip_nl(tokens, pos)
+    set pos to sk
+    let t = tokens[pos]
+    if t.kind == "IDENT" and t.text == "not":
+        set pos to pos + 1
+        let res = parse_unary(tokens, pos)
+        let un_node = make_bin("not", res[0], make_num(0, t.line), t.line)
+        return [un_node, res[1]]
+    if t.kind == "SYM" and t.text == "-":
+        set pos to pos + 1
+        let res = parse_unary(tokens, pos)
+        let neg_node = make_bin("-", make_num(0, t.line), res[0], t.line)
+        return [neg_node, res[1]]
+    return parse_postfix(tokens, pos)
+
+action parse_multiplicative(tokens, pos):
+    let res = parse_unary(tokens, pos)
+    let node = res[0]
+    set pos to res[1]
+
+    let done = 0
+    while pos < (length of tokens) and done == 0:
+        let t = tokens[pos]
+        if t.kind == "SYM" and (t.text == "*" or t.text == "/" or t.text == "%"):
+            let op = t.text
+            set pos to pos + 1
+            let right_res = parse_unary(tokens, pos)
+            set node to make_bin(op, node, right_res[0], t.line)
+            set pos to right_res[1]
+        otherwise:
+            set done to 1
+    return [node, pos]
+
+action parse_additive(tokens, pos):
+    let res = parse_multiplicative(tokens, pos)
+    let node = res[0]
+    set pos to res[1]
+
+    let done = 0
+    while pos < (length of tokens) and done == 0:
+        let t = tokens[pos]
+        if t.kind == "SYM" and (t.text == "+" or t.text == "-"):
+            let op = t.text
+            set pos to pos + 1
+            let right_res = parse_multiplicative(tokens, pos)
+            set node to make_bin(op, node, right_res[0], t.line)
+            set pos to right_res[1]
+        otherwise:
+            set done to 1
+    return [node, pos]
+
+action parse_relational(tokens, pos):
+    let res = parse_additive(tokens, pos)
+    let node = res[0]
+    set pos to res[1]
+
+    let done = 0
+    while pos < (length of tokens) and done == 0:
+        let t = tokens[pos]
+        let is_rel = 0
+        let op = t.text
+        if t.kind == "OP":
+            if op == "==" or op == "!=" or op == "<=" or op == ">=":
+                set is_rel = 1
+        if t.kind == "SYM":
+            if op == "<" or op == ">":
+                set is_rel = 1
+
+        if is_rel == 1:
+            set pos to pos + 1
+            let right_res = parse_additive(tokens, pos)
+            set node to make_bin(op, node, right_res[0], t.line)
+            set pos to right_res[1]
+        otherwise:
+            set done to 1
+    return [node, pos]
+
+action parse_logical_and(tokens, pos):
+    let res = parse_relational(tokens, pos)
+    let node = res[0]
+    set pos to res[1]
+
+    let done = 0
+    while pos < (length of tokens) and done == 0:
+        let t = tokens[pos]
+        if t.kind == "IDENT" and t.text == "and":
+            set pos to pos + 1
+            let right_res = parse_relational(tokens, pos)
+            set node to make_bin("and", node, right_res[0], t.line)
+            set pos to right_res[1]
+        otherwise:
+            set done to 1
+    return [node, pos]
+
+action parse_expr(tokens, pos):
+    let res = parse_logical_and(tokens, pos)
+    let node = res[0]
+    set pos to res[1]
+
+    let done = 0
+    while pos < (length of tokens) and done == 0:
+        let t = tokens[pos]
+        if t.kind == "IDENT" and t.text == "or":
+            set pos to pos + 1
+            let right_res = parse_logical_and(tokens, pos)
+            set node to make_bin("or", node, right_res[0], t.line)
+            set pos to right_res[1]
+        otherwise:
+            set done to 1
+    return [node, pos]
+
+action parse_block(tokens, pos):
+    let sk = skip_nl(tokens, pos)
+    set pos to sk
+
+    let t = tokens[pos]
+    if t.kind != "INDENT":
+        return [[], pos]
+
+    set pos to pos + 1
+    let stmts = []
+    let done = 0
+
+    while pos < (length of tokens) and done == 0:
+        let sk2 = skip_nl(tokens, pos)
+        set pos to sk2
+        let cur = tokens[pos]
+        if cur.kind == "DEDENT":
+            set pos to pos + 1
+            set done to 1
+        otherwise:
+            if cur.kind == "EOF":
+                set done to 1
+            otherwise:
+                let s_res = parse_stmt(tokens, pos)
+                set stmts to stmts + [s_res[0]]
+                set pos to s_res[1]
+
+    return [stmts, pos]
+
+action parse_stmt(tokens, pos):
+    let sk = skip_nl(tokens, pos)
+    set pos to sk
+    let t = tokens[pos]
+
+    # 1. let var = expr
+    if t.kind == "IDENT" and t.text == "let":
+        set pos to pos + 1
+        let tk_var = tokens[pos]
+        let var_name = tk_var.text
+        set pos to pos + 1
+        if is_token(tokens, pos, "SYM", "=") == 1:
+            set pos to pos + 1
+        let e_res = parse_expr(tokens, pos)
+        let s_node = make_stmt("LET", var_name, [e_res[0]], t.line)
+        return [s_node, e_res[1]]
+
+    # 2. set var to expr / set var = expr
+    if t.kind == "IDENT" and t.text == "set":
+        set pos to pos + 1
+        let tk_var = tokens[pos]
+        let var_name = tk_var.text
+        set pos to pos + 1
+        if (is_token(tokens, pos, "IDENT", "to") == 1) or (is_token(tokens, pos, "SYM", "=") == 1):
+            set pos to pos + 1
+        let e_res = parse_expr(tokens, pos)
+        let s_node = make_stmt("SET", var_name, [e_res[0]], t.line)
+        return [s_node, e_res[1]]
+
+    # 3. return expr
+    if t.kind == "IDENT" and t.text == "return":
+        set pos to pos + 1
+        let cur = tokens[pos]
+        if cur.kind == "NEWLINE" or cur.kind == "DEDENT" or cur.kind == "EOF":
+            let s_node = make_stmt("RETURN", "", [], t.line)
+            return [s_node, pos]
+        let e_res = parse_expr(tokens, pos)
+        let s_node = make_stmt("RETURN", "", [e_res[0]], t.line)
+        return [s_node, e_res[1]]
+
+    # 3b. log [level] expr
+    if t.kind == "IDENT" and t.text == "log":
+        set pos to pos + 1
+        let cur = tokens[pos]
+        if cur.kind == "IDENT" and (cur.text == "info" or cur.text == "warn" or cur.text == "warning" or cur.text == "error" or cur.text == "debug"):
+            set pos to pos + 1
+        let e_res = parse_expr(tokens, pos)
+        let call_node = make_call("log", [e_res[0]], t.line)
+        let s_node = make_stmt("EXPR", "", [call_node], t.line)
+        return [s_node, e_res[1]]
+
+    # 4. if cond: block otherwise: block
+    if t.kind == "IDENT" and t.text == "if":
+        set pos to pos + 1
+        let c_res = parse_expr(tokens, pos)
+        let cond_node = c_res[0]
+        set pos to c_res[1]
+        if is_token(tokens, pos, "SYM", ":") == 1:
+            set pos to pos + 1
+        let b_res = parse_block(tokens, pos)
+        let then_stmts = b_res[0]
+        set pos to b_res[1]
+
+        let other_stmts = []
+        let sk2 = skip_nl(tokens, pos)
+        if sk2 < (length of tokens):
+            let tk_other = tokens[sk2]
+            if tk_other.kind == "IDENT" and tk_other.text == "otherwise":
+                set pos to sk2 + 1
+                if is_token(tokens, pos, "SYM", ":") == 1:
+                    set pos to pos + 1
+                let ob_res = parse_block(tokens, pos)
+                set other_stmts = ob_res[0]
+                set pos to ob_res[1]
+
+        let then_node = make_stmt("BLOCK", "then", then_stmts, t.line)
+        let other_node = make_stmt("BLOCK", "otherwise", other_stmts, t.line)
+        let if_node = make_stmt("IF", "", [cond_node, then_node, other_node], t.line)
+        return [if_node, pos]
+
+    # 5. while cond: block
+    if t.kind == "IDENT" and t.text == "while":
+        set pos to pos + 1
+        let c_res = parse_expr(tokens, pos)
+        let cond_node = c_res[0]
+        set pos to c_res[1]
+        if is_token(tokens, pos, "SYM", ":") == 1:
+            set pos to pos + 1
+        let b_res = parse_block(tokens, pos)
+        let body_stmts = b_res[0]
+        set pos to b_res[1]
+        let body_node = make_stmt("BLOCK", "body", body_stmts, t.line)
+        let while_node = make_stmt("WHILE", "", [cond_node, body_node], t.line)
+        return [while_node, pos]
+
+    # 6. for each var in list: block
+    if t.kind == "IDENT" and t.text == "for":
+        set pos to pos + 1
+        let tk_each = tokens[pos]
+        if tk_each.kind == "IDENT" and tk_each.text == "each":
+            set pos to pos + 1
+        let tk_var = tokens[pos]
+        let var_name = tk_var.text
+        set pos to pos + 1
+        let tk_in = tokens[pos]
+        if tk_in.kind == "IDENT" and tk_in.text == "in":
+            set pos to pos + 1
+        let l_res = parse_expr(tokens, pos)
+        let list_node = l_res[0]
+        set pos to l_res[1]
+        if is_token(tokens, pos, "SYM", ":") == 1:
+            set pos to pos + 1
+        let b_res = parse_block(tokens, pos)
+        let body_stmts = b_res[0]
+        set pos to b_res[1]
+        let body_node = make_stmt("BLOCK", "body", body_stmts, t.line)
+        let for_node = make_stmt("FOR_EACH", var_name, [list_node, body_node], t.line)
+        return [for_node, pos]
+
+    # 7. Expression statement (function calls, etc.)
+    let e_res = parse_expr(tokens, pos)
+    let s_node = make_stmt("EXPR", "", [e_res[0]], t.line)
+    return [s_node, e_res[1]]
+
+action parse_program(tokens):
+    let items = []
+    let pos = 0
+    let len = length of tokens
+
+    while pos < len:
+        let sk = skip_nl(tokens, pos)
+        set pos to sk
+        if pos >= len:
+            return items
+
+        let t = tokens[pos]
+        if t.kind == "EOF":
+            return items
+
+        # Ignore needs: header
+        if t.kind == "IDENT" and t.text == "needs":
+            let done = 0
+            while pos < len and done == 0:
+                let cur = tokens[pos]
+                if cur.kind == "NEWLINE":
+                    set pos to pos + 1
+                    set done = 1
+                otherwise:
+                    if cur.kind == "EOF":
+                        set done = 1
+                    otherwise:
+                        set pos to pos + 1
+
+        # Ignore use "..." import
+        otherwise:
+            if t.kind == "IDENT" and t.text == "use":
+                let done = 0
+                while pos < len and done == 0:
+                    let cur = tokens[pos]
+                    if cur.kind == "NEWLINE":
+                        set pos to pos + 1
+                        set done = 1
+                    otherwise:
+                        if cur.kind == "EOF":
+                            set done = 1
+                        otherwise:
+                            set pos to pos + 1
+
+            # record Name:
+            otherwise:
+                if t.kind == "IDENT" and t.text == "record":
+                    set pos to pos + 1
+                    let tk_rec = tokens[pos]
+                    let rec_name = tk_rec.text
+                    set pos to pos + 1
+                    if is_token(tokens, pos, "SYM", ":") == 1:
+                        set pos to pos + 1
+                    let sk2 = skip_nl(tokens, pos)
+                    set pos to sk2
+                    let fields = []
+                    let cur_ind = tokens[pos]
+                    if cur_ind.kind == "INDENT":
+                        set pos to pos + 1
+                        let f_done = 0
+                        while pos < len and f_done == 0:
+                            let sk3 = skip_nl(tokens, pos)
+                            set pos to sk3
+                            let tk_f = tokens[pos]
+                            if tk_f.kind == "DEDENT":
+                                set pos to pos + 1
+                                set f_done to 1
+                            otherwise:
+                                if tk_f.kind == "EOF":
+                                    set f_done to 1
+                                otherwise:
+                                    let fname = tk_f.text
+                                    set pos to pos + 1
+                                    let ftype = "any"
+                                    if is_token(tokens, pos, "SYM", ":") == 1:
+                                        set pos to pos + 1
+                                        let tk_ft = tokens[pos]
+                                        if tk_ft.kind == "IDENT":
+                                            set ftype = tk_ft.text
+                                            set pos to pos + 1
+                                    let f_node = make_node("FIELD_DEF", fname, ftype, 0, [], t.line)
+                                    set fields to fields + [f_node]
+                    let rec_node = make_node("RECORD", rec_name, "", 0, fields, t.line)
+                    set items to items + [rec_node]
+
+                # action / check / filter Name(params):
+                otherwise:
+                    if t.kind == "IDENT" and (t.text == "action" or t.text == "check" or t.text == "filter"):
+                        let fn_kind = t.text
+                        set pos to pos + 1
+                        let tk_fn = tokens[pos]
+                        let fn_name = tk_fn.text
+                        set pos to pos + 1
+                        let params = []
+                        if is_token(tokens, pos, "SYM", "(") == 1:
+                            set pos to pos + 1
+                            let p_done = 0
+                            while pos < len and p_done == 0:
+                                if is_token(tokens, pos, "SYM", ")") == 1:
+                                    set pos to pos + 1
+                                    set p_done to 1
+                                otherwise:
+                                    let tk_p = tokens[pos]
+                                    if tk_p.kind == "IDENT":
+                                        set params to params + [tk_p.text]
+                                        set pos to pos + 1
+                                        if is_token(tokens, pos, "SYM", ",") == 1:
+                                            set pos to pos + 1
+                        if is_token(tokens, pos, "SYM", ":") == 1:
+                            set pos to pos + 1
+
+                        let b_res = parse_block(tokens, pos)
+                        let body_stmts = b_res[0]
+                        set pos to b_res[1]
+
+                        let p_nodes = []
+                        for each p in params:
+                            set p_nodes to p_nodes + [make_ident(p, t.line)]
+                        let item_node = make_item(fn_kind, fn_name, make_stmt("PARAMS", "", p_nodes, t.line), make_stmt("BODY", "", body_stmts, t.line), t.line)
+                        set items to items + [item_node]
+
+                    otherwise:
+                        set pos to pos + 1
+
+    return items
+# codegen.kaze — Pure Kaze C99 Emitter
+
+action get_c_runtime_header():
+    let h = "/* Generated by Kaze-in-Kaze Self-Hosted Compiler (Stage 1) */\n"
+    set h to h + "#include <stdint.h>\n"
+    set h to h + "#include <stdbool.h>\n"
+    set h to h + "#include <stddef.h>\n"
+    set h to h + "#include <stdlib.h>\n"
+    set h to h + "#include <string.h>\n"
+    set h to h + "#include <stdio.h>\n"
+    set h to h + "#include <math.h>\n\n"
+    set h to h + "#if !defined(_WIN32)\n"
+    set h to h + "#include <unistd.h>\n"
+    set h to h + "#else\n"
+    set h to h + "#include <io.h>\n"
+    set h to h + "#define isatty _isatty\n"
+    set h to h + "#define fileno _fileno\n"
+    set h to h + "#endif\n\n"
+    set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD } KzValKind;\n"
+    set h to h + "struct KzValue;\n"
+    set h to h + "typedef struct { size_t len; size_t cap; struct KzValue* items; } KzList;\n"
+    set h to h + "typedef struct { const char* type_name; size_t field_count; const char** keys; struct KzValue* values; } KzRecord;\n"
+    set h to h + "typedef struct KzValue {\n"
+    set h to h + "    KzValKind kind;\n"
+    set h to h + "    union { bool boolean; double number; const char* str; KzList* list; KzRecord* record; } as;\n"
+    set h to h + "} KzValue;\n\n"
+    set h to h + "static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"
+    set h to h + "static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"
+    set h to h + "static inline KzValue kz_num(double n) { KzValue v; v.kind = KZ_VAL_NUM; v.as.number = n; return v; }\n"
+    set h to h + "static inline KzValue kz_str(const char* s) { KzValue v; v.kind = KZ_VAL_STR; v.as.str = s ? s : \"\"; return v; }\n"
+    set h to h + "static inline bool kz_is_truthy(KzValue v) {\n"
+    set h to h + "    switch (v.kind) {\n"
+    set h to h + "        case KZ_VAL_BOOL: return v.as.boolean;\n"
+    set h to h + "        case KZ_VAL_NUM: return v.as.number != 0.0;\n"
+    set h to h + "        case KZ_VAL_STR: return v.as.str && v.as.str[0] != '\\0';\n"
+    set h to h + "        case KZ_VAL_LIST: return v.as.list && v.as.list->len > 0;\n"
+    set h to h + "        case KZ_VAL_RECORD: return true;\n"
+    set h to h + "        default: return false;\n"
+    set h to h + "    }\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline char* kz_str_alloc_copy(const char* s) {\n"
+    set h to h + "    if (!s) return \"\";\n"
+    set h to h + "    size_t l = strlen(s);\n"
+    set h to h + "    char* out = (char*)malloc(l + 1);\n"
+    set h to h + "    if (!out) return \"\";\n"
+    set h to h + "    memcpy(out, s, l + 1);\n"
+    set h to h + "    return out;\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline char* kz_str_concat(const char* a, const char* b) {\n"
+    set h to h + "    size_t la = a ? strlen(a) : 0;\n"
+    set h to h + "    size_t lb = b ? strlen(b) : 0;\n"
+    set h to h + "    char* out = (char*)malloc(la + lb + 1);\n"
+    set h to h + "    if (!out) return \"\";\n"
+    set h to h + "    if (la) memcpy(out, a, la);\n"
+    set h to h + "    if (lb) memcpy(out + la, b, lb);\n"
+    set h to h + "    out[la + lb] = '\\0';\n"
+    set h to h + "    return out;\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline const char* kz_to_string(KzValue v) {\n"
+    set h to h + "    if (v.kind == KZ_VAL_STR) return v.as.str ? v.as.str : \"\";\n"
+    set h to h + "    if (v.kind == KZ_VAL_BOOL) return v.as.boolean ? \"true\" : \"false\";\n"
+    set h to h + "    if (v.kind == KZ_VAL_NUM) {\n"
+    set h to h + "        char buf[64];\n"
+    set h to h + "        if (floor(v.as.number) == v.as.number && !isnan(v.as.number) && !isinf(v.as.number)) {\n"
+    set h to h + "            snprintf(buf, sizeof(buf), \"%.0f\", v.as.number);\n"
+    set h to h + "        } else {\n"
+    set h to h + "            snprintf(buf, sizeof(buf), \"%g\", v.as.number);\n"
+    set h to h + "        }\n"
+    set h to h + "        return kz_str_alloc_copy(buf);\n"
+    set h to h + "    }\n"
+    set h to h + "    if (v.kind == KZ_VAL_NIL) return \"nil\";\n"
+    set h to h + "    if (v.kind == KZ_VAL_RECORD) return v.as.record ? v.as.record->type_name : \"record\";\n"
+    set h to h + "    if (v.kind == KZ_VAL_LIST) return \"list\";\n"
+    set h to h + "    return \"\";\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_list_new(size_t cap) {\n"
+    set h to h + "    KzList* l = (KzList*)malloc(sizeof(KzList));\n"
+    set h to h + "    l->len = 0;\n"
+    set h to h + "    l->cap = cap > 4 ? cap : 4;\n"
+    set h to h + "    l->items = (KzValue*)malloc(l->cap * sizeof(KzValue));\n"
+    set h to h + "    KzValue v; v.kind = KZ_VAL_LIST; v.as.list = l; return v;\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_list_concat(KzValue a, KzValue b) {\n"
+    set h to h + "    size_t la = (a.kind == KZ_VAL_LIST && a.as.list) ? a.as.list->len : 0;\n"
+    set h to h + "    size_t lb = (b.kind == KZ_VAL_LIST && b.as.list) ? b.as.list->len : 0;\n"
+    set h to h + "    KzValue res = kz_list_new(la + lb);\n"
+    set h to h + "    KzList* l = res.as.list;\n"
+    set h to h + "    if (la) { memcpy(l->items, a.as.list->items, la * sizeof(KzValue)); l->len += la; }\n"
+    set h to h + "    if (lb) { memcpy(l->items + l->len, b.as.list->items, lb * sizeof(KzValue)); l->len += lb; }\n"
+    set h to h + "    return res;\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_list_from(size_t n, const KzValue* items) {\n"
+    set h to h + "    KzValue res = kz_list_new(n);\n"
+    set h to h + "    if (n > 0 && items) { memcpy(res.as.list->items, items, n * sizeof(KzValue)); res.as.list->len = n; }\n"
+    set h to h + "    return res;\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_record_create(const char* type_name, size_t n, const char** keys, const KzValue* vals) {\n"
+    set h to h + "    KzRecord* r = (KzRecord*)malloc(sizeof(KzRecord));\n"
+    set h to h + "    r->type_name = type_name;\n"
+    set h to h + "    r->field_count = n;\n"
+    set h to h + "    r->keys = keys;\n"
+    set h to h + "    r->values = (n > 0) ? (KzValue*)malloc(n * sizeof(KzValue)) : NULL;\n"
+    set h to h + "    if (n > 0 && vals && r->values) { memcpy(r->values, vals, n * sizeof(KzValue)); }\n"
+    set h to h + "    KzValue v; v.kind = KZ_VAL_RECORD; v.as.record = r; return v;\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_get_field(KzValue obj, const char* field) {\n"
+    set h to h + "    if (obj.kind != KZ_VAL_RECORD || !obj.as.record) return kz_nil();\n"
+    set h to h + "    KzRecord* r = obj.as.record;\n"
+    set h to h + "    for (size_t i = 0; i < r->field_count; i++) {\n"
+    set h to h + "        if (strcmp(r->keys[i], field) == 0) return r->values[i];\n"
+    set h to h + "    }\n"
+    set h to h + "    return kz_nil();\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_add(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_num(a.as.number + b.as.number);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR || b.kind == KZ_VAL_STR) return kz_str(kz_str_concat(kz_to_string(a), kz_to_string(b)));\n"
+    set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST) return kz_list_concat(a, b);\n"
+    set h to h + "    return kz_nil();\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_sub(KzValue a, KzValue b) { return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) - ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)); }\n"
+    set h to h + "static inline KzValue kz_mul(KzValue a, KzValue b) { return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) * ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)); }\n"
+    set h to h + "static inline KzValue kz_div(KzValue a, KzValue b) { double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0; return kz_num(d == 0.0 ? 0.0 : (((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) / d)); }\n"
+    set h to h + "static inline KzValue kz_mod(KzValue a, KzValue b) { double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0; return kz_num(d == 0.0 ? 0.0 : fmod(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0), d)); }\n"
+    set h to h + "static inline KzValue kz_not(KzValue a) { return kz_bool(!kz_is_truthy(a)); }\n\n"
+    set h to h + "static inline bool kz_val_eq(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind != b.kind) return false;\n"
+    set h to h + "    switch (a.kind) {\n"
+    set h to h + "        case KZ_VAL_NIL: return true;\n"
+    set h to h + "        case KZ_VAL_BOOL: return a.as.boolean == b.as.boolean;\n"
+    set h to h + "        case KZ_VAL_NUM: return a.as.number == b.as.number;\n"
+    set h to h + "        case KZ_VAL_STR: return (a.as.str && b.as.str) ? (strcmp(a.as.str, b.as.str) == 0) : (a.as.str == b.as.str);\n"
+    set h to h + "        default: return a.as.list == b.as.list;\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_eq(KzValue a, KzValue b) { return kz_bool(kz_val_eq(a, b)); }\n"
+    set h to h + "static inline KzValue kz_ne(KzValue a, KzValue b) { return kz_bool(!kz_val_eq(a, b)); }\n"
+    set h to h + "static inline KzValue kz_lt(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number < b.as.number);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) < 0);\n"
+    set h to h + "    return kz_bool(false);\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_le(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number <= b.as.number);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) <= 0);\n"
+    set h to h + "    return kz_bool(false);\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_gt(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number > b.as.number);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) > 0);\n"
+    set h to h + "    return kz_bool(false);\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_ge(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number >= b.as.number);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) >= 0);\n"
+    set h to h + "    return kz_bool(false);\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_and(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) && kz_is_truthy(b)); }\n"
+    set h to h + "static inline KzValue kz_or(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) || kz_is_truthy(b)); }\n\n"
+    set h to h + "static inline KzValue kz_len(KzValue a) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && a.as.str) return kz_num((double)strlen(a.as.str));\n"
+    set h to h + "    if (a.kind == KZ_VAL_LIST && a.as.list) return kz_num((double)a.as.list->len);\n"
+    set h to h + "    return kz_num(0.0);\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_index(KzValue coll, KzValue idx) {\n"
+    set h to h + "    size_t i = (idx.kind == KZ_VAL_NUM && idx.as.number >= 0.0) ? (size_t)idx.as.number : 0;\n"
+    set h to h + "    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"
+    set h to h + "        if (i < coll.as.list->len) return coll.as.list->items[i];\n"
+    set h to h + "        return kz_nil();\n"
+    set h to h + "    }\n"
+    set h to h + "    if (coll.kind == KZ_VAL_STR && coll.as.str) {\n"
+    set h to h + "        size_t l = strlen(coll.as.str);\n"
+    set h to h + "        if (i < l) {\n"
+    set h to h + "            char* one = (char*)malloc(2);\n"
+    set h to h + "            one[0] = coll.as.str[i];\n"
+    set h to h + "            one[1] = '\\0';\n"
+    set h to h + "            return kz_str(one);\n"
+    set h to h + "        }\n"
+    set h to h + "        return kz_str(\"\");\n"
+    set h to h + "    }\n"
+    set h to h + "    return kz_nil();\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline void kz_builtin_log(KzValue msg) { printf(\"[info] %s\\n\", kz_to_string(msg)); }\n\n"
+    set h to h + "static inline KzValue kz_read_stream(FILE* f) {\n"
+    set h to h + "    size_t cap = 4096; size_t len = 0;\n"
+    set h to h + "    char* buf = (char*)malloc(cap);\n"
+    set h to h + "    if (!buf) return kz_str(\"\");\n"
+    set h to h + "    size_t n;\n"
+    set h to h + "    while ((n = fread(buf + len, 1, cap - len - 1, f)) > 0) {\n"
+    set h to h + "        len += n;\n"
+    set h to h + "        if (len + 1024 >= cap) { cap *= 2; char* nb = (char*)realloc(buf, cap); if (!nb) break; buf = nb; }\n"
+    set h to h + "    }\n"
+    set h to h + "    buf[len] = '\\0';\n"
+    set h to h + "    return kz_str(buf);\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_read_file_or_string(const char* path_or_str) {\n"
+    set h to h + "    if (!path_or_str) return kz_str(\"\");\n"
+    set h to h + "    FILE* f = fopen(path_or_str, \"rb\");\n"
+    set h to h + "    if (!f) return kz_str(path_or_str);\n"
+    set h to h + "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n"
+    set h to h + "    if (sz < 0) { fclose(f); return kz_str(path_or_str); }\n"
+    set h to h + "    char* buf = (char*)malloc((size_t)sz + 1);\n"
+    set h to h + "    if (!buf) { fclose(f); return kz_str(path_or_str); }\n"
+    set h to h + "    size_t rd = fread(buf, 1, (size_t)sz, f);\n"
+    set h to h + "    buf[rd] = '\\0'; fclose(f);\n"
+    set h to h + "    return kz_str(buf);\n"
+    set h to h + "}\n\n"
+    set h to h + "static inline KzValue kz_resolve_cli_arg(int argc, char** argv, const char* name, int index) {\n"
+    set h to h + "    size_t nlen = strlen(name);\n"
+    set h to h + "    for (int i = 1; i < argc; i++) {\n"
+    set h to h + "        const char* a = argv[i];\n"
+    set h to h + "        if (strncmp(a, \"--\", 2) == 0) {\n"
+    set h to h + "            const char* opt = a + 2;\n"
+    set h to h + "            if (strncmp(opt, name, nlen) == 0 && opt[nlen] == '=') return kz_read_file_or_string(opt + nlen + 1);\n"
+    set h to h + "            if (strcmp(opt, \"arg\") == 0 && i + 1 < argc) {\n"
+    set h to h + "                const char* next_arg = argv[i + 1];\n"
+    set h to h + "                if (strncmp(next_arg, name, nlen) == 0 && next_arg[nlen] == '=') return kz_read_file_or_string(next_arg + nlen + 1);\n"
+    set h to h + "            }\n"
+    set h to h + "            if (strncmp(opt, \"arg=\", 4) == 0) {\n"
+    set h to h + "                const char* next_arg = opt + 4;\n"
+    set h to h + "                if (strncmp(next_arg, name, nlen) == 0 && next_arg[nlen] == '=') return kz_read_file_or_string(next_arg + nlen + 1);\n"
+    set h to h + "            }\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    char env_name[128];\n"
+    set h to h + "    snprintf(env_name, sizeof(env_name), \"AGENT_%s\", name);\n"
+    set h to h + "    for (size_t j = 6; env_name[j]; j++) { if (env_name[j] >= 'a' && env_name[j] <= 'z') env_name[j] -= 32; }\n"
+    set h to h + "    char* ev = getenv(env_name);\n"
+    set h to h + "    if (ev) return kz_read_file_or_string(ev);\n"
+    set h to h + "    snprintf(env_name, sizeof(env_name), \"SOFUU_%s\", name);\n"
+    set h to h + "    for (size_t j = 6; env_name[j]; j++) { if (env_name[j] >= 'a' && env_name[j] <= 'z') env_name[j] -= 32; }\n"
+    set h to h + "    ev = getenv(env_name);\n"
+    set h to h + "    if (ev) return kz_read_file_or_string(ev);\n"
+    set h to h + "    int pos_idx = 0;\n"
+    set h to h + "    for (int i = 1; i < argc; i++) {\n"
+    set h to h + "        if (argv[i][0] != '-') {\n"
+    set h to h + "            if (pos_idx == index) return kz_read_file_or_string(argv[i]);\n"
+    set h to h + "            pos_idx++;\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    if (index == 0 && !isatty(fileno(stdin))) return kz_read_stream(stdin);\n"
+    set h to h + "    return kz_str(\"\");\n"
+    set h to h + "}\n\n"
+    return h
+
+action sanitize_c_id(name):
+    if name == "auto" or name == "break" or name == "case" or name == "char" or name == "const" or name == "continue" or name == "default" or name == "do" or name == "double" or name == "else" or name == "enum" or name == "extern" or name == "float" or name == "for" or name == "goto" or name == "if" or name == "inline" or name == "int" or name == "long" or name == "register" or name == "restrict" or name == "return" or name == "short" or name == "signed" or name == "sizeof" or name == "static" or name == "struct" or name == "switch" or name == "typedef" or name == "union" or name == "unsigned" or name == "void" or name == "volatile" or name == "while" or name == "main":
+        return "_kz_" + name
+    return name
+
+action escape_c_str(s):
+    let res = "\""
+    let len = length of s
+    let i = 0
+    while i < len:
+        let c = s[i]
+        if c == "\\":
+            set res to res + "\\\\"
+        otherwise:
+            if c == "\"":
+                set res to res + "\\\""
+            otherwise:
+                if c == "\n":
+                    set res to res + "\\n"
+                otherwise:
+                    if c == "\t":
+                        set res to res + "\\t"
+                    otherwise:
+                        set res to res + c
+        set i to i + 1
+    set res to res + "\""
+    return res
+
+action emit_c_expr(node):
+    let k = node.kind
+
+    if k == "NUM":
+        return "kz_num(" + node.val_num + ")"
+
+    if k == "STR":
+        return "kz_str(" + escape_c_str(node.val_str) + ")"
+
+    if k == "BOOL":
+        return "kz_bool(" + node.val_str + ")"
+
+    if k == "IDENT":
+        return sanitize_c_id(node.name)
+
+    if k == "LEN":
+        let inner = node.children[0]
+        return "kz_len(" + emit_c_expr(inner) + ")"
+
+    if k == "FIELD":
+        let base = node.children[0]
+        return "kz_get_field(" + emit_c_expr(base) + ", \"" + node.name + "\")"
+
+    if k == "INDEX":
+        let coll = node.children[0]
+        let idx = node.children[1]
+        return "kz_index(" + emit_c_expr(coll) + ", " + emit_c_expr(idx) + ")"
+
+    if k == "BIN":
+        let left = node.children[0]
+        let right = node.children[1]
+        let op = node.name
+        if op == "+":
+            return "kz_add(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "-":
+            return "kz_sub(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "*":
+            return "kz_mul(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "/":
+            return "kz_div(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "%":
+            return "kz_mod(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "==":
+            return "kz_eq(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "!=":
+            return "kz_ne(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "<":
+            return "kz_lt(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "<=":
+            return "kz_le(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == ">":
+            return "kz_gt(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == ">=":
+            return "kz_ge(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "and":
+            return "kz_and(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        if op == "or":
+            return "kz_or(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
+        return "kz_nil()"
+
+    if k == "CALL":
+        let fn_id = sanitize_c_id(node.name)
+        let arg_strs = ""
+        let is_first = 1
+        for each a in node.children:
+            if is_first == 0:
+                set arg_strs to arg_strs + ", "
+            # check if named field arg
+            if a.kind == "BIN" and a.name == ":":
+                let val_e = a.children[1]
+                set arg_strs to arg_strs + emit_c_expr(val_e)
+            otherwise:
+                set arg_strs to arg_strs + emit_c_expr(a)
+            set is_first to 0
+
+        # Check if log call
+        if node.name == "log":
+            return "kz_builtin_log(" + arg_strs + ")"
+        let n_name = node.name
+        if length of n_name > 0:
+            let first_char = n_name[0]
+            if first_char >= "A" and first_char <= "Z":
+                return "kz_record_new_" + fn_id + "(" + arg_strs + ")"
+        return "kz_fn_" + fn_id + "(" + arg_strs + ")"
+
+    if k == "LIST":
+        let arg_strs = ""
+        let is_first = 1
+        for each item in node.children:
+            if is_first == 0:
+                set arg_strs to arg_strs + ", "
+            set arg_strs to arg_strs + emit_c_expr(item)
+            set is_first to 0
+        let l_ch = node.children
+        let cnt = length of l_ch
+        if cnt == 0:
+            return "kz_list_new(0)"
+        return "kz_list_from(" + cnt + ", (KzValue[]){ " + arg_strs + " })"
+
+    return "kz_nil()"
+
+action emit_c_stmt(stmt, ind):
+    let k = stmt.kind
+    let out = ""
+
+    if k == "LET":
+        let v_id = sanitize_c_id(stmt.name)
+        let val_e = stmt.children[0]
+        set out to ind + "KzValue " + v_id + " = " + emit_c_expr(val_e) + ";\n"
+        return out
+
+    if k == "SET":
+        let v_id = sanitize_c_id(stmt.name)
+        let val_e = stmt.children[0]
+        set out to ind + v_id + " = " + emit_c_expr(val_e) + ";\n"
+        return out
+
+    if k == "RETURN":
+        let r_ch = stmt.children
+        if (length of r_ch) > 0:
+            let val_e = r_ch[0]
+            set out to ind + "return " + emit_c_expr(val_e) + ";\n"
+        otherwise:
+            set out to ind + "return kz_nil();\n"
+        return out
+
+    if k == "EXPR":
+        let val_e = stmt.children[0]
+        set out to ind + "(void)(" + emit_c_expr(val_e) + ");\n"
+        return out
+
+    if k == "IF":
+        let cond_e = stmt.children[0]
+        let then_block = stmt.children[1]
+        let other_block = stmt.children[2]
+        set out to ind + "if (kz_is_truthy(" + emit_c_expr(cond_e) + ")) {\n"
+        for each s in then_block.children:
+            set out to out + emit_c_stmt(s, ind + "    ")
+        let oth_ch = other_block.children
+        if (length of oth_ch) > 0:
+            set out to out + ind + "} else {\n"
+            for each s in oth_ch:
+                set out to out + emit_c_stmt(s, ind + "    ")
+        set out to out + ind + "}\n"
+        return out
+
+    if k == "WHILE":
+        let cond_e = stmt.children[0]
+        let body_block = stmt.children[1]
+        set out to ind + "while (kz_is_truthy(" + emit_c_expr(cond_e) + ")) {\n"
+        for each s in body_block.children:
+            set out to out + emit_c_stmt(s, ind + "    ")
+        set out to out + ind + "}\n"
+        return out
+
+    if k == "FOR_EACH":
+        let var_id = sanitize_c_id(stmt.name)
+        let list_e = stmt.children[0]
+        let body_block = stmt.children[1]
+        set out to ind + "{\n"
+        set out to out + ind + "    KzValue _iter_target = " + emit_c_expr(list_e) + ";\n"
+        set out to out + ind + "    if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {\n"
+        set out to out + ind + "        size_t _len = _iter_target.as.list->len;\n"
+        set out to out + ind + "        for (size_t _i = 0; _i < _len; _i++) {\n"
+        set out to out + ind + "            KzValue " + var_id + " = _iter_target.as.list->items[_i];\n"
+        for each s in body_block.children:
+            set out to out + emit_c_stmt(s, ind + "            ")
+        set out to out + ind + "        }\n"
+        set out to out + ind + "    }\n"
+        set out to out + ind + "}\n"
+        return out
+
+    return out
+
+action emit_c_program(items):
+    let out = get_c_runtime_header()
+
+    # 1. Forward Declarations
+    set out to out + "/* --- Forward Declarations --- */\n"
+    for each item in items:
+        if item.kind == "RECORD":
+            let rec_id = sanitize_c_id(item.name)
+            let params = ""
+            let is_first = 1
+            for each f in item.children:
+                if is_first == 0:
+                    set params to params + ", "
+                set params to params + "KzValue " + sanitize_c_id(f.name)
+                set is_first = 0
+            if is_first == 1:
+                set params = "void"
+            set out to out + "static inline KzValue kz_record_new_" + rec_id + "(" + params + ");\n"
+        otherwise:
+            let fn_id = sanitize_c_id(item.name)
+            let params_node = item.children[0]
+            let params = ""
+            let is_first = 1
+            for each p in params_node.children:
+                if is_first == 0:
+                    set params to params + ", "
+                set params to params + "KzValue " + sanitize_c_id(p.name)
+                set is_first = 0
+            if is_first == 1:
+                set params = "void"
+            set out to out + "static KzValue kz_fn_" + fn_id + "(" + params + ");\n"
+
+    set out to out + "\n/* --- Record Constructors --- */\n"
+    for each item in items:
+        if item.kind == "RECORD":
+            let rec_id = sanitize_c_id(item.name)
+            let params = ""
+            let keys = ""
+            let vals = ""
+            let is_first = 1
+            for each f in item.children:
+                if is_first == 0:
+                    set params to params + ", "
+                    set keys to keys + ", "
+                    set vals to vals + ", "
+                set params to params + "KzValue " + sanitize_c_id(f.name)
+                set keys to keys + "\"" + f.name + "\""
+                set vals to vals + sanitize_c_id(f.name)
+                set is_first = 0
+            if is_first == 1:
+                set params = "void"
+            set out to out + "static inline KzValue kz_record_new_" + rec_id + "(" + params + ") {\n"
+            let r_fields = item.children
+            let cnt = length of r_fields
+            if cnt == 0:
+                set out to out + "    return kz_record_create(\"" + item.name + "\", 0, NULL, NULL);\n"
+            otherwise:
+                set out to out + "    static const char* _keys[] = { " + keys + " };\n"
+                set out to out + "    KzValue _vals[] = { " + vals + " };\n"
+                set out to out + "    return kz_record_create(\"" + item.name + "\", " + cnt + ", _keys, _vals);\n"
+            set out to out + "}\n\n"
+
+    set out to out + "/* --- Routines --- */\n"
+    for each item in items:
+        if item.kind != "RECORD":
+            let fn_id = sanitize_c_id(item.name)
+            let params_node = item.children[0]
+            let body_node = item.children[1]
+            let params = ""
+            let is_first = 1
+            for each p in params_node.children:
+                if is_first == 0:
+                    set params to params + ", "
+                set params to params + "KzValue " + sanitize_c_id(p.name)
+                set is_first = 0
+            if is_first == 1:
+                set params = "void"
+            set out to out + "static KzValue kz_fn_" + fn_id + "(" + params + ") {\n"
+            for each s in body_node.children:
+                set out to out + emit_c_stmt(s, "    ")
+            set out to out + "    return kz_nil();\n"
+            set out to out + "}\n\n"
+
+    # Main Entry Point
+    set out to out + "/* --- Main Entry Point --- */\n"
+    set out to out + "int main(int argc, char** argv) {\n"
+    let main_found = 0
+    for each item in items:
+        if item.name == "main":
+            set main_found = 1
+            let params_node = item.children[0]
+            let p_ch = params_node.children
+            let p_count = length of p_ch
+            if p_count == 0:
+                set out to out + "    (void)argc; (void)argv;\n"
+                set out to out + "    KzValue res = kz_fn__kz_main();\n"
+            otherwise:
+                let idx = 0
+                let call_args = ""
+                for each p in params_node.children:
+                    set out to out + "    KzValue arg_" + idx + " = kz_resolve_cli_arg(argc, argv, \"" + p.name + "\", " + idx + ");\n"
+                    if idx > 0:
+                        set call_args to call_args + ", "
+                    set call_args to call_args + "arg_" + idx
+                    set idx to idx + 1
+                set out to out + "    KzValue res = kz_fn__kz_main(" + call_args + ");\n"
+            set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
+            set out to out + "        if (floor(res.as.number) == res.as.number) { printf(\"%.0f\\n\", res.as.number); }\n"
+            set out to out + "        else { printf(\"%g\\n\", res.as.number); }\n"
+            set out to out + "    } else if (res.kind == KZ_VAL_STR) {\n"
+            set out to out + "        printf(\"%s\\n\", res.as.str ? res.as.str : \"\");\n"
+            set out to out + "    } else if (res.kind == KZ_VAL_BOOL) {\n"
+            set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
+            set out to out + "    }\n"
+    if main_found == 0:
+        set out to out + "    (void)argc; (void)argv;\n"
+        set out to out + "    printf(\"Kaze module loaded (no main entry)\\n\");\n"
+    set out to out + "    return 0;\n"
+    set out to out + "}\n"
+
+    return out
+# main.kaze — Pure Kaze Self-Hosted Compiler (Stage 1)
+
+action compile(src):
+    let tokens = tokenize(src)
+    let program = parse_program(tokens)
+    let c_code = emit_c_program(program)
+    return c_code
+
+action main(src):
+    if length of src == 0:
+        return "/* Kaze Stage 1 Compiler — No input provided */\n"
+    return compile(src)

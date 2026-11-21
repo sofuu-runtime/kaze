@@ -16,6 +16,7 @@ pub fn print_help() {
          \x20 compile <file.kaze>  Emit the .kazebc module (deterministic bytes)\n\
          \x20 to-machine <file.kaze>  Transpile human or machine syntax to canonical machine S-expr\n\
          \x20 to-human <file.kaze>    Transpile machine or human syntax to canonical human syntax\n\
+         \x20 emit-c <file.kaze>      Emit portable ANSI/ISO C99 source code\n\
          \x20 fmt <file.kaze>      Format source; prints to stdout by default\n\
          \x20 bench <file.kaze>    Run a mission repeatedly and report timings\n\
          \x20 selftest             Run the software checks\n\
@@ -495,6 +496,49 @@ fn cmd_to_human(argv: &[String]) -> i32 {
         Err(err) => {
             eprintln!("\x1b[31mError:\x1b[0m {}", kaze::KazeError::from(err).render());
             1
+        }
+    }
+}
+
+fn cmd_emit_c(argv: &[String]) -> i32 {
+    let flags = match parse_flags(argv) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("\x1b[31mError:\x1b[0m {}", e);
+            return 2;
+        }
+    };
+    if flags.want_help {
+        print_help();
+        return 0;
+    }
+    let Some(path) = flags.positional.first() else {
+        eprintln!("\x1b[31mError:\x1b[0m 'kaze emit-c' needs a .kaze file");
+        return 2;
+    };
+    let opts = kaze::c_codegen::CodegenOptions {
+        standalone: true,
+        entry: flags.entry.clone(),
+    };
+    let c_code = match kaze::emit_c_file(path, &opts) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+            return 1;
+        }
+    };
+    match flags.out {
+        Some(out_path) => {
+            if let Err(e) = std::fs::write(&out_path, &c_code) {
+                eprintln!("\x1b[31mError:\x1b[0m cannot write '{}': {}", out_path, e);
+                return 1;
+            }
+            println!("\x1b[32m✓\x1b[0m {} → {} ({} bytes)", path, out_path, c_code.len());
+            0
+        }
+        None => {
+            print!("{}", c_code);
+            0
         }
     }
 }
@@ -1115,6 +1159,7 @@ fn main() {
         "compile" => cmd_compile(rest),
         "to-machine" => cmd_to_machine(rest),
         "to-human" => cmd_to_human(rest),
+        "emit-c" => cmd_emit_c(rest),
         "fmt" => cmd_fmt(rest),
         "bench" => cmd_bench(rest),
         "selftest" => cmd_selftest(rest),

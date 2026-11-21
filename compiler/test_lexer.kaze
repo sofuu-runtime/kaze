@@ -1,0 +1,12 @@
+# test_lexer.kaze — Test the pure Kaze tokenizer
+use "./lexer.kaze"
+
+needs: log
+
+action main():
+    let src = "action add(a, b):\n    return a + b\n"
+    let tokens = tokenize(src)
+    log "Token count: " + (length of tokens)
+    for each t in tokens:
+        log t.kind + ": " + t.text
+    return length of tokens

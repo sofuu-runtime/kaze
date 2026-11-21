@@ -242,11 +242,13 @@ fn opcode_numbers_are_locked() {
         ("TRY_BEGIN", 44),
         ("TRY_END", 45),
         ("LINK_LOST", 46),
+        ("CALL_ROUTINE", 47),
+        ("NEWMAP", 48),
     ];
     for (name, number) in LOCK {
         let op = Op::from_u8(*number).unwrap_or_else(|| panic!("opcode {} is missing", number));
         assert_eq!(op.name(), *name, "opcode {} was renamed", number);
         assert_eq!(op as u8, *number);
     }
-    assert!(Op::from_u8(47).is_none(), "a new opcode needs a format bump");
+    assert!(Op::from_u8(49).is_none(), "a new opcode needs a format bump");
 }

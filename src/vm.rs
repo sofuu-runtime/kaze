@@ -74,10 +74,12 @@ pub struct Vm<'a> {
     locals: Vec<Value>,
     handlers: Vec<Handler>,
     verdict: Option<Verdict>,
+    call_depth: usize,
 }
 
 /// The stack is a fixed-size vector; a script cannot grow it without bound.
 const MAX_STACK: usize = 256;
+const MAX_CALL_DEPTH: usize = 128;
 
 /// Live `try` handlers. A catchable host failure unwinds to the innermost one.
 const MAX_HANDLERS: usize = 32;
@@ -121,6 +123,7 @@ impl<'a> Vm<'a> {
             locals: Vec::new(),
             handlers: Vec::new(),
             verdict: None,
+            call_depth: 0,
         }
     }
 
@@ -128,12 +131,80 @@ impl<'a> Vm<'a> {
     pub fn run_item(&mut self, item: &ItemCode, args: &[Value]) -> Result<Value, VmError> {
         self.stack.clear();
         self.handlers.clear();
+        self.call_depth = 0;
         self.locals = vec![Value::Unit; item.slots.max(item.params.len() as u8) as usize];
         for (i, a) in args.iter().enumerate().take(self.locals.len()) {
             self.locals[i] = *a;
         }
         self.verdict = None;
+        self.execute_item(item)
+    }
 
+    #[inline(never)]
+    fn call_routine(&mut self, item: &ItemCode, args: &[Value]) -> Result<Value, VmError> {
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(VmError::new("E_KAZE_OVERFLOW", "call stack overflow"));
+        }
+        self.call_depth += 1;
+        let saved_locals = std::mem::replace(
+            &mut self.locals,
+            vec![Value::Unit; (item.slots as usize).max(item.params.len())],
+        );
+        for (i, a) in args.iter().enumerate().take(self.locals.len()) {
+            self.locals[i] = *a;
+        }
+        let saved_handlers = std::mem::take(&mut self.handlers);
+
+        let res = self.execute_item(item);
+
+        self.locals = saved_locals;
+        self.handlers = saved_handlers;
+        self.call_depth -= 1;
+        res
+    }
+
+    #[inline(never)]
+    fn exec_call_routine(
+        &mut self,
+        w: u32,
+        pc: &mut usize,
+        code: &[u32],
+        line: u32,
+    ) -> Result<(), VmError> {
+        let imm = self.imm(code, *pc, line)? as usize;
+        *pc += 1;
+        let argc = field_a(w) as usize;
+        let mut args = vec![Value::Unit; argc];
+        for i in (0..argc).rev() {
+            args[i] = self.pop(line)?;
+        }
+        let target = self
+            .module
+            .items
+            .get(imm)
+            .ok_or_else(|| VmError::new("E_KAZE_BADCODE", "routine item out of range"))?;
+        let ret = self.call_routine(target, &args)?;
+        self.push(ret, line)
+    }
+
+    #[inline(never)]
+    fn exec_new_map(&mut self, w: u32, line: u32) -> Result<(), VmError> {
+        let n = field_a(w) as usize;
+        let mut entries = Vec::with_capacity(n);
+        for _ in 0..n {
+            let v = self.pop(line)?;
+            let k = self.pop(line)?;
+            entries.push((k, v));
+        }
+        entries.reverse();
+        let m = self
+            .heap
+            .push_map(entries)
+            .map_err(|msg| VmError { code: "E_KAZE_MEMORY", msg, line })?;
+        self.push(m, line)
+    }
+
+    fn execute_item(&mut self, item: &ItemCode) -> Result<Value, VmError> {
         let code = &item.code;
         let mut pc = 0usize;
         while pc < code.len() {
@@ -459,6 +530,12 @@ impl<'a> Vm<'a> {
                         .is_some_and(|silent| silent >= after_ms);
                     self.push(Value::Bool(lost), item.line)?;
                 }
+                Op::CallRoutine => {
+                    self.exec_call_routine(w, &mut pc, code, item.line)?;
+                }
+                Op::NewMap => {
+                    self.exec_new_map(w, item.line)?;
+                }
             }
         }
         Ok(Value::Unit)
@@ -624,6 +701,17 @@ impl<'a> Vm<'a> {
                 }
                 self.heap
                     .push_vec(sum)
+                    .map_err(|msg| VmError { code: "E_KAZE_MEMORY", msg, line })
+            }
+            (Value::Arr(x), Value::Arr(y)) => {
+                let a1 = self.heap.array(x);
+                let a2 = self.heap.array(y);
+                let cap = a1.map_or(0, |a| a.len()) + a2.map_or(0, |a| a.len());
+                let mut combined = Vec::with_capacity(cap);
+                if let Some(a) = a1 { combined.extend_from_slice(a); }
+                if let Some(a) = a2 { combined.extend_from_slice(a); }
+                self.heap
+                    .push_array(combined)
                     .map_err(|msg| VmError { code: "E_KAZE_MEMORY", msg, line })
             }
             (a, b) => Err(VmError {

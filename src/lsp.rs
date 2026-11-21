@@ -302,6 +302,7 @@ impl Server {
                 crate::ast::ItemKind::Action
                 | crate::ast::ItemKind::Check
                 | crate::ast::ItemKind::Filter => 12,
+                crate::ast::ItemKind::Record(_) => 23,
                 crate::ast::ItemKind::When(_) | crate::ast::ItemKind::Every(_) => 24,
             };
             out.push(json!({
@@ -641,6 +642,7 @@ fn hover_text(word: &str, document: &str) -> Option<String> {
                 crate::ast::ItemKind::Action => "action",
                 crate::ast::ItemKind::Check => "check",
                 crate::ast::ItemKind::Filter => "filter",
+                crate::ast::ItemKind::Record(_) => "record",
                 crate::ast::ItemKind::When(_) => "when hook",
                 crate::ast::ItemKind::Every(_) => "every hook",
             };

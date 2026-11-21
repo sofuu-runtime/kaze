@@ -1,0 +1,10 @@
+# token.kaze — Kaze Token representations
+
+record Token:
+    kind: str
+    text: str
+    line: num
+    col: num
+
+action make_token(k, t, l, c):
+    return Token(kind: k, text: t, line: l, col: c)

@@ -13,6 +13,7 @@
 
 pub mod arena;
 pub mod ast;
+pub mod c_codegen;
 pub mod caps;
 pub mod checker;
 pub mod compiler;
@@ -369,6 +370,57 @@ pub fn check_source(src: &str, name: &str) -> Result<(), KazeError> {
 
 pub fn check_file(path: &str) -> Result<(), KazeError> {
     prepare_file(path).map(|_| ())
+}
+
+/// Emit ANSI C99 source code.
+pub fn emit_c_source(src: &str, name: &str, opts: &c_codegen::CodegenOptions) -> Result<String, KazeError> {
+    let program = parser::parse(src).map_err(|e| {
+        KazeError::new("E_KAZE_PARSE", e.render(name))
+    })?;
+    checker::check(&program).map_err(|errors| {
+        let mut message = String::new();
+        for (i, err) in errors.iter().enumerate() {
+            if i > 0 {
+                message.push('\n');
+            }
+            message.push_str(&err.render(name));
+        }
+        KazeError::new("E_KAZE_CHECK", message)
+    })?;
+    Ok(c_codegen::emit_c(&program, opts))
+}
+
+pub fn emit_c_file(path: &str, opts: &c_codegen::CodegenOptions) -> Result<String, KazeError> {
+    let src = read_source(path)?;
+    let (base, root_origin) = if path == "-" {
+        (PathBuf::from("."), "-".to_string())
+    } else {
+        let base = Path::new(path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        let origin = Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+        (base, origin)
+    };
+    let mut loader = Loader::new(base.clone());
+    let program = parser::parse(&src).map_err(|e| {
+        KazeError::new("E_KAZE_PARSE", e.render(path))
+    })?;
+    let program = loader.expand(program, &root_origin, &base)?;
+    checker::check(&program).map_err(|errors| {
+        let mut message = String::new();
+        for (i, err) in errors.iter().enumerate() {
+            if i > 0 {
+                message.push('\n');
+            }
+            message.push_str(&err.render(path));
+        }
+        KazeError::new("E_KAZE_CHECK", message)
+    })?;
+    Ok(c_codegen::emit_c(&program, opts))
 }
 
 pub fn compile_source(src: &str, name: &str) -> Result<Module, KazeError> {

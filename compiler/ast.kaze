@@ -1,0 +1,51 @@
+# ast.kaze — Kaze AST node representations
+
+record AstNode:
+    kind: str
+    name: str
+    val_str: str
+    val_num: num
+    children: list
+    line: num
+
+action make_node(k, n, vs, vn, ch, l):
+    return AstNode(kind: k, name: n, val_str: vs, val_num: vn, children: ch, line: l)
+
+action make_ident(name, l):
+    return AstNode(kind: "IDENT", name: name, val_str: "", val_num: 0, children: [], line: l)
+
+action make_num(n, l):
+    return AstNode(kind: "NUM", name: "", val_str: "", val_num: n, children: [], line: l)
+
+action make_str(s, l):
+    return AstNode(kind: "STR", name: "", val_str: s, val_num: 0, children: [], line: l)
+
+action make_bool(b, l):
+    let vs = "false"
+    if b:
+        set vs to "true"
+    return AstNode(kind: "BOOL", name: "", val_str: vs, val_num: 0, children: [], line: l)
+
+action make_bin(op, left, right, l):
+    return AstNode(kind: "BIN", name: op, val_str: "", val_num: 0, children: [left, right], line: l)
+
+action make_call(target, args, l):
+    return AstNode(kind: "CALL", name: target, val_str: "", val_num: 0, children: args, line: l)
+
+action make_field(base, field, l):
+    return AstNode(kind: "FIELD", name: field, val_str: "", val_num: 0, children: [base], line: l)
+
+action make_index(coll, idx, l):
+    return AstNode(kind: "INDEX", name: "", val_str: "", val_num: 0, children: [coll, idx], line: l)
+
+action make_len(inner, l):
+    return AstNode(kind: "LEN", name: "", val_str: "", val_num: 0, children: [inner], line: l)
+
+action make_list_expr(items, l):
+    return AstNode(kind: "LIST", name: "", val_str: "", val_num: 0, children: items, line: l)
+
+action make_stmt(kind, name, children, l):
+    return AstNode(kind: kind, name: name, val_str: "", val_num: 0, children: children, line: l)
+
+action make_item(kind, name, params, body, l):
+    return AstNode(kind: kind, name: name, val_str: "", val_num: 0, children: [params, body], line: l)

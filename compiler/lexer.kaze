@@ -1,0 +1,167 @@
+# lexer.kaze — Pure Kaze Tokenizer
+use "./token.kaze"
+
+action is_alpha(c):
+    if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_":
+        return 1
+    return 0
+
+action is_digit(c):
+    if c >= "0" and c <= "9":
+        return 1
+    return 0
+
+action is_alphanumeric(c):
+    if is_alpha(c) == 1 or is_digit(c) == 1:
+        return 1
+    return 0
+
+action tokenize(src):
+    let tokens = []
+    let len = length of src
+    let i = 0
+    let line = 1
+    let col = 1
+
+    let indent_stack = [0]
+
+    while i < len:
+        let c = src[i]
+
+        # 1. Skip spaces and tabs
+        if c == " " or c == "\t":
+            set i to i + 1
+            set col to col + 1
+
+        # 2. Comments
+        otherwise:
+            if c == "#":
+                while i < len and src[i] != "\n":
+                    set i to i + 1
+                # The newline itself will be processed next
+
+            # 3. Newlines and Indentation
+            otherwise:
+                if c == "\n":
+                    let nl_tok = make_token("NEWLINE", "\n", line, col)
+                    set tokens to tokens + [nl_tok]
+                    set i to i + 1
+                    set line to line + 1
+                    set col to 1
+
+                    # Count leading spaces on the next line
+                    let spaces = 0
+                    while i < len and src[i] == " ":
+                        set spaces to spaces + 1
+                        set i to i + 1
+                        set col to col + 1
+
+                    # Ignore blank or comment-only lines
+                    if i < len and src[i] != "\n" and src[i] != "#":
+                        let curr_ind = indent_stack[(length of indent_stack) - 1]
+                        if spaces > curr_ind:
+                            let ind_tok = make_token("INDENT", "", line, col)
+                            set tokens to tokens + [ind_tok]
+                            set indent_stack to indent_stack + [spaces]
+                        otherwise:
+                            if spaces < curr_ind:
+                                while (length of indent_stack) > 1 and indent_stack[(length of indent_stack) - 1] > spaces:
+                                    let ded_tok = make_token("DEDENT", "", line, col)
+                                    set tokens to tokens + [ded_tok]
+                                    # pop indent stack by slicing or list rebuild
+                                    let new_stack = []
+                                    let stk_len = (length of indent_stack) - 1
+                                    let si = 0
+                                    while si < stk_len:
+                                        set new_stack to new_stack + [indent_stack[si]]
+                                        set si to si + 1
+                                    set indent_stack to new_stack
+
+                # 4. String literal
+                otherwise:
+                    if c == "\"":
+                        let start_col = col
+                        set i to i + 1
+                        set col to col + 1
+                        let text = ""
+                        while i < len and src[i] != "\"":
+                            if src[i] == "\\":
+                                set i to i + 1
+                                set col to col + 1
+                                if i < len:
+                                    if src[i] == "n":
+                                        set text to text + "\n"
+                                    otherwise:
+                                        if src[i] == "t":
+                                            set text to text + "\t"
+                                        otherwise:
+                                            set text to text + src[i]
+                            otherwise:
+                                set text to text + src[i]
+                            set i to i + 1
+                            set col to col + 1
+                        if i < len and src[i] == "\"":
+                            set i to i + 1
+                            set col to col + 1
+                        let tok = make_token("STR", text, line, start_col)
+                        set tokens to tokens + [tok]
+
+                    # 5. Number literal
+                    otherwise:
+                        if is_digit(c) == 1:
+                            let start_col = col
+                            let text = ""
+                            while i < len and (is_digit(src[i]) == 1 or src[i] == "."):
+                                set text to text + src[i]
+                                set i to i + 1
+                                set col to col + 1
+                            let tok = make_token("NUM", text, line, start_col)
+                            set tokens to tokens + [tok]
+
+                        # 6. Identifier or Keyword
+                        otherwise:
+                            if is_alpha(c) == 1:
+                                let start_col = col
+                                let text = ""
+                                while i < len and is_alphanumeric(src[i]) == 1:
+                                    set text to text + src[i]
+                                    set i to i + 1
+                                    set col to col + 1
+                                let tok = make_token("IDENT", text, line, start_col)
+                                set tokens to tokens + [tok]
+
+                            # 7. Two-character operators
+                            otherwise:
+                                let is_two = 0
+                                if i + 1 < len:
+                                    let next_c = src[i + 1]
+                                    let two_s = c + next_c
+                                    if two_s == "==" or two_s == "!=" or two_s == "<=" or two_s == ">=":
+                                        let tok = make_token("OP", two_s, line, col)
+                                        set tokens to tokens + [tok]
+                                        set i to i + 2
+                                        set col to col + 2
+                                        set is_two to 1
+
+                                # 8. Single-character symbols
+                                if is_two == 0:
+                                    let tok = make_token("SYM", c, line, col)
+                                    set tokens to tokens + [tok]
+                                    set i to i + 1
+                                    set col to col + 1
+
+    # Emit remaining DEDENT tokens at EOF
+    while (length of indent_stack) > 1:
+        let ded_tok = make_token("DEDENT", "", line, col)
+        set tokens to tokens + [ded_tok]
+        let new_stack = []
+        let stk_len = (length of indent_stack) - 1
+        let si = 0
+        while si < stk_len:
+            set new_stack to new_stack + [indent_stack[si]]
+            set si to si + 1
+        set indent_stack to new_stack
+
+    let eof_tok = make_token("EOF", "", line, col)
+    set tokens to tokens + [eof_tok]
+    return tokens

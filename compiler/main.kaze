@@ -1,0 +1,17 @@
+# main.kaze — Pure Kaze Self-Hosted Compiler (Stage 1)
+use "./token.kaze"
+use "./ast.kaze"
+use "./lexer.kaze"
+use "./parser.kaze"
+use "./codegen.kaze"
+
+action compile(src):
+    let tokens = tokenize(src)
+    let program = parse_program(tokens)
+    let c_code = emit_c_program(program)
+    return c_code
+
+action main(src):
+    if length of src == 0:
+        return "/* Kaze Stage 1 Compiler — No input provided */\n"
+    return compile(src)

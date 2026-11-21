@@ -95,6 +95,11 @@ pub enum Op {
     /// wide: milliseconds of link silence; push true once the link has been
     /// silent at least that long (false when there is no live link)
     LinkLost = 46,
+    // ── v1.1: self-hosting & systems routines ───────────────────────
+    /// a: argument count; wide: item index in the module's items table
+    CallRoutine = 47,
+    /// a: number of key-value pairs (pops 2*a: key, val pairs); pushes a map
+    NewMap = 48,
 }
 
 impl Op {
@@ -147,6 +152,8 @@ impl Op {
             44 => Op::TryBegin,
             45 => Op::TryEnd,
             46 => Op::LinkLost,
+            47 => Op::CallRoutine,
+            48 => Op::NewMap,
             _ => return None,
         })
     }
@@ -167,6 +174,7 @@ impl Op {
                 | Op::FuelTick
                 | Op::TryBegin
                 | Op::LinkLost
+                | Op::CallRoutine
         )
     }
 
@@ -219,6 +227,8 @@ impl Op {
             Op::TryBegin => "TRY_BEGIN",
             Op::TryEnd => "TRY_END",
             Op::LinkLost => "LINK_LOST",
+            Op::CallRoutine => "CALL_ROUTINE",
+            Op::NewMap => "NEWMAP",
         }
     }
 }
@@ -638,6 +648,22 @@ fn verify_indices(
                 return Err(format!("{}: VECNEW width {} is not 2 or 3", here(), insn.a));
             }
         }
+        Op::CallRoutine => {
+            let imm = insn.imm.unwrap_or(u32::MAX) as usize;
+            let target = module
+                .items
+                .get(imm)
+                .ok_or_else(|| format!("{}: routine item {} is out of range", here(), imm))?;
+            if insn.a as usize != target.params.len() {
+                return Err(format!(
+                    "{}: CALL_ROUTINE says {} arguments but '{}' takes {}",
+                    here(),
+                    insn.a,
+                    target.name,
+                    target.params.len()
+                ));
+            }
+        }
         Op::Jmp | Op::JmpIfFalse | Op::JmpIfTrue | Op::Jeq | Op::Jne => {
             verify_jump(item, insn, boundaries)?;
         }
@@ -707,7 +733,8 @@ fn stack_effect(op: Op, a: u8) -> Option<(usize, usize)> {
         | Op::Sqrt
         | Op::DegToRad
         | Op::RadToDeg => (1, 1),
-        Op::CallCap => (a, 1),
+        Op::CallCap | Op::CallRoutine => (a, 1),
+        Op::NewMap => (a * 2, 1),
         Op::Jmp | Op::FuelTick | Op::TryBegin | Op::TryEnd | Op::RetUnit | Op::Halt | Op::Trap => {
             (0, 0)
         }

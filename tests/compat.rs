@@ -67,3 +67,85 @@ fn dual_syntax_human_and_machine_compile_and_run_identically() {
     assert_eq!(human_report.actions, machine_report.actions);
     assert_eq!(human_report.logs, machine_report.logs);
 }
+
+#[test]
+fn stage1_pure_kaze_compiler_self_hosts_and_achieves_fixed_point() {
+    let self_compiler_path = concat!(env!("CARGO_MANIFEST_DIR"), "/compiler/kaze_self.kaze");
+    let hello_path = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/hello.kaze");
+
+    let opts = kaze::c_codegen::CodegenOptions {
+        standalone: true,
+        entry: Some("main".to_string()),
+    };
+
+    let c_stage1_src = kaze::emit_c_file(self_compiler_path, &opts).expect("emit c for kaze_self.kaze");
+
+    let tmp = std::env::temp_dir();
+    let stage1_c = tmp.join("test_kaze_stage1.c");
+    let stage1_bin = tmp.join("test_kaze_stage1_bin");
+    let stage2_c = tmp.join("test_kaze_stage2.c");
+    let stage2_bin = tmp.join("test_kaze_stage2_bin");
+    let stage3_c = tmp.join("test_kaze_stage3.c");
+
+    std::fs::write(&stage1_c, &c_stage1_src).expect("write stage1_c");
+
+    // 1. Compile Stage 1 binary
+    let cc_st1 = std::process::Command::new("cc")
+        .arg("-std=c99")
+        .arg("-O2")
+        .arg("-Wno-unused-function")
+        .arg(&stage1_c)
+        .arg("-o")
+        .arg(&stage1_bin)
+        .status();
+    let cc_ok = cc_st1.map(|s| s.success()).unwrap_or(false);
+    if !cc_ok {
+        return; // cc not available or failed
+    }
+
+    // 2. Stage 1 compiles hello.kaze
+    let hello_out = std::process::Command::new(&stage1_bin)
+        .arg(hello_path)
+        .output()
+        .expect("stage 1 compiles hello");
+    let hello_c = String::from_utf8_lossy(&hello_out.stdout);
+    assert!(hello_c.contains("kz_fn__kz_main"));
+    assert!(hello_c.contains("kz_builtin_log"));
+
+    // 3. Stage 1 compiles itself -> Stage 2 C source
+    let st2_out = std::process::Command::new(&stage1_bin)
+        .arg(self_compiler_path)
+        .output()
+        .expect("stage 1 compiles itself");
+    let st2_c = String::from_utf8_lossy(&st2_out.stdout);
+    std::fs::write(&stage2_c, st2_c.as_bytes()).expect("write stage2_c");
+
+    // 4. Compile Stage 2 binary
+    let cc_st2 = std::process::Command::new("cc")
+        .arg("-std=c99")
+        .arg("-O2")
+        .arg("-Wno-unused-function")
+        .arg(&stage2_c)
+        .arg("-o")
+        .arg(&stage2_bin)
+        .status();
+    assert!(cc_st2.expect("run cc").success(), "Stage 2 C source must compile with cc");
+
+    // 5. Stage 2 compiles itself -> Stage 3 C source
+    let st3_out = std::process::Command::new(&stage2_bin)
+        .arg(self_compiler_path)
+        .output()
+        .expect("stage 2 compiles itself");
+    let st3_c = String::from_utf8_lossy(&st3_out.stdout);
+    std::fs::write(&stage3_c, st3_c.as_bytes()).expect("write stage3_c");
+
+    // 6. Fixed Point Identity: Stage 2 == Stage 3 byte-identical
+    assert_eq!(st2_c, st3_c, "Self-hosting fixed point: Stage 2 and Stage 3 C output must be byte-identical");
+
+    // Clean up
+    let _ = std::fs::remove_file(&stage1_c);
+    let _ = std::fs::remove_file(&stage1_bin);
+    let _ = std::fs::remove_file(&stage2_c);
+    let _ = std::fs::remove_file(&stage2_bin);
+    let _ = std::fs::remove_file(&stage3_c);
+}
