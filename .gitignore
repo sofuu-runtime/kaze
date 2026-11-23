@@ -1,4 +1,5 @@
 /target/
+/bin/
 *.kazebc
 .DS_Store
 **/*.rs.bk

@@ -1,0 +1,10 @@
+# expect: ok - a capability read inside try: is recoverable, so no fallback is needed
+needs: sensor
+
+action sample() -> num:
+    try:
+        let t = sensor.temperature()
+        return t
+    otherwise with err:
+        let t = 0
+        return t

@@ -1,0 +1,4 @@
+# expect: ok - the fallback covers the field read itself
+action read_value(reading) -> num:
+    let v = reading.value otherwise 0
+    return v

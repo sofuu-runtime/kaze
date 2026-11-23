@@ -1,0 +1,29 @@
+# ==============================================================================
+# Kaze Language Repository (.gitattributes)
+# GitHub Linguist Classification & Statistics Configuration
+# ==============================================================================
+
+# 1. Kaze Source Files
+*.kaze linguist-detectable=true
+compiler/*.kaze linguist-detectable=true
+examples/*.kaze linguist-detectable=true
+
+# 2. Exclude Generated C & Runtime Substrates from Statistics
+dist/* linguist-vendored
+dist/**/*.c linguist-vendored
+dist/**/*.h linguist-vendored
+
+# 3. Exclude Shell & Python Tooling Scripts from Statistics
+scripts/* linguist-vendored
+scripts/**/*.sh linguist-vendored
+scripts/**/*.py linguist-vendored
+
+# 4. Exclude Editor Extensions (Excludes JavaScript/VSCode glue from stats)
+editors/* linguist-vendored
+editors/** linguist-vendored
+
+# 5. Exclude Test Suites & Golden Fixtures from Statistics
+tests/* linguist-documentation
+tests/**/*.rs linguist-documentation
+tests/**/*.golden linguist-documentation
+tests/fixtures/* linguist-documentation

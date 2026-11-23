@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-PARTS="compiler/token.kaze compiler/ast.kaze compiler/lexer.kaze compiler/parser.kaze compiler/checker.kaze compiler/machine.kaze compiler/codegen.kaze compiler/main.kaze"
+PARTS="compiler/token.kaze compiler/ast.kaze compiler/lexer.kaze compiler/parser.kaze compiler/checker.kaze compiler/isa.kaze compiler/machine.kaze compiler/codegen.kaze compiler/lsp.kaze compiler/main.kaze"
 OUT="compiler/kaze_self.kaze"
 
 build() {

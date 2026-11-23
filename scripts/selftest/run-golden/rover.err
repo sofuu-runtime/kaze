@@ -1,0 +1,1 @@
+E_CAP_MISSING: this binary has no host backend for 'lidar' (needed by 'lidar.front_distance'); run the script with the interpreter and a granted backend, or build with one

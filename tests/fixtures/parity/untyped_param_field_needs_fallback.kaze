@@ -1,0 +1,4 @@
+# expect: E_KAZE_MISSING_FALLBACK - a field of a parameter that came from outside
+action read_value(reading) -> num:
+    let v = reading.value
+    return v

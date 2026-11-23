@@ -1,0 +1,8 @@
+# expect: E_KAZE_MISSING_FALLBACK - a missing field is fatal even inside try:
+action read_value(reading) -> num:
+    try:
+        let v = reading.value
+        return v
+    otherwise with err:
+        let v = 0
+        return v

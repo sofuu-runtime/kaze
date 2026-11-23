@@ -1,0 +1,6 @@
+# expect: E_KAZE_MISSING_FALLBACK - geo resolves through the device family
+needs: device
+
+action main() -> num:
+    let g = geo.read_gpio("fan")
+    return g

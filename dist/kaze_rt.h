@@ -29,6 +29,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdlib.h>   /* strtod, in kz_format_number */
 #include <stdio.h>
 #include <math.h>
 #include <time.h>
@@ -121,7 +122,8 @@ typedef enum kaze_code_t {
     KAZE_ERR_DIV0,             /* "E_KAZE_DIV0" — integer or float divide by zero */
     KAZE_ERR_MATH,             /* "E_KAZE_MATH" — a non-finite float result */
     KAZE_ERR_SAFETY_VIOLATION, /* "E_SAFETY_VIOLATION" — watchdog fail-closed */
-    KAZE_ERR_BADARG            /* "E_KAZE_BADARG" — NULL/invalid runtime argument */
+    KAZE_ERR_BADARG,           /* "E_KAZE_BADARG" — NULL/invalid runtime argument */
+    KAZE_ERR_TYPE              /* "E_KAZE_TYPE" — an operation on a value of the wrong type */
 } kaze_code_t;
 
 /* A handler receives the code string and a human message and returns an int
@@ -149,47 +151,90 @@ int kaze_trap(kaze_code_t code, const char *message);
 /* Linear bump arena                                                          */
 /* ------------------------------------------------------------------------- */
 
-/* One arena per run. Allocation bumps a byte cursor; there is no per-object
- * free and no fragmentation. Reset returns the whole run's memory at once,
- * which is the property a 10 Hz controller needs: bounded and O(1). */
+/* One arena per run, made of one or more blocks. Allocation bumps a byte
+ * cursor inside the current block; there is no per-object free and no
+ * fragmentation inside a block. When a request does not fit the current
+ * block, a heap arena chains another block instead of failing the run, so the
+ * initial capacity is a starting point rather than an upper bound. Reset
+ * returns the run's memory at once, which is the property a 10 Hz controller
+ * needs: allocation is bounded work and the reset is a chain walk, not a
+ * per-object sweep.
+ *
+ * A caller-owned arena (kaze_arena_init) is the exception: it owns exactly the
+ * storage the caller handed it, never allocates another block, and reports
+ * E_KAZE_OOM when that buffer is full. */
+typedef struct kaze_arena_block_t {
+    struct kaze_arena_block_t *next; /* next (newer) block; NULL at the current one */
+    void *raw;                       /* malloc pointer for this block: what free() takes */
+    uint8_t *data;                   /* 8-byte aligned usable bytes */
+    size_t cap;                      /* usable bytes at data */
+    size_t used;                     /* bytes handed out from this block */
+} kaze_arena_block_t;
+
 typedef struct kaze_arena_t {
-    uint8_t *base;   /* first byte the cursor may use (8-byte aligned) */
-    size_t cap;      /* usable bytes from base */
-    size_t offset;   /* next free byte; may be unaligned, returned pointers are not */
+    uint8_t *base;   /* current block's first allocatable byte (8-byte aligned) */
+    size_t cap;      /* current block's usable bytes */
+    size_t offset;   /* current block's next free byte; returned pointers are aligned */
     bool failed;     /* sticky: some allocation in this run did not fit */
-    bool owned;      /* base came from kaze_arena_init_heap */
-    void *raw;       /* the pointer to hand back to free(); init_heap only */
+    bool owned;      /* blocks came from kaze_arena_init_heap */
+    void *raw;       /* first block's malloc pointer; init_heap only */
+    kaze_arena_block_t *first; /* anchor block of the chain; NULL for caller storage */
+    kaze_arena_block_t *cur;   /* block that base/cap/offset describe */
 } kaze_arena_t;
+
+/* Chained blocks grow geometrically from the initial capacity up to this many
+ * bytes each. A single request larger than the cap still succeeds: it gets a
+ * dedicated block of its own size. Override at build time with
+ * -DKAZE_ARENA_BLOCK_MAX_BYTES=<bytes> (e.g. on a memory-constrained target). */
+#ifndef KAZE_ARENA_BLOCK_MAX_BYTES
+#define KAZE_ARENA_BLOCK_MAX_BYTES ((size_t)64u * 1024u * 1024u)
+#endif
 
 /* Bind an arena to storage the caller owns (stack buffer, static array, or a
  * slice of a larger allocation). A misaligned buffer costs at most 7 leading
- * bytes; every allocation out of the arena is still 8-byte aligned. */
+ * bytes; every allocation out of the arena is still 8-byte aligned. This
+ * arena cannot grow: when the buffer is full, kmalloc traps E_KAZE_OOM. */
 void kaze_arena_init(kaze_arena_t *arena, void *buffer, size_t capacity);
 
 #ifndef KAZE_NO_HEAP
-/* The one place the runtime touches malloc. For a fixed-memory device, use
- * kaze_arena_init with a static buffer instead and compile KAZE_NO_HEAP. */
+/* Create a heap arena whose first block holds exactly capacity usable bytes.
+ * capacity is also the growth hint for later blocks: each new block takes
+ * twice the current one, capped at KAZE_ARENA_BLOCK_MAX_BYTES, and is always
+ * large enough for the request that triggered it. Re-initialising an arena
+ * that still owns blocks leaks them; call kaze_arena_free first. For a
+ * fixed-memory device, use kaze_arena_init with a static buffer instead and
+ * compile KAZE_NO_HEAP. */
 bool kaze_arena_init_heap(kaze_arena_t *arena, size_t capacity);
+
+/* Release every block in the chain and clear the header. */
 void kaze_arena_free(kaze_arena_t *arena);
 #endif
 
-/* O(1) bump allocation, 8-byte aligned. Returns NULL and sets arena->failed
- * when the request does not fit; the arena state is unchanged in that case, so
- * a smaller request afterwards still succeeds. size == 0 consumes no bytes. */
+/* Bump allocation from the current block, 8-byte aligned. When the request
+ * does not fit, a heap arena chains a new block sized max(size, 2 x the current
+ * block), capped at KAZE_ARENA_BLOCK_MAX_BYTES, and allocates there;
+ * caller-owned storage has nowhere to grow, so it returns NULL and sets
+ * arena->failed in that case. A failed request leaves the arena state
+ * unchanged, so a smaller request afterwards still succeeds. size == 0 consumes
+ * no bytes and never triggers growth. */
 void *kmalloc(kaze_arena_t *arena, size_t size);
 
-/* Bulk free: the offset goes to zero and the capacity stays. Clears the
- * failed flag, because the run that ran out of memory is over. Pointers into
- * the arena are dead after this call. */
+/* Bulk free: every chained block is released, the first block is kept with an
+ * empty cursor, so the growth hint is the original capacity again. The failed
+ * flag is cleared, because the run that ran out of memory is over. Pointers
+ * into the arena are dead after this call. */
 void kaze_arena_reset(kaze_arena_t *arena);
 
 /* Pre-flight: true when size more bytes (plus worst-case alignment padding)
- * fit. On false it also records E_KAZE_OOM and sets arena->failed, so a caller
- * can choose a smaller plan before allocating anything. */
+ * can be served. On a growable heap arena that does not fit the current block,
+ * require reserves the block that will serve the plan, so true means the
+ * storage exists; on caller-owned storage it only checks the bound buffer. On
+ * false it records E_KAZE_OOM and sets arena->failed, so a caller can choose a
+ * smaller plan before allocating anything. */
 bool kaze_arena_require(kaze_arena_t *arena, size_t size);
 
-size_t kaze_arena_used(const kaze_arena_t *arena);      /* bytes consumed */
-size_t kaze_arena_capacity(const kaze_arena_t *arena);  /* bytes usable */
+size_t kaze_arena_used(const kaze_arena_t *arena);      /* bytes consumed across the chain */
+size_t kaze_arena_capacity(const kaze_arena_t *arena);  /* bytes usable across the chain */
 bool kaze_arena_failed(const kaze_arena_t *arena);      /* sticky OOM flag */
 
 /* ------------------------------------------------------------------------- */
@@ -423,3 +468,4 @@ bool kaze_install_cleanup_signal_handlers(void);
 #endif
 
 #endif /* KAZE_RT_H */
+

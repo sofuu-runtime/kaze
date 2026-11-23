@@ -423,7 +423,11 @@ action tokenize(src):
                     # Ignore blank or comment-only lines, and lines inside
                     # brackets: indentation there is layout, not structure.
                     if bracket_depth > 0:
-                        set spaces to spaces
+                        # Indentation inside brackets is layout, not structure, so the
+                        # count is left as it stands. It was `set spaces to spaces`,
+                        # which emits a self-assignment and a warning; + 0 says the
+                        # same thing to the compiler without the warning.
+                        set spaces to spaces + 0
                     otherwise:
                         if i < len and (src[i] otherwise "x") != "\n" and (src[i] otherwise "x") != "#":
                             let curr_ind = indent_stack[(length of indent_stack) - 1] otherwise 0
@@ -475,10 +479,20 @@ action tokenize(src):
                                 set text to text + (src[i] otherwise "")
                             set i to i + 1
                             set col to col + 1
+                        # A string that never closes is a parse error, not something to
+                        # recover from: handing the parser a token it cannot read makes
+                        # the checker report E_KAZE_PARSE, which is what the reference
+                        # engine does. (Recovering here meant `return "unclosed` passed
+                        # `check`.)
+                        let closed = 0
                         if i < len and (src[i] otherwise "x") == "\"":
+                            set closed to 1
                             set i to i + 1
                             set col to col + 1
-                        let tok = make_token("STR", text, line, start_col, start)
+                        let kind = "STR"
+                        if closed == 0:
+                            set kind to "UNTERMINATED_STR"
+                        let tok = make_token(kind, text, line, start_col, start)
                         let acc4 = push_tok(chunks, chunk, chunk_len, tok)
                         set chunks to acc4[0] otherwise []
                         set chunk to acc4[1] otherwise []
@@ -1730,38 +1744,30 @@ action cap_name_known(w):
         return 1
     return 0
 
+# The capability surface the compiler knows: one entry per family.verb. This is the
+# single source of truth - op_known reads it, and `kaze surface` prints it so
+# scripts/kaze-drift-check.sh can compare the standalone compiler with the embedded
+# product engine. Keeping it as data rather than an if-chain is what makes the drift
+# claim checkable at all.
+action cap_verbs() -> list:
+    return [
+        "drone.arm", "drone.land", "drone.rtl", "drone.hold", "drone.stop",
+        "drone.takeoff", "drone.goto", "drone.telemetry",
+        "rover.forward", "rover.backward", "rover.turn_left", "rover.turn_right",
+        "rover.stop", "rover.telemetry",
+        "sensor.temperature", "sensor.humidity", "sensor.distance",
+        "sensor.front_distance", "sensor.read", "sensor.telemetry",
+        "device.set_relay", "device.pulse", "device.read_gpio", "device.set_duty",
+        "memory.save", "memory.recall",
+        "policy.detects", "policy.detect", "policy.allow", "policy.reject",
+        "log.info", "log.warn", "log.error", "log.debug",
+        "alert.send",
+        "ai.prompt", "ai.complete", "ai.classify",
+        "tool.call", "tool.run"
+    ]
+
 action op_known(family, op):
-    if family == "drone":
-        if op == "arm" or op == "land" or op == "rtl" or op == "hold" or op == "stop" or op == "takeoff" or op == "goto" or op == "telemetry":
-            return 1
-    if family == "rover":
-        if op == "forward" or op == "backward" or op == "turn_left" or op == "turn_right" or op == "stop" or op == "telemetry":
-            return 1
-    if family == "sensor":
-        if op == "temperature" or op == "humidity" or op == "distance" or op == "front_distance" or op == "read" or op == "telemetry":
-            return 1
-    if family == "device":
-        if op == "set_relay" or op == "pulse" or op == "read_gpio" or op == "set_duty":
-            return 1
-    if family == "memory":
-        if op == "save" or op == "recall":
-            return 1
-    if family == "policy":
-        if op == "detects" or op == "detect" or op == "allow" or op == "reject":
-            return 1
-    if family == "log":
-        if op == "info" or op == "warn" or op == "error" or op == "debug":
-            return 1
-    if family == "alert":
-        if op == "send":
-            return 1
-    if family == "ai":
-        if op == "prompt" or op == "complete" or op == "classify":
-            return 1
-    if family == "tool":
-        if op == "call" or op == "run":
-            return 1
-    return 0
+    return list_has(cap_verbs(), family + "." + op)
 
 action pure_builtin(name):
     if name == "sin" or name == "cos" or name == "tan" or name == "sqrt" or name == "atan2":
@@ -1961,7 +1967,67 @@ action find_len_fact(facts, ck):
 
 # ── the expression walk ────────────────────────────────────────────────
 
+# ── unit dimensions ────────────────────────────────────────────────────
+# Enough algebra to refuse adding a length to a time, which the reference engine
+# reports as E_KAZE_UNIT_MISMATCH. Literals and in-unit wrappers carry a dimension;
+# anything else is 'unknown' and stays quiet, because a false positive here would
+# reject a correct program.
+
+action dimension_of_unit(u: string) -> string:
+    if u == "m" or u == "km" or u == "cm" or u == "mm":
+        return "length"
+    if u == "seconds" or u == "ms" or u == "hours" or u == "minutes":
+        return "time"
+    if u == "kg" or u == "gram":
+        return "mass"
+    if u == "Celsius" or u == "Kelvin":
+        return "temperature"
+    if u == "Pascal" or u == "mbar" or u == "hPa":
+        return "pressure"
+    if u == "ampere":
+        return "current"
+    if u == "degrees" or u == "radians":
+        return "angle"
+    if u == "%":
+        return "percent"
+    return ""
+
+action unit_dimension(e: AstNode) -> string:
+    recursion bounded 256
+    if e.kind == "NUM" or e.kind == "IN_UNIT":
+        return dimension_of_unit(unit_word(e.name))
+    if e.kind == "BIN" and (e.name == "+" or e.name == "-"):
+        let l = unit_dimension(child_at(e, 0))
+        let r = unit_dimension(child_at(e, 1))
+        if l == r:
+            return l
+        # a mismatch is reported by unit_mismatch; the dimension itself is unknown
+        return ""
+    return ""
+
+action unit_mismatch(e: AstNode) -> string:
+    recursion bounded 256
+    if e.kind == "BIN" and (e.name == "+" or e.name == "-"):
+        let l = unit_dimension(child_at(e, 0))
+        let r = unit_dimension(child_at(e, 1))
+        if (length of l) > 0 and (length of r) > 0 and l != r:
+            return "cannot add or subtract " + l + " and " + r
+    if e.kind == "BIN":
+        let l = unit_mismatch(child_at(e, 0))
+        if (length of l) > 0:
+            return l
+        return unit_mismatch(child_at(e, 1))
+    return ""
+
+# The expression walker proper. `guard` is true only for the immediate node inside an
+# inline `otherwise`, never for its children: the reference resets the flag on every
+# child, and a field read nested one level deeper than the fallback still needs its own
+# (this is what caught `(reading.value + 1) otherwise 0` being wrongly accepted).
 action check_expr(e: AstNode, names, facts, items, needs, open, diags):
+    recursion bounded 256   # the walker recurses through this wrapper
+    return check_expr_g(e, names, facts, items, needs, open, diags, 0)
+
+action check_expr_g(e: AstNode, names, facts, items, needs, open, diags, guard):
     recursion bounded 200
     let k = e.kind
     if k == "NUM" or k == "STR" or k == "BOOL":
@@ -1977,7 +2043,17 @@ action check_expr(e: AstNode, names, facts, items, needs, open, diags):
         set diags to diags + [diag("E_KAZE_PARSE", e.line, "the parser could not read this expression")]
         return diags
 
-    if k == "LEN" or k == "FIELD" or k == "IN_UNIT":
+    if k == "FIELD":
+        let out = check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
+        let base = child_at(e, 0)
+        # Closed-world only: in a file with imports a record type may be declared elsewhere,
+        # and this checker cannot see it. The reference resolves imports, so it has no such
+        # blind spot; refusing here would be a false positive.
+        if guard == 0 and base.kind == "IDENT" and list_has(facts, "param:" + base.name) == 1 and list_has(facts, "recparam:" + base.name) == 0 and (open == 0 or list_has(facts, "untyped:" + base.name)):
+            set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "'" + base.name + "." + e.name + "' reads a field of '" + base.name + "', which came from outside this routine and may not have it; write '<read> otherwise <fallback>' or declare '" + base.name + "' with a record type")]
+        return out
+
+    if k == "LEN" or k == "IN_UNIT":
         return check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
 
     if k == "LIST":
@@ -2003,6 +2079,9 @@ action check_expr(e: AstNode, names, facts, items, needs, open, diags):
             set cur to child_at(cur, 0)
             set guard to guard + 1
         let out = check_expr(cur, names, facts, items, needs, open, diags)
+        let umsg = unit_mismatch(e)
+        if (length of umsg) > 0:
+            set out to out + [diag("E_KAZE_UNIT_MISMATCH", e.line, umsg)]
         let i = (length of rights) - 1
         while i >= 0 bounded 100000:
             let right = node_at(rights, i)
@@ -2026,11 +2105,11 @@ action check_expr(e: AstNode, names, facts, items, needs, open, diags):
             let out = check_expr(child_at(inner, 0), names, facts, items, needs, open, diags)
             set out to check_expr(child_at(inner, 1), names, facts, items, needs, open, out)
             return check_expr(fb, names, facts, items, needs, open, out)
-        let out = check_expr(inner, names, facts, items, needs, open, diags)
+        let out = check_expr_g(inner, names, facts, items, needs, open, diags, 1)
         return check_expr(fb, names, facts, items, needs, open, out)
 
     if k == "CALL":
-        return check_call(e, names, facts, items, needs, open, diags)
+        return check_call(e, names, facts, items, needs, open, diags, guard)
 
     return diags
 
@@ -2045,6 +2124,17 @@ action check_index(e: AstNode, names, facts, items, needs, open, diags):
         # A literal collection is checked against its own length.
         if coll.kind == "LIST":
             let n = length of coll.children
+            let k = constant_value(idx)
+            if k >= 0 and k < n:
+                return out
+            set out to out + [diag("E_KAZE_BOUNDS", e.line, "this index is outside the value it reads; a constant position past the end is refused")]
+            return out
+        if coll.kind == "STR":
+            # A constant index into a text literal is proved against its length, the same
+            # way a list literal is. Without this, `"kaze"[2]` was refused for want of a
+            # fallback even though the position is plainly inside (a false positive, and
+            # the corpus comparison against the reference caught it).
+            let n = length of coll.val_str
             let k = constant_value(idx)
             if k >= 0 and k < n:
                 return out
@@ -2071,7 +2161,24 @@ action check_index(e: AstNode, names, facts, items, needs, open, diags):
     set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this index is not proved to be inside the value; guard it (if i < length of xs:) or write '<value>[<i>] otherwise <fallback>'")]
     return out
 
-action check_call(e: AstNode, names, facts, items, needs, open, diags):
+# Which capability reads must carry a fallback, ported from the reference engine
+# (src/strict.rs::needs_fallback). Sensor reads always return a number the script acts on;
+# device and memory only on their read verbs; everything else - log, alert, policy,
+# drone effectors - is an effect or a decision and needs none.
+action needs_fallback_cap(family: string, op: string) -> num:
+    if family == "sensor":
+        return 1
+    if family == "device":
+        if op == "read_gpio" or op == "read":
+            return 1
+        return 0
+    if family == "memory":
+        if op == "recall":
+            return 1
+        return 0
+    return 0
+
+action check_call(e: AstNode, names, facts, items, needs, open, diags, guarded):
     recursion bounded 200
     let name = e.name
     let out = diags
@@ -2083,15 +2190,22 @@ action check_call(e: AstNode, names, facts, items, needs, open, diags):
 
     if has_dot(name) == 1:
         let head = head_words(name)
-        # Geometry is a pure builtin family, not a capability.
+        let op = tail_words(name)
+        # Geometry is a pure builtin family, not a capability - but the reference still
+        # resolves geo through the device family, so its reads need a fallback too.
         if head == "geo":
+            # The reference resolves geo through the device family, so its reads need a
+            # fallback too; returning here used to skip that check.
+            if guarded == 0 and list_has(facts, "in_try") == 0 and needs_fallback_cap("device", op) == 1:
+                set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this reads geo." + op + " and needs a fallback; write '<read> otherwise <fallback>'")]
             return out
         let family = family_of_word(head)
-        let op = tail_words(name)
         if list_has(needs, family) == 0:
             set out to out + [diag("E_CAP_UNDECLARED", e.line, "'" + family + "' is used but this file does not declare it; add it to the needs: line")]
         if op_known(family, op) == 0:
             set out to out + [diag("E_KAZE_CAP_OP", e.line, "'" + family + "." + op + "' is not an operation Kaze knows")]
+        if guarded == 0 and list_has(facts, "in_try") == 0 and list_has(needs, family) == 1 and needs_fallback_cap(family, op) == 1:
+            set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this reads " + family + "." + op + " and needs a fallback; write '<read> otherwise <fallback>'")]
         return out
 
     if is_upper(name) == 1:
@@ -2154,7 +2268,10 @@ action check_stmt(s: AstNode, names, facts, items, needs, open, diags):
         set out to check_stmts(kids_of(child_at(s, 1)), names + [s.name], facts, items, needs, open, out)
         return out
     if k == "TRY":
-        let out = check_stmts(kids_of(child_at(s, 0)), names, facts, items, needs, open, diags)
+        # `in_try` exempts capability reads (recoverable) and nothing else: a missing field'
+        # or a bad index is fatal in the reference, so those rules keep firing here.'
+        let try_facts = facts + ["in_try"]
+        let out = check_stmts(kids_of(child_at(s, 0)), names, try_facts, items, needs, open, diags)
         let inner = names
         if s.name != "":
             set inner to names + [s.name]
@@ -2387,11 +2504,51 @@ action contract_diags(item: AstNode):
         set i to i + 1
     return out
 
+# A field read on a parameter that came from outside this routine may name a field the
+# record does not have, and the language answers that with nothing - the reference engine
+# asks for a fallback there (src/strict.rs, Expr::Field). Parameters and record-typed
+# parameters travel as facts so the expression walker needs no extra parameter.
+# Exactly the words the reference's TypeRef::parse resolves before it considers a name a
+# record (src/ast.rs). A record declared with one of these names is never a record type,
+# so a parameter annotated with it counts as coming from outside.
+action is_builtin_type_word(w: string) -> num:
+    if w == "int" or w == "num" or w == "number" or w == "float":
+        return 1
+    if w == "str" or w == "text" or w == "bool" or w == "percent":
+        return 1
+    if w == "length" or w == "meters":
+        return 1
+    if w == "time" or w == "seconds":
+        return 1
+    if w == "angle" or w == "degrees":
+        return 1
+    if w == "temperature" or w == "Celsius" or w == "celsius" or w == "Kelvin" or w == "kelvin":
+        return 1
+    return 0
+
+action param_facts(item: AstNode, items) -> list:
+    recursion bounded 64
+    #   param:<name>    always: it is a parameter
+    #   untyped:<name>  no annotation, so it can never be an imported record either
+    #   recparam:<name> annotated with a record declared in this file, and the annotation
+    #                   is not a builtin type word (the reference parses the annotation
+    #                   and builtin type words win over a record of the same name)
+    let out = []
+    let params = child_at(item, 0)
+    for each p in params.children:
+        set out to out + ["param:" + p.name]
+        if p.val_str == "":
+            set out to out + ["untyped:" + p.name]
+        otherwise:
+            if record_named(items, p.val_str) == 1 and is_builtin_type_word(p.val_str) == 0:
+                set out to out + ["recparam:" + p.name]
+    return out
+
 action check_item(item: AstNode, module_needs, items, names_all, froms, tos, open):
     let out = contract_diags(item)
     let needs = module_needs + routine_needs(item)
     let names = param_names(item)
-    let facts = requires_facts(item)
+    let facts = requires_facts(item) + param_facts(item, items)
     let body = child_at(item, 2)
     set out to check_stmts(body.children, names, facts, items, needs, open, out)
     if item.kind == "FILTER":
@@ -2449,6 +2606,46 @@ action check_program(prog: AstNode):
             set out to check_stmts(body.children, [], [], items, declared, open, out)
         set i to i + 1
     return out
+
+# The bytecode opcode set, transcribed from the frozen ISA (product:
+# crates/sofuu-core/src/domains/kaze/isa.rs, enum Op). This is the contract the
+# bytecode writer obeys: bc_emit and bc_wide refuse a number that is not listed,
+# and `kaze surface` prints the table so scripts/kaze-drift-check.sh can compare
+# the standalone compiler with the embedded product engine.
+action bc_opcodes() -> list:
+    return [
+        "Const@0", "LoadLocal@1", "StoreLocal@2", "NewArr@3",
+        "GetIndex@4", "Len@5", "Pop@6", "Add@7",
+        "Sub@8", "Mul@9", "Div@10", "Mod@11",
+        "Neg@12", "CmpLt@13", "CmpLe@14", "CmpGt@15",
+        "CmpGe@16", "CmpEq@17", "CmpNe@18", "Not@19",
+        "Jmp@20", "JmpIfFalse@21", "CallCap@22", "PolicyStop@23",
+        "Ret@24", "RetUnit@25", "FuelTick@26", "Trap@27",
+        "Halt@28", "JmpIfTrue@29", "GetField@30", "Jeq@31",
+        "Jne@32", "VecNew@33", "VecDist@34", "VecBearing@35",
+        "VecBearingBetween@36", "Sin@37", "Cos@38", "Atan2@39",
+        "Sqrt@40", "DegToRad@41", "RadToDeg@42", "VecSlantDist@43",
+        "TryBegin@44", "TryEnd@45", "LinkLost@46", "CallRoutine@47",
+        "NewMap@48",
+    ]
+
+# The numbers alone, for the writer's membership test.
+action bc_opcode_numbers() -> list:
+    return [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+        36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+        48,
+    ]
+
+# True when n is a defined opcode. A writer bug that invents a number fails here
+# instead of producing a module the VM cannot run.
+action bc_opcode_known(n) -> num:
+    for each m in bc_opcode_numbers():
+        if m == n:
+            return 1
+    return 0
 
 # machine.kaze — the dual-syntax engine.
 #
@@ -3206,6 +3403,7 @@ action get_c_runtime_header():
     set h to h + "#include <string.h>\n"
     set h to h + "#include <stdio.h>\n"
     set h to h + "#include <math.h>\n"
+    set h to h + "#include \"kaze_rt.h\"   /* arena, checked arithmetic, portable types */\n"
     set h to h + "#pragma STDC FP_CONTRACT OFF\n\n"
     set h to h + "#if !defined(_WIN32)\n"
     set h to h + "#include <unistd.h>\n"
@@ -3214,50 +3412,167 @@ action get_c_runtime_header():
     set h to h + "#define isatty _isatty\n"
     set h to h + "#define fileno _fileno\n"
     set h to h + "#endif\n\n"
+    set h to h + "/* A program need not use every helper; keep strict builds clean. */\n"
+    set h to h + "#if defined(__GNUC__) || defined(__clang__)\n"
+    set h to h + "#define KZ_MAYBE_UNUSED __attribute__((unused))\n"
+    set h to h + "#else\n"
+    set h to h + "#define KZ_MAYBE_UNUSED\n"
+    set h to h + "#endif\n\n"
+    set h to h + "/* Bulk allocation: every dynamic structure comes from this arena and is\n"
+    set h to h + "   released in one reset. KAZE_ARENA_BYTES sizes it. */\n"
+    set h to h + "static kaze_arena_t kz_arena;\n"
+    set h to h + "/* KAZE_ARENA_BYTES sizes the arena; 64 MiB default. */\n"
+    set h to h + "static size_t kz_arena_bytes(void) {\n"
+    set h to h + "    const char* env = getenv(\"KAZE_ARENA_BYTES\");\n"
+    set h to h + "    if (env && env[0]) { long n = strtol(env, NULL, 10); if (n > 0) return (size_t)n; }\n"
+    set h to h + "    return (size_t)1024 * 1024 * 1024;\n"
+    set h to h + "}\n"
+    set h to h + "/* Per-function allocation accounting: KAZE_ARENA_STATS=1 answers where the\n"
+    set h to h + "   memory went, from data. __func__ names the emitting helper, so no call site\n"
+    set h to h + "   has to be tagged. */\n"
+    set h to h + "#define KZ_ALLOC_SITES 16\n"
+    set h to h + "static const char* kz_site_name[KZ_ALLOC_SITES];\n"
+    set h to h + "static size_t kz_site_bytes[KZ_ALLOC_SITES];\n"
+    set h to h + "static size_t kz_site_calls[KZ_ALLOC_SITES];\n"
+    set h to h + "static void kz_note_site(const char* site, size_t n) {\n"
+    set h to h + "    for (int i = 0; i < KZ_ALLOC_SITES; i++) {\n"
+    set h to h + "        if (kz_site_name[i] == site || kz_site_name[i] == NULL) {\n"
+    set h to h + "            if (kz_site_name[i] == NULL) kz_site_name[i] = site;\n"
+    set h to h + "            kz_site_bytes[i] += n;\n"
+    set h to h + "            kz_site_calls[i] += 1;\n"
+    set h to h + "            return;\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
+    set h to h + "static void* kz_alloc_site(const char* site, size_t n);\n"
+    set h to h + "#define kz_alloc(n) kz_alloc_site(__func__, (n))\n"
+    set h to h + "static void* kz_alloc_raw(size_t n) {\n"
+    set h to h + "    void* p = kmalloc(&kz_arena, n);\n"
+    set h to h + "    if (p == NULL) {\n"
+    set h to h + "        kaze_trap(KAZE_ERR_OOM, \"the arena is full; raise KAZE_ARENA_BYTES\");\n"
+    set h to h + "        exit(70);\n"
+    set h to h + "    }\n"
+    set h to h + "    return p;\n"
+    set h to h + "}\n\n"
+    set h to h + "static void* kz_alloc_site(const char* site, size_t n) {\n"
+    set h to h + "    kz_note_site(site, n);\n"
+    set h to h + "    return kz_alloc_raw(n);\n"
+    set h to h + "}\n"
+    set h to h + "static void kz_print_alloc_sites(void) {\n"
+    set h to h + "    const char* env = getenv(\"KAZE_ARENA_STATS\");\n"
+    set h to h + "    if (env == NULL || env[0] == 0 || env[0] == 48) return;\n"
+    set h to h + "    fprintf(stderr, \"kaze-alloc: %zu bytes used in the arena\\n\", kaze_arena_used(&kz_arena));\n"
+    set h to h + "    for (int i = 0; i < KZ_ALLOC_SITES; i++) {\n"
+    set h to h + "        if (kz_site_name[i] != NULL)\n"
+    set h to h + "            fprintf(stderr, \"kaze-alloc:   %-12s %12zu bytes %10zu calls\\n\", kz_site_name[i], kz_site_bytes[i], kz_site_calls[i]);\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
     set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD, KZ_VAL_POINT } KzValKind;\n"
     set h to h + "struct KzValue;\n"
     set h to h + "typedef struct { size_t len; size_t cap; struct KzValue* items; } KzList;\n"
     set h to h + "typedef struct { const char* type_name; size_t field_count; const char** keys; struct KzValue* values; } KzRecord;\n"
-    set h to h + "typedef struct { double x, y, z; } KzPoint;\n"
+    set h to h + "typedef struct { const char* data; size_t len; } KzStr;\n"
+    set h to h + "typedef struct { kaze_float_t x, y, z; } KzPoint;\n"
     set h to h + "typedef struct KzValue {\n"
     set h to h + "    KzValKind kind;\n"
-    set h to h + "    union { bool boolean; double number; const char* str; KzList* list; KzRecord* record; KzPoint point; } as;\n"
+    set h to h + "    union { bool boolean; kaze_float_t number; KzStr str; KzList* list; KzRecord* record; KzPoint point; } as;\n"
     set h to h + "} KzValue;\n\n"
-    set h to h + "static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"
-    set h to h + "static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"
-    set h to h + "static inline KzValue kz_num(double n) { KzValue v; v.kind = KZ_VAL_NUM; v.as.number = n; return v; }\n"
-    set h to h + "static inline KzValue kz_str(const char* s) { KzValue v; v.kind = KZ_VAL_STR; v.as.str = s ? s : \"\"; return v; }\n"
-    set h to h + "static inline KzValue kz_point(KzValue x, KzValue y, KzValue z);\n"
-    set h to h + "static inline double kz_pt(KzValue v, int i);\n"
-    set h to h + "static inline bool kz_is_truthy(KzValue v) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_num(double n) { KzValue v; v.kind = KZ_VAL_NUM; v.as.number = n; return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_str(const char* s) {\n"
+    set h to h + "    KzValue v; v.kind = KZ_VAL_STR;\n"
+    set h to h + "    v.as.str.data = s ? s : \"\";\n"
+    set h to h + "    v.as.str.len = strlen(v.as.str.data);   /* measured once, never again */\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_point(KzValue x, KzValue y, KzValue z);\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_pt(KzValue v, int i);\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline bool kz_is_truthy(KzValue v) {\n"
     set h to h + "    switch (v.kind) {\n"
     set h to h + "        case KZ_VAL_BOOL: return v.as.boolean;\n"
     set h to h + "        case KZ_VAL_NUM: return v.as.number != 0.0;\n"
-    set h to h + "        case KZ_VAL_STR: return v.as.str && v.as.str[0] != '\\0';\n"
+    set h to h + "        case KZ_VAL_STR: return v.as.str.data && v.as.str.data[0] != '\\0';\n"
     set h to h + "        case KZ_VAL_LIST: return v.as.list && v.as.list->len > 0;\n"
     set h to h + "        case KZ_VAL_RECORD: return true;\n"
     set h to h + "        default: return false;\n"
     set h to h + "    }\n"
     set h to h + "}\n\n"
-    set h to h + "static inline char* kz_str_alloc_copy(const char* s) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline char* kz_str_alloc_copy(const char* s) {\n"
     set h to h + "    if (!s) return \"\";\n"
     set h to h + "    size_t l = strlen(s);\n"
-    set h to h + "    char* out = (char*)malloc(l + 1);\n"
+    set h to h + "    char* out = (char*)kz_alloc(l + 1);\n"
     set h to h + "    if (!out) return \"\";\n"
     set h to h + "    memcpy(out, s, l + 1);\n"
     set h to h + "    return out;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline char* kz_str_concat(const char* a, const char* b) {\n"
+    set h to h + "/* Concatenate with known lengths: nothing is re-walked. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline char* kz_str_concat_n(const char* a, size_t la, const char* b, size_t lb) {\n"
+    set h to h + "    char* out = (char*)kz_alloc(la + lb + 1);\n"
+    set h to h + "    if (la) memcpy(out, a, la);\n"
+    set h to h + "    if (lb) memcpy(out + la, b, lb);\n"
+    set h to h + "    out[la + lb] = 0;\n"
+    set h to h + "    return out;\n"
+    set h to h + "}\n"
+
+    set h to h + "KZ_MAYBE_UNUSED static inline char* kz_str_concat(const char* a, const char* b) {\n"
     set h to h + "    size_t la = a ? strlen(a) : 0;\n"
     set h to h + "    size_t lb = b ? strlen(b) : 0;\n"
-    set h to h + "    char* out = (char*)malloc(la + lb + 1);\n"
+    set h to h + "    char* out = (char*)kz_alloc(la + lb + 1);\n"
     set h to h + "    if (!out) return \"\";\n"
     set h to h + "    if (la) memcpy(out, a, la);\n"
     set h to h + "    if (lb) memcpy(out + la, b, lb);\n"
     set h to h + "    out[la + lb] = '\\0';\n"
     set h to h + "    return out;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline void kz_format_number(char* buf, size_t cap, double v) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_add(KzValue a, KzValue b);\n"
+    set h to h + "/* `v = v + x` where v is proved append-only. Same result as kz_add, but a text\n"
+    set h to h + "   or list buffer that is still the newest arena allocation grows in place\n"
+    set h to h + "   instead of being copied. Dispatch is by runtime type, so any operand is safe. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_add_own(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) {\n"
+    set h to h + "        const char* s = a.as.str.data;\n"
+    set h to h + "        size_t la = a.as.str.len, lb = b.as.str.len;\n"
+    set h to h + "        if (kz_arena.base != NULL && s != NULL &&\n"
+    set h to h + "            s + la + 1 == (const char*)kz_arena.base + kz_arena.offset &&\n"
+    set h to h + "            kz_arena.offset + lb <= kz_arena.cap) {\n"
+    set h to h + "            memcpy((char*)s + la, b.as.str.data, lb);\n"
+    set h to h + "            ((char*)s)[la + lb] = 0;\n"
+    set h to h + "            kz_arena.offset += lb;\n"
+    set h to h + "            a.as.str.len = la + lb;   /* the value carries its length: keep it true */\n"
+    set h to h + "            return a;\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST && a.as.list != NULL &&\n"
+    set h to h + "        b.as.list != NULL && b.as.list->len == 1) {\n"
+    set h to h + "        KzList* l = a.as.list;\n"
+    set h to h + "        if (l->len >= l->cap) {\n"
+    set h to h + "            size_t cap = l->cap ? l->cap * 2 : 4;\n"
+    set h to h + "            KzValue* items;\n"
+    set h to h + "            if (kz_arena.base != NULL &&\n"
+    set h to h + "                (const char*)l->items + l->cap * sizeof(KzValue) ==\n"
+    set h to h + "                    (const char*)kz_arena.base + kz_arena.offset &&\n"
+    set h to h + "                kz_arena.offset + (cap - l->cap) * sizeof(KzValue) <= kz_arena.cap) {\n"
+    set h to h + "                items = l->items;\n"
+    set h to h + "                kz_arena.offset += (cap - l->cap) * sizeof(KzValue);\n"
+    set h to h + "            } else {\n"
+    set h to h + "                items = (KzValue*)kz_alloc(cap * sizeof(KzValue));\n"
+    set h to h + "                memcpy(items, l->items, l->len * sizeof(KzValue));\n"
+    set h to h + "            }\n"
+    set h to h + "            l->items = items;\n"
+    set h to h + "            l->cap = cap;\n"
+    set h to h + "        }\n"
+    set h to h + "        l->items[l->len] = b.as.list->items[0];\n"
+    set h to h + "        l->len += 1;\n"
+    set h to h + "        return a;\n"
+    set h to h + "    }\n"
+    set h to h + "    return kz_add(a, b);\n"
+    set h to h + "}\n"
+
+
+
+
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_format_number(char* buf, size_t cap, double v) {\n"
     set h to h + "    if (isnan(v)) { snprintf(buf, cap, \"NaN\"); return; }\n"
     set h to h + "    if (isinf(v)) { snprintf(buf, cap, v > 0 ? \"inf\" : \"-inf\"); return; }\n"
     set h to h + "    if (floor(v) == v && fabs(v) < 1e17) { snprintf(buf, cap, \"%.0f\", v); return; }\n"
@@ -3266,7 +3581,7 @@ action get_c_runtime_header():
     set h to h + "        if (strtod(buf, NULL) == v) return;\n"
     set h to h + "    }\n"
     set h to h + "}\n\n"
-    set h to h + "static inline const char* kz_to_string(KzValue v) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline const char* kz_to_string(KzValue v) {\n"
     set h to h + "    if (v.kind == KZ_VAL_POINT) {\n"
     set h to h + "        char pbuf[192], b1[40], b2[40], b3[40];\n"
     set h to h + "        kz_format_number(b1, sizeof(b1), v.as.point.x);\n"
@@ -3275,7 +3590,7 @@ action get_c_runtime_header():
     set h to h + "        snprintf(pbuf, sizeof(pbuf), \"(%s, %s, %s)\", b1, b2, b3);\n"
     set h to h + "        return kz_str_alloc_copy(pbuf);\n"
     set h to h + "    }\n"
-    set h to h + "    if (v.kind == KZ_VAL_STR) return v.as.str ? v.as.str : \"\";\n"
+    set h to h + "    if (v.kind == KZ_VAL_STR) return v.as.str.data ? v.as.str.data : \"\";\n"
     set h to h + "    if (v.kind == KZ_VAL_BOOL) return v.as.boolean ? \"true\" : \"false\";\n"
     set h to h + "    if (v.kind == KZ_VAL_NUM) {\n"
     set h to h + "        char buf[64];\n"
@@ -3287,113 +3602,155 @@ action get_c_runtime_header():
     set h to h + "    if (v.kind == KZ_VAL_LIST) return \"list\";\n"
     set h to h + "    return \"\";\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_list_new(size_t cap) {\n"
-    set h to h + "    KzList* l = (KzList*)malloc(sizeof(KzList));\n"
+    set h to h + "/* Make room for `need` items. A list may start with no buffer at all, so every\n"
+    set h to h + "   reader that indexes items must come through here (or check len first). */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_list_reserve(KzList* l, size_t need) {\n"
+    set h to h + "    if (l->cap >= need && l->items != NULL) return;\n"
+    set h to h + "    size_t cap = l->cap ? l->cap : 4;\n"
+    set h to h + "    while (cap < need) cap *= 2;\n"
+    set h to h + "    KzValue* items = (KzValue*)kz_alloc(cap * sizeof(KzValue));\n"
+    set h to h + "    if (l->len) memcpy(items, l->items, l->len * sizeof(KzValue));\n"
+    set h to h + "    l->items = items;\n"
+    set h to h + "    l->cap = cap;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_list_new(size_t cap) {\n"
+    set h to h + "    KzList* l = (KzList*)kz_alloc(sizeof(KzList));\n"
     set h to h + "    l->len = 0;\n"
-    set h to h + "    l->cap = cap > 4 ? cap : 4;\n"
-    set h to h + "    l->items = (KzValue*)malloc(l->cap * sizeof(KzValue));\n"
+    set h to h + "    /* Lazy buffer: an empty list costs a header, not a header and a buffer.\n"
+    set h to h + "       Every site that indexes items either checks len first or goes through\n"
+    set h to h + "       kz_list_reserve (audited: concat, from, append, index, for-each). */\n"
+    set h to h + "    l->cap = cap > 4 ? cap : 0;\n"
+    set h to h + "    l->items = (cap > 4) ? (KzValue*)kz_alloc(l->cap * sizeof(KzValue)) : NULL;\n"
     set h to h + "    KzValue v; v.kind = KZ_VAL_LIST; v.as.list = l; return v;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_list_concat(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_list_concat(KzValue a, KzValue b) {\n"
     set h to h + "    size_t la = (a.kind == KZ_VAL_LIST && a.as.list) ? a.as.list->len : 0;\n"
     set h to h + "    size_t lb = (b.kind == KZ_VAL_LIST && b.as.list) ? b.as.list->len : 0;\n"
     set h to h + "    KzValue res = kz_list_new(la + lb);\n"
+    set h to h + "    kz_list_reserve(res.as.list, la + lb);   /* the buffer is lazy: ask first */\n"
     set h to h + "    KzList* l = res.as.list;\n"
     set h to h + "    if (la) { memcpy(l->items, a.as.list->items, la * sizeof(KzValue)); l->len += la; }\n"
     set h to h + "    if (lb) { memcpy(l->items + l->len, b.as.list->items, lb * sizeof(KzValue)); l->len += lb; }\n"
     set h to h + "    return res;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_list_from(size_t n, const KzValue* items) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_list_from(size_t n, const KzValue* items) {\n"
     set h to h + "    KzValue res = kz_list_new(n);\n"
-    set h to h + "    if (n > 0 && items) { memcpy(res.as.list->items, items, n * sizeof(KzValue)); res.as.list->len = n; }\n"
+    set h to h + "    if (n > 0 && items) { kz_list_reserve(res.as.list, n); memcpy(res.as.list->items, items, n * sizeof(KzValue)); res.as.list->len = n; }\n"
     set h to h + "    return res;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_record_create(const char* type_name, size_t n, const char** keys, const KzValue* vals) {\n"
-    set h to h + "    KzRecord* r = (KzRecord*)malloc(sizeof(KzRecord));\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_record_create(const char* type_name, size_t n, const char** keys, const KzValue* vals) {\n"
+    set h to h + "    KzRecord* r = (KzRecord*)kz_alloc(sizeof(KzRecord));\n"
     set h to h + "    r->type_name = type_name;\n"
     set h to h + "    r->field_count = n;\n"
     set h to h + "    r->keys = keys;\n"
-    set h to h + "    r->values = (n > 0) ? (KzValue*)malloc(n * sizeof(KzValue)) : NULL;\n"
+    set h to h + "    r->values = (n > 0) ? (KzValue*)kz_alloc(n * sizeof(KzValue)) : NULL;\n"
     set h to h + "    if (n > 0 && vals && r->values) { memcpy(r->values, vals, n * sizeof(KzValue)); }\n"
     set h to h + "    KzValue v; v.kind = KZ_VAL_RECORD; v.as.record = r; return v;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_get_field(KzValue obj, const char* field) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_get_field(KzValue obj, const char* field) {\n"
+    set h to h + "    if (obj.kind == KZ_VAL_POINT) {\n"
+    set h to h + "        if (field && field[0] == 'x' && field[1] == 0) return kz_num(obj.as.point.x);\n"
+    set h to h + "        if (field && field[0] == 'y' && field[1] == 0) return kz_num(obj.as.point.y);\n"
+    set h to h + "        if (field && field[0] == 'z' && field[1] == 0) return kz_num(obj.as.point.z);\n"
+    set h to h + "        return kz_nil();\n"
+    set h to h + "    }\n"
     set h to h + "    if (obj.kind != KZ_VAL_RECORD || !obj.as.record) return kz_nil();\n"
     set h to h + "    KzRecord* r = obj.as.record;\n"
     set h to h + "    for (size_t i = 0; i < r->field_count; i++) {\n"
-    set h to h + "        if (strcmp(r->keys[i], field) == 0) return r->values[i];\n"
+    set h to h + "        /* Pointer identity first: record keys and field names come from the same\n"
+    set h to h + "           literals, so the common hit costs one compare instead of a strcmp. */\n"
+    set h to h + "        if (r->keys[i] == field || (field && strcmp(r->keys[i], field) == 0)) return r->values[i];\n"
     set h to h + "    }\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_add(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_add(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_num(a.as.number + b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR || b.kind == KZ_VAL_STR) return kz_str(kz_str_concat(kz_to_string(a), kz_to_string(b)));\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR || b.kind == KZ_VAL_STR) {\n"
+    set h to h + "        KzValue sa = (a.kind == KZ_VAL_STR) ? a : kz_str(kz_to_string(a));\n"
+    set h to h + "        KzValue sb = (b.kind == KZ_VAL_STR) ? b : kz_str(kz_to_string(b));\n"
+    set h to h + "        return kz_str(kz_str_concat_n(sa.as.str.data, sa.as.str.len, sb.as.str.data, sb.as.str.len));\n"
+    set h to h + "    }\n"
     set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST) return kz_list_concat(a, b);\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_sub(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_sub(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_POINT) return kz_point(kz_num(a.as.point.x - b.as.point.x), kz_num(a.as.point.y - b.as.point.y), kz_num(a.as.point.z - b.as.point.z));\n"
     set h to h + "    return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) - ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_mul(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mul(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_NUM) return kz_point(kz_num(a.as.point.x * b.as.number), kz_num(a.as.point.y * b.as.number), kz_num(a.as.point.z * b.as.number));\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_POINT) return kz_mul(b, a);\n"
     set h to h + "    return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) * ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_div(KzValue a, KzValue b) { double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0; return kz_num(d == 0.0 ? 0.0 : (((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) / d)); }\n"
-    set h to h + "static inline KzValue kz_mod(KzValue a, KzValue b) { double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0; return kz_num(d == 0.0 ? 0.0 : fmod(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0), d)); }\n"
-    set h to h + "static inline KzValue kz_not(KzValue a) { return kz_bool(!kz_is_truthy(a)); }\n\n"
-    set h to h + "static inline bool kz_val_eq(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_div(KzValue a, KzValue b) {\n"
+    set h to h + "    kaze_float_t out = 0.0;   /* kaze_rt checks the divisor and the result */\n"
+    set h to h + "    kaze_float_t x = (a.kind == KZ_VAL_NUM) ? a.as.number : 0.0;\n"
+    set h to h + "    kaze_float_t y = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
+    set h to h + "    if (!kaze_float_div_checked(x, y, &out)) { kaze_trap(KAZE_ERR_DIV0, \"division by zero\"); exit(70); }\n"
+    set h to h + "    return kz_num(out);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mod(KzValue a, KzValue b) {\n"
+    set h to h + "    kaze_float_t y = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
+    set h to h + "    kaze_float_t x = (a.kind == KZ_VAL_NUM) ? a.as.number : 0.0;\n"
+    set h to h + "    if (y == 0.0) { kaze_trap(KAZE_ERR_DIV0, \"remainder by zero\"); exit(70); }\n"
+    set h to h + "    return kz_num(fmod(x, y));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_not(KzValue a) { return kz_bool(!kz_is_truthy(a)); }\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline bool kz_val_eq(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind != b.kind) return false;\n"
     set h to h + "    switch (a.kind) {\n"
     set h to h + "        case KZ_VAL_NIL: return true;\n"
     set h to h + "        case KZ_VAL_BOOL: return a.as.boolean == b.as.boolean;\n"
     set h to h + "        case KZ_VAL_NUM: return a.as.number == b.as.number;\n"
-    set h to h + "        case KZ_VAL_STR: return (a.as.str && b.as.str) ? (strcmp(a.as.str, b.as.str) == 0) : (a.as.str == b.as.str);\n"
+    set h to h + "        case KZ_VAL_STR: return (a.as.str.data && b.as.str.data) ? (strcmp(a.as.str.data, b.as.str.data) == 0) : (a.as.str.data == b.as.str.data);\n"
     set h to h + "        default: return a.as.list == b.as.list;\n"
     set h to h + "    }\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_eq(KzValue a, KzValue b) { return kz_bool(kz_val_eq(a, b)); }\n"
-    set h to h + "static inline KzValue kz_ne(KzValue a, KzValue b) { return kz_bool(!kz_val_eq(a, b)); }\n"
-    set h to h + "static inline KzValue kz_lt(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_eq(KzValue a, KzValue b) { return kz_bool(kz_val_eq(a, b)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_ne(KzValue a, KzValue b) { return kz_bool(!kz_val_eq(a, b)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_lt(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number < b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) < 0);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) < 0);\n"
     set h to h + "    return kz_bool(false);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_le(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_le(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number <= b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) <= 0);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) <= 0);\n"
     set h to h + "    return kz_bool(false);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_gt(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_gt(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number > b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) > 0);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) > 0);\n"
     set h to h + "    return kz_bool(false);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_ge(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_ge(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number >= b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) >= 0);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) >= 0);\n"
     set h to h + "    return kz_bool(false);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_and(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) && kz_is_truthy(b)); }\n"
-    set h to h + "static inline KzValue kz_or(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) || kz_is_truthy(b)); }\n\n"
-    set h to h + "static inline KzValue kz_len(KzValue a) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_and(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) && kz_is_truthy(b)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_or(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) || kz_is_truthy(b)); }\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_len(KzValue a) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT) return kz_num(sqrt(a.as.point.x * a.as.point.x + a.as.point.y * a.as.point.y + a.as.point.z * a.as.point.z));\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && a.as.str) return kz_num((double)strlen(a.as.str));\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR) return kz_num((double)a.as.str.len);\n"
     set h to h + "    if (a.kind == KZ_VAL_LIST && a.as.list) return kz_num((double)a.as.list->len);\n"
-    set h to h + "    return kz_num(0.0);\n"
+    set h to h + "    /* length of applies to text, lists and points. Returning 0 for anything\n"
+    set h to h + "       else would make a guard clause fall through instead of refusing. */\n"
+    set h to h + "    kaze_trap(KAZE_ERR_TYPE, \"length of does not apply to this value\");\n"
+    set h to h + "    exit(70);\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_index(KzValue coll, KzValue idx) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_index(KzValue coll, KzValue idx) {\n"
     set h to h + "    size_t i = (idx.kind == KZ_VAL_NUM && idx.as.number >= 0.0) ? (size_t)idx.as.number : 0;\n"
     set h to h + "    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"
     set h to h + "        if (i < coll.as.list->len) return coll.as.list->items[i];\n"
     set h to h + "        return kz_nil();\n"
     set h to h + "    }\n"
-    set h to h + "    if (coll.kind == KZ_VAL_STR && coll.as.str) {\n"
-    set h to h + "        size_t l = strlen(coll.as.str);\n"
+    set h to h + "    if (coll.kind == KZ_VAL_STR && coll.as.str.data) {\n"
+    set h to h + "        size_t l = coll.as.str.len;\n"
     set h to h + "        if (i < l) {\n"
-    set h to h + "            char* one = (char*)malloc(2);\n"
-    set h to h + "            one[0] = coll.as.str[i];\n"
+    set h to h + "            char* one = (char*)kz_alloc(2);\n"
+    set h to h + "            one[0] = coll.as.str.data[i];\n"
     set h to h + "            one[1] = '\\0';\n"
     set h to h + "            return kz_str(one);\n"
     set h to h + "        }\n"
@@ -3401,10 +3758,10 @@ action get_c_runtime_header():
     set h to h + "    }\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n\n"
-    set h to h + "static inline void kz_builtin_log(KzValue msg) { printf(\"[info] %s\\n\", kz_to_string(msg)); }\n\n"
-    set h to h + "static inline KzValue kz_read_stream(FILE* f) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_builtin_log(KzValue msg) { printf(\"[info] %s\\n\", kz_to_string(msg)); }\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_read_stream(FILE* f) {\n"
     set h to h + "    size_t cap = 4096; size_t len = 0;\n"
-    set h to h + "    char* buf = (char*)malloc(cap);\n"
+    set h to h + "    char* buf = (char*)kz_alloc(cap);\n"
     set h to h + "    if (!buf) return kz_str(\"\");\n"
     set h to h + "    size_t n;\n"
     set h to h + "    while ((n = fread(buf + len, 1, cap - len - 1, f)) > 0) {\n"
@@ -3412,21 +3769,51 @@ action get_c_runtime_header():
     set h to h + "        if (len + 1024 >= cap) { cap *= 2; char* nb = (char*)realloc(buf, cap); if (!nb) break; buf = nb; }\n"
     set h to h + "    }\n"
     set h to h + "    buf[len] = '\\0';\n"
+    set h to h + "    if (len == 0) return kz_nil();   /* nothing on stdin is no value, not empty text */\n"
     set h to h + "    return kz_str(buf);\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_read_file_or_string(const char* path_or_str) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_read_file_or_string(const char* path_or_str) {\n"
     set h to h + "    if (!path_or_str) return kz_str(\"\");\n"
     set h to h + "    FILE* f = fopen(path_or_str, \"rb\");\n"
     set h to h + "    if (!f) return kz_str(path_or_str);\n"
     set h to h + "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n"
     set h to h + "    if (sz < 0) { fclose(f); return kz_str(path_or_str); }\n"
-    set h to h + "    char* buf = (char*)malloc((size_t)sz + 1);\n"
+    set h to h + "    char* buf = (char*)kz_alloc((size_t)sz + 1);\n"
     set h to h + "    if (!buf) { fclose(f); return kz_str(path_or_str); }\n"
     set h to h + "    size_t rd = fread(buf, 1, (size_t)sz, f);\n"
     set h to h + "    buf[rd] = '\\0'; fclose(f);\n"
     set h to h + "    return kz_str(buf);\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_resolve_cli_arg(int argc, char** argv, const char* name, int index) {\n"
+    set h to h + "/* 12-factor input: --arg > AGENT_* > config > signature default. A parameter\n"
+    set h to h + "   declared with a type must arrive with a value of that type; silently using 0\n"
+    set h to h + "   or raw text is how a script acts on a number nobody gave it. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_param(const char* ty, const char* name, const char* routine, KzValue v) {\n"
+    set h to h + "    if (ty == NULL || ty[0] == 0) return v;\n"
+    set h to h + "    int wants_text = (strcmp(ty, \"text\") == 0 || strcmp(ty, \"string\") == 0);\n"
+    set h to h + "    int wants_bool = (strcmp(ty, \"bool\") == 0);\n"
+    set h to h + "    if (v.kind == KZ_VAL_NIL) {\n"
+    set h to h + "        fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s and has no value; provide --arg %s=<value>, the environment variable AGENT_%s, or \\\"%s\\\" in the config file\\n\", name, routine, ty, name, name, name);\n"
+    set h to h + "        exit(2);\n"
+    set h to h + "    }\n"
+    set h to h + "    if (wants_text) return (v.kind == KZ_VAL_STR) ? v : kz_str(kz_to_string(v));\n"
+    set h to h + "    if (wants_bool) {\n"
+    set h to h + "        if (v.kind == KZ_VAL_BOOL) return v;\n"
+    set h to h + "        if (v.kind == KZ_VAL_STR) {\n"
+    set h to h + "            if (strcmp(v.as.str.data, \"true\") == 0) return kz_bool(true);\n"
+    set h to h + "            if (strcmp(v.as.str.data, \"false\") == 0) return kz_bool(false);\n"
+    set h to h + "        }\n"
+    set h to h + "    } else {\n"
+    set h to h + "        if (v.kind == KZ_VAL_NUM) return v;\n"
+    set h to h + "        if (v.kind == KZ_VAL_STR) {\n"
+    set h to h + "            char* end = NULL;\n"
+    set h to h + "            double d = strtod(v.as.str.data, &end);\n"
+    set h to h + "            if (end != NULL && end != v.as.str.data && *end == 0) return kz_num(d);\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s but the value given is not one\\n\", name, routine, ty);\n"
+    set h to h + "    exit(2);\n"
+    set h to h + "}\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_resolve_cli_arg(int argc, char** argv, const char* name, int index) {\n"
     set h to h + "    size_t nlen = strlen(name);\n"
     set h to h + "    for (int i = 1; i < argc; i++) {\n"
     set h to h + "        const char* a = argv[i];\n"
@@ -3454,36 +3841,43 @@ action get_c_runtime_header():
     set h to h + "    if (ev) return kz_read_file_or_string(ev);\n"
     set h to h + "    int pos_idx = 0;\n"
     set h to h + "    for (int i = 1; i < argc; i++) {\n"
+    set h to h + "        /* An option value is not a positional argument: --ticks 2 used to\n"
+    set h to h + "           hand the 2 to the first parameter. */\n"
+    set h to h + "        if (strcmp(argv[i], \"--ticks\") == 0 || strcmp(argv[i], \"--cap\") == 0 ||\n"
+    set h to h + "            strcmp(argv[i], \"--config\") == 0 || strcmp(argv[i], \"--arg\") == 0 ||\n"
+    set h to h + "            strcmp(argv[i], \"--entry\") == 0 || strcmp(argv[i], \"-o\") == 0) { i++; continue; }\n"
     set h to h + "        if (argv[i][0] != '-') {\n"
     set h to h + "            if (pos_idx == index) return kz_read_file_or_string(argv[i]);\n"
     set h to h + "            pos_idx++;\n"
     set h to h + "        }\n"
     set h to h + "    }\n"
     set h to h + "    if (index == 0 && !isatty(fileno(stdin))) return kz_read_stream(stdin);\n"
-    set h to h + "    return kz_str(\"\");\n"
+    set h to h + "    /* No layer supplied this argument: nothing, not empty text, so a\n"
+    set h to h + "       guard clause on it refuses the way the interpreter does. */\n"
+    set h to h + "    return kz_nil();\n"
     set h to h + "}\n\n"
     set h to h + "\n"
-    set h to h + "static inline KzValue kz_fb_div(KzValue a, KzValue b, KzValue fb) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_fb_div(KzValue a, KzValue b, KzValue fb) {\n"
     set h to h + "    double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
     set h to h + "    if (d == 0.0) return fb;\n"
     set h to h + "    return kz_div(a, b);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_fb_mod(KzValue a, KzValue b, KzValue fb) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_fb_mod(KzValue a, KzValue b, KzValue fb) {\n"
     set h to h + "    double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
     set h to h + "    if (d == 0.0) return fb;\n"
     set h to h + "    return kz_mod(a, b);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_fb_index(KzValue coll, KzValue idx, KzValue fb) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_fb_index(KzValue coll, KzValue idx, KzValue fb) {\n"
     set h to h + "    double d = (idx.kind == KZ_VAL_NUM) ? idx.as.number : -1.0;\n"
     set h to h + "    if (d < 0.0) return fb;\n"
     set h to h + "    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"
     set h to h + "        if ((size_t)d >= coll.as.list->len) return fb;\n"
-    set h to h + "    } else if (coll.kind == KZ_VAL_STR && coll.as.str) {\n"
-    set h to h + "        if ((size_t)d >= strlen(coll.as.str)) return fb;\n"
+    set h to h + "    } else if (coll.kind == KZ_VAL_STR && coll.as.str.data) {\n"
+    set h to h + "        if ((size_t)d >= coll.as.str.len) return fb;\n"
     set h to h + "    }\n"
     set h to h + "    return kz_index(coll, idx);\n"
     set h to h + "}\n"
-    set h to h + "static inline void kz_record_set(KzValue* vals, const char** keys, size_t count, size_t pos, const char* key, KzValue value) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_record_set(KzValue* vals, const char** keys, size_t count, size_t pos, const char* key, KzValue value) {\n"
     set h to h + "    if (key != NULL) {\n"
     set h to h + "        for (size_t j = 0; j < count; j++) {\n"
     set h to h + "            if (strcmp(keys[j], key) == 0) { vals[j] = value; return; }\n"
@@ -3492,33 +3886,33 @@ action get_c_runtime_header():
     set h to h + "    }\n"
     set h to h + "    if (pos < count) vals[pos] = value;\n"
     set h to h + "}\n"
-    set h to h + "static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"
-    set h to h + "static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"
-    set h to h + "static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
-    set h to h + "static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
-    set h to h + "static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
-    set h to h + "static inline KzValue kz_math_to_radians(KzValue a) { return kz_num(kz_to_num(a) * 0.017453292519943295); }\n"
-    set h to h + "static inline KzValue kz_math_to_degrees(KzValue a) { return kz_num(kz_to_num(a) * 57.29577951308232); }\n"
-    set h to h + "static inline KzValue kz_point(KzValue x, KzValue y, KzValue z) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_to_radians(KzValue a) { return kz_num(kz_to_num(a) * 0.017453292519943295); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_to_degrees(KzValue a) { return kz_num(kz_to_num(a) * 57.29577951308232); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_point(KzValue x, KzValue y, KzValue z) {\n"
     set h to h + "    KzValue v; v.kind = KZ_VAL_POINT;\n"
     set h to h + "    v.as.point.x = (x.kind == KZ_VAL_NUM) ? x.as.number : 0.0;\n"
     set h to h + "    v.as.point.y = (y.kind == KZ_VAL_NUM) ? y.as.number : 0.0;\n"
     set h to h + "    v.as.point.z = (z.kind == KZ_VAL_NUM) ? z.as.number : 0.0;\n"
     set h to h + "    return v;\n"
     set h to h + "}\n"
-    set h to h + "static inline double kz_pt(KzValue v, int i) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_pt(KzValue v, int i) {\n"
     set h to h + "    if (v.kind != KZ_VAL_POINT) return 0.0;\n"
     set h to h + "    return i == 0 ? v.as.point.x : (i == 1 ? v.as.point.y : v.as.point.z);\n"
     set h to h + "}\n"
-    set h to h + "static inline double kz_list_num(KzValue v, size_t i) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_list_num(KzValue v, size_t i) {\n"
     set h to h + "    if (v.kind == KZ_VAL_LIST && v.as.list && i < v.as.list->len) return kz_to_num(v.as.list->items[i]);\n"
     set h to h + "    return 0.0;\n"
     set h to h + "}\n"
     set h to h + "#define KZ_EARTH_RADIUS_M 6371008.8\n"
-    set h to h + "static inline double kz_geo_rad(double d) { return d * (3.14159265358979323846 / 180.0); }\n"
-    set h to h + "static inline double kz_geo_deg(double r) { return r * (180.0 / 3.14159265358979323846); }\n"
-    set h to h + "static inline double kz_geo_norm(double d) { double m = fmod(d, 360.0); if (m < 0.0) m += 360.0; return m; }\n"
-    set h to h + "static inline double kz_geo_haversine(double alat, double alon, double blat, double blon) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_geo_rad(double d) { return d * (3.14159265358979323846 / 180.0); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_geo_deg(double r) { return r * (180.0 / 3.14159265358979323846); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_geo_norm(double d) { double m = fmod(d, 360.0); if (m < 0.0) m += 360.0; return m; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_geo_haversine(double alat, double alon, double blat, double blon) {\n"
     set h to h + "    double lat1 = kz_geo_rad(alat), lon1 = kz_geo_rad(alon);\n"
     set h to h + "    double lat2 = kz_geo_rad(blat), lon2 = kz_geo_rad(blon);\n"
     set h to h + "    double dlat = lat2 - lat1, dlon = lon2 - lon1;\n"
@@ -3527,34 +3921,40 @@ action get_c_runtime_header():
     set h to h + "    if (hv > 1.0) hv = 1.0;\n"
     set h to h + "    return 2.0 * KZ_EARTH_RADIUS_M * asin(sqrt(hv));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_geo_distance(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_geo_distance(KzValue a, KzValue b) {\n"
     set h to h + "    return kz_num(kz_geo_haversine(kz_pt(a, 0), kz_pt(a, 1), kz_pt(b, 0), kz_pt(b, 1)));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_geo_slant_distance(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_geo_slant_distance(KzValue a, KzValue b) {\n"
     set h to h + "    double ground = kz_geo_haversine(kz_pt(a, 0), kz_pt(a, 1), kz_pt(b, 0), kz_pt(b, 1));\n"
     set h to h + "    double dz = kz_pt(b, 2) - kz_pt(a, 2);\n"
     set h to h + "    return kz_num(sqrt(ground * ground + dz * dz));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_geo_bearing_from(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_geo_bearing_from(KzValue a, KzValue b) {\n"
     set h to h + "    double lat1 = kz_geo_rad(kz_pt(a, 0)), lat2 = kz_geo_rad(kz_pt(b, 0));\n"
     set h to h + "    double dlon = kz_geo_rad(kz_pt(b, 1) - kz_pt(a, 1));\n"
     set h to h + "    double y = sin(dlon) * cos(lat2);\n"
     set h to h + "    double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon);\n"
     set h to h + "    return kz_num(kz_geo_norm(kz_geo_deg(atan2(y, x))));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_geo_bearing_of(KzValue p) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_geo_bearing_of(KzValue p) {\n"
     set h to h + "    return kz_num(kz_geo_norm(kz_geo_deg(atan2(kz_pt(p, 0), kz_pt(p, 1)))));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_unavailable(const char* what) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_unavailable(const char* what) {\n"
     set h to h + "    fprintf(stderr, \"E_KAZE_UNSUPPORTED: %s is not lowered by the pure-Kaze C emitter\\n\", what);\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_cap_call(const char* recv, const char* op, int n, KzValue* args) {\n"
+    set h to h + "/* A bare telemetry field is a capability read. Returning nothing here would\n"
+    set h to h + "   let `when battery < 20%` compare nothing against a percent. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_cap_get(const char* family, const char* field) {\n"
+    set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", family, field);\n"
+    set h to h + "    exit(70);\n"
+    set h to h + "}\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_cap_call(const char* recv, const char* op, int n, KzValue* args) {\n"
     set h to h + "    (void)n; (void)args;\n"
     set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", recv, op);\n"
     set h to h + "    exit(70);\n"
     set h to h + "}\n"
-    set h to h + "static inline void kz_builtin_alert(KzValue msg) { fprintf(stderr, \"[alert] %s\\n\", kz_to_string(msg)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_builtin_alert(KzValue msg) { fprintf(stderr, \"[alert] %s\\n\", kz_to_string(msg)); }\n"
     return h
 
 action sanitize_c_id(name):
@@ -3761,7 +4161,10 @@ action emit_c_call(node: AstNode):
                 return "kz_geo_bearing_from(" + two_args(args) + ")"
             if tail == "bearing_of":
                 return "kz_geo_bearing_of(" + nth_arg(args, 0) + ")"
-        return "kz_cap_call(" + escape_c_str(head) + ", " + escape_c_str(tail) + ", " + cnt + ", (KzValue[]){ " + arg_str + " })"
+        let arr = "NULL"
+        if cnt != 0:
+            set arr to "(KzValue[]){ " + arg_str + " }"
+        return "kz_cap_call(" + escape_c_str(head) + ", " + escape_c_str(tail) + ", " + cnt + ", " + arr + ")"
 
     # 3. Pure builtins.
     if name == "link_lost":
@@ -3780,7 +4183,23 @@ action emit_c_call(node: AstNode):
         return "kz_unavailable(" + escape_c_str(name) + ")"
 
     # 4. A routine written in this program.
-    return "kz_fn_" + sanitize_c_id(name) + "(" + arg_str + ")"
+    return "kaze_fn_" + sanitize_c_id(name) + "(" + arg_str + ")"
+
+action is_plain_integer(t: string) -> num:
+    # Digits only (an optional leading minus): no dot, no exponent.
+    if t == "":
+        return 0
+    let i = 0
+    let n = length of t
+    while i < n bounded 64:
+        let c = t[i] otherwise "?"
+        if c == "-" and i == 0:
+            set i to i + 1
+        otherwise:
+            if c < "0" or c > "9":
+                return 0
+            set i to i + 1
+    return 1
 
 action emit_c_expr(node: AstNode):
     recursion bounded 200
@@ -3791,12 +4210,21 @@ action emit_c_expr(node: AstNode):
         # lowering the reference engine applies, so sin/cos agree.
         if node.name == "degrees":
             return "kz_math_to_radians(kz_num(" + node.val_str + "))"
+        if is_plain_integer(node.val_str) == 1:
+            # INT64_C-style portability without an integer literal: 3300000000 is
+            # an int on a 64-bit host and does not fit one on a 32-bit target.
+            return "kz_num((kaze_float_t)" + node.val_str + ")"
         return "kz_num(" + node.val_str + ")"
     if k == "STR":
         return "kz_str(" + escape_c_str(node.val_str) + ")"
     if k == "BOOL":
         return "kz_bool(" + node.val_str + ")"
+    if k == "TELEMETRY":
+        # A bare telemetry word that no declaration shadows: a capability read.
+        return "kz_cap_get(" + escape_c_str(node.val_str) + ", " + escape_c_str(node.name) + ")"
     if k == "IDENT":
+        # A declared name: parameter, local, or record field. Telemetry words that
+        # no declaration shadows were already rewritten to TELEMETRY above.
         return sanitize_c_id(node.name)
     if k == "LEN":
         return "kz_len(" + emit_c_expr(child_at(node, 0)) + ")"
@@ -3841,8 +4269,31 @@ action emit_c_stmt(stmt: AstNode, ind):
             return ind + "return " + emit_c_expr(child_at(stmt, 0)) + ";\n"
         return ind + "return kz_nil();\n"
 
+    if k == "RETURN_CHECKED":
+        # A return site in a routine with ensures clauses: bind, check, return.
+        let out = ind + "KzValue _kz_ret = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
+        let i = 1
+        while i < (length of stmt.children) bounded 32:
+            set out to out + ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, i)) + ")) {\n"
+            set out to out + ind + "    fprintf(stderr, \"E_KAZE_CONTRACT: an ensures clause is false for this result\\n\");\n"
+            set out to out + ind + "    exit(70);\n"
+            set out to out + ind + "}\n"
+            set i to i + 1
+        set out to out + ind + "return _kz_ret;\n"
+        return out
+
+    if k == "APPEND_OWN":
+        # Proved append-only: kz_add_own does exactly what `+` would, but grows the
+        # buffer in place when it is still the newest arena allocation.
+        let target = sanitize_c_id(stmt.name)
+        return ind + target + " = kz_add_own(" + target + ", " + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
     if k == "EXPR":
         return ind + "(void)(" + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
+    if k == "APPEND_LIST_OWN":
+        let target = sanitize_c_id(stmt.name)
+        return ind + target + " = kz_list_append_own(" + target + ", " + emit_c_expr(child_at(stmt, 0)) + ");\n"
 
     # guard <expr>: an executed assertion. A false invariant stops the run.
     if k == "GUARD":
@@ -3978,12 +4429,32 @@ action emit_record_ctor(item: AstNode):
     set out to out + "}\n\n"
     return out
 
+# Contracts at routine entry: a `requires` clause that is false for the arguments
+# given is a refusal, not an assertion in the C sense -- the interpreter's
+# E_KAZE_CONTRACT. Elision when every call site is proved comes later; correctness
+# first.
+action emit_requires(item: AstNode) -> string:
+    recursion bounded 200
+    let contracts = child_at(item, 1)
+    let out = ""
+    for each c in contracts.children:
+        if c.kind == "CONTRACT" and c.name == "requires":
+            let cond = child_at(c, 0)
+            set out to out + "    if (!kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
+            set out to out + "        fprintf(stderr, \"E_KAZE_CONTRACT: the requires clause at line " + c.line + " is false for these arguments\\n\");\n"
+            set out to out + "        exit(70);\n"
+            set out to out + "    }\n"
+    return out
+
 action emit_routine(item: AstNode):
     recursion bounded 200
     let id = sanitize_c_id(item.name)
     let params_node = child_at(item, 0)
     let body = child_at(item, 2)
-    let out = "static KzValue kz_fn_" + id + "(" + param_list(params_node) + ") {\n"
+    let out = "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + id + "(" + param_list(params_node) + ") {\n"
+    for each prm in params_node.children:
+        set out to out + "    (void)" + sanitize_c_id(prm.name) + ";   /* a routine need not use every parameter */\n"
+    set out to out + emit_requires(item)
     for each s in body.children:
         set out to out + emit_c_stmt(s, "    ")
     set out to out + "    return kz_nil();\n"
@@ -4037,11 +4508,30 @@ action emit_hook_driver(items):
     set out to out + "}\n\n"
     return out
 
+action single_routine(items):
+    # The interpreter's default entry is `main`, else the only action/check/filter
+    # in the root file. Without this the native binary printed "no main entry"
+    # and exited 0 where the VM actually ran the routine.
+    let found = none_node()
+    let count = 0
+    for each item in items:
+        if is_routine(item) == 1:
+            set found to item
+            set count to count + 1
+    if count == 1:
+        return found
+    return none_node()
+
 action emit_c_entry(items):
     recursion bounded 200
     let out = "/* --- Main Entry Point --- */\n"
     set out to out + "int main(int argc, char** argv) {\n"
+    set out to out + "    /* One arena for the whole run; KAZE_ARENA_BYTES overrides the default. */\n"
+    set out to out + "    if (!kaze_arena_init_heap(&kz_arena, kz_arena_bytes())) { fprintf(stderr, \"E_KAZE_OOM: cannot reserve the arena\\n\"); return 70; }\n"
+    set out to out + "    atexit(kz_print_alloc_sites);   /* KAZE_ARENA_STATS=1 reports by function */\n"
     let main_item = find_named(items, "main")
+    if is_routine(main_item) == 0:
+        set main_item to single_routine(items)
     if is_routine(main_item) == 0:
         set out to out + "    (void)argc; (void)argv;\n"
         set out to out + "    kz_run_hooks(argc, argv);\n"
@@ -4051,23 +4541,24 @@ action emit_c_entry(items):
         let cnt = length of params_node.children
         if cnt == 0:
             set out to out + "    (void)argc; (void)argv;\n"
-            set out to out + "    KzValue res = kz_fn__kz_main();\n"
+            set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "();\n"
         otherwise:
             let i = 0
             let call_args = ""
             while i < cnt bounded 1000:
                 let prm = child_at(params_node, i)
-                set out to out + "    KzValue arg_" + i + " = kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + ");\n"
+                set out to out + "    KzValue arg_" + i + " = kz_param(" + escape_c_str(prm.val_str) + ", " + escape_c_str(prm.name) + ", " + escape_c_str(main_item.name) + ", kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + "));\n"
                 if i > 0:
                     set call_args to call_args + ", "
                 set call_args to call_args + "arg_" + i
                 set i to i + 1
-            set out to out + "    KzValue res = kz_fn__kz_main(" + call_args + ");\n"
+            set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "(" + call_args + ");\n"
         set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
-        set out to out + "        if (floor(res.as.number) == res.as.number) { printf(\"%.0f\\n\", res.as.number); }\n"
-        set out to out + "        else { printf(\"%.16g\\n\", res.as.number); }\n"
+        set out to out + "        char numbuf[64];\n"
+        set out to out + "        kz_format_number(numbuf, sizeof numbuf, res.as.number);\n"
+        set out to out + "        printf(\"%s\\n\", numbuf);\n"
         set out to out + "    } else if (res.kind == KZ_VAL_STR) {\n"
-        set out to out + "        printf(\"%s\\n\", res.as.str ? res.as.str : \"\");\n"
+        set out to out + "        printf(\"%s\\n\", res.as.str.data ? res.as.str.data : \"\");\n"
         set out to out + "    } else if (res.kind == KZ_VAL_BOOL) {\n"
         set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
         set out to out + "    }\n"
@@ -4076,9 +4567,374 @@ action emit_c_entry(items):
     set out to out + "}\n"
     return out
 
+# ── ambient telemetry ──────────────────────────────────────────────────
+# A bare telemetry word (battery, altitude, ...) is a capability read, but an
+# emitter cannot tell it from a variable without name resolution -- `distance` is
+# an ordinary local in this compiler's own source, and lowering every telemetry
+# word blindly broke the compiler's own build. This pass resolves it once, on the
+# tree, where each routine's declarations are known.
+
+# ── in-place append ────────────────────────────────────────────────────
+# `set out to out + piece` copies the whole string every time, which is where the
+# translators' memory and time go. When a variable is only ever built this way and
+# read once at the end, its buffer can be extended in place instead -- the runtime
+# checks that the buffer is still the newest arena allocation before writing.
+
+action count_ident(n: AstNode, v: string) -> num:
+    recursion bounded 256
+    let total = 0
+    if n.kind == "IDENT" and n.name == v:
+        set total to 1
+    for each c in n.children:
+        set total to total + count_ident(c, v)
+    return total
+
+action count_appends(n: AstNode, v: string) -> num:
+    recursion bounded 256
+    let total = 0
+    if n.kind == "SET" and n.name == v:
+        let rhs = child_at(n, 0)
+        if rhs.kind == "BIN" and rhs.name == "+":
+            let left = child_at(rhs, 0)
+            # kz_add_own dispatches on the runtime type, so any operand shape is safe
+            # here: the result is exactly what `+` would have produced.
+            if left.kind == "IDENT" and left.name == v:
+                set total to 1
+    for each c in n.children:
+        set total to total + count_appends(c, v)
+    return total
+
+action count_return_reads(n: AstNode, v: string) -> num:
+    recursion bounded 256
+    let total = 0
+    if n.kind == "RETURN":
+        set total to total + count_ident(n, v)
+    for each c in n.children:
+        set total to total + count_return_reads(c, v)
+    return total
+
+action string_lets(n: AstNode, acc: list) -> list:
+    recursion bounded 256
+    let out = acc
+    if n.kind == "LET":
+        let rhs = child_at(n, 0)
+        if rhs.kind == "STR" or rhs.kind == "LIST" or rhs.kind == "CALL" or (rhs.kind == "BIN" and rhs.name == "+"):
+            set out to out + [n.name]
+    for each c in n.children:
+        set out to string_lets(c, out)
+    return out
+
+action append_plan(body: AstNode) -> list:
+    recursion bounded 200
+    # A name qualifies when every occurrence of it is either the left operand of an
+    # append or inside a return: nothing else can hold its buffer.
+    let out = []
+    for each v in string_lets(body, []):
+        let app = count_appends(body, v)
+        if app > 0:
+            let occ = count_ident(body, v)
+            let ret = count_return_reads(body, v)
+            if occ == app + ret:
+                set out to out + [v]
+    return out
+
+action rewrite_appends(n: AstNode, plan: list) -> AstNode:
+    recursion bounded 256
+    if n.kind == "SET" and has_name(plan, n.name):
+        let rhs = child_at(n, 0)
+        if rhs.kind == "BIN" and rhs.name == "+":
+            let left = child_at(rhs, 0)
+            if left.kind == "IDENT" and left.name == n.name:
+                return make_node("APPEND_OWN", n.name, n.val_str, n.val_num, [child_at(rhs, 1)], n.line)
+    let kids = []
+    for each c in n.children:
+        set kids to kids + [rewrite_appends(c, plan)]
+    return make_node(n.kind, n.name, n.val_str, n.val_num, kids, n.line)
+
+action has_name(names: list, w: string) -> num:
+    recursion bounded 256
+    for each n in names:
+        if n == w:
+            return 1
+    return 0
+
+action collect_declared(n: AstNode, acc: list) -> list:
+    recursion bounded 256
+    let out = acc
+    if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH" or n.kind == "PARAM":
+        if n.name != "" and has_name(acc, n.name) == 0:
+            set out to out + [n.name]
+    for each c in n.children:
+        set out to collect_declared(c, out)
+    return out
+
+action relabel_telemetry(n: AstNode, declared: list) -> AstNode:
+    recursion bounded 256
+    if n.kind == "IDENT":
+        if is_telemetry(n.name) == 1 and has_name(declared, n.name) == 0:
+            return make_node("TELEMETRY", n.name, family_of_word(n.name), 0, [], n.line)
+        return n
+    let kids = []
+    for each c in n.children:
+        set kids to kids + [relabel_telemetry(c, declared)]
+    return make_node(n.kind, n.name, n.val_str, n.val_num, kids, n.line)
+
+# ── contract elision ───────────────────────────────────────────────────
+# A `requires` clause costs a branch per call. When every call site passes
+# constants that satisfy it, the branch can go -- the reference rule
+# (src/compiler.rs::requires_proved_everywhere), on the tree.
+
+action num_of_text(t: string) -> num:
+    recursion bounded 64
+    let i = 0
+    let n = length of t
+    let sign = 1
+    if n > 0 and (t[0] otherwise "?") == "-":
+        set sign to -1
+        set i to 1
+    let whole = 0
+    let seen_dot = 0
+    let scale = 1
+    while i < n bounded 64:
+        let c = t[i] otherwise "?"
+        if c == ".":
+            set seen_dot to 1
+        otherwise:
+            if c >= "0" and c <= "9":
+                let d = digit_value(c)
+                if seen_dot == 1:
+                    set scale to scale * 10
+                    set whole to whole + (d / scale otherwise 0)
+                otherwise:
+                    set whole to whole * 10 + d
+        set i to i + 1
+    return sign * whole
+
+action eval_const(n: AstNode, params: list, values: list) -> list:
+    recursion bounded 256
+    # [1, v] when this node is a constant under the bindings, else [0, 0].
+    if n.kind == "NUM":
+        return [1, num_of_text(n.val_str)]
+    if n.kind == "IDENT":
+        let i = 0
+        for each p in params:
+            if p == n.name and i < (length of values):
+                return [1, values[i] otherwise 0]
+            set i to i + 1
+        return [0, 0]
+    if n.kind == "BIN":
+        let l = eval_const(child_at(n, 0), params, values)
+        let r = eval_const(child_at(n, 1), params, values)
+        if (l[0] otherwise 0) == 0 or (r[0] otherwise 0) == 0:
+            return [0, 0]
+        let a = l[1] otherwise 0
+        let b = r[1] otherwise 0
+        if n.name == ">=":
+            if a >= b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == "<=":
+            if a <= b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == ">":
+            if a > b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == "<":
+            if a < b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == "==":
+            if a == b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == "!=":
+            if a != b:
+                return [1, 1]
+            return [1, 0]
+        return [0, 0]
+    return [0, 0]
+
+action calls_to(n: AstNode, name: string, acc: list) -> list:
+    recursion bounded 256
+    let out = acc
+    if n.kind == "CALL" and n.name == name:
+        set out to out + [n.children]
+    for each c in n.children:
+        set out to calls_to(c, name, out)
+    return out
+
+action routine_param_names(params: AstNode) -> list:
+    recursion bounded 64
+    let out = []
+    for each p in params.children:
+        set out to out + [p.name]
+    return out
+
+action all_calls_proved(name: string, items: list, params: list, clauses: list) -> num:
+    recursion bounded 200
+    let sites = []
+    for each it in items:
+        set sites to calls_to(it, name, sites)
+    if (length of sites) == 0:
+        # Nothing in this program calls it; the host still might.
+        return 0
+    for each args in sites:
+        if (length of args) != (length of params):
+            return 0
+        let values = []
+        for each a in args:
+            let v = eval_const(a, [], [])
+            if (v[0] otherwise 0) == 0:
+                return 0
+            set values to values + [v[1] otherwise 0]
+        for each cl in clauses:
+            let c = eval_const(child_at(cl, 0), params, values)
+            if (c[0] otherwise 0) == 0 or (c[1] otherwise 0) == 0:
+                return 0
+    return 1
+
+action elidable_names(items: list) -> list:
+    recursion bounded 200
+    let out = []
+    for each it in items:
+        if it.kind == "ACTION" or it.kind == "CHECK" or it.kind == "FILTER":
+            let params = routine_param_names(child_at(it, 0))
+            let ctr = child_at(it, 1)
+            let clauses = []
+            for each c in ctr.children:
+                if c.kind == "CONTRACT" and c.name == "requires":
+                    set clauses to clauses + [c]
+            if (length of clauses) > 0:
+                if all_calls_proved(it.name, items, params, clauses) == 1:
+                    set out to out + [it.name]
+    return out
+
+# ── ensures ────────────────────────────────────────────────────────────
+# `ensures` speaks about `result`, so each return site binds the value first and
+# checks the clause against it. The rewrite happens on the tree, where the
+# routine's contracts and its return statements are both visible.
+
+
+action subst_result(n: AstNode) -> AstNode:
+    recursion bounded 256
+    if n.kind == "IDENT" and n.name == "result":
+        return make_node("IDENT", "_kz_ret", n.val_str, n.val_num, [], n.line)
+    let kids = []
+    for each c in n.children:
+        set kids to kids + [subst_result(c)]
+    return make_node(n.kind, n.name, n.val_str, n.val_num, kids, n.line)
+
+action returns_of(n: AstNode, acc: list) -> list:
+    recursion bounded 256
+    let out = acc
+    if n.kind == "RETURN" and (length of n.children) > 0:
+        set out to out + [child_at(n, 0)]
+    for each c in n.children:
+        set out to returns_of(c, out)
+    return out
+
+action ensures_proved(clauses: list, body: AstNode) -> num:
+    recursion bounded 200
+    # An ensures clause is elidable when every return value is a literal that
+    # satisfies it: no branch is needed for a proof already in the tree.
+    if (length of clauses) == 0:
+        return 1
+    let sites = returns_of(body, [])
+    if (length of sites) == 0:
+        return 1
+    for each r in sites:
+        let v = eval_const(r, [], [])
+        if (v[0] otherwise 0) == 0:
+            return 0
+        let value = v[1] otherwise 0
+        for each cl in clauses:
+            let c = eval_const(cl, ["_kz_ret"], [value])
+            if (c[0] otherwise 0) == 0 or (c[1] otherwise 0) == 0:
+                return 0
+    return 1
+
+action drop_proved_ensures(contracts: AstNode, body: AstNode) -> AstNode:
+    recursion bounded 64
+    let clauses = []
+    for each c in contracts.children:
+        if c.kind == "CONTRACT" and c.name == "ensures":
+            set clauses to clauses + [subst_result(child_at(c, 0))]
+    if ensures_proved(clauses, body) == 0:
+        return contracts
+    let kept = []
+    for each c in contracts.children:
+        let proven = 0
+        if c.kind == "CONTRACT" and c.name == "ensures":
+            set proven to 1
+        if proven == 0:
+            set kept to kept + [c]
+    return make_node("CONTRACTS", contracts.name, contracts.val_str, contracts.val_num, kept, contracts.line)
+
+action ensures_clauses(contracts: AstNode) -> list:
+    recursion bounded 64
+    let out = []
+    for each c in contracts.children:
+        if c.kind == "CONTRACT" and c.name == "ensures":
+            set out to out + [subst_result(child_at(c, 0))]
+    return out
+
+action rewrite_returns(n: AstNode, clauses: list) -> AstNode:
+    recursion bounded 256
+    if n.kind == "RETURN" and (length of clauses) > 0 and (length of n.children) > 0:
+        let kids = [child_at(n, 0)]
+        for each cl in clauses:
+            set kids to kids + [cl]
+        return make_node("RETURN_CHECKED", n.name, n.val_str, n.val_num, kids, n.line)
+    let kids = []
+    for each c in n.children:
+        set kids to kids + [rewrite_returns(c, clauses)]
+    return make_node(n.kind, n.name, n.val_str, n.val_num, kids, n.line)
+
+action drop_proved_requires(contracts: AstNode, name: string, elided: list) -> AstNode:
+    recursion bounded 64
+    # A routine whose every call site passes constants satisfying its requires
+    # clauses needs no entry branch at all.
+    if has_name(elided, name) == 0:
+        return contracts
+    let kept = []
+    for each c in contracts.children:
+        let proven = 0
+        if c.kind == "CONTRACT" and c.name == "requires":
+            set proven to 1
+        if proven == 0:
+            set kept to kept + [c]
+    return make_node("CONTRACTS", contracts.name, contracts.val_str, contracts.val_num, kept, contracts.line)
+
+action mark_item(item: AstNode, elided: list) -> AstNode:
+    recursion bounded 200
+    if item.kind == "WHEN" or item.kind == "EVERY":
+        let declared = collect_declared(child_at(item, 1), [])
+        let cond = relabel_telemetry(child_at(item, 0), declared)
+        let body = relabel_telemetry(child_at(item, 1), declared)
+        return make_node(item.kind, item.name, item.val_str, item.val_num, [cond, body], item.line)
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+        let params = child_at(item, 0)
+        let declared = collect_declared(params, [])
+        set declared to collect_declared(child_at(item, 2), declared)
+        let raw_contracts = drop_proved_requires(child_at(item, 1), item.name, elided)
+        let contracts = relabel_telemetry(raw_contracts, declared)
+        let checked = rewrite_returns(child_at(item, 2), ensures_clauses(drop_proved_ensures(raw_contracts, child_at(item, 2))))
+        let plan = append_plan(checked)
+        set checked to rewrite_appends(checked, plan)
+        let body = relabel_telemetry(checked, declared)
+        return make_node(item.kind, item.name, item.val_str, item.val_num, [params, contracts, body], item.line)
+    return item
+
 action emit_c_program(prog: AstNode):
     recursion bounded 200
-    let items = program_items(prog)
+    # Resolve bare telemetry words once, with each routine's declarations in hand.
+    let raw_items = program_items(prog)
+    let elided = elidable_names(raw_items)
+    let items = []
+    for each it in raw_items:
+        set items to items + [mark_item(it, elided)]
     let out = get_c_runtime_header()
 
     # 1. Forward declarations.
@@ -4089,7 +4945,7 @@ action emit_c_program(prog: AstNode):
         otherwise:
             if is_routine(item) == 1:
                 let params_node = child_at(item, 0)
-                set out to out + "static KzValue kz_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
+                set out to out + "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
 
     # 2. Record constructors.
     set out to out + "\n/* --- Record Constructors --- */\n"
@@ -4112,6 +4968,1094 @@ action emit_c_program(prog: AstNode):
     set out to out + emit_c_entry(items)
     return out
 
+# lsp.kaze — a Language Server Protocol engine written in pure Kaze.
+#
+# What this is: a JSON-RPC 2.0 engine with Content-Length framing, a tolerant
+# JSON reader, a strict JSON writer, and the four features the roadmap asks a
+# native server to prove: publishDiagnostics on open/change, hover, definition,
+# and shutdown/exit. Every reply is produced by this compiler's own front end:
+# lsp_parse_source feeds check_program, and the diagnostics come straight from
+# that checker. No Rust and no host process take part.
+#
+# What this is NOT, and why: an interactive daemon. The pure-Kaze emitter gives
+# a program exactly one input channel and one output channel:
+#
+#   * input: kz_resolve_cli_arg reads a positional argument (a path, or the
+#     argument text itself) and slurps all of stdin only for parameter 0. The
+#     read is to EOF, so a server cannot pull one message at a time.
+#   * output: the value main returns is printed once, when the process exits.
+#     There is no emit/flush primitive and no way to write while running.
+#
+# So the transport here is a batch session: the whole framed conversation
+# arrives as one text, every message is answered in order, and the framed
+# replies leave as the return value of main. That is the strongest shape the
+# language can express today. It is enough to prove the protocol engine end to
+# end, and the two ways to close the gap are named at the bottom of this file.
+#
+# Framing rules implemented:
+#   * a frame is zero or more "Header: value" lines, a blank line, then exactly
+#     Content-Length bytes of JSON. CRLF and bare LF line endings both read.
+#   * Content-Length names are matched case-insensitively; Content-Type and any
+#     other header is ignored rather than refused.
+#   * output always writes CRLF line endings and the byte length of the body.
+#
+# JSON rules implemented:
+#   * the reader accepts the full value grammar, decodes the standard escapes,
+#     and tolerates unknown members anywhere. Anything it cannot parse becomes
+#     a "none" node or a -32700 reply, never a crash.
+#   * the writer escapes quote, backslash, newline, carriage return and tab.
+#     Other control bytes become "?" because the language has no ord(): a byte
+#     cannot be turned into the digits its backslash-u escape needs. Non-ASCII
+#     UTF-8 passes through unchanged, which is valid JSON.
+
+# ── values ─────────────────────────────────────────────────────────────
+#
+# One record shape for every JSON value. Objects keep parallel key/value lists;
+# arrays keep values only. "none" means "absent", which is distinct from JSON
+# null ("null") so a missing id is not mistaken for an explicit one.
+
+record LspJson:
+    kind: str
+    text: str
+    keys: list
+    vals: list
+
+# One open document. LSP keys documents by URI, so does this store.
+record LspDoc:
+    uri: str
+    text: str
+
+# One declaration the document makes that hover/definition can answer for.
+# line is 1-based like the checker's diagnostics; col is 0-based like LSP.
+record LspDecl:
+    kind: str
+    name: str
+    params: str
+    signature: str
+    line: num
+    col: num
+
+action lsp_none_json() -> LspJson:
+    return LspJson(kind: "none", text: "", keys: [], vals: [])
+
+action lsp_null_json() -> LspJson:
+    return LspJson(kind: "null", text: "", keys: [], vals: [])
+
+action lsp_str_json(s) -> LspJson:
+    return LspJson(kind: "str", text: s, keys: [], vals: [])
+
+action lsp_obj_json(keys, vals) -> LspJson:
+    return LspJson(kind: "obj", text: "", keys: keys, vals: vals)
+
+action lsp_arr_json(vals) -> LspJson:
+    return LspJson(kind: "arr", text: "", keys: [], vals: vals)
+
+action lsp_num_json(text) -> LspJson:
+    return LspJson(kind: "num", text: text, keys: [], vals: [])
+
+action lsp_bool_json(flag) -> LspJson:
+    let text = "false"
+    if flag == 1:
+        set text to "true"
+    return LspJson(kind: "bool", text: text, keys: [], vals: [])
+
+action lsp_empty_decl() -> LspDecl:
+    return LspDecl(kind: "", name: "", params: "", signature: "", line: 0, col: 0)
+
+action lsp_empty_doc() -> LspDoc:
+    return LspDoc(uri: "", text: "")
+
+# ── text helpers ───────────────────────────────────────────────────────
+#
+# Every read of text goes through a fallback and every loop declares a bound,
+# which is what the checker demands and what keeps a malformed message from
+# becoming a panic.
+
+action lsp_char(s, i):
+    return s[i] otherwise ""
+
+action lsp_is_space(c):
+    if c == " " or c == "\t" or c == "\n" or c < " ":
+        return 1
+    return 0
+
+action lsp_is_digit(c):
+    if c >= "0" and c <= "9":
+        return 1
+    return 0
+
+action lsp_is_ident(c):
+    if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_":
+        return 1
+    if c >= "0" and c <= "9":
+        return 1
+    return 0
+
+action lsp_digit_value(c):
+    if c == "0":
+        return 0
+    if c == "1":
+        return 1
+    if c == "2":
+        return 2
+    if c == "3":
+        return 3
+    if c == "4":
+        return 4
+    if c == "5":
+        return 5
+    if c == "6":
+        return 6
+    if c == "7":
+        return 7
+    if c == "8":
+        return 8
+    if c == "9":
+        return 9
+    return 0
+
+# A substring. stop is clamped to the text, so a short message cannot overrun.
+action lsp_slice(s, start, count):
+    let n = length of s
+    let i = start
+    let stop = start + count
+    if i < 0:
+        set i to 0
+    if stop > n:
+        set stop to n
+    let out = ""
+    while i < stop bounded 4000000:
+        set out to out + (s[i] otherwise "")
+        set i to i + 1
+    return out
+
+# The index of the next newline at or after from, or the text length.
+action lsp_find_nl(s, from):
+    let n = length of s
+    let i = from
+    let found = -1
+    while i < n and found < 0 bounded 4000000:
+        if (s[i] otherwise "") == "\n":
+            set found to i
+        set i to i + 1
+    if found < 0:
+        return n
+    return found
+
+# A line without its trailing carriage return. The language has no
+# carriage-return escape, so a control byte is recognised by comparing it
+# against a space rather than by naming CR.
+action lsp_trim_eol(line):
+    let i = length of line
+    let going = 1
+    while i > 0 and going == 1 bounded 4000:
+        let c = line[i - 1] otherwise ""
+        if c == " " or c == "\t" or c < " ":
+            set i to i - 1
+        otherwise:
+            set going to 0
+    return lsp_slice(line, 0, i)
+
+action lsp_alpha_index(c):
+    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    let i = 0
+    while i < 26 bounded 26:
+        if (upper[i] otherwise "") == c:
+            return i
+        set i to i + 1
+    return -1
+
+action lsp_lower(c):
+    let idx = lsp_alpha_index(c)
+    if idx >= 0:
+        return lsp_slice("abcdefghijklmnopqrstuvwxyz", idx, 1)
+    return c
+
+# prefix must be written in lower case.
+action lsp_starts_with_ci(s, prefix):
+    let n = length of prefix
+    if (length of s) < n:
+        return 0
+    let i = 0
+    let ok = 1
+    while i < n and ok == 1 bounded 200:
+        if lsp_lower(s[i] otherwise "") != (prefix[i] otherwise ""):
+            set ok to 0
+        set i to i + 1
+    return ok
+
+action lsp_starts_at(s, from, word):
+    let n = length of word
+    if (length of s) < from + n:
+        return 0
+    let i = 0
+    let ok = 1
+    while i < n and ok == 1 bounded 200:
+        if (s[from + i] otherwise "") != (word[i] otherwise ""):
+            set ok to 0
+        set i to i + 1
+    return ok
+
+# ── JSON reader ────────────────────────────────────────────────────────
+#
+# Recursive descent with an explicit cursor. Every parser returns [node, next]
+# so a caller can keep reading; a value it cannot read becomes a none node and
+# the cursor does not move, which is what makes the reader tolerant without
+# being silently wrong.
+
+action lsp_skip_ws(s, from):
+    let n = length of s
+    let i = from
+    let going = 1
+    while i < n and going == 1 bounded 4000000:
+        if lsp_is_space(s[i] otherwise "") == 1:
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return i
+
+action lsp_hex_value(c):
+    if c >= "0" and c <= "9":
+        return lsp_digit_value(c)
+    if c == "a" or c == "A":
+        return 10
+    if c == "b" or c == "B":
+        return 11
+    if c == "c" or c == "C":
+        return 12
+    if c == "d" or c == "D":
+        return 13
+    if c == "e" or c == "E":
+        return 14
+    if c == "f" or c == "F":
+        return 15
+    return -1
+
+# ASCII printable characters 32..126, needed because a number cannot be turned
+# into a character any other way. Kept in two tables so neither string needs a
+# character escape the lexer would misread.
+action lsp_printable(idx):
+    let low = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_"
+    if idx >= 0 and idx < 64:
+        return lsp_slice(low, idx, 1)
+    let high = "`abcdefghijklmnopqrstuvwxyz{|}~"
+    if idx >= 64 and idx < 95:
+        return lsp_slice(high, idx - 64, 1)
+    return "?"
+
+# A backslash-u code point as text. Only ASCII is exact: the language has no way
+# to turn a number into an arbitrary byte, so a non-ASCII escape becomes "?".
+# A client that sends raw UTF-8 (the usual case) is unaffected.
+action lsp_char_from_code(code):
+    if code == 9:
+        return "\t"
+    if code == 10:
+        return "\n"
+    if code == 13:
+        return "\n"
+    return lsp_printable(code - 32)
+
+action lsp_parse_hex4(s, from):
+    let i = from
+    let value = 0
+    let digits = 0
+    let ok = 1
+    while i < (length of s) and digits < 4 and ok == 1 bounded 4:
+        let h = lsp_hex_value(s[i] otherwise "")
+        if h < 0:
+            set ok to 0
+        otherwise:
+            set value to value * 16 + h
+            set digits to digits + 1
+            set i to i + 1
+    return [value, i]
+
+# One escape sequence as text, and the index after it. Escape handling lives
+# in one place so the reader cannot disagree with itself about newline, tab and
+# backslash-u. Carriage return, backspace and formfeed are dropped: the language
+# has no literal for those bytes, and a dropped one is safer than a wrong one.
+action lsp_decode_escape(e, s, from):
+    if e == "n":
+        return ["\n", from]
+    if e == "t":
+        return ["\t", from]
+    if e == "u":
+        let h = lsp_parse_hex4(s, from)
+        return [lsp_char_from_code(h[0] otherwise 0), h[1] otherwise from]
+    if e == "b" or e == "f" or e == "r":
+        return ["", from]
+    return [e, from]
+
+action lsp_jparse_string(s, from):
+    let n = length of s
+    let i = from
+    let out = ""
+    let done = 0
+    while i < n and done == 0 bounded 4000000:
+        let c = s[i] otherwise ""
+        if c == "\"":
+            set done to 1
+            set i to i + 1
+        otherwise:
+            if c == "\\":
+                let e = s[i + 1] otherwise ""
+                let d = lsp_decode_escape(e, s, i + 2)
+                set out to out + (d[0] otherwise "")
+                set i to d[1] otherwise i + 2
+            otherwise:
+                set out to out + c
+                set i to i + 1
+    return [out, i]
+
+action lsp_scan_number(s, from):
+    let n = length of s
+    let i = from
+    let going = 1
+    while i < n and going == 1 bounded 200:
+        let c = s[i] otherwise ""
+        if lsp_is_digit(c) == 1 or c == "-" or c == "+" or c == "." or c == "e" or c == "E":
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return i
+
+action lsp_jparse(s, from):
+    recursion bounded 200
+    let n = length of s
+    let i = lsp_skip_ws(s, from)
+    if i >= n:
+        return [lsp_none_json(), i]
+    let c = s[i] otherwise ""
+    if c == "{":
+        return lsp_jparse_obj(s, i + 1)
+    if c == "[":
+        return lsp_jparse_arr(s, i + 1)
+    if c == "\"":
+        let r = lsp_jparse_string(s, i + 1)
+        return [lsp_str_json(r[0] otherwise ""), r[1] otherwise i]
+    if lsp_starts_at(s, i, "true") == 1:
+        return [lsp_bool_json(1), i + 4]
+    if lsp_starts_at(s, i, "false") == 1:
+        return [lsp_bool_json(0), i + 5]
+    if lsp_starts_at(s, i, "null") == 1:
+        return [lsp_null_json(), i + 4]
+    if lsp_is_digit(c) == 1 or c == "-":
+        let stop = lsp_scan_number(s, i)
+        return [lsp_num_json(lsp_slice(s, i, stop - i)), stop]
+    return [lsp_none_json(), i]
+
+action lsp_jparse_obj(s, from):
+    recursion bounded 200
+    let n = length of s
+    let i = from
+    let keys = []
+    let vals = []
+    let done = 0
+    let closed = 0
+    while i < n and done == 0 bounded 200000:
+        set i to lsp_skip_ws(s, i)
+        let c = s[i] otherwise ""
+        if c == "}":
+            set i to i + 1
+            set done to 1
+            set closed to 1
+        otherwise:
+            if c == "\"":
+                let k = lsp_jparse_string(s, i + 1)
+                let key = k[0] otherwise ""
+                set i to lsp_skip_ws(s, k[1] otherwise i)
+                if (s[i] otherwise "") == ":":
+                    set i to i + 1
+                let v = lsp_jparse(s, i)
+                set keys to keys + [key]
+                set vals to vals + [v[0] otherwise lsp_none_json()]
+                set i to lsp_skip_ws(s, v[1] otherwise i)
+                if (s[i] otherwise "") == ",":
+                    set i to i + 1
+            otherwise:
+                set done to 1
+    if closed == 0:
+        return [lsp_none_json(), i]
+    return [lsp_obj_json(keys, vals), i]
+
+action lsp_jparse_arr(s, from):
+    recursion bounded 200
+    let n = length of s
+    let i = from
+    let vals = []
+    let done = 0
+    let closed = 0
+    while i < n and done == 0 bounded 200000:
+        set i to lsp_skip_ws(s, i)
+        let c = s[i] otherwise ""
+        if c == "]":
+            set i to i + 1
+            set done to 1
+            set closed to 1
+        otherwise:
+            if c == ",":
+                set i to i + 1
+            otherwise:
+                let v = lsp_jparse(s, i)
+                let node = v[0] otherwise lsp_none_json()
+                if node.kind == "none":
+                    set done to 1
+                otherwise:
+                    set vals to vals + [node]
+                    set i to v[1] otherwise i
+    if closed == 0:
+        return [lsp_none_json(), i]
+    return [lsp_arr_json(vals), i]
+
+# Member lookup on an object node. A missing key is a none node.
+action lsp_get(node: LspJson, key) -> LspJson:
+    if node.kind != "obj":
+        return lsp_none_json()
+    let keys = node.keys
+    let vals = node.vals
+    let n = length of keys
+    let i = 0
+    while i < n bounded 200000:
+        if (keys[i] otherwise "") == key:
+            return vals[i] otherwise lsp_none_json()
+        set i to i + 1
+    return lsp_none_json()
+
+action lsp_items(node: LspJson) -> list:
+    if node.kind == "arr":
+        return node.vals
+    return []
+
+action lsp_first_item(node: LspJson) -> LspJson:
+    let items = lsp_items(node)
+    if (length of items) > 0:
+        return items[0] otherwise lsp_none_json()
+    return lsp_none_json()
+
+action lsp_as_text(node: LspJson) -> string:
+    if node.kind == "str":
+        return node.text
+    return ""
+
+action lsp_as_num(node: LspJson) -> num:
+    if node.kind == "num":
+        return text_to_num(node.text)
+    return 0
+
+action lsp_get_text(node: LspJson, key) -> string:
+    return lsp_as_text(lsp_get(node, key))
+
+action lsp_get_num(node: LspJson, key) -> num:
+    return lsp_as_num(lsp_get(node, key))
+
+# ── JSON writer ────────────────────────────────────────────────────────
+#
+# The compiler's own emitter prints main's return value with printf, so the
+# reply stream never contains a NUL byte. Quote, backslash and the three
+# whitespace controls are escaped; any other control byte is replaced by "?"
+# for the reason given at the top of the file.
+
+action lsp_jstr(s):
+    let n = length of s
+    let i = 0
+    let out = "\""
+    while i < n bounded 4000000:
+        let c = s[i] otherwise ""
+        let escaped = c
+        if c == "\"":
+            set escaped to "\\\""
+        otherwise:
+            if c == "\\":
+                set escaped to "\\\\"
+            otherwise:
+                if c == "\n":
+                    set escaped to "\\n"
+                otherwise:
+                    if c == "\t":
+                        set escaped to "\\t"
+                    otherwise:
+                        if c < " ":
+                            set escaped to "?"
+        set out to out + escaped
+        set i to i + 1
+    return out + "\""
+
+# An id is echoed exactly: a string keeps its quotes, a number keeps its text.
+action lsp_id_json(node: LspJson) -> string:
+    if node.kind == "str":
+        return lsp_jstr(node.text)
+    if node.kind == "num":
+        return node.text
+    return "null"
+
+action lsp_range_json(line, c1, c2):
+    return "{\"start\":{\"line\":" + line + ",\"character\":" + c1 + "},\"end\":{\"line\":" + line + ",\"character\":" + c2 + "}}"
+
+# ── framing ────────────────────────────────────────────────────────────
+
+action lsp_frame(body, eol):
+    return "Content-Length: " + (length of body) + eol + eol + body
+
+# The line ending to answer with: the first control byte that is neither a tab
+# nor a newline in the request stream is the client's carriage return. A client
+# that writes bare LF gets bare LF back; a spec-conformant client gets CRLF.
+action lsp_eol_of(s):
+    let n = length of s
+    let limit = 200
+    if n > limit:
+        set n to limit
+    let i = 0
+    while i < n bounded 200:
+        let c = s[i] otherwise ""
+        if c < " " and c != "\n" and c != "\t":
+            return c + "\n"
+        set i to i + 1
+    return "\n"
+
+action lsp_reply(id_json, result_json, eol):
+    let body = "{\"jsonrpc\":\"2.0\",\"id\":" + id_json + ",\"result\":" + result_json + "}"
+    return lsp_frame(body, eol)
+
+action lsp_error_reply(id_json, code, message, eol):
+    let body = "{\"jsonrpc\":\"2.0\",\"id\":" + id_json + ",\"error\":{\"code\":" + code + ",\"message\":" + lsp_jstr(message) + "}}"
+    return lsp_frame(body, eol)
+
+action lsp_notify(method, params_json, eol):
+    let body = "{\"jsonrpc\":\"2.0\",\"method\":" + lsp_jstr(method) + ",\"params\":" + params_json + "}"
+    return lsp_frame(body, eol)
+
+# The digits after the colon of a header line, or -1 when there are none.
+action lsp_header_number(line):
+    let n = length of line
+    let i = 0
+    let seen = 0
+    while i < n and seen == 0 bounded 500:
+        if (line[i] otherwise "") == ":":
+            set seen to 1
+        set i to i + 1
+    if seen == 0:
+        return -1
+    let value = 0
+    let digits = 0
+    let going = 1
+    while i < n and going == 1 bounded 500:
+        let c = line[i] otherwise ""
+        if lsp_is_space(c) == 1:
+            set i to i + 1
+        otherwise:
+            if lsp_is_digit(c) == 1:
+                set value to value * 10 + lsp_digit_value(c)
+                set digits to digits + 1
+                set i to i + 1
+            otherwise:
+                set going to 0
+    if digits == 0:
+        return -1
+    return value
+
+# Read one frame at start. Result: [body, next_index, ok].
+action lsp_read_frame(s, start):
+    let n = length of s
+    let i = start
+    let skipping = 1
+    while i < n and skipping == 1 bounded 200000:
+        if lsp_is_space(s[i] otherwise "") == 1:
+            set i to i + 1
+        otherwise:
+            set skipping to 0
+    let length_ok = -1
+    let done = 0
+    let body_start = i
+    while i < n and done == 0 bounded 2000:
+        let nl = lsp_find_nl(s, i)
+        let line = lsp_trim_eol(lsp_slice(s, i, nl - i))
+        if (length of line) == 0:
+            set body_start to nl + 1
+            set done to 1
+        otherwise:
+            if lsp_starts_with_ci(line, "content-length:") == 1:
+                set length_ok to lsp_header_number(line)
+            set i to nl + 1
+    if done == 0 or length_ok < 0:
+        return ["", n, 0]
+    let end = body_start + length_ok
+    if end > n:
+        set end to n
+    return [lsp_slice(s, body_start, end - body_start), end, 1]
+
+# ── document store ─────────────────────────────────────────────────────
+
+action lsp_doc_index(docs, uri):
+    let n = length of docs
+    let i = 0
+    let found = -1
+    while i < n and found < 0 bounded 100000:
+        let d = docs[i] otherwise lsp_empty_doc()
+        if d.uri == uri:
+            set found to i
+        set i to i + 1
+    return found
+
+action lsp_doc_put(docs, uri, text):
+    let idx = lsp_doc_index(docs, uri)
+    if idx < 0:
+        return docs + [LspDoc(uri: uri, text: text)]
+    let out = []
+    let n = length of docs
+    let i = 0
+    while i < n bounded 100000:
+        let d = docs[i] otherwise lsp_empty_doc()
+        if i == idx:
+            set out to out + [LspDoc(uri: d.uri, text: text)]
+        otherwise:
+            set out to out + [d]
+        set i to i + 1
+    return out
+
+action lsp_doc_text(docs, uri):
+    let idx = lsp_doc_index(docs, uri)
+    if idx < 0:
+        return ""
+    let d = docs[idx] otherwise lsp_empty_doc()
+    return d.text
+
+# ── source lines ───────────────────────────────────────────────────────
+
+action lsp_split_lines(text):
+    let n = length of text
+    let i = 0
+    let line = ""
+    let out = []
+    while i < n bounded 4000000:
+        let c = text[i] otherwise ""
+        if c == "\n":
+            set out to out + [line]
+            set line to ""
+        otherwise:
+            if c >= " " or c == "\t":
+                set line to line + c
+        set i to i + 1
+    return out + [line]
+
+action lsp_line_text(text, want):
+    let lines = lsp_split_lines(text)
+    if want >= 0 and want < (length of lines):
+        return lines[want] otherwise ""
+    return ""
+
+# Everything before the first hash that is not inside a string.
+action lsp_strip_comment(s):
+    let n = length of s
+    let i = 0
+    let in_string = 0
+    while i < n bounded 4000000:
+        let c = s[i] otherwise ""
+        if c == "\"":
+            if in_string == 0:
+                set in_string to 1
+            otherwise:
+                set in_string to 0
+        otherwise:
+            if c == "#" and in_string == 0:
+                return lsp_slice(s, 0, i)
+        set i to i + 1
+    return s
+
+# The text without leading whitespace, and how many characters were removed.
+action lsp_ltrim(s):
+    let n = length of s
+    let i = 0
+    let going = 1
+    while i < n and going == 1 bounded 4000:
+        let c = s[i] otherwise ""
+        if c == " " or c == "\t" or c < " ":
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return [lsp_slice(s, i, n - i), i]
+
+action lsp_rtrim(s):
+    let n = length of s
+    let i = n
+    let going = 1
+    while i > 0 and going == 1 bounded 4000:
+        let c = s[i - 1] otherwise ""
+        if c == " " or c == "\t" or c < " ":
+            set i to i - 1
+        otherwise:
+            set going to 0
+    return lsp_slice(s, 0, i)
+
+action lsp_first_word(s):
+    let n = length of s
+    let i = 0
+    let out = ""
+    let going = 1
+    while i < n and going == 1 bounded 4000:
+        let c = s[i] otherwise ""
+        if lsp_is_ident(c) == 1:
+            set out to out + c
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return out
+
+action lsp_after_first_word(s):
+    let n = length of s
+    let word = lsp_first_word(s)
+    let k = length of word
+    while k < n and lsp_is_space(s[k] otherwise "") == 1 bounded 4000:
+        set k to k + 1
+    return lsp_slice(s, k, n - k)
+
+action lsp_leading_ident(s):
+    let n = length of s
+    let i = 0
+    let out = ""
+    let going = 1
+    while i < n and going == 1 bounded 4000:
+        let c = s[i] otherwise ""
+        if lsp_is_ident(c) == 1:
+            set out to out + c
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return out
+
+# The text inside the first pair of parentheses, trimmed; "" when there is none.
+action lsp_params_of(s):
+    let n = length of s
+    let i = 0
+    let open = -1
+    while i < n and open < 0 bounded 4000:
+        if (s[i] otherwise "") == "(":
+            set open to i
+        set i to i + 1
+    if open < 0:
+        return ""
+    let j = open + 1
+    let close = -1
+    while j < n and close < 0 bounded 4000:
+        if (s[j] otherwise "") == ")":
+            set close to j
+        set j to j + 1
+    if close < 0:
+        return lsp_rtrim(lsp_slice(s, open + 1, n - open - 1))
+    return lsp_rtrim(lsp_slice(s, open + 1, close - open - 1))
+
+action lsp_contains(s, needle):
+    let n = length of s
+    let m = length of needle
+    if m == 0:
+        return 0
+    let i = 0
+    let found = 0
+    while i + m <= n and found == 0 bounded 4000000:
+        if lsp_starts_at(s, i, needle) == 1:
+            set found to 1
+        set i to i + 1
+    return found
+
+# ── declarations ───────────────────────────────────────────────────────
+#
+# The index is built from the document text, not from a successful parse: hover
+# and definition must answer while a program is half-typed, which is exactly
+# when the checker is reporting errors.
+
+action lsp_record_fields(lines, from, base_indent):
+    let n = length of lines
+    let j = from
+    let out = ""
+    let going = 1
+    while j < n and going == 1 bounded 200000:
+        let clean = lsp_strip_comment(lines[j] otherwise "")
+        let tt = lsp_ltrim(clean)
+        let t = lsp_rtrim(tt[0] otherwise "")
+        let indent = tt[1] otherwise 0
+        if (length of t) == 0:
+            set j to j + 1
+        otherwise:
+            if indent <= base_indent:
+                set going to 0
+            otherwise:
+                if lsp_contains(t, ":") == 1:
+                    set out to out + "\n    " + t
+                set j to j + 1
+    return out
+
+action lsp_scan_decls(text) -> list:
+    let lines = lsp_split_lines(text)
+    let n = length of lines
+    let decls = []
+    let i = 0
+    while i < n bounded 200000:
+        let clean = lsp_strip_comment(lines[i] otherwise "")
+        let tt = lsp_ltrim(clean)
+        let t = tt[0] otherwise ""
+        let indent = tt[1] otherwise 0
+        let word = lsp_first_word(t)
+        if word == "action" or word == "routine" or word == "func" or word == "check" or word == "filter":
+            let rest = lsp_after_first_word(t)
+            let name = lsp_leading_ident(rest)
+            if (length of name) > 0:
+                let params = lsp_params_of(rest)
+                let signature = word + " " + name + "(" + params + ")"
+                set decls to decls + [LspDecl(kind: word, name: name, params: params, signature: signature, line: i + 1, col: indent + (length of word) + 1)]
+        otherwise:
+            if word == "record":
+                let rest = lsp_after_first_word(t)
+                let name = lsp_leading_ident(rest)
+                if (length of name) > 0:
+                    let fields = lsp_record_fields(lines, i + 1, indent)
+                    let signature = "record " + name + fields
+                    set decls to decls + [LspDecl(kind: "record", name: name, params: "", signature: signature, line: i + 1, col: indent + (length of word) + 1)]
+        set i to i + 1
+    return decls
+
+action lsp_find_decl(decls, name) -> LspDecl:
+    if (length of name) == 0:
+        return lsp_empty_decl()
+    let n = length of decls
+    let i = 0
+    while i < n bounded 200000:
+        let d = decls[i] otherwise lsp_empty_decl()
+        if d.name == name:
+            return d
+        set i to i + 1
+    return lsp_empty_decl()
+
+# The identifier under the cursor: [text, start_column, end_column].
+action lsp_word_at(text, want_line, want_char):
+    let line = lsp_line_text(text, want_line)
+    let n = length of line
+    let c = want_char
+    if c < 0:
+        set c to 0
+    if c > n:
+        set c to n
+    let start = c
+    let going = 1
+    while start > 0 and going == 1 bounded 4000000:
+        if lsp_is_ident(line[start - 1] otherwise "") == 1:
+            set start to start - 1
+        otherwise:
+            set going to 0
+    let stop = c
+    set going to 1
+    while stop < n and going == 1 bounded 4000000:
+        if lsp_is_ident(line[stop] otherwise "") == 1:
+            set stop to stop + 1
+        otherwise:
+            set going to 0
+    return [lsp_slice(line, start, stop - start), start, stop]
+
+# ── diagnostics ────────────────────────────────────────────────────────
+#
+# parse_source is the compiler's own entry point, re-stated here so this module
+# does not depend on main.kaze. check_program is the same checker the check
+# command runs; a diagnostic's line becomes the range's line and column 0 is
+# used because the pure checker reports lines, not columns.
+
+action lsp_parse_source(src) -> AstNode:
+    if is_machine_source(src) == 1:
+        return parse_machine(src)
+    let tokens = tokenize(src)
+    return parse_program(tokens)
+
+action lsp_diags_json(text):
+    let program = lsp_parse_source(text)
+    let diags = check_program(program)
+    let count = length of diags
+    let out = "["
+    let i = 0
+    while i < count bounded 200000:
+        let d = diags[i] otherwise Diagnostic(code: "", line: 0, msg: "")
+        let line0 = d.line - 1
+        if line0 < 0:
+            set line0 to 0
+        let width = length of (lsp_line_text(text, line0))
+        if i > 0:
+            set out to out + ","
+        set out to out + "{\"range\":" + lsp_range_json(line0, 0, width) + ",\"severity\":1,\"source\":\"kaze\",\"code\":" + lsp_jstr(d.code) + ",\"message\":" + lsp_jstr(d.msg) + "}"
+        set i to i + 1
+    return out + "]"
+
+action lsp_publish(uri, text, eol):
+    let params = "{\"uri\":" + lsp_jstr(uri) + ",\"diagnostics\":" + lsp_diags_json(text) + "}"
+    return lsp_notify("textDocument/publishDiagnostics", params, eol)
+
+# ── hover and definition ───────────────────────────────────────────────
+
+action lsp_hover_result(text, want_line, want_char, uri):
+    let word = lsp_word_at(text, want_line, want_char)
+    let decls = lsp_scan_decls(text)
+    let d = lsp_find_decl(decls, word[0] otherwise "")
+    if (length of d.name) == 0:
+        return "null"
+    let markdown = "```kaze\n" + d.signature + "\n```\n\nDeclared at line " + d.line + " of " + uri + "."
+    let range = lsp_range_json(want_line, word[1] otherwise 0, word[2] otherwise 0)
+    return "{\"contents\":{\"kind\":\"markdown\",\"value\":" + lsp_jstr(markdown) + "},\"range\":" + range + "}"
+
+action lsp_definition_result(text, want_line, want_char, uri):
+    let word = lsp_word_at(text, want_line, want_char)
+    let decls = lsp_scan_decls(text)
+    let d = lsp_find_decl(decls, word[0] otherwise "")
+    if (length of d.name) == 0:
+        return "null"
+    let line0 = d.line - 1
+    if line0 < 0:
+        set line0 to 0
+    let end_col = d.col + (length of d.name)
+    return "{\"uri\":" + lsp_jstr(uri) + ",\"range\":" + lsp_range_json(line0, d.col, end_col) + "}"
+
+# ── dispatch ───────────────────────────────────────────────────────────
+
+action lsp_initialize_caps():
+    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true},\"serverInfo\":{\"name\":\"kaze-lsp-native\",\"version\":\"0.1.0\"}}"
+
+# Handle one message. Result: [reply_text, next_docs, stop_flag].
+action lsp_handle(body, docs, eol):
+    let parsed = lsp_jparse(body, 0)
+    let msg = parsed[0] otherwise lsp_none_json()
+    if msg.kind != "obj":
+        return [lsp_error_reply("null", -32700, "Parse error", eol), docs, 0]
+    let method = lsp_get_text(msg, "method")
+    let id_node = lsp_get(msg, "id")
+    let is_request = 0
+    if id_node.kind != "none":
+        set is_request to 1
+    let params = lsp_get(msg, "params")
+
+    if method == "initialize":
+        if is_request == 1:
+            return [lsp_reply(lsp_id_json(id_node), lsp_initialize_caps(), eol), docs, 0]
+        return ["", docs, 0]
+
+    if method == "initialized":
+        return ["", docs, 0]
+
+    if method == "textDocument/didOpen":
+        let td = lsp_get(params, "textDocument")
+        let uri = lsp_get_text(td, "uri")
+        let text = lsp_get_text(td, "text")
+        let next_docs = lsp_doc_put(docs, uri, text)
+        return [lsp_publish(uri, text, eol), next_docs, 0]
+
+    if method == "textDocument/didChange":
+        let td = lsp_get(params, "textDocument")
+        let uri = lsp_get_text(td, "uri")
+        let text = lsp_get_text(td, "text")
+        if (length of text) == 0:
+            let change = lsp_first_item(lsp_get(params, "contentChanges"))
+            set text to lsp_get_text(change, "text")
+        let next_docs = lsp_doc_put(docs, uri, text)
+        return [lsp_publish(uri, text, eol), next_docs, 0]
+
+    if method == "textDocument/hover" or method == "textDocument/definition":
+        let td = lsp_get(params, "textDocument")
+        let uri = lsp_get_text(td, "uri")
+        let position = lsp_get(params, "position")
+        let want_line = lsp_get_num(position, "line")
+        let want_char = lsp_get_num(position, "character")
+        let text = lsp_doc_text(docs, uri)
+        let result = "null"
+        if method == "textDocument/hover":
+            set result to lsp_hover_result(text, want_line, want_char, uri)
+        otherwise:
+            set result to lsp_definition_result(text, want_line, want_char, uri)
+        if is_request == 1:
+            return [lsp_reply(lsp_id_json(id_node), result, eol), docs, 0]
+        return ["", docs, 0]
+
+    if method == "shutdown":
+        if is_request == 1:
+            return [lsp_reply(lsp_id_json(id_node), "null", eol), docs, 0]
+        return ["", docs, 0]
+
+    if method == "exit":
+        return ["", docs, 1]
+
+    # A request that names a method this server does not implement gets the
+    # JSON-RPC "method not found" error. A notification is never answered.
+    if is_request == 1:
+        return [lsp_error_reply(lsp_id_json(id_node), -32601, "Method not found: " + method, eol), docs, 0]
+    return ["", docs, 0]
+
+# ── the session ────────────────────────────────────────────────────────
+#
+# Read a frame, answer it, append the reply, repeat. exit stops the loop; a
+# frame that cannot be read ends the session rather than guessing.
+
+action lsp_serve_session(session) -> string:
+    let n = length of session
+    let i = 0
+    let docs = []
+    let out = ""
+    let eol = lsp_eol_of(session)
+    let stop = 0
+    let frames = 0
+    while i < n and stop == 0 and frames < 100000 bounded 100002:
+        let r = lsp_read_frame(session, i)
+        let body = r[0] otherwise ""
+        let next = r[1] otherwise n
+        let ok = r[2] otherwise 0
+        if ok == 0:
+            set i to n
+        otherwise:
+            if (length of body) > 0:
+                let h = lsp_handle(body, docs, eol)
+                set out to out + (h[0] otherwise "")
+                set docs to h[1] otherwise docs
+                set stop to h[2] otherwise 0
+            set i to next
+        set frames to frames + 1
+    return out
+
+# ── what the CLI can hand this module ──────────────────────────────────
+#
+# The compiler binary has no nothing literal, so a missing argument is
+# recognised by its runtime type: kz_to_string(nil) is the text "nil".
+# A real document that literally is "nil" still counts as text.
+
+action lsp_has_text(v) -> num:
+    if v == "nil":
+        return 1
+    let as_text = v + ""
+    if as_text == "nil":
+        return 0
+    return 1
+
+# A framed session starts (after whitespace) with a Content-Length header.
+action lsp_looks_like_session(v) -> num:
+    if lsp_has_text(v) == 0:
+        return 0
+    let text = v + ""
+    let n = length of text
+    let i = 0
+    let going = 1
+    while i < n and going == 1 bounded 1000:
+        if lsp_is_space(text[i] otherwise "") == 1:
+            set i to i + 1
+        otherwise:
+            set going to 0
+    if lsp_starts_with_ci(lsp_slice(text, i, 15), "content-length:") == 1:
+        return 1
+    return 0
+
+# ── closing the interactive gap (designs, not code) ────────────────────
+#
+# Two designs would turn this batch engine into a daemon:
+#
+#   (a) an stdio capability with a host backend: "needs: stdio" becomes a
+#       declared capability, stdio.read(n) and stdio.emit(text) lower to
+#       fread/fwrite through the capability gate, and SPEC.md gains the entries.
+#       The checker, the capability policy and the Sofuu drift check all stay
+#       in charge of who may use it; the LSP loop above runs unchanged.
+#   (b) a small C host that embeds the emitted compiler (Phase 10's embedded
+#       host bridge): the host owns the pipes and the JSON-RPC loop and calls
+#       into the emitted front end for parse/check/hover. No language change;
+#       the protocol engine here remains the reference for the messages.
+
 # main.kaze — Pure Kaze Self-Hosted Compiler.
 #
 # One binary, several modes, selected by the first positional argument:
@@ -4119,8 +6063,11 @@ action emit_c_program(prog: AstNode):
 #   <bin> <file.kaze>              source in, C out (the bootstrap default)
 #   <bin> emit-c <file.kaze>       the same, said explicitly
 #   <bin> check <file.kaze>        parse and check, print diagnostics
+#   <bin> fmt <file.kaze>          parse and print the canonical human form
+#   <bin> compile <file.kaze>      parse, check, print the bytecode module (hex)
 #   <bin> to-machine <file.kaze>   emit the canonical machine S-expression form
 #   <bin> to-human <file.kaze>     read machine S-expressions, print human syntax
+#   <bin> lsp [session]            serve a framed LSP session (see lsp.kaze)
 #
 # The first parameter is the mode so that the single-argument form keeps
 # working: when the first positional argument is not a mode name, it is the
@@ -4129,6 +6076,8 @@ action emit_c_program(prog: AstNode):
 
 action mode_of(word):
     if word == "check" or word == "emit-c" or word == "to-machine" or word == "to-human":
+        return word
+    if word == "fmt" or word == "compile" or word == "lsp" or word == "surface":
         return word
     return ""
 
@@ -4153,10 +6102,44 @@ action compile(src):
     let program = parse_source(src)
     return emit_c_program(program)
 
+# Print the language surface as one family.verb per line, sorted, so the drift check can
+# diff it against the embedded product engine (scripts/kaze-drift-check.sh).
+action surface_text() -> text:
+    # cap_verbs() is kept in sorted order, so printing it is already canonical
+    let verbs = cap_verbs()
+    let out = ""
+    let first = 1
+    for each v in verbs:
+        if first == 1:
+            set out to v
+            set first to 0
+        otherwise:
+            set out to out + "\n" + v
+    for each o in bc_opcodes():
+        set out to out + "\nopcode " + o
+    return out
+
 action main(mode, src):
     let selected = mode_of(mode)
+    if selected == "lsp":
+        # The second parameter is the session: a path the runtime reads, or the
+        # session text itself when the argument is not a file. With no second
+        # parameter there is no second input channel in this binary, so the
+        # command says nothing on stdout rather than printing an empty line.
+        if lsp_has_text(src) == 0:
+            return
+        if lsp_looks_like_session(src) == 0:
+            return
+        return lsp_serve_session(src)
     if selected == "":
+        # A whole framed session arriving as the first parameter is what a
+        # stdin slurp produces (the binary with no mode word, or --entry lsp
+        # with stdin piped); serve it instead of trying to compile JSON.
+        if lsp_looks_like_session(mode) == 1:
+            return lsp_serve_session(mode)
         # Legacy one-argument form: the first parameter holds the source.
+        if lsp_has_text(mode) == 0:
+            return "/* Kaze Compiler — No input provided */\n"
         if length of mode == 0:
             return "/* Kaze Compiler — No input provided */\n"
         return compile(mode)
@@ -4166,8 +6149,1407 @@ action main(mode, src):
     if selected == "to-machine":
         let program = parse_source(src)
         return emit_machine(program)
+    if selected == "surface":
+        return surface_text()
+
     if selected == "to-human":
         let program = parse_machine(src)
         return emit_human(program)
+    if selected == "fmt":
+        let program = parse_source(src)
+        return emit_human(program)
+    if selected == "compile":
+        return compile_module(src)
     return compile(src)
+
+# ── compile: the bytecode module writer ─────────────────────────────────
+#
+# The reference for the on-disk layout is sfs/isa.rs: the magic KAZEBC1 and a
+# NUL, a u16 format number, the root origin, the needs list, the constant pool
+# (number as f64 little-endian / text as length+bytes / boolean as one byte),
+# the capability table, then one record per item: tag, period, line, slots,
+# recursion ceiling, name, origin, parameter names and the code words.
+#
+# The lowering below mirrors sfs/compiler.rs instruction for instruction, so a
+# module written here runs on the same VM as one the reference compiler wrote.
+# Three limits of running inside the self-hosted binary are reported rather
+# than papered over:
+#
+#   * it cannot write a file — the language has no write primitive, and the
+#     generated C prints a returned string with printf("%s"), which stops at
+#     the NUL byte every module header holds — so the module leaves as
+#     lowercase hex on stdout:
+#         kaze compile x.kaze | xxd -r -p > x.kazebc
+#   * the root and item origins are empty: the generated C reads a positional
+#     argument as the file it names, so this program never learns the path.
+#     The VM reads neither field; only diagnostics lose the file name.
+#   * text is ASCII: the writer has no UTF-8 encoder (it would need code
+#     points), so a module carrying a non-ASCII constant is refused by name.
+
+# One entry in the constant pool.
+record BcConst:
+    kind: str
+    text: str
+    val: num
+
+# One capability call site: the family the gate re-checks, the operation and
+# the number of arguments the call passes.
+record BcCap:
+    family: str
+    op: str
+    argc: num
+
+# One item exactly as the module stores it.
+record BcItem:
+    name: str
+    tag: num
+    params: list
+    code: list
+    line: num
+    period: num
+    slots: num
+    bound: num
+
+# ── numbers and bytes ───────────────────────────────────────────────────
+
+# The integer part of x. There is no floor builtin, and every use here is on
+# a non-negative quantity, so one subtraction of the fractional part is exact.
+action bc_floor(x):
+    if x >= 0:
+        let r = x % 1 otherwise 0
+        return x - r
+    let r = (0 - x) % 1 otherwise 0
+    return 0 - ((0 - x) - r)
+
+# A decimal literal's text as a number. The fraction is scaled with one
+# division of two exact integers, which rounds once — the same rounding the
+# reference parser's str::parse gives every literal this lexer can produce.
+action bc_num_of(text):
+    let n = length of text
+    let i = 0
+    let seen = 0
+    let whole = 0
+    let frac = 0
+    let scale = 1
+    while i < n bounded 64:
+        let c = text[i] otherwise "x"
+        if c == ".":
+            set seen to 1
+        otherwise:
+            if c >= "0" and c <= "9":
+                let d = digit_value(c)
+                if seen == 1:
+                    set scale to scale * 10
+                    set frac to frac * 10 + d
+                otherwise:
+                    set whole to whole * 10 + d
+        set i to i + 1
+    if scale == 1:
+        return whole
+    return (whole * scale + frac) / scale otherwise whole
+
+# The 8 bytes of a number's IEEE-754 representation, little-endian. A
+# constant is stored as f64 and the language has no bit-cast, so the writer
+# normalises to 1 <= m < 2, reads the 52 fraction bits with arithmetic, then
+# splits the exponent and the mantissa into two 32-bit halves.
+action bc_bytes_of_num(x):
+    let sign = 0
+    let v = x
+    if v < 0:
+        set sign to 1
+        set v to 0 - v
+    if v == 0:
+        return [0, 0, 0, 0, 0, 0, 0, 0]
+    let e = 0
+    let m = v
+    while m >= 2 and e < 1100 bounded 2000:
+        set m to m / 2
+        set e to e + 1
+    while m < 1 and e > -1100 bounded 2000:
+        set m to m * 2
+        set e to e - 1
+    let frac = 0
+    let i = 0
+    set m to m - 1
+    while i < 52 bounded 64:
+        set m to m * 2
+        let bit = bc_floor(m)
+        set m to m - bit
+        set frac to frac * 2 + bit
+        set i to i + 1
+    let ef = e + 1023
+    let fhi = bc_floor(frac / 4294967296)
+    let flo = frac - fhi * 4294967296
+    let hi = sign * 2147483648 + ef * 1048576 + fhi
+    let lo = flo
+    let y3 = bc_floor(lo / 16777216)
+    let r3 = lo - y3 * 16777216
+    let y2 = bc_floor(r3 / 65536)
+    let r2 = r3 - y2 * 65536
+    let y1 = bc_floor(r2 / 256)
+    let y0 = r2 - y1 * 256
+    let z3 = bc_floor(hi / 16777216)
+    let s3 = hi - z3 * 16777216
+    let z2 = bc_floor(s3 / 65536)
+    let s2 = s3 - z2 * 65536
+    let z1 = bc_floor(s2 / 256)
+    let z0 = s2 - z1 * 256
+    return [y0, y1, y2, y3, z0, z1, z2, z3]
+
+# An immediate word is written as the u32 the reference writer's cast
+# produces: a negative displacement wraps around.
+action bc_u32(n):
+    if n < 0:
+        return n + 4294967296
+    return n
+
+action bc_u16_bytes(n):
+    let v = bc_u32(n)
+    let b0 = v % 256
+    let b1 = (v - b0) / 256
+    return [b0, b1]
+
+action bc_u32_bytes(n):
+    let v = bc_u32(n)
+    let b0 = v % 256
+    let r0 = (v - b0) / 256
+    let b1 = r0 % 256
+    let r1 = (r0 - b1) / 256
+    let b2 = r1 % 256
+    let b3 = (r1 - b2) / 256
+    return [b0, b1, b2, b3]
+
+# The code of one ASCII character, or -1 when it is not ASCII. The table is
+# 32..126 in order, so the byte is its position plus 32.
+action bc_byte_of(c):
+    if c == "\n":
+        return 10
+    if c == "\t":
+        return 9
+    let table = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    let n = length of table
+    let i = 0
+    while i < n bounded 128:
+        if (table[i] otherwise "") == c:
+            return 32 + i
+        set i to i + 1
+    return -1
+
+action bc_text_ok(s):
+    let n = length of s
+    let i = 0
+    let ok = 1
+    while i < n bounded 100000:
+        if bc_byte_of(s[i] otherwise "x") < 0:
+            set ok to 0
+        set i to i + 1
+    return ok
+
+action bc_text_bytes(s):
+    let out = []
+    let n = length of s
+    let i = 0
+    while i < n bounded 100000:
+        let b = bc_byte_of(s[i] otherwise "x")
+        if b >= 0:
+            set out to out + [b]
+        set i to i + 1
+    return out
+
+action bc_text_field(s):
+    return bc_u32_bytes(length of s) + bc_text_bytes(s)
+
+# A whole number as text. Both engines agree on "" + n only when the left
+# side is a string, and the interpreter refuses text + number outright, so
+# every message that names a line spells the number out here.
+action bc_num_text(n):
+    recursion bounded 32
+    let v = bc_floor(n)
+    if v < 0:
+        return "-" + bc_num_text(0 - v)
+    if v == 0:
+        return "0"
+    let digits = "0123456789"
+    let out = ""
+    let rest = v
+    while rest > 0 bounded 32:
+        let d = rest % 10
+        set out to (digits[d] otherwise "0") + out
+        set rest to (rest - d) / 10
+    return out
+
+action bc_hex_of(bytes):
+    let digits = "0123456789abcdef"
+    let out = ""
+    for each b in bytes:
+        let lo = b % 16
+        let hi = (b - lo) / 16
+        set out to out + (digits[hi] otherwise "0") + (digits[lo] otherwise "0")
+    return out
+
+# ── the lowering state ──────────────────────────────────────────────────
+#
+# A Kaze record cannot be mutated, so the compiler threads one list through
+# the walk instead:
+#   0 next free local slot      5 the first error ("" while the walk is clean)
+#   1 lexical scopes            6 the item being lowered
+#   2 the code words            7 every item in the module (call targets)
+#   3 the constant pool         8 the item's ensures clauses
+#   4 the capability table
+
+action bc_set_at(lst, i, v):
+    let out = []
+    let k = 0
+    for each x in lst:
+        if k == i:
+            set out to out + [v]
+        otherwise:
+            set out to out + [x]
+        set k to k + 1
+    return out
+
+action bc_state(item_name, items_nodes, ensures, consts, caps):
+    return [0, [[]], [], consts, caps, "", item_name, items_nodes, ensures]
+
+action bc_fail(st, msg):
+    if (length of (st[5] otherwise "")) > 0:
+        return st
+    return bc_set_at(st, 5, msg)
+
+action bc_emit(st, op, a):
+    let code = st[2] otherwise []
+    return bc_set_at(st, 2, code + [op + a * 256])
+
+action bc_wide(st, op, a, imm):
+    let code = st[2] otherwise []
+    let at = length of code
+    return [bc_set_at(st, 2, code + [op + a * 256, bc_u32(imm)]), at]
+
+action bc_wide1(st, op, a, imm):
+    let r = bc_wide(st, op, a, imm)
+    return r[0] otherwise []
+
+action bc_mark(st):
+    return length of (st[2] otherwise [])
+
+action bc_patch(st, at):
+    let code = st[2] otherwise []
+    let rel = (length of code) - (at + 2)
+    return bc_set_at(st, 2, bc_set_at(code, at + 1, bc_u32(rel)))
+
+action bc_jump_back(st, head):
+    let code = st[2] otherwise []
+    let at = length of code
+    let rel = head - (at + 2)
+    return bc_set_at(st, 2, code + [20, bc_u32(rel)])
+
+action bc_temp(st):
+    let n = st[0] otherwise 0
+    if n >= 255:
+        return [bc_fail(st, "this block uses more than 255 values; split it into actions"), 0]
+    return [bc_set_at(st, 0, n + 1), n]
+
+action bc_push_scope(st):
+    return bc_set_at(st, 1, (st[1] otherwise []) + [[]])
+
+action bc_pop_scope(st):
+    let scopes = st[1] otherwise []
+    let n = length of scopes
+    if n == 0:
+        return st
+    let out = []
+    let i = 0
+    while i < (n - 1) bounded 400:
+        set out to out + [scopes[i] otherwise []]
+        set i to i + 1
+    return bc_set_at(st, 1, out)
+
+action bc_resolve(scopes, name):
+    let found = -1
+    let i = (length of scopes) - 1
+    while i >= 0 bounded 400:
+        let scope = scopes[i] otherwise []
+        let j = (length of scope) - 1
+        while j >= 0 bounded 400:
+            let pair = scope[j] otherwise []
+            if found < 0 and (pair[0] otherwise "") == name:
+                set found to pair[1] otherwise -1
+            set j to j - 1
+        set i to i - 1
+    return found
+
+action bc_bind(st, name):
+    let t = bc_temp(st)
+    let st1 = t[0] otherwise []
+    let slot = t[1] otherwise 0
+    let scopes = st1[1] otherwise []
+    let n = length of scopes
+    if n == 0:
+        return [bc_set_at(st1, 1, [[[name, slot]]]), slot]
+    let last = scopes[n - 1] otherwise []
+    return [bc_set_at(st1, 1, bc_set_at(scopes, n - 1, last + [[name, slot]])), slot]
+
+# Bind a name to a slot the caller already reserved (a try handler's error).
+action bc_bind_named(st, name, slot):
+    let scopes = st[1] otherwise []
+    let n = length of scopes
+    if n == 0:
+        return bc_set_at(st, 1, [[[name, slot]]])
+    let last = scopes[n - 1] otherwise []
+    return bc_set_at(st, 1, bc_set_at(scopes, n - 1, last + [[name, slot]]))
+
+action bc_same_bytes(a, b):
+    if (length of a) != (length of b):
+        return 0
+    let n = length of a
+    let i = 0
+    let same = 1
+    while i < n bounded 16:
+        if (a[i] otherwise -1) != (b[i] otherwise -2):
+            set same to 0
+        set i to i + 1
+    return same
+
+action bc_push_num(st, val):
+    let consts = st[3] otherwise []
+    let n = length of consts
+    let want = bc_bytes_of_num(val)
+    let i = 0
+    let found = -1
+    while i < n bounded 20000:
+        let c = consts[i] otherwise BcConst(kind: "", text: "", val: 0)
+        if found < 0 and c.kind == "num":
+            if bc_same_bytes(bc_bytes_of_num(c.val), want) == 1:
+                set found to i
+        set i to i + 1
+    if found >= 0:
+        return [st, found]
+    return [bc_set_at(st, 3, consts + [BcConst(kind: "num", text: "", val: val)]), n]
+
+action bc_push_text(st, text):
+    if bc_text_ok(text) == 0:
+        return [bc_fail(st, "a text constant holds a non-ASCII character; the minimal module writer has no UTF-8 encoder"), 0]
+    let consts = st[3] otherwise []
+    let n = length of consts
+    let i = 0
+    let found = -1
+    while i < n bounded 20000:
+        let c = consts[i] otherwise BcConst(kind: "", text: "", val: 0)
+        if found < 0 and c.kind == "str" and c.text == text:
+            set found to i
+        set i to i + 1
+    if found >= 0:
+        return [st, found]
+    return [bc_set_at(st, 3, consts + [BcConst(kind: "str", text: text, val: 0)]), n]
+
+action bc_push_bool(st, which):
+    let spelling = "false"
+    if which == 1:
+        set spelling to "true"
+    let consts = st[3] otherwise []
+    let n = length of consts
+    let i = 0
+    let found = -1
+    while i < n bounded 20000:
+        let c = consts[i] otherwise BcConst(kind: "", text: "", val: 0)
+        if found < 0 and c.kind == "bool" and c.text == spelling:
+            set found to i
+        set i to i + 1
+    if found >= 0:
+        return [st, found]
+    return [bc_set_at(st, 3, consts + [BcConst(kind: "bool", text: spelling, val: 0)]), n]
+
+action bc_push_cap(st, family, op, argc):
+    let caps = st[4] otherwise []
+    let n = length of caps
+    let i = 0
+    let found = -1
+    while i < n bounded 20000:
+        let c = caps[i] otherwise BcCap(family: "", op: "", argc: 0)
+        if found < 0 and c.family == family and c.op == op and c.argc == argc:
+            set found to i
+        set i to i + 1
+    if found >= 0:
+        return [st, found]
+    return [bc_set_at(st, 4, caps + [BcCap(family: family, op: op, argc: argc)]), n]
+
+# ── names ───────────────────────────────────────────────────────────────
+
+action bc_take_chars(s, k):
+    let out = ""
+    let i = 0
+    while i < k bounded 256:
+        set out to out + (s[i] otherwise "")
+        set i to i + 1
+    return out
+
+action bc_from_char(s, k):
+    let out = ""
+    let n = length of s
+    let i = k
+    while i < n bounded 256:
+        set out to out + (s[i] otherwise "")
+        set i to i + 1
+    return out
+
+action bc_head(s):
+    let n = length of s
+    let i = 0
+    while i < n bounded 256:
+        if (s[i] otherwise "") == ".":
+            return bc_take_chars(s, i)
+        set i to i + 1
+    return s
+
+action bc_tail(s):
+    let n = length of s
+    let i = 0
+    while i < n bounded 256:
+        if (s[i] otherwise "") == ".":
+            return bc_from_char(s, i + 1)
+        set i to i + 1
+    return ""
+
+action bc_item_index(items, name):
+    let n = length of items
+    let i = 0
+    let found = -1
+    while i < n bounded 5000:
+        let it = items[i] otherwise none_node()
+        if found < 0 and it.name == name:
+            set found to i
+        set i to i + 1
+    return found
+
+# ── units ───────────────────────────────────────────────────────────────
+
+# The multiplier into the dimension's base unit, as ast.rs's Unit::scale:
+# the reference engine normalises at parse time, and a constant only matches
+# its bytes if this walk does the same.
+action bc_unit_scale(u):
+    if u == "km":
+        return 1000
+    if u == "cm":
+        return 0.01
+    if u == "mm":
+        return 0.001
+    if u == "km/h":
+        return 1000 / 3600
+    if u == "radians":
+        return 180 / 3.141592653589793
+    if u == "hours":
+        return 3600
+    if u == "minutes":
+        return 60
+    if u == "ms":
+        return 0.001
+    if u == "gram":
+        return 0.001
+    if u == "mbar":
+        return 100
+    if u == "hPa":
+        return 100
+    return 1
+
+# Only Celsius has a zero that is not the dimension's zero.
+action bc_unit_offset(u):
+    if u == "Celsius":
+        return 273.15
+    return 0
+
+# ── expressions ─────────────────────────────────────────────────────────
+
+action bc_bin_op(op):
+    if op == "+":
+        return 7
+    if op == "-":
+        return 8
+    if op == "*":
+        return 9
+    if op == "/":
+        return 10
+    if op == "%":
+        return 11
+    if op == "<":
+        return 13
+    if op == "<=":
+        return 14
+    if op == ">":
+        return 15
+    if op == ">=":
+        return 16
+    if op == "==":
+        return 17
+    if op == "!=":
+        return 18
+    return 6
+
+action bc_math_op(name):
+    if name == "sin":
+        return 37
+    if name == "cos":
+        return 38
+    if name == "atan2":
+        return 39
+    return 40
+
+action bc_has_named(args):
+    let found = 0
+    for each a in args:
+        if a.kind == "NAMED_ARG":
+            set found to 1
+    return found
+
+action bc_named_arg(args, name):
+    let out = none_node()
+    let found = 0
+    for each a in args:
+        if found == 0 and a.kind == "NAMED_ARG" and a.name == name:
+            set out to bc_kid(a, 0)
+            set found to 1
+    return out
+
+action bc_kid(n: AstNode, i):
+    return child_at(n, i)
+
+action bc_expr_args(st, args):
+    recursion bounded 200
+    let st1 = st
+    for each a in args:
+        if a.kind == "NAMED_ARG":
+            set st1 to bc_expr(st1, bc_kid(a, 0), 0)
+        otherwise:
+            set st1 to bc_expr(st1, a, 0)
+    return st1
+
+action bc_trig_args(st, args, target):
+    recursion bounded 200
+    let st1 = st
+    let i = 0
+    let n = length of args
+    while i < n bounded 256:
+        let a = args[i] otherwise none_node()
+        set st1 to bc_expr(st1, a, 0)
+        if i == 0 and (target == "sin" or target == "cos"):
+            if a.kind == "NUM" and (a.name == "degrees" or a.name == "radians"):
+                set st1 to bc_emit(st1, 41, 0)
+        set i to i + 1
+    return st1
+
+action bc_link_lost(st, e: AstNode):
+    let args = e.children
+    if (length of args) == 0:
+        return bc_fail(st, "line " + bc_num_text(e.line) + ": link lost needs a time, e.g. 'link lost for 3 seconds'")
+    let a = args[0] otherwise none_node()
+    if a.kind != "NUM":
+        return bc_fail(st, "line " + bc_num_text(e.line) + ": link lost needs a time literal, e.g. 'link lost for 3 seconds'")
+    let ms = (bc_num_of(a.val_str) * bc_unit_scale(a.name)) * 1000
+    if ms < 1 or ms > 4294967295:
+        return bc_fail(st, "line " + bc_num_text(e.line) + ": link lost needs at least 1 millisecond (and less than about 49 days)")
+    return bc_wide1(st, 46, 0, bc_floor(ms))
+
+action bc_record_init(st, e: AstNode):
+    recursion bounded 200
+    let items = st[7] otherwise []
+    let target = bc_item_index(items, e.name)
+    if target < 0:
+        return bc_fail(st, "line " + bc_num_text(e.line) + ": record '" + e.name + "' is not defined in this module")
+    let item = items[target] otherwise none_node()
+    if item.kind != "RECORD":
+        return bc_fail(st, "line " + bc_num_text(e.line) + ": '" + e.name + "' is not a record")
+    let fields = item.children
+    let st1 = st
+    for each f in fields:
+        let arg = bc_named_arg(e.children, f.name)
+        if arg.kind == "NONE":
+            set st1 to bc_fail(st1, "line " + bc_num_text(e.line) + ": missing field '" + f.name + "' in instantiation of record '" + e.name + "'")
+        otherwise:
+            let r = bc_push_text(st1, f.name)
+            let st2 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+            set st1 to bc_expr(st2, arg, 0)
+    return bc_emit(st1, 48, length of fields)
+
+action bc_call(st, e: AstNode, root):
+    recursion bounded 200
+    let target = e.name
+    let args = e.children
+    if (length of args) > 255:
+        return bc_fail(st, "line " + bc_num_text(e.line) + ": '" + target + "' takes too many values")
+    if target == "link_lost":
+        return bc_link_lost(st, e)
+    if target == "vector":
+        let st1 = bc_expr_args(st, args)
+        return bc_emit(st1, 33, length of args)
+    if target == "sin" or target == "cos" or target == "sqrt" or target == "atan2":
+        let st1 = bc_trig_args(st, args, target)
+        return bc_emit(st1, bc_math_op(target), 0)
+    if target == "geo.distance":
+        let st1 = bc_expr_args(st, args)
+        return bc_emit(st1, 34, 0)
+    if target == "geo.slant_distance":
+        let st1 = bc_expr_args(st, args)
+        return bc_emit(st1, 43, 0)
+    if target == "geo.bearing_of":
+        let st1 = bc_expr_args(st, args)
+        return bc_emit(st1, 35, 0)
+    if target == "geo.bearing_from":
+        let st1 = bc_expr_args(st, args)
+        return bc_emit(st1, 36, 0)
+    if (length of bc_tail(target)) > 0:
+        let family = family_of_word(bc_head(target))
+        let op = bc_tail(target)
+        let st1 = bc_expr_args(st, args)
+        let c = bc_push_cap(st1, family, op, length of args)
+        return bc_wide1(c[0] otherwise [], 22, length of args, c[1] otherwise 0)
+    if bc_has_named(args) == 1:
+        return bc_record_init(st, e)
+    let idx = bc_item_index(st[7] otherwise [], target)
+    if idx < 0:
+        return bc_fail(st, "line " + bc_num_text(e.line) + ": '" + target + "' is not defined in this module")
+    let st1 = bc_expr_args(st, args)
+    return bc_wide1(st1, 47, length of args, idx)
+
+action bc_expr(st, e: AstNode, root):
+    recursion bounded 200
+    let k = e.kind
+    if k == "NUM":
+        let val = bc_num_of(e.val_str) * bc_unit_scale(e.name) + bc_unit_offset(e.name)
+        let r = bc_push_num(st, val)
+        return bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+    if k == "STR":
+        let r = bc_push_text(st, e.val_str)
+        return bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+    if k == "BOOL":
+        let which = 0
+        if e.val_str == "true":
+            set which to 1
+        let r = bc_push_bool(st, which)
+        return bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+    if k == "LIST":
+        let items = e.children
+        let n = length of items
+        if n > 255:
+            return bc_fail(st, "line " + bc_num_text(e.line) + ": this list has more than 255 items")
+        let st1 = st
+        for each it in items:
+            set st1 to bc_expr(st1, it, 0)
+        return bc_emit(st1, 3, n)
+    if k == "IDENT":
+        let slot = bc_resolve(st[1] otherwise [], e.name)
+        if slot < 0:
+            return bc_fail(st, "line " + bc_num_text(e.line) + ": '" + e.name + "' is not defined in '" + (st[6] otherwise "") + "'")
+        return bc_emit(st, 1, slot)
+    if k == "LEN":
+        let st1 = bc_expr(st, bc_kid(e, 0), 0)
+        return bc_emit(st1, 5, 0)
+    if k == "LEN_LIT":
+        let r = bc_push_num(st, e.val_num)
+        return bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+    if k == "INDEX":
+        let st1 = bc_expr(st, bc_kid(e, 0), 0)
+        let st2 = bc_expr(st1, bc_kid(e, 1), 0)
+        return bc_emit(st2, 4, 0)
+    if k == "FIELD":
+        let base = bc_kid(e, 0)
+        if base.kind != "IDENT":
+            return bc_fail(st, "line " + bc_num_text(e.line) + ": a field is read from a name, not from another expression")
+        let slot = bc_resolve(st[1] otherwise [], base.name)
+        if slot < 0:
+            return bc_fail(st, "line " + bc_num_text(e.line) + ": '" + base.name + "' is not a value here")
+        let st1 = bc_emit(st, 1, slot)
+        let r = bc_push_text(st1, e.name)
+        let st2 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+        return bc_emit(st2, 30, 0)
+    if k == "BIN":
+        return bc_bin(st, e, root)
+    if k == "FALLBACK":
+        return bc_fallback(st, bc_kid(e, 0), bc_kid(e, 1), e.line, root)
+    if k == "IN_UNIT":
+        let st1 = bc_expr(st, bc_kid(e, 0), 0)
+        if e.name == "radians":
+            return bc_emit(st1, 41, 0)
+        return bc_emit(st1, 42, 0)
+    if k == "CALL":
+        return bc_call(st, e, root)
+    return bc_fail(st, "line " + bc_num_text(e.line) + ": the parser could not read this expression")
+
+action bc_bin(st, e: AstNode, root):
+    recursion bounded 200
+    let op = e.name
+    if op == "not":
+        let st1 = bc_expr(st, bc_kid(e, 0), 0)
+        return bc_emit(st1, 19, 0)
+    if op == "and":
+        let st1 = bc_expr(st, bc_kid(e, 0), 0)
+        let to_false = bc_wide(st1, 21, 0, 0)
+        let st2 = bc_expr(to_false[0] otherwise [], bc_kid(e, 1), 0)
+        let to_end = bc_wide(st2, 20, 0, 0)
+        let st3 = bc_patch(to_end[0] otherwise [], to_false[1] otherwise 0)
+        let r = bc_push_bool(st3, 0)
+        let st4 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+        return bc_patch(st4, to_end[1] otherwise 0)
+    if op == "or":
+        let st1 = bc_expr(st, bc_kid(e, 0), 0)
+        let to_rhs = bc_wide(st1, 21, 0, 0)
+        let r = bc_push_bool(to_rhs[0] otherwise [], 1)
+        let st2 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+        let to_end = bc_wide(st2, 20, 0, 0)
+        let st3 = bc_patch(to_end[0] otherwise [], to_rhs[1] otherwise 0)
+        let st4 = bc_expr(st3, bc_kid(e, 1), 0)
+        return bc_patch(st4, to_end[1] otherwise 0)
+    let st1 = bc_expr(st, bc_kid(e, 0), 0)
+    let st2 = bc_expr(st1, bc_kid(e, 1), 0)
+    return bc_emit(st2, bc_bin_op(op), 0)
+
+# <inner> otherwise <fallback>, lowered with the opcodes that exist: a
+# divisor test, a bounds test, or a try frame around a capability call.
+# Anything the checker proved safe gets no test at all.
+action bc_fallback(st, inner: AstNode, fb: AstNode, line, root):
+    recursion bounded 200
+    let k = inner.kind
+    if k == "BIN" and (inner.name == "/" or inner.name == "%"):
+        let right = bc_kid(inner, 1)
+        if right.kind == "NUM" and bc_num_of(right.val_str) != 0:
+            return bc_expr(st, inner, root)
+        let t = bc_temp(st)
+        let st1 = bc_expr(t[0] otherwise [], right, 0)
+        let divisor = t[1] otherwise 0
+        let st2 = bc_emit(st1, 2, divisor)
+        let st3 = bc_emit(st2, 1, divisor)
+        let r = bc_push_num(st3, 0)
+        let st4 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+        let to_fb = bc_wide(st4, 31, 0, 0)
+        let st5 = bc_expr(to_fb[0] otherwise [], bc_kid(inner, 0), 0)
+        let st6 = bc_emit(st5, 1, divisor)
+        let op = 10
+        if inner.name == "%":
+            set op to 11
+        let st7 = bc_emit(st6, op, 0)
+        let to_end = bc_wide(st7, 20, 0, 0)
+        let st8 = bc_patch(to_end[0] otherwise [], to_fb[1] otherwise 0)
+        let st9 = bc_expr(st8, fb, 0)
+        return bc_patch(st9, to_end[1] otherwise 0)
+    if k == "INDEX":
+        let c = bc_temp(st)
+        let i = bc_temp(c[0] otherwise [])
+        let coll_slot = c[1] otherwise 0
+        let idx_slot = i[1] otherwise 0
+        let st1 = bc_expr(i[0] otherwise [], bc_kid(inner, 0), 0)
+        let st2 = bc_emit(st1, 2, coll_slot)
+        let st3 = bc_expr(st2, bc_kid(inner, 1), 0)
+        let st4 = bc_emit(st3, 2, idx_slot)
+        let st5 = bc_emit(st4, 1, idx_slot)
+        let r = bc_push_num(st5, 0)
+        let st6 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+        let st7 = bc_emit(st6, 13, 0)
+        let too_low = bc_wide(st7, 29, 0, 0)
+        let st8 = bc_emit(too_low[0] otherwise [], 1, idx_slot)
+        let st9 = bc_emit(st8, 1, coll_slot)
+        let st10 = bc_emit(st9, 5, 0)
+        let st11 = bc_emit(st10, 16, 0)
+        let too_high = bc_wide(st11, 29, 0, 0)
+        let st12 = bc_emit(too_high[0] otherwise [], 1, coll_slot)
+        let st13 = bc_emit(st12, 1, idx_slot)
+        let st14 = bc_emit(st13, 4, 0)
+        let to_end = bc_wide(st14, 20, 0, 0)
+        let st15 = bc_patch(to_end[0] otherwise [], too_low[1] otherwise 0)
+        let st16 = bc_patch(st15, too_high[1] otherwise 0)
+        let st17 = bc_expr(st16, fb, 0)
+        return bc_patch(st17, to_end[1] otherwise 0)
+    if k == "CALL":
+        if root == 0:
+            return bc_fail(st, "line " + line + ": a capability fallback must be the whole value of its statement; give it a 'let' of its own (or wrap the statement in 'try:')")
+        let h = bc_wide(st, 44, 255, 0)
+        let st1 = bc_expr(h[0] otherwise [], inner, 0)
+        let st2 = bc_emit(st1, 45, 0)
+        let to_end = bc_wide(st2, 20, 0, 0)
+        let st3 = bc_patch(to_end[0] otherwise [], h[1] otherwise 0)
+        let st4 = bc_expr(st3, fb, 0)
+        return bc_patch(st4, to_end[1] otherwise 0)
+    return bc_expr(st, inner, root)
+
+# Branch when cond is false. a == b and a != b fuse into one
+# compare-and-branch instruction, the same lowering the reference emits.
+action bc_jump_if_false(st, cond: AstNode):
+    if cond.kind == "BIN" and cond.name == "==":
+        let st1 = bc_expr(st, bc_kid(cond, 0), 0)
+        let st2 = bc_expr(st1, bc_kid(cond, 1), 0)
+        return bc_wide(st2, 32, 0, 0)
+    if cond.kind == "BIN" and cond.name == "!=":
+        let st1 = bc_expr(st, bc_kid(cond, 0), 0)
+        let st2 = bc_expr(st1, bc_kid(cond, 1), 0)
+        return bc_wide(st2, 31, 0, 0)
+    let st3 = bc_expr(st, cond, 1)
+    return bc_wide(st3, 21, 0, 0)
+
+# ── statements ──────────────────────────────────────────────────────────
+
+action bc_stmts(st, block: AstNode):
+    recursion bounded 200
+    let st1 = bc_push_scope(st)
+    let st2 = st1
+    for each s in block.children:
+        set st2 to bc_stmt(st2, s)
+    return bc_pop_scope(st2)
+
+action bc_stmt(st, s: AstNode):
+    recursion bounded 200
+    let k = s.kind
+    if k == "LET":
+        let st1 = bc_expr(st, bc_kid(s, 0), 1)
+        let b = bc_bind(st1, s.name)
+        return bc_emit(b[0] otherwise [], 2, b[1] otherwise 0)
+    if k == "SET":
+        let st1 = bc_expr(st, bc_kid(s, 0), 1)
+        let slot = bc_resolve(st1[1] otherwise [], s.name)
+        if slot < 0:
+            return bc_fail(st1, "line " + bc_num_text(s.line) + ": '" + s.name + "' is not defined")
+        return bc_emit(st1, 2, slot)
+    if k == "EXPR":
+        let e = bc_kid(s, 0)
+        let st1 = bc_expr(st, e, 1)
+        if e.kind == "CALL" and (e.name == "policy.allow" or e.name == "policy.reject"):
+            return bc_emit(st1, 23, 0)
+        return bc_emit(st1, 6, 0)
+    if k == "IF":
+        let j = bc_jump_if_false(st, bc_kid(s, 0))
+        let st1 = bc_stmts(j[0] otherwise [], bc_kid(s, 1))
+        let other = bc_kid(s, 2)
+        if (length of other.children) == 0:
+            return bc_patch(st1, j[1] otherwise 0)
+        let to_end = bc_wide(st1, 20, 0, 0)
+        let st2 = bc_patch(to_end[0] otherwise [], j[1] otherwise 0)
+        let st3 = bc_stmts(st2, other)
+        return bc_patch(st3, to_end[1] otherwise 0)
+    if k == "WHILE":
+        return bc_while(st, s)
+    if k == "FOR_EACH":
+        return bc_for_each(st, s)
+    if k == "TRY":
+        return bc_try(st, s)
+    if k == "GUARD":
+        let st1 = bc_expr(st, bc_kid(s, 0), 1)
+        let held = bc_wide(st1, 29, 0, 0)
+        let r = bc_push_text(held[0] otherwise [], "E_KAZE_GUARD: the invariant at line " + bc_num_text(s.line) + " is false")
+        let st2 = bc_wide1(r[0] otherwise [], 27, 0, r[1] otherwise 0)
+        return bc_patch(st2, held[1] otherwise 0)
+    if k == "RETURN":
+        return bc_return(st, s)
+    return bc_fail(st, "line " + bc_num_text(s.line) + ": " + k + " is not lowered by the minimal bytecode writer")
+
+action bc_while(st, s: AstNode):
+    recursion bounded 200
+    let cond = bc_kid(s, 0)
+    let body = bc_kid(s, 1)
+    let bound_node = bc_kid(s, 2)
+    let bound_text = bound_node.val_str
+    let limited = 1
+    if bound_text == "" or bound_text == "?":
+        set limited to 0
+    let st1 = st
+    let counter = -1
+    if limited == 1:
+        let t = bc_temp(st1)
+        set st1 to t[0] otherwise []
+        set counter to t[1] otherwise 0
+        let r = bc_push_num(st1, 0)
+        let st2 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+        set st1 to bc_emit(st2, 2, counter)
+    let head = bc_mark(st1)
+    set st1 to bc_wide1(st1, 26, 0, s.line)
+    let to_trap = -1
+    if limited == 1:
+        let st2 = bc_emit(st1, 1, counter)
+        let r = bc_push_num(st2, bc_num_of(bound_text))
+        let st3 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+        let st4 = bc_emit(st3, 16, 0)
+        let j = bc_wide(st4, 29, 0, 0)
+        set st1 to j[0] otherwise []
+        set to_trap to j[1] otherwise 0
+    let jf = bc_jump_if_false(st1, cond)
+    let to_end = jf[1] otherwise 0
+    let st5 = jf[0] otherwise []
+    for each b in body.children:
+        set st5 to bc_stmt(st5, b)
+    let st6 = st5
+    if limited == 1:
+        let st7 = bc_emit(st6, 1, counter)
+        let r = bc_push_num(st7, 1)
+        let st8 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+        let st9 = bc_emit(st8, 7, 0)
+        set st6 to bc_emit(st9, 2, counter)
+    let st10 = bc_jump_back(st6, head)
+    if limited == 0:
+        return bc_patch(st10, to_end)
+    let over = bc_wide(st10, 20, 0, 0)
+    let st11 = bc_patch(over[0] otherwise [], to_trap)
+    let r = bc_push_text(st11, "E_KAZE_LOOP_BOUND: the loop at line " + bc_num_text(s.line) + " ran past its declared bound of " + bound_text + " iterations")
+    let st12 = bc_wide1(r[0] otherwise [], 27, 0, r[1] otherwise 0)
+    let st13 = bc_emit(st12, 25, 0)
+    let st14 = bc_patch(st13, over[1] otherwise 0)
+    return bc_patch(st14, to_end)
+
+action bc_for_each(st, s: AstNode):
+    recursion bounded 200
+    let st1 = bc_expr(st, bc_kid(s, 0), 0)
+    let t1 = bc_temp(st1)
+    let list_slot = t1[1] otherwise 0
+    let st2 = bc_emit(t1[0] otherwise [], 2, list_slot)
+    let r0 = bc_push_num(st2, 0)
+    let st3 = bc_wide1(r0[0] otherwise [], 0, 0, r0[1] otherwise 0)
+    let t2 = bc_temp(st3)
+    let idx_slot = t2[1] otherwise 0
+    let st4 = bc_emit(t2[0] otherwise [], 2, idx_slot)
+    let head = bc_mark(st4)
+    let st5 = bc_wide1(st4, 26, 0, s.line)
+    let st6 = bc_emit(st5, 1, list_slot)
+    let st7 = bc_emit(st6, 5, 0)
+    let st8 = bc_emit(st7, 1, idx_slot)
+    let st9 = bc_emit(st8, 14, 0)
+    let j = bc_wide(st9, 29, 0, 0)
+    let st10 = bc_push_scope(j[0] otherwise [])
+    let b = bc_bind(st10, s.name)
+    let st11 = bc_emit(b[0] otherwise [], 1, list_slot)
+    let st12 = bc_emit(st11, 1, idx_slot)
+    let st13 = bc_emit(st12, 4, 0)
+    let st14 = bc_emit(st13, 2, b[1] otherwise 0)
+    let st15 = st14
+    let body_block = bc_kid(s, 1)
+    for each x in body_block.children:
+        set st15 to bc_stmt(st15, x)
+    let st16 = bc_pop_scope(st15)
+    let st17 = bc_emit(st16, 1, idx_slot)
+    let r1 = bc_push_num(st17, 1)
+    let st18 = bc_wide1(r1[0] otherwise [], 0, 0, r1[1] otherwise 0)
+    let st19 = bc_emit(st18, 7, 0)
+    let st20 = bc_emit(st19, 2, idx_slot)
+    let st21 = bc_jump_back(st20, head)
+    return bc_patch(st21, j[1] otherwise 0)
+
+action bc_try(st, s: AstNode):
+    recursion bounded 200
+    let err = s.name
+    let st1 = st
+    let slot = 255
+    if (length of err) > 0:
+        let t = bc_temp(st1)
+        set st1 to t[0] otherwise []
+        set slot to t[1] otherwise 0
+    let h = bc_wide(st1, 44, slot, 0)
+    let st2 = bc_stmts(h[0] otherwise [], bc_kid(s, 0))
+    let st3 = bc_emit(st2, 45, 0)
+    let to_end = bc_wide(st3, 20, 0, 0)
+    let st4 = bc_patch(to_end[0] otherwise [], h[1] otherwise 0)
+    let st5 = bc_push_scope(st4)
+    let st6 = st5
+    if (length of err) > 0:
+        set st6 to bc_bind_named(st5, err, slot)
+    let st7 = bc_stmts(st6, bc_kid(s, 1))
+    let st8 = bc_pop_scope(st7)
+    return bc_patch(st8, to_end[1] otherwise 0)
+
+action bc_return(st, s: AstNode):
+    if (length of s.children) == 0:
+        return bc_emit(st, 25, 0)
+    let t = bc_temp(st)
+    let st1 = bc_expr(t[0] otherwise [], bc_kid(s, 0), 1)
+    let slot = t[1] otherwise 0
+    let st2 = bc_emit(st1, 2, slot)
+    let st3 = bc_exit_assertions(st2, slot)
+    let st4 = bc_emit(st3, 1, slot)
+    return bc_emit(st4, 24, 0)
+
+action bc_entry_assertions(st, contracts):
+    let st1 = st
+    for each c in contracts:
+        if c.kind == "CONTRACT" and c.name == "requires":
+            let st2 = bc_expr(st1, bc_kid(c, 0), 1)
+            let held = bc_wide(st2, 29, 0, 0)
+            let r = bc_push_text(held[0] otherwise [], "E_KAZE_CONTRACT: the requires clause at line " + bc_num_text(c.line) + " is false for these arguments")
+            let st3 = bc_wide1(r[0] otherwise [], 27, 0, r[1] otherwise 0)
+            set st1 to bc_patch(st3, held[1] otherwise 0)
+    return st1
+
+action bc_exit_assertions(st, slot):
+    let st1 = st
+    for each c in (st[8] otherwise []):
+        if c.kind == "CONTRACT" and c.name == "ensures":
+            let st2 = bc_push_scope(st1)
+            let st3 = bc_bind_named(st2, "result", slot)
+            let st4 = bc_expr(st3, bc_kid(c, 0), 1)
+            let st5 = bc_pop_scope(st4)
+            let held = bc_wide(st5, 29, 0, 0)
+            let r = bc_push_text(held[0] otherwise [], "E_KAZE_CONTRACT: the ensures clause at line " + bc_num_text(c.line) + " is false for this result")
+            let st6 = bc_wide1(r[0] otherwise [], 27, 0, r[1] otherwise 0)
+            set st1 to bc_patch(st6, held[1] otherwise 0)
+    return st1
+
+# ── items ───────────────────────────────────────────────────────────────
+
+# The loader numbers hooks across the whole module so two files cannot both
+# define when#1; the parser's per-file spelling never reaches a module.
+action bc_hook_name(kind, serial):
+    if kind == "WHEN":
+        return "when-" + bc_num_text(serial)
+    return "every-" + bc_num_text(serial)
+
+action bc_tag_of(kind):
+    if kind == "CHECK":
+        return 1
+    if kind == "FILTER":
+        return 2
+    if kind == "WHEN":
+        return 3
+    if kind == "EVERY":
+        return 4
+    return 0
+
+action bc_period_of(item: AstNode):
+    if item.kind != "EVERY":
+        return 0
+    let d = bc_kid(item, 0)
+    if d.kind != "NUM":
+        return 0
+    return (bc_num_of(d.val_str) * bc_unit_scale(d.name)) * 1000
+
+action bc_is_routine_kind(kind):
+    if kind == "ACTION" or kind == "CHECK" or kind == "FILTER":
+        return 1
+    return 0
+
+# ── contract elision ────────────────────────────────────────────────────
+#
+# A requires clause is only worth a runtime check when some call site cannot be
+# proved. This is the reference rule: every call passes numeric literals and
+# every clause folds true, so the entry assertions are dead code and vanish.
+
+# [known, value]: known 0 means "the walk could not decide".
+action bc_eval_num(e: AstNode, env):
+    recursion bounded 200
+    let k = e.kind
+    if k == "NUM":
+        return [1, bc_num_of(e.val_str) * bc_unit_scale(e.name) + bc_unit_offset(e.name)]
+    if k == "IDENT":
+        let i = 0
+        let n = length of env
+        while i < n bounded 64:
+            let pair = env[i] otherwise ["", 0]
+            if (pair[0] otherwise "") == e.name:
+                return [1, pair[1] otherwise 0]
+            set i to i + 1
+        return [0, 0]
+    if k == "BIN":
+        let op = e.name
+        if op == "+" or op == "-" or op == "*" or op == "/" or op == "%":
+            let l = bc_eval_num(bc_kid(e, 0), env)
+            let r = bc_eval_num(bc_kid(e, 1), env)
+            if (l[0] otherwise 0) == 0 or (r[0] otherwise 0) == 0:
+                return [0, 0]
+            let a = l[1] otherwise 0
+            let b = r[1] otherwise 0
+            if op == "+":
+                return [1, a + b]
+            if op == "-":
+                return [1, a - b]
+            if op == "*":
+                return [1, a * b]
+            if b == 0:
+                return [0, 0]
+            if op == "/":
+                return [1, a / b otherwise 0]
+            return [1, a % b otherwise 0]
+    return [0, 0]
+
+action bc_eval_clause(e: AstNode, env):
+    recursion bounded 200
+    let k = e.kind
+    if k == "BOOL":
+        let v = 0
+        if e.val_str == "true":
+            set v to 1
+        return [1, v]
+    if k == "BIN" and e.name == "not":
+        let r = bc_eval_clause(bc_kid(e, 0), env)
+        if (r[0] otherwise 0) == 0:
+            return [0, 0]
+        return [1, 1 - (r[1] otherwise 0)]
+    if k == "BIN" and (e.name == "and" or e.name == "or"):
+        let l = bc_eval_clause(bc_kid(e, 0), env)
+        let r = bc_eval_clause(bc_kid(e, 1), env)
+        if (l[0] otherwise 0) == 0 or (r[0] otherwise 0) == 0:
+            return [0, 0]
+        let a = l[1] otherwise 0
+        let b = r[1] otherwise 0
+        if e.name == "and":
+            if a == 1 and b == 1:
+                return [1, 1]
+            return [1, 0]
+        if a == 1 or b == 1:
+            return [1, 1]
+        return [1, 0]
+    if k == "BIN" and (e.name == "<" or e.name == "<=" or e.name == ">" or e.name == ">=" or e.name == "==" or e.name == "!="):
+        let l = bc_eval_num(bc_kid(e, 0), env)
+        let r = bc_eval_num(bc_kid(e, 1), env)
+        if (l[0] otherwise 0) == 0 or (r[0] otherwise 0) == 0:
+            return [0, 0]
+        let a = l[1] otherwise 0
+        let b = r[1] otherwise 0
+        if e.name == "<":
+            if a < b:
+                return [1, 1]
+            return [1, 0]
+        if e.name == "<=":
+            if a <= b:
+                return [1, 1]
+            return [1, 0]
+        if e.name == ">":
+            if a > b:
+                return [1, 1]
+            return [1, 0]
+        if e.name == ">=":
+            if a >= b:
+                return [1, 1]
+            return [1, 0]
+        if e.name == "==":
+            if a == b:
+                return [1, 1]
+            return [1, 0]
+        if a != b:
+            return [1, 1]
+        return [1, 0]
+    return [0, 0]
+
+# Does one call site pass values that provably satisfy every clause?
+action bc_proves_call(callee: AstNode, args):
+    let params_node = bc_kid(callee, 0)
+    let params = params_node.children
+    if (length of params) != (length of args):
+        return 0
+    let env = []
+    let i = 0
+    while i < (length of params) bounded 64:
+        let p = params[i] otherwise none_node()
+        let a = args[i] otherwise none_node()
+        if a.kind != "NUM":
+            return 0
+        set env to env + [[p.name, bc_num_of(a.val_str) * bc_unit_scale(a.name) + bc_unit_offset(a.name)]]
+        set i to i + 1
+    let cnode = bc_kid(callee, 1)
+    for each c in cnode.children:
+        if c.kind == "CONTRACT" and c.name == "requires":
+            let r = bc_eval_clause(bc_kid(c, 0), env)
+            if (r[0] otherwise 0) == 0 or (r[1] otherwise 0) != 1:
+                return 0
+    return 1
+
+action bc_walk_calls_expr(e: AstNode, callee: AstNode, sites, proved):
+    recursion bounded 200
+    let s = sites
+    let p = proved
+    if e.kind == "CALL" and bc_has_named(e.children) == 0:
+        if (length of bc_tail(e.name)) == 0 and e.name == callee.name:
+            set s to s + 1
+            if bc_proves_call(callee, e.children) == 0:
+                set p to 0
+    for each c in e.children:
+        let r = bc_walk_calls_expr(c, callee, s, p)
+        set s to r[0] otherwise 0
+        set p to r[1] otherwise 1
+    return [s, p]
+
+action bc_walk_calls(stmts, callee: AstNode, sites, proved):
+    recursion bounded 200
+    let s = sites
+    let p = proved
+    for each st in stmts:
+        for each c in st.children:
+            if c.kind == "BLOCK":
+                let r = bc_walk_calls(c.children, callee, s, p)
+                set s to r[0] otherwise 0
+                set p to r[1] otherwise 1
+            otherwise:
+                let r2 = bc_walk_calls_expr(c, callee, s, p)
+                set s to r2[0] otherwise 0
+                set p to r2[1] otherwise 1
+    return [s, p]
+
+action bc_body_of(item: AstNode):
+    if bc_is_routine_kind(item.kind) == 1:
+        let body = bc_kid(item, 2)
+        return body.children
+    if item.kind == "WHEN" or item.kind == "EVERY":
+        let hook_body = bc_kid(item, 1)
+        return hook_body.children
+    return []
+
+action bc_requires_proved(items, item: AstNode):
+    let cnode = bc_kid(item, 1)
+    let asked = 0
+    for each c in cnode.children:
+        if c.kind == "CONTRACT" and c.name == "requires":
+            set asked to 1
+    if asked == 0:
+        return 1
+    let s = 0
+    let p = 1
+    for each caller in items:
+        let body = bc_body_of(caller)
+        let r = bc_walk_calls(body, item, s, p)
+        set s to r[0] otherwise 0
+        set p to r[1] otherwise 1
+    if s > 0 and p == 1:
+        return 1
+    return 0
+
+action bc_item(st, item: AstNode, items_nodes):
+    let kind = item.kind
+    if kind == "RECORD":
+        let fields = item.children
+        let st1 = st
+        let i = 0
+        while i < (length of fields) bounded 256:
+            let f = fields[i] otherwise none_node()
+            let r = bc_push_text(st1, f.name)
+            let st2 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+            set st1 to bc_emit(st2, 1, i)
+            set i to i + 1
+        let st3 = bc_emit(st1, 48, length of fields)
+        return bc_emit(st3, 24, 0)
+    if kind == "WHEN":
+        let st1 = bc_expr(st, bc_kid(item, 0), 0)
+        let skip = bc_wide(st1, 21, 0, 0)
+        let st2 = bc_stmts(skip[0] otherwise [], bc_kid(item, 1))
+        let st3 = bc_emit(st2, 25, 0)
+        let st4 = bc_patch(st3, skip[1] otherwise 0)
+        return bc_emit(st4, 25, 0)
+    if kind == "EVERY":
+        let st1 = bc_stmts(st, bc_kid(item, 1))
+        return bc_emit(st1, 25, 0)
+    let st1 = st
+    let params_node = bc_kid(item, 0)
+    for each p in params_node.children:
+        let b = bc_bind(st1, p.name)
+        set st1 to b[0] otherwise []
+    let cnode = bc_kid(item, 1)
+    let st2 = st1
+    if bc_requires_proved(st1[7] otherwise [], item) == 0:
+        set st2 to bc_entry_assertions(st1, cnode.children)
+    let st3 = bc_stmts(st2, bc_kid(item, 2))
+    return bc_emit(st3, 25, 0)
+
+# ── the module ──────────────────────────────────────────────────────────
+
+action bc_module(prog: AstNode):
+    let uses = program_uses(prog)
+    if (length of uses.children) > 0:
+        return ["this file imports another module with 'use'; the pure-Kaze writer compiles one file — inline the import or leave the module to the reference engine", []]
+    let needs = []
+    let needs_node = program_needs(prog)
+    for each nd in needs_node.children:
+        set needs to needs + [nd.name]
+    let items_nodes = program_items(prog)
+    let consts = []
+    let caps = []
+    let out = []
+    let hooks = 0
+    for each item in items_nodes:
+        let kind = item.kind
+        let contracts = []
+        let params = []
+        if kind == "RECORD":
+            for each f in item.children:
+                set params to params + [f.name]
+        if bc_is_routine_kind(kind) == 1:
+            let cnode = bc_kid(item, 1)
+            set contracts to cnode.children
+            let params_node = bc_kid(item, 0)
+            for each p in params_node.children:
+                set params to params + [p.name]
+        let st = bc_state(item.name, items_nodes, contracts, consts, caps)
+        let st1 = bc_item(st, item, items_nodes)
+        if (length of (st1[5] otherwise "")) > 0:
+            return [st1[5] otherwise "", []]
+        set consts to st1[3] otherwise []
+        set caps to st1[4] otherwise []
+        let slots = st1[0] otherwise 0
+        if (length of params) > slots:
+            set slots to length of params
+        let bound = 0
+        let i = 0
+        while i < (length of contracts) bounded 64:
+            let c = contracts[i] otherwise none_node()
+            if c.kind == "RECURSION_BOUND":
+                set bound to bc_num_of(c.val_str)
+            set i to i + 1
+        let code = st1[2] otherwise []
+        let label = item.name
+        if kind == "WHEN" or kind == "EVERY":
+            set hooks to hooks + 1
+            set label to bc_hook_name(kind, hooks)
+        set out to out + [BcItem(name: label, tag: bc_tag_of(kind), params: params, code: code, line: item.line, period: bc_period_of(item), slots: slots, bound: bound)]
+    return ["", bc_serialize(needs, consts, caps, out)]
+
+action bc_serialize(needs, consts, caps, items):
+    let out = [75, 65, 90, 69, 66, 67, 49, 0]
+    set out to out + bc_u16_bytes(5)
+    set out to out + bc_text_field("")
+    set out to out + bc_u32_bytes(length of needs)
+    for each nm in needs:
+        set out to out + bc_text_field(nm)
+    set out to out + bc_u32_bytes(length of consts)
+    for each c in consts:
+        if c.kind == "num":
+            set out to out + [0] + bc_bytes_of_num(c.val)
+        otherwise:
+            if c.kind == "str":
+                set out to out + [1] + bc_text_field(c.text)
+            otherwise:
+                let bv = 0
+                if c.text == "true":
+                    set bv to 1
+                set out to out + [2, bv]
+    set out to out + bc_u32_bytes(length of caps)
+    for each c in caps:
+        set out to out + bc_text_field(c.family) + bc_text_field(c.op) + [c.argc]
+    set out to out + bc_u32_bytes(length of items)
+    for each it in items:
+        set out to out + [it.tag] + bc_bytes_of_num(it.period) + bc_u32_bytes(it.line) + [it.slots] + bc_u16_bytes(it.bound)
+        set out to out + bc_text_field(it.name) + bc_text_field("")
+        set out to out + bc_u32_bytes(length of it.params)
+        for each p in it.params:
+            set out to out + bc_text_field(p)
+        set out to out + bc_u32_bytes(length of it.code)
+        for each w in it.code:
+            set out to out + bc_u32_bytes(w)
+    return out
+
+# The self-hosted parser recovers from a syntax error into an UNKNOWN node
+# instead of failing, so a module must not be written for a tree that holds
+# one: the reference engine refuses the file outright.
+action bc_first_unknown(n: AstNode):
+    recursion bounded 200
+    if n.kind == "UNKNOWN":
+        return bc_num_text(n.line)
+    for each c in n.children:
+        let r = bc_first_unknown(c)
+        if (length of r) > 0:
+            return r
+    return ""
+
+# The compile command: parse, check, and print the module as hex.
+action compile_module(src):
+    let program = parse_source(src)
+    let unread = bc_first_unknown(program)
+    if (length of unread) > 0:
+        return "compile: the parser could not read this source (line " + unread + "); no module written\n"
+    let diags = check_program(program)
+    if (length of diags) > 0:
+        let out = "compile: " + bc_num_text(length of diags) + " diagnostic(s); no module written\n"
+        for each d in diags:
+            set out to out + render_diag(d) + "\n"
+        return out
+    let r = bc_module(program)
+    if (length of (r[0] otherwise "")) > 0:
+        return "compile: " + (r[0] otherwise "") + "\n"
+    return bc_hex_of(r[1] otherwise [])
 

@@ -1,0 +1,39 @@
+# The bytecode opcode set, transcribed from the frozen ISA (product:
+# crates/sofuu-core/src/domains/kaze/isa.rs, enum Op). This is the contract the
+# bytecode writer obeys: bc_emit and bc_wide refuse a number that is not listed,
+# and `kaze surface` prints the table so scripts/kaze-drift-check.sh can compare
+# the standalone compiler with the embedded product engine.
+action bc_opcodes() -> list:
+    return [
+        "Const@0", "LoadLocal@1", "StoreLocal@2", "NewArr@3",
+        "GetIndex@4", "Len@5", "Pop@6", "Add@7",
+        "Sub@8", "Mul@9", "Div@10", "Mod@11",
+        "Neg@12", "CmpLt@13", "CmpLe@14", "CmpGt@15",
+        "CmpGe@16", "CmpEq@17", "CmpNe@18", "Not@19",
+        "Jmp@20", "JmpIfFalse@21", "CallCap@22", "PolicyStop@23",
+        "Ret@24", "RetUnit@25", "FuelTick@26", "Trap@27",
+        "Halt@28", "JmpIfTrue@29", "GetField@30", "Jeq@31",
+        "Jne@32", "VecNew@33", "VecDist@34", "VecBearing@35",
+        "VecBearingBetween@36", "Sin@37", "Cos@38", "Atan2@39",
+        "Sqrt@40", "DegToRad@41", "RadToDeg@42", "VecSlantDist@43",
+        "TryBegin@44", "TryEnd@45", "LinkLost@46", "CallRoutine@47",
+        "NewMap@48",
+    ]
+
+# The numbers alone, for the writer's membership test.
+action bc_opcode_numbers() -> list:
+    return [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+        24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+        36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+        48,
+    ]
+
+# True when n is a defined opcode. A writer bug that invents a number fails here
+# instead of producing a module the VM cannot run.
+action bc_opcode_known(n) -> num:
+    for each m in bc_opcode_numbers():
+        if m == n:
+            return 1
+    return 0

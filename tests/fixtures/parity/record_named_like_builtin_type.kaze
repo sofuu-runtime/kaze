@@ -1,0 +1,7 @@
+# expect: E_KAZE_MISSING_FALLBACK - a record may not shadow a builtin type word
+record time:
+    value: number
+
+action read_value(reading: time) -> num:
+    let v = reading.value
+    return v

@@ -1,0 +1,7 @@
+# expect: ok - a record-typed parameter has its fields checked
+record Reading:
+    value: number
+
+action read_value(reading: Reading) -> num:
+    let v = reading.value
+    return v

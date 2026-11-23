@@ -1,0 +1,45 @@
+# coremain.kaze — the release compiler: check, emit-c and fmt.
+#
+# The full CLI also compiles bytecode, reads and writes machine syntax, and serves the
+# batch LSP turned into a JSON-RPC conversation. Those are tooling; this is what a
+# compiler must do, and it is measured separately because the roadmap puts a 300 KB
+# ceiling on the release binary.
+use "./token.kaze"
+use "./ast.kaze"
+use "./lexer.kaze"
+use "./parser.kaze"
+use "./checker.kaze"
+use "./codegen.kaze"
+use "./machine.kaze"
+
+action core_mode(word: text) -> text:
+    if word == "check" or word == "emit-c" or word == "fmt":
+        return word
+    return ""
+
+action core_render(diags) -> text:
+    if (length of diags) == 0:
+        return "check: ok"
+    let out = "check: " + (length of diags) + " diagnostic(s)"
+    for each d in diags:
+        set out to out + "\n" + d.code + " at line " + d.line + ": " + d.msg
+    return out
+
+action core_main(mode, src) -> text:
+    let selected = core_mode(mode)
+    if selected == "check":
+        let tokens = tokenize(src)
+        let program = parse_program(tokens)
+        return core_render(check_program(program))
+    if selected == "emit-c":
+        let tokens = tokenize(src)
+        let program = parse_program(tokens)
+        return emit_c_program(program)
+    if selected == "fmt":
+        let tokens = tokenize(src)
+        let program = parse_program(tokens)
+        return emit_human(program)
+    return "usage: kaze check|emit-c|fmt <file>"
+
+action main(mode, src):
+    return core_main(mode, src)

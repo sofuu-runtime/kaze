@@ -125,38 +125,30 @@ action cap_name_known(w):
         return 1
     return 0
 
+# The capability surface the compiler knows: one entry per family.verb. This is the
+# single source of truth - op_known reads it, and `kaze surface` prints it so
+# scripts/kaze-drift-check.sh can compare the standalone compiler with the embedded
+# product engine. Keeping it as data rather than an if-chain is what makes the drift
+# claim checkable at all.
+action cap_verbs() -> list:
+    return [
+        "drone.arm", "drone.land", "drone.rtl", "drone.hold", "drone.stop",
+        "drone.takeoff", "drone.goto", "drone.telemetry",
+        "rover.forward", "rover.backward", "rover.turn_left", "rover.turn_right",
+        "rover.stop", "rover.telemetry",
+        "sensor.temperature", "sensor.humidity", "sensor.distance",
+        "sensor.front_distance", "sensor.read", "sensor.telemetry",
+        "device.set_relay", "device.pulse", "device.read_gpio", "device.set_duty",
+        "memory.save", "memory.recall",
+        "policy.detects", "policy.detect", "policy.allow", "policy.reject",
+        "log.info", "log.warn", "log.error", "log.debug",
+        "alert.send",
+        "ai.prompt", "ai.complete", "ai.classify",
+        "tool.call", "tool.run"
+    ]
+
 action op_known(family, op):
-    if family == "drone":
-        if op == "arm" or op == "land" or op == "rtl" or op == "hold" or op == "stop" or op == "takeoff" or op == "goto" or op == "telemetry":
-            return 1
-    if family == "rover":
-        if op == "forward" or op == "backward" or op == "turn_left" or op == "turn_right" or op == "stop" or op == "telemetry":
-            return 1
-    if family == "sensor":
-        if op == "temperature" or op == "humidity" or op == "distance" or op == "front_distance" or op == "read" or op == "telemetry":
-            return 1
-    if family == "device":
-        if op == "set_relay" or op == "pulse" or op == "read_gpio" or op == "set_duty":
-            return 1
-    if family == "memory":
-        if op == "save" or op == "recall":
-            return 1
-    if family == "policy":
-        if op == "detects" or op == "detect" or op == "allow" or op == "reject":
-            return 1
-    if family == "log":
-        if op == "info" or op == "warn" or op == "error" or op == "debug":
-            return 1
-    if family == "alert":
-        if op == "send":
-            return 1
-    if family == "ai":
-        if op == "prompt" or op == "complete" or op == "classify":
-            return 1
-    if family == "tool":
-        if op == "call" or op == "run":
-            return 1
-    return 0
+    return list_has(cap_verbs(), family + "." + op)
 
 action pure_builtin(name):
     if name == "sin" or name == "cos" or name == "tan" or name == "sqrt" or name == "atan2":
@@ -356,7 +348,67 @@ action find_len_fact(facts, ck):
 
 # ── the expression walk ────────────────────────────────────────────────
 
+# ── unit dimensions ────────────────────────────────────────────────────
+# Enough algebra to refuse adding a length to a time, which the reference engine
+# reports as E_KAZE_UNIT_MISMATCH. Literals and in-unit wrappers carry a dimension;
+# anything else is 'unknown' and stays quiet, because a false positive here would
+# reject a correct program.
+
+action dimension_of_unit(u: string) -> string:
+    if u == "m" or u == "km" or u == "cm" or u == "mm":
+        return "length"
+    if u == "seconds" or u == "ms" or u == "hours" or u == "minutes":
+        return "time"
+    if u == "kg" or u == "gram":
+        return "mass"
+    if u == "Celsius" or u == "Kelvin":
+        return "temperature"
+    if u == "Pascal" or u == "mbar" or u == "hPa":
+        return "pressure"
+    if u == "ampere":
+        return "current"
+    if u == "degrees" or u == "radians":
+        return "angle"
+    if u == "%":
+        return "percent"
+    return ""
+
+action unit_dimension(e: AstNode) -> string:
+    recursion bounded 256
+    if e.kind == "NUM" or e.kind == "IN_UNIT":
+        return dimension_of_unit(unit_word(e.name))
+    if e.kind == "BIN" and (e.name == "+" or e.name == "-"):
+        let l = unit_dimension(child_at(e, 0))
+        let r = unit_dimension(child_at(e, 1))
+        if l == r:
+            return l
+        # a mismatch is reported by unit_mismatch; the dimension itself is unknown
+        return ""
+    return ""
+
+action unit_mismatch(e: AstNode) -> string:
+    recursion bounded 256
+    if e.kind == "BIN" and (e.name == "+" or e.name == "-"):
+        let l = unit_dimension(child_at(e, 0))
+        let r = unit_dimension(child_at(e, 1))
+        if (length of l) > 0 and (length of r) > 0 and l != r:
+            return "cannot add or subtract " + l + " and " + r
+    if e.kind == "BIN":
+        let l = unit_mismatch(child_at(e, 0))
+        if (length of l) > 0:
+            return l
+        return unit_mismatch(child_at(e, 1))
+    return ""
+
+# The expression walker proper. `guard` is true only for the immediate node inside an
+# inline `otherwise`, never for its children: the reference resets the flag on every
+# child, and a field read nested one level deeper than the fallback still needs its own
+# (this is what caught `(reading.value + 1) otherwise 0` being wrongly accepted).
 action check_expr(e: AstNode, names, facts, items, needs, open, diags):
+    recursion bounded 256   # the walker recurses through this wrapper
+    return check_expr_g(e, names, facts, items, needs, open, diags, 0)
+
+action check_expr_g(e: AstNode, names, facts, items, needs, open, diags, guard):
     recursion bounded 200
     let k = e.kind
     if k == "NUM" or k == "STR" or k == "BOOL":
@@ -372,7 +424,17 @@ action check_expr(e: AstNode, names, facts, items, needs, open, diags):
         set diags to diags + [diag("E_KAZE_PARSE", e.line, "the parser could not read this expression")]
         return diags
 
-    if k == "LEN" or k == "FIELD" or k == "IN_UNIT":
+    if k == "FIELD":
+        let out = check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
+        let base = child_at(e, 0)
+        # Closed-world only: in a file with imports a record type may be declared elsewhere,
+        # and this checker cannot see it. The reference resolves imports, so it has no such
+        # blind spot; refusing here would be a false positive.
+        if guard == 0 and base.kind == "IDENT" and list_has(facts, "param:" + base.name) == 1 and list_has(facts, "recparam:" + base.name) == 0 and (open == 0 or list_has(facts, "untyped:" + base.name)):
+            set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "'" + base.name + "." + e.name + "' reads a field of '" + base.name + "', which came from outside this routine and may not have it; write '<read> otherwise <fallback>' or declare '" + base.name + "' with a record type")]
+        return out
+
+    if k == "LEN" or k == "IN_UNIT":
         return check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
 
     if k == "LIST":
@@ -398,6 +460,9 @@ action check_expr(e: AstNode, names, facts, items, needs, open, diags):
             set cur to child_at(cur, 0)
             set guard to guard + 1
         let out = check_expr(cur, names, facts, items, needs, open, diags)
+        let umsg = unit_mismatch(e)
+        if (length of umsg) > 0:
+            set out to out + [diag("E_KAZE_UNIT_MISMATCH", e.line, umsg)]
         let i = (length of rights) - 1
         while i >= 0 bounded 100000:
             let right = node_at(rights, i)
@@ -421,11 +486,11 @@ action check_expr(e: AstNode, names, facts, items, needs, open, diags):
             let out = check_expr(child_at(inner, 0), names, facts, items, needs, open, diags)
             set out to check_expr(child_at(inner, 1), names, facts, items, needs, open, out)
             return check_expr(fb, names, facts, items, needs, open, out)
-        let out = check_expr(inner, names, facts, items, needs, open, diags)
+        let out = check_expr_g(inner, names, facts, items, needs, open, diags, 1)
         return check_expr(fb, names, facts, items, needs, open, out)
 
     if k == "CALL":
-        return check_call(e, names, facts, items, needs, open, diags)
+        return check_call(e, names, facts, items, needs, open, diags, guard)
 
     return diags
 
@@ -440,6 +505,17 @@ action check_index(e: AstNode, names, facts, items, needs, open, diags):
         # A literal collection is checked against its own length.
         if coll.kind == "LIST":
             let n = length of coll.children
+            let k = constant_value(idx)
+            if k >= 0 and k < n:
+                return out
+            set out to out + [diag("E_KAZE_BOUNDS", e.line, "this index is outside the value it reads; a constant position past the end is refused")]
+            return out
+        if coll.kind == "STR":
+            # A constant index into a text literal is proved against its length, the same
+            # way a list literal is. Without this, `"kaze"[2]` was refused for want of a
+            # fallback even though the position is plainly inside (a false positive, and
+            # the corpus comparison against the reference caught it).
+            let n = length of coll.val_str
             let k = constant_value(idx)
             if k >= 0 and k < n:
                 return out
@@ -466,7 +542,24 @@ action check_index(e: AstNode, names, facts, items, needs, open, diags):
     set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this index is not proved to be inside the value; guard it (if i < length of xs:) or write '<value>[<i>] otherwise <fallback>'")]
     return out
 
-action check_call(e: AstNode, names, facts, items, needs, open, diags):
+# Which capability reads must carry a fallback, ported from the reference engine
+# (src/strict.rs::needs_fallback). Sensor reads always return a number the script acts on;
+# device and memory only on their read verbs; everything else - log, alert, policy,
+# drone effectors - is an effect or a decision and needs none.
+action needs_fallback_cap(family: string, op: string) -> num:
+    if family == "sensor":
+        return 1
+    if family == "device":
+        if op == "read_gpio" or op == "read":
+            return 1
+        return 0
+    if family == "memory":
+        if op == "recall":
+            return 1
+        return 0
+    return 0
+
+action check_call(e: AstNode, names, facts, items, needs, open, diags, guarded):
     recursion bounded 200
     let name = e.name
     let out = diags
@@ -478,15 +571,22 @@ action check_call(e: AstNode, names, facts, items, needs, open, diags):
 
     if has_dot(name) == 1:
         let head = head_words(name)
-        # Geometry is a pure builtin family, not a capability.
+        let op = tail_words(name)
+        # Geometry is a pure builtin family, not a capability - but the reference still
+        # resolves geo through the device family, so its reads need a fallback too.
         if head == "geo":
+            # The reference resolves geo through the device family, so its reads need a
+            # fallback too; returning here used to skip that check.
+            if guarded == 0 and list_has(facts, "in_try") == 0 and needs_fallback_cap("device", op) == 1:
+                set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this reads geo." + op + " and needs a fallback; write '<read> otherwise <fallback>'")]
             return out
         let family = family_of_word(head)
-        let op = tail_words(name)
         if list_has(needs, family) == 0:
             set out to out + [diag("E_CAP_UNDECLARED", e.line, "'" + family + "' is used but this file does not declare it; add it to the needs: line")]
         if op_known(family, op) == 0:
             set out to out + [diag("E_KAZE_CAP_OP", e.line, "'" + family + "." + op + "' is not an operation Kaze knows")]
+        if guarded == 0 and list_has(facts, "in_try") == 0 and list_has(needs, family) == 1 and needs_fallback_cap(family, op) == 1:
+            set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this reads " + family + "." + op + " and needs a fallback; write '<read> otherwise <fallback>'")]
         return out
 
     if is_upper(name) == 1:
@@ -549,7 +649,10 @@ action check_stmt(s: AstNode, names, facts, items, needs, open, diags):
         set out to check_stmts(kids_of(child_at(s, 1)), names + [s.name], facts, items, needs, open, out)
         return out
     if k == "TRY":
-        let out = check_stmts(kids_of(child_at(s, 0)), names, facts, items, needs, open, diags)
+        # `in_try` exempts capability reads (recoverable) and nothing else: a missing field'
+        # or a bad index is fatal in the reference, so those rules keep firing here.'
+        let try_facts = facts + ["in_try"]
+        let out = check_stmts(kids_of(child_at(s, 0)), names, try_facts, items, needs, open, diags)
         let inner = names
         if s.name != "":
             set inner to names + [s.name]
@@ -782,11 +885,51 @@ action contract_diags(item: AstNode):
         set i to i + 1
     return out
 
+# A field read on a parameter that came from outside this routine may name a field the
+# record does not have, and the language answers that with nothing - the reference engine
+# asks for a fallback there (src/strict.rs, Expr::Field). Parameters and record-typed
+# parameters travel as facts so the expression walker needs no extra parameter.
+# Exactly the words the reference's TypeRef::parse resolves before it considers a name a
+# record (src/ast.rs). A record declared with one of these names is never a record type,
+# so a parameter annotated with it counts as coming from outside.
+action is_builtin_type_word(w: string) -> num:
+    if w == "int" or w == "num" or w == "number" or w == "float":
+        return 1
+    if w == "str" or w == "text" or w == "bool" or w == "percent":
+        return 1
+    if w == "length" or w == "meters":
+        return 1
+    if w == "time" or w == "seconds":
+        return 1
+    if w == "angle" or w == "degrees":
+        return 1
+    if w == "temperature" or w == "Celsius" or w == "celsius" or w == "Kelvin" or w == "kelvin":
+        return 1
+    return 0
+
+action param_facts(item: AstNode, items) -> list:
+    recursion bounded 64
+    #   param:<name>    always: it is a parameter
+    #   untyped:<name>  no annotation, so it can never be an imported record either
+    #   recparam:<name> annotated with a record declared in this file, and the annotation
+    #                   is not a builtin type word (the reference parses the annotation
+    #                   and builtin type words win over a record of the same name)
+    let out = []
+    let params = child_at(item, 0)
+    for each p in params.children:
+        set out to out + ["param:" + p.name]
+        if p.val_str == "":
+            set out to out + ["untyped:" + p.name]
+        otherwise:
+            if record_named(items, p.val_str) == 1 and is_builtin_type_word(p.val_str) == 0:
+                set out to out + ["recparam:" + p.name]
+    return out
+
 action check_item(item: AstNode, module_needs, items, names_all, froms, tos, open):
     let out = contract_diags(item)
     let needs = module_needs + routine_needs(item)
     let names = param_names(item)
-    let facts = requires_facts(item)
+    let facts = requires_facts(item) + param_facts(item, items)
     let body = child_at(item, 2)
     set out to check_stmts(body.children, names, facts, items, needs, open, out)
     if item.kind == "FILTER":

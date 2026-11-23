@@ -7,8 +7,8 @@ cd "$ROOT"
 
 BIN="${KAZE_BIN:-}"
 if [ -z "$BIN" ]; then
-    cargo build --quiet --bin kaze
-    BIN="target/debug/kaze"
+    make -C "$ROOT/.." kaze-build --quiet
+    BIN="bin/kaze"
 fi
 
 status=0

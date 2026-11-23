@@ -1,0 +1,1092 @@
+# lsp.kaze — a Language Server Protocol engine written in pure Kaze.
+#
+# What this is: a JSON-RPC 2.0 engine with Content-Length framing, a tolerant
+# JSON reader, a strict JSON writer, and the four features the roadmap asks a
+# native server to prove: publishDiagnostics on open/change, hover, definition,
+# and shutdown/exit. Every reply is produced by this compiler's own front end:
+# lsp_parse_source feeds check_program, and the diagnostics come straight from
+# that checker. No Rust and no host process take part.
+#
+# What this is NOT, and why: an interactive daemon. The pure-Kaze emitter gives
+# a program exactly one input channel and one output channel:
+#
+#   * input: kz_resolve_cli_arg reads a positional argument (a path, or the
+#     argument text itself) and slurps all of stdin only for parameter 0. The
+#     read is to EOF, so a server cannot pull one message at a time.
+#   * output: the value main returns is printed once, when the process exits.
+#     There is no emit/flush primitive and no way to write while running.
+#
+# So the transport here is a batch session: the whole framed conversation
+# arrives as one text, every message is answered in order, and the framed
+# replies leave as the return value of main. That is the strongest shape the
+# language can express today. It is enough to prove the protocol engine end to
+# end, and the two ways to close the gap are named at the bottom of this file.
+#
+# Framing rules implemented:
+#   * a frame is zero or more "Header: value" lines, a blank line, then exactly
+#     Content-Length bytes of JSON. CRLF and bare LF line endings both read.
+#   * Content-Length names are matched case-insensitively; Content-Type and any
+#     other header is ignored rather than refused.
+#   * output always writes CRLF line endings and the byte length of the body.
+#
+# JSON rules implemented:
+#   * the reader accepts the full value grammar, decodes the standard escapes,
+#     and tolerates unknown members anywhere. Anything it cannot parse becomes
+#     a "none" node or a -32700 reply, never a crash.
+#   * the writer escapes quote, backslash, newline, carriage return and tab.
+#     Other control bytes become "?" because the language has no ord(): a byte
+#     cannot be turned into the digits its backslash-u escape needs. Non-ASCII
+#     UTF-8 passes through unchanged, which is valid JSON.
+use "./ast.kaze"
+use "./lexer.kaze"
+use "./parser.kaze"
+use "./checker.kaze"
+use "./machine.kaze"
+
+# ── values ─────────────────────────────────────────────────────────────
+#
+# One record shape for every JSON value. Objects keep parallel key/value lists;
+# arrays keep values only. "none" means "absent", which is distinct from JSON
+# null ("null") so a missing id is not mistaken for an explicit one.
+
+record LspJson:
+    kind: str
+    text: str
+    keys: list
+    vals: list
+
+# One open document. LSP keys documents by URI, so does this store.
+record LspDoc:
+    uri: str
+    text: str
+
+# One declaration the document makes that hover/definition can answer for.
+# line is 1-based like the checker's diagnostics; col is 0-based like LSP.
+record LspDecl:
+    kind: str
+    name: str
+    params: str
+    signature: str
+    line: num
+    col: num
+
+action lsp_none_json() -> LspJson:
+    return LspJson(kind: "none", text: "", keys: [], vals: [])
+
+action lsp_null_json() -> LspJson:
+    return LspJson(kind: "null", text: "", keys: [], vals: [])
+
+action lsp_str_json(s) -> LspJson:
+    return LspJson(kind: "str", text: s, keys: [], vals: [])
+
+action lsp_obj_json(keys, vals) -> LspJson:
+    return LspJson(kind: "obj", text: "", keys: keys, vals: vals)
+
+action lsp_arr_json(vals) -> LspJson:
+    return LspJson(kind: "arr", text: "", keys: [], vals: vals)
+
+action lsp_num_json(text) -> LspJson:
+    return LspJson(kind: "num", text: text, keys: [], vals: [])
+
+action lsp_bool_json(flag) -> LspJson:
+    let text = "false"
+    if flag == 1:
+        set text to "true"
+    return LspJson(kind: "bool", text: text, keys: [], vals: [])
+
+action lsp_empty_decl() -> LspDecl:
+    return LspDecl(kind: "", name: "", params: "", signature: "", line: 0, col: 0)
+
+action lsp_empty_doc() -> LspDoc:
+    return LspDoc(uri: "", text: "")
+
+# ── text helpers ───────────────────────────────────────────────────────
+#
+# Every read of text goes through a fallback and every loop declares a bound,
+# which is what the checker demands and what keeps a malformed message from
+# becoming a panic.
+
+action lsp_char(s, i):
+    return s[i] otherwise ""
+
+action lsp_is_space(c):
+    if c == " " or c == "\t" or c == "\n" or c < " ":
+        return 1
+    return 0
+
+action lsp_is_digit(c):
+    if c >= "0" and c <= "9":
+        return 1
+    return 0
+
+action lsp_is_ident(c):
+    if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_":
+        return 1
+    if c >= "0" and c <= "9":
+        return 1
+    return 0
+
+action lsp_digit_value(c):
+    if c == "0":
+        return 0
+    if c == "1":
+        return 1
+    if c == "2":
+        return 2
+    if c == "3":
+        return 3
+    if c == "4":
+        return 4
+    if c == "5":
+        return 5
+    if c == "6":
+        return 6
+    if c == "7":
+        return 7
+    if c == "8":
+        return 8
+    if c == "9":
+        return 9
+    return 0
+
+# A substring. stop is clamped to the text, so a short message cannot overrun.
+action lsp_slice(s, start, count):
+    let n = length of s
+    let i = start
+    let stop = start + count
+    if i < 0:
+        set i to 0
+    if stop > n:
+        set stop to n
+    let out = ""
+    while i < stop bounded 4000000:
+        set out to out + (s[i] otherwise "")
+        set i to i + 1
+    return out
+
+# The index of the next newline at or after from, or the text length.
+action lsp_find_nl(s, from):
+    let n = length of s
+    let i = from
+    let found = -1
+    while i < n and found < 0 bounded 4000000:
+        if (s[i] otherwise "") == "\n":
+            set found to i
+        set i to i + 1
+    if found < 0:
+        return n
+    return found
+
+# A line without its trailing carriage return. The language has no
+# carriage-return escape, so a control byte is recognised by comparing it
+# against a space rather than by naming CR.
+action lsp_trim_eol(line):
+    let i = length of line
+    let going = 1
+    while i > 0 and going == 1 bounded 4000:
+        let c = line[i - 1] otherwise ""
+        if c == " " or c == "\t" or c < " ":
+            set i to i - 1
+        otherwise:
+            set going to 0
+    return lsp_slice(line, 0, i)
+
+action lsp_alpha_index(c):
+    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    let i = 0
+    while i < 26 bounded 26:
+        if (upper[i] otherwise "") == c:
+            return i
+        set i to i + 1
+    return -1
+
+action lsp_lower(c):
+    let idx = lsp_alpha_index(c)
+    if idx >= 0:
+        return lsp_slice("abcdefghijklmnopqrstuvwxyz", idx, 1)
+    return c
+
+# prefix must be written in lower case.
+action lsp_starts_with_ci(s, prefix):
+    let n = length of prefix
+    if (length of s) < n:
+        return 0
+    let i = 0
+    let ok = 1
+    while i < n and ok == 1 bounded 200:
+        if lsp_lower(s[i] otherwise "") != (prefix[i] otherwise ""):
+            set ok to 0
+        set i to i + 1
+    return ok
+
+action lsp_starts_at(s, from, word):
+    let n = length of word
+    if (length of s) < from + n:
+        return 0
+    let i = 0
+    let ok = 1
+    while i < n and ok == 1 bounded 200:
+        if (s[from + i] otherwise "") != (word[i] otherwise ""):
+            set ok to 0
+        set i to i + 1
+    return ok
+
+# ── JSON reader ────────────────────────────────────────────────────────
+#
+# Recursive descent with an explicit cursor. Every parser returns [node, next]
+# so a caller can keep reading; a value it cannot read becomes a none node and
+# the cursor does not move, which is what makes the reader tolerant without
+# being silently wrong.
+
+action lsp_skip_ws(s, from):
+    let n = length of s
+    let i = from
+    let going = 1
+    while i < n and going == 1 bounded 4000000:
+        if lsp_is_space(s[i] otherwise "") == 1:
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return i
+
+action lsp_hex_value(c):
+    if c >= "0" and c <= "9":
+        return lsp_digit_value(c)
+    if c == "a" or c == "A":
+        return 10
+    if c == "b" or c == "B":
+        return 11
+    if c == "c" or c == "C":
+        return 12
+    if c == "d" or c == "D":
+        return 13
+    if c == "e" or c == "E":
+        return 14
+    if c == "f" or c == "F":
+        return 15
+    return -1
+
+# ASCII printable characters 32..126, needed because a number cannot be turned
+# into a character any other way. Kept in two tables so neither string needs a
+# character escape the lexer would misread.
+action lsp_printable(idx):
+    let low = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_"
+    if idx >= 0 and idx < 64:
+        return lsp_slice(low, idx, 1)
+    let high = "`abcdefghijklmnopqrstuvwxyz{|}~"
+    if idx >= 64 and idx < 95:
+        return lsp_slice(high, idx - 64, 1)
+    return "?"
+
+# A backslash-u code point as text. Only ASCII is exact: the language has no way
+# to turn a number into an arbitrary byte, so a non-ASCII escape becomes "?".
+# A client that sends raw UTF-8 (the usual case) is unaffected.
+action lsp_char_from_code(code):
+    if code == 9:
+        return "\t"
+    if code == 10:
+        return "\n"
+    if code == 13:
+        return "\n"
+    return lsp_printable(code - 32)
+
+action lsp_parse_hex4(s, from):
+    let i = from
+    let value = 0
+    let digits = 0
+    let ok = 1
+    while i < (length of s) and digits < 4 and ok == 1 bounded 4:
+        let h = lsp_hex_value(s[i] otherwise "")
+        if h < 0:
+            set ok to 0
+        otherwise:
+            set value to value * 16 + h
+            set digits to digits + 1
+            set i to i + 1
+    return [value, i]
+
+# One escape sequence as text, and the index after it. Escape handling lives
+# in one place so the reader cannot disagree with itself about newline, tab and
+# backslash-u. Carriage return, backspace and formfeed are dropped: the language
+# has no literal for those bytes, and a dropped one is safer than a wrong one.
+action lsp_decode_escape(e, s, from):
+    if e == "n":
+        return ["\n", from]
+    if e == "t":
+        return ["\t", from]
+    if e == "u":
+        let h = lsp_parse_hex4(s, from)
+        return [lsp_char_from_code(h[0] otherwise 0), h[1] otherwise from]
+    if e == "b" or e == "f" or e == "r":
+        return ["", from]
+    return [e, from]
+
+action lsp_jparse_string(s, from):
+    let n = length of s
+    let i = from
+    let out = ""
+    let done = 0
+    while i < n and done == 0 bounded 4000000:
+        let c = s[i] otherwise ""
+        if c == "\"":
+            set done to 1
+            set i to i + 1
+        otherwise:
+            if c == "\\":
+                let e = s[i + 1] otherwise ""
+                let d = lsp_decode_escape(e, s, i + 2)
+                set out to out + (d[0] otherwise "")
+                set i to d[1] otherwise i + 2
+            otherwise:
+                set out to out + c
+                set i to i + 1
+    return [out, i]
+
+action lsp_scan_number(s, from):
+    let n = length of s
+    let i = from
+    let going = 1
+    while i < n and going == 1 bounded 200:
+        let c = s[i] otherwise ""
+        if lsp_is_digit(c) == 1 or c == "-" or c == "+" or c == "." or c == "e" or c == "E":
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return i
+
+action lsp_jparse(s, from):
+    recursion bounded 200
+    let n = length of s
+    let i = lsp_skip_ws(s, from)
+    if i >= n:
+        return [lsp_none_json(), i]
+    let c = s[i] otherwise ""
+    if c == "{":
+        return lsp_jparse_obj(s, i + 1)
+    if c == "[":
+        return lsp_jparse_arr(s, i + 1)
+    if c == "\"":
+        let r = lsp_jparse_string(s, i + 1)
+        return [lsp_str_json(r[0] otherwise ""), r[1] otherwise i]
+    if lsp_starts_at(s, i, "true") == 1:
+        return [lsp_bool_json(1), i + 4]
+    if lsp_starts_at(s, i, "false") == 1:
+        return [lsp_bool_json(0), i + 5]
+    if lsp_starts_at(s, i, "null") == 1:
+        return [lsp_null_json(), i + 4]
+    if lsp_is_digit(c) == 1 or c == "-":
+        let stop = lsp_scan_number(s, i)
+        return [lsp_num_json(lsp_slice(s, i, stop - i)), stop]
+    return [lsp_none_json(), i]
+
+action lsp_jparse_obj(s, from):
+    recursion bounded 200
+    let n = length of s
+    let i = from
+    let keys = []
+    let vals = []
+    let done = 0
+    let closed = 0
+    while i < n and done == 0 bounded 200000:
+        set i to lsp_skip_ws(s, i)
+        let c = s[i] otherwise ""
+        if c == "}":
+            set i to i + 1
+            set done to 1
+            set closed to 1
+        otherwise:
+            if c == "\"":
+                let k = lsp_jparse_string(s, i + 1)
+                let key = k[0] otherwise ""
+                set i to lsp_skip_ws(s, k[1] otherwise i)
+                if (s[i] otherwise "") == ":":
+                    set i to i + 1
+                let v = lsp_jparse(s, i)
+                set keys to keys + [key]
+                set vals to vals + [v[0] otherwise lsp_none_json()]
+                set i to lsp_skip_ws(s, v[1] otherwise i)
+                if (s[i] otherwise "") == ",":
+                    set i to i + 1
+            otherwise:
+                set done to 1
+    if closed == 0:
+        return [lsp_none_json(), i]
+    return [lsp_obj_json(keys, vals), i]
+
+action lsp_jparse_arr(s, from):
+    recursion bounded 200
+    let n = length of s
+    let i = from
+    let vals = []
+    let done = 0
+    let closed = 0
+    while i < n and done == 0 bounded 200000:
+        set i to lsp_skip_ws(s, i)
+        let c = s[i] otherwise ""
+        if c == "]":
+            set i to i + 1
+            set done to 1
+            set closed to 1
+        otherwise:
+            if c == ",":
+                set i to i + 1
+            otherwise:
+                let v = lsp_jparse(s, i)
+                let node = v[0] otherwise lsp_none_json()
+                if node.kind == "none":
+                    set done to 1
+                otherwise:
+                    set vals to vals + [node]
+                    set i to v[1] otherwise i
+    if closed == 0:
+        return [lsp_none_json(), i]
+    return [lsp_arr_json(vals), i]
+
+# Member lookup on an object node. A missing key is a none node.
+action lsp_get(node: LspJson, key) -> LspJson:
+    if node.kind != "obj":
+        return lsp_none_json()
+    let keys = node.keys
+    let vals = node.vals
+    let n = length of keys
+    let i = 0
+    while i < n bounded 200000:
+        if (keys[i] otherwise "") == key:
+            return vals[i] otherwise lsp_none_json()
+        set i to i + 1
+    return lsp_none_json()
+
+action lsp_items(node: LspJson) -> list:
+    if node.kind == "arr":
+        return node.vals
+    return []
+
+action lsp_first_item(node: LspJson) -> LspJson:
+    let items = lsp_items(node)
+    if (length of items) > 0:
+        return items[0] otherwise lsp_none_json()
+    return lsp_none_json()
+
+action lsp_as_text(node: LspJson) -> string:
+    if node.kind == "str":
+        return node.text
+    return ""
+
+action lsp_as_num(node: LspJson) -> num:
+    if node.kind == "num":
+        return text_to_num(node.text)
+    return 0
+
+action lsp_get_text(node: LspJson, key) -> string:
+    return lsp_as_text(lsp_get(node, key))
+
+action lsp_get_num(node: LspJson, key) -> num:
+    return lsp_as_num(lsp_get(node, key))
+
+# ── JSON writer ────────────────────────────────────────────────────────
+#
+# The compiler's own emitter prints main's return value with printf, so the
+# reply stream never contains a NUL byte. Quote, backslash and the three
+# whitespace controls are escaped; any other control byte is replaced by "?"
+# for the reason given at the top of the file.
+
+action lsp_jstr(s):
+    let n = length of s
+    let i = 0
+    let out = "\""
+    while i < n bounded 4000000:
+        let c = s[i] otherwise ""
+        let escaped = c
+        if c == "\"":
+            set escaped to "\\\""
+        otherwise:
+            if c == "\\":
+                set escaped to "\\\\"
+            otherwise:
+                if c == "\n":
+                    set escaped to "\\n"
+                otherwise:
+                    if c == "\t":
+                        set escaped to "\\t"
+                    otherwise:
+                        if c < " ":
+                            set escaped to "?"
+        set out to out + escaped
+        set i to i + 1
+    return out + "\""
+
+# An id is echoed exactly: a string keeps its quotes, a number keeps its text.
+action lsp_id_json(node: LspJson) -> string:
+    if node.kind == "str":
+        return lsp_jstr(node.text)
+    if node.kind == "num":
+        return node.text
+    return "null"
+
+action lsp_range_json(line, c1, c2):
+    return "{\"start\":{\"line\":" + line + ",\"character\":" + c1 + "},\"end\":{\"line\":" + line + ",\"character\":" + c2 + "}}"
+
+# ── framing ────────────────────────────────────────────────────────────
+
+action lsp_frame(body, eol):
+    return "Content-Length: " + (length of body) + eol + eol + body
+
+# The line ending to answer with: the first control byte that is neither a tab
+# nor a newline in the request stream is the client's carriage return. A client
+# that writes bare LF gets bare LF back; a spec-conformant client gets CRLF.
+action lsp_eol_of(s):
+    let n = length of s
+    let limit = 200
+    if n > limit:
+        set n to limit
+    let i = 0
+    while i < n bounded 200:
+        let c = s[i] otherwise ""
+        if c < " " and c != "\n" and c != "\t":
+            return c + "\n"
+        set i to i + 1
+    return "\n"
+
+action lsp_reply(id_json, result_json, eol):
+    let body = "{\"jsonrpc\":\"2.0\",\"id\":" + id_json + ",\"result\":" + result_json + "}"
+    return lsp_frame(body, eol)
+
+action lsp_error_reply(id_json, code, message, eol):
+    let body = "{\"jsonrpc\":\"2.0\",\"id\":" + id_json + ",\"error\":{\"code\":" + code + ",\"message\":" + lsp_jstr(message) + "}}"
+    return lsp_frame(body, eol)
+
+action lsp_notify(method, params_json, eol):
+    let body = "{\"jsonrpc\":\"2.0\",\"method\":" + lsp_jstr(method) + ",\"params\":" + params_json + "}"
+    return lsp_frame(body, eol)
+
+# The digits after the colon of a header line, or -1 when there are none.
+action lsp_header_number(line):
+    let n = length of line
+    let i = 0
+    let seen = 0
+    while i < n and seen == 0 bounded 500:
+        if (line[i] otherwise "") == ":":
+            set seen to 1
+        set i to i + 1
+    if seen == 0:
+        return -1
+    let value = 0
+    let digits = 0
+    let going = 1
+    while i < n and going == 1 bounded 500:
+        let c = line[i] otherwise ""
+        if lsp_is_space(c) == 1:
+            set i to i + 1
+        otherwise:
+            if lsp_is_digit(c) == 1:
+                set value to value * 10 + lsp_digit_value(c)
+                set digits to digits + 1
+                set i to i + 1
+            otherwise:
+                set going to 0
+    if digits == 0:
+        return -1
+    return value
+
+# Read one frame at start. Result: [body, next_index, ok].
+action lsp_read_frame(s, start):
+    let n = length of s
+    let i = start
+    let skipping = 1
+    while i < n and skipping == 1 bounded 200000:
+        if lsp_is_space(s[i] otherwise "") == 1:
+            set i to i + 1
+        otherwise:
+            set skipping to 0
+    let length_ok = -1
+    let done = 0
+    let body_start = i
+    while i < n and done == 0 bounded 2000:
+        let nl = lsp_find_nl(s, i)
+        let line = lsp_trim_eol(lsp_slice(s, i, nl - i))
+        if (length of line) == 0:
+            set body_start to nl + 1
+            set done to 1
+        otherwise:
+            if lsp_starts_with_ci(line, "content-length:") == 1:
+                set length_ok to lsp_header_number(line)
+            set i to nl + 1
+    if done == 0 or length_ok < 0:
+        return ["", n, 0]
+    let end = body_start + length_ok
+    if end > n:
+        set end to n
+    return [lsp_slice(s, body_start, end - body_start), end, 1]
+
+# ── document store ─────────────────────────────────────────────────────
+
+action lsp_doc_index(docs, uri):
+    let n = length of docs
+    let i = 0
+    let found = -1
+    while i < n and found < 0 bounded 100000:
+        let d = docs[i] otherwise lsp_empty_doc()
+        if d.uri == uri:
+            set found to i
+        set i to i + 1
+    return found
+
+action lsp_doc_put(docs, uri, text):
+    let idx = lsp_doc_index(docs, uri)
+    if idx < 0:
+        return docs + [LspDoc(uri: uri, text: text)]
+    let out = []
+    let n = length of docs
+    let i = 0
+    while i < n bounded 100000:
+        let d = docs[i] otherwise lsp_empty_doc()
+        if i == idx:
+            set out to out + [LspDoc(uri: d.uri, text: text)]
+        otherwise:
+            set out to out + [d]
+        set i to i + 1
+    return out
+
+action lsp_doc_text(docs, uri):
+    let idx = lsp_doc_index(docs, uri)
+    if idx < 0:
+        return ""
+    let d = docs[idx] otherwise lsp_empty_doc()
+    return d.text
+
+# ── source lines ───────────────────────────────────────────────────────
+
+action lsp_split_lines(text):
+    let n = length of text
+    let i = 0
+    let line = ""
+    let out = []
+    while i < n bounded 4000000:
+        let c = text[i] otherwise ""
+        if c == "\n":
+            set out to out + [line]
+            set line to ""
+        otherwise:
+            if c >= " " or c == "\t":
+                set line to line + c
+        set i to i + 1
+    return out + [line]
+
+action lsp_line_text(text, want):
+    let lines = lsp_split_lines(text)
+    if want >= 0 and want < (length of lines):
+        return lines[want] otherwise ""
+    return ""
+
+# Everything before the first hash that is not inside a string.
+action lsp_strip_comment(s):
+    let n = length of s
+    let i = 0
+    let in_string = 0
+    while i < n bounded 4000000:
+        let c = s[i] otherwise ""
+        if c == "\"":
+            if in_string == 0:
+                set in_string to 1
+            otherwise:
+                set in_string to 0
+        otherwise:
+            if c == "#" and in_string == 0:
+                return lsp_slice(s, 0, i)
+        set i to i + 1
+    return s
+
+# The text without leading whitespace, and how many characters were removed.
+action lsp_ltrim(s):
+    let n = length of s
+    let i = 0
+    let going = 1
+    while i < n and going == 1 bounded 4000:
+        let c = s[i] otherwise ""
+        if c == " " or c == "\t" or c < " ":
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return [lsp_slice(s, i, n - i), i]
+
+action lsp_rtrim(s):
+    let n = length of s
+    let i = n
+    let going = 1
+    while i > 0 and going == 1 bounded 4000:
+        let c = s[i - 1] otherwise ""
+        if c == " " or c == "\t" or c < " ":
+            set i to i - 1
+        otherwise:
+            set going to 0
+    return lsp_slice(s, 0, i)
+
+action lsp_first_word(s):
+    let n = length of s
+    let i = 0
+    let out = ""
+    let going = 1
+    while i < n and going == 1 bounded 4000:
+        let c = s[i] otherwise ""
+        if lsp_is_ident(c) == 1:
+            set out to out + c
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return out
+
+action lsp_after_first_word(s):
+    let n = length of s
+    let word = lsp_first_word(s)
+    let k = length of word
+    while k < n and lsp_is_space(s[k] otherwise "") == 1 bounded 4000:
+        set k to k + 1
+    return lsp_slice(s, k, n - k)
+
+action lsp_leading_ident(s):
+    let n = length of s
+    let i = 0
+    let out = ""
+    let going = 1
+    while i < n and going == 1 bounded 4000:
+        let c = s[i] otherwise ""
+        if lsp_is_ident(c) == 1:
+            set out to out + c
+            set i to i + 1
+        otherwise:
+            set going to 0
+    return out
+
+# The text inside the first pair of parentheses, trimmed; "" when there is none.
+action lsp_params_of(s):
+    let n = length of s
+    let i = 0
+    let open = -1
+    while i < n and open < 0 bounded 4000:
+        if (s[i] otherwise "") == "(":
+            set open to i
+        set i to i + 1
+    if open < 0:
+        return ""
+    let j = open + 1
+    let close = -1
+    while j < n and close < 0 bounded 4000:
+        if (s[j] otherwise "") == ")":
+            set close to j
+        set j to j + 1
+    if close < 0:
+        return lsp_rtrim(lsp_slice(s, open + 1, n - open - 1))
+    return lsp_rtrim(lsp_slice(s, open + 1, close - open - 1))
+
+action lsp_contains(s, needle):
+    let n = length of s
+    let m = length of needle
+    if m == 0:
+        return 0
+    let i = 0
+    let found = 0
+    while i + m <= n and found == 0 bounded 4000000:
+        if lsp_starts_at(s, i, needle) == 1:
+            set found to 1
+        set i to i + 1
+    return found
+
+# ── declarations ───────────────────────────────────────────────────────
+#
+# The index is built from the document text, not from a successful parse: hover
+# and definition must answer while a program is half-typed, which is exactly
+# when the checker is reporting errors.
+
+action lsp_record_fields(lines, from, base_indent):
+    let n = length of lines
+    let j = from
+    let out = ""
+    let going = 1
+    while j < n and going == 1 bounded 200000:
+        let clean = lsp_strip_comment(lines[j] otherwise "")
+        let tt = lsp_ltrim(clean)
+        let t = lsp_rtrim(tt[0] otherwise "")
+        let indent = tt[1] otherwise 0
+        if (length of t) == 0:
+            set j to j + 1
+        otherwise:
+            if indent <= base_indent:
+                set going to 0
+            otherwise:
+                if lsp_contains(t, ":") == 1:
+                    set out to out + "\n    " + t
+                set j to j + 1
+    return out
+
+action lsp_scan_decls(text) -> list:
+    let lines = lsp_split_lines(text)
+    let n = length of lines
+    let decls = []
+    let i = 0
+    while i < n bounded 200000:
+        let clean = lsp_strip_comment(lines[i] otherwise "")
+        let tt = lsp_ltrim(clean)
+        let t = tt[0] otherwise ""
+        let indent = tt[1] otherwise 0
+        let word = lsp_first_word(t)
+        if word == "action" or word == "routine" or word == "func" or word == "check" or word == "filter":
+            let rest = lsp_after_first_word(t)
+            let name = lsp_leading_ident(rest)
+            if (length of name) > 0:
+                let params = lsp_params_of(rest)
+                let signature = word + " " + name + "(" + params + ")"
+                set decls to decls + [LspDecl(kind: word, name: name, params: params, signature: signature, line: i + 1, col: indent + (length of word) + 1)]
+        otherwise:
+            if word == "record":
+                let rest = lsp_after_first_word(t)
+                let name = lsp_leading_ident(rest)
+                if (length of name) > 0:
+                    let fields = lsp_record_fields(lines, i + 1, indent)
+                    let signature = "record " + name + fields
+                    set decls to decls + [LspDecl(kind: "record", name: name, params: "", signature: signature, line: i + 1, col: indent + (length of word) + 1)]
+        set i to i + 1
+    return decls
+
+action lsp_find_decl(decls, name) -> LspDecl:
+    if (length of name) == 0:
+        return lsp_empty_decl()
+    let n = length of decls
+    let i = 0
+    while i < n bounded 200000:
+        let d = decls[i] otherwise lsp_empty_decl()
+        if d.name == name:
+            return d
+        set i to i + 1
+    return lsp_empty_decl()
+
+# The identifier under the cursor: [text, start_column, end_column].
+action lsp_word_at(text, want_line, want_char):
+    let line = lsp_line_text(text, want_line)
+    let n = length of line
+    let c = want_char
+    if c < 0:
+        set c to 0
+    if c > n:
+        set c to n
+    let start = c
+    let going = 1
+    while start > 0 and going == 1 bounded 4000000:
+        if lsp_is_ident(line[start - 1] otherwise "") == 1:
+            set start to start - 1
+        otherwise:
+            set going to 0
+    let stop = c
+    set going to 1
+    while stop < n and going == 1 bounded 4000000:
+        if lsp_is_ident(line[stop] otherwise "") == 1:
+            set stop to stop + 1
+        otherwise:
+            set going to 0
+    return [lsp_slice(line, start, stop - start), start, stop]
+
+# ── diagnostics ────────────────────────────────────────────────────────
+#
+# parse_source is the compiler's own entry point, re-stated here so this module
+# does not depend on main.kaze. check_program is the same checker the check
+# command runs; a diagnostic's line becomes the range's line and column 0 is
+# used because the pure checker reports lines, not columns.
+
+action lsp_parse_source(src) -> AstNode:
+    if is_machine_source(src) == 1:
+        return parse_machine(src)
+    let tokens = tokenize(src)
+    return parse_program(tokens)
+
+action lsp_diags_json(text):
+    let program = lsp_parse_source(text)
+    let diags = check_program(program)
+    let count = length of diags
+    let out = "["
+    let i = 0
+    while i < count bounded 200000:
+        let d = diags[i] otherwise Diagnostic(code: "", line: 0, msg: "")
+        let line0 = d.line - 1
+        if line0 < 0:
+            set line0 to 0
+        let width = length of (lsp_line_text(text, line0))
+        if i > 0:
+            set out to out + ","
+        set out to out + "{\"range\":" + lsp_range_json(line0, 0, width) + ",\"severity\":1,\"source\":\"kaze\",\"code\":" + lsp_jstr(d.code) + ",\"message\":" + lsp_jstr(d.msg) + "}"
+        set i to i + 1
+    return out + "]"
+
+action lsp_publish(uri, text, eol):
+    let params = "{\"uri\":" + lsp_jstr(uri) + ",\"diagnostics\":" + lsp_diags_json(text) + "}"
+    return lsp_notify("textDocument/publishDiagnostics", params, eol)
+
+# ── hover and definition ───────────────────────────────────────────────
+
+action lsp_hover_result(text, want_line, want_char, uri):
+    let word = lsp_word_at(text, want_line, want_char)
+    let decls = lsp_scan_decls(text)
+    let d = lsp_find_decl(decls, word[0] otherwise "")
+    if (length of d.name) == 0:
+        return "null"
+    let markdown = "```kaze\n" + d.signature + "\n```\n\nDeclared at line " + d.line + " of " + uri + "."
+    let range = lsp_range_json(want_line, word[1] otherwise 0, word[2] otherwise 0)
+    return "{\"contents\":{\"kind\":\"markdown\",\"value\":" + lsp_jstr(markdown) + "},\"range\":" + range + "}"
+
+action lsp_definition_result(text, want_line, want_char, uri):
+    let word = lsp_word_at(text, want_line, want_char)
+    let decls = lsp_scan_decls(text)
+    let d = lsp_find_decl(decls, word[0] otherwise "")
+    if (length of d.name) == 0:
+        return "null"
+    let line0 = d.line - 1
+    if line0 < 0:
+        set line0 to 0
+    let end_col = d.col + (length of d.name)
+    return "{\"uri\":" + lsp_jstr(uri) + ",\"range\":" + lsp_range_json(line0, d.col, end_col) + "}"
+
+# ── dispatch ───────────────────────────────────────────────────────────
+
+action lsp_initialize_caps():
+    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true},\"serverInfo\":{\"name\":\"kaze-lsp-native\",\"version\":\"0.1.0\"}}"
+
+# Handle one message. Result: [reply_text, next_docs, stop_flag].
+action lsp_handle(body, docs, eol):
+    let parsed = lsp_jparse(body, 0)
+    let msg = parsed[0] otherwise lsp_none_json()
+    if msg.kind != "obj":
+        return [lsp_error_reply("null", -32700, "Parse error", eol), docs, 0]
+    let method = lsp_get_text(msg, "method")
+    let id_node = lsp_get(msg, "id")
+    let is_request = 0
+    if id_node.kind != "none":
+        set is_request to 1
+    let params = lsp_get(msg, "params")
+
+    if method == "initialize":
+        if is_request == 1:
+            return [lsp_reply(lsp_id_json(id_node), lsp_initialize_caps(), eol), docs, 0]
+        return ["", docs, 0]
+
+    if method == "initialized":
+        return ["", docs, 0]
+
+    if method == "textDocument/didOpen":
+        let td = lsp_get(params, "textDocument")
+        let uri = lsp_get_text(td, "uri")
+        let text = lsp_get_text(td, "text")
+        let next_docs = lsp_doc_put(docs, uri, text)
+        return [lsp_publish(uri, text, eol), next_docs, 0]
+
+    if method == "textDocument/didChange":
+        let td = lsp_get(params, "textDocument")
+        let uri = lsp_get_text(td, "uri")
+        let text = lsp_get_text(td, "text")
+        if (length of text) == 0:
+            let change = lsp_first_item(lsp_get(params, "contentChanges"))
+            set text to lsp_get_text(change, "text")
+        let next_docs = lsp_doc_put(docs, uri, text)
+        return [lsp_publish(uri, text, eol), next_docs, 0]
+
+    if method == "textDocument/hover" or method == "textDocument/definition":
+        let td = lsp_get(params, "textDocument")
+        let uri = lsp_get_text(td, "uri")
+        let position = lsp_get(params, "position")
+        let want_line = lsp_get_num(position, "line")
+        let want_char = lsp_get_num(position, "character")
+        let text = lsp_doc_text(docs, uri)
+        let result = "null"
+        if method == "textDocument/hover":
+            set result to lsp_hover_result(text, want_line, want_char, uri)
+        otherwise:
+            set result to lsp_definition_result(text, want_line, want_char, uri)
+        if is_request == 1:
+            return [lsp_reply(lsp_id_json(id_node), result, eol), docs, 0]
+        return ["", docs, 0]
+
+    if method == "shutdown":
+        if is_request == 1:
+            return [lsp_reply(lsp_id_json(id_node), "null", eol), docs, 0]
+        return ["", docs, 0]
+
+    if method == "exit":
+        return ["", docs, 1]
+
+    # A request that names a method this server does not implement gets the
+    # JSON-RPC "method not found" error. A notification is never answered.
+    if is_request == 1:
+        return [lsp_error_reply(lsp_id_json(id_node), -32601, "Method not found: " + method, eol), docs, 0]
+    return ["", docs, 0]
+
+# ── the session ────────────────────────────────────────────────────────
+#
+# Read a frame, answer it, append the reply, repeat. exit stops the loop; a
+# frame that cannot be read ends the session rather than guessing.
+
+action lsp_serve_session(session) -> string:
+    let n = length of session
+    let i = 0
+    let docs = []
+    let out = ""
+    let eol = lsp_eol_of(session)
+    let stop = 0
+    let frames = 0
+    while i < n and stop == 0 and frames < 100000 bounded 100002:
+        let r = lsp_read_frame(session, i)
+        let body = r[0] otherwise ""
+        let next = r[1] otherwise n
+        let ok = r[2] otherwise 0
+        if ok == 0:
+            set i to n
+        otherwise:
+            if (length of body) > 0:
+                let h = lsp_handle(body, docs, eol)
+                set out to out + (h[0] otherwise "")
+                set docs to h[1] otherwise docs
+                set stop to h[2] otherwise 0
+            set i to next
+        set frames to frames + 1
+    return out
+
+# ── what the CLI can hand this module ──────────────────────────────────
+#
+# The compiler binary has no nothing literal, so a missing argument is
+# recognised by its runtime type: kz_to_string(nil) is the text "nil".
+# A real document that literally is "nil" still counts as text.
+
+action lsp_has_text(v) -> num:
+    if v == "nil":
+        return 1
+    let as_text = v + ""
+    if as_text == "nil":
+        return 0
+    return 1
+
+# A framed session starts (after whitespace) with a Content-Length header.
+action lsp_looks_like_session(v) -> num:
+    if lsp_has_text(v) == 0:
+        return 0
+    let text = v + ""
+    let n = length of text
+    let i = 0
+    let going = 1
+    while i < n and going == 1 bounded 1000:
+        if lsp_is_space(text[i] otherwise "") == 1:
+            set i to i + 1
+        otherwise:
+            set going to 0
+    if lsp_starts_with_ci(lsp_slice(text, i, 15), "content-length:") == 1:
+        return 1
+    return 0
+
+# ── closing the interactive gap (designs, not code) ────────────────────
+#
+# Two designs would turn this batch engine into a daemon:
+#
+#   (a) an stdio capability with a host backend: "needs: stdio" becomes a
+#       declared capability, stdio.read(n) and stdio.emit(text) lower to
+#       fread/fwrite through the capability gate, and SPEC.md gains the entries.
+#       The checker, the capability policy and the Sofuu drift check all stay
+#       in charge of who may use it; the LSP loop above runs unchanged.
+#   (b) a small C host that embeds the emitted compiler (Phase 10's embedded
+#       host bridge): the host owns the pipes and the JSON-RPC loop and calls
+#       into the emitted front end for parse/check/hover. No language change;
+#       the protocol engine here remains the reference for the messages.

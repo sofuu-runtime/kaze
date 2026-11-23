@@ -10,6 +10,7 @@ action get_c_runtime_header():
     set h to h + "#include <string.h>\n"
     set h to h + "#include <stdio.h>\n"
     set h to h + "#include <math.h>\n"
+    set h to h + "#include \"kaze_rt.h\"   /* arena, checked arithmetic, portable types */\n"
     set h to h + "#pragma STDC FP_CONTRACT OFF\n\n"
     set h to h + "#if !defined(_WIN32)\n"
     set h to h + "#include <unistd.h>\n"
@@ -18,50 +19,167 @@ action get_c_runtime_header():
     set h to h + "#define isatty _isatty\n"
     set h to h + "#define fileno _fileno\n"
     set h to h + "#endif\n\n"
+    set h to h + "/* A program need not use every helper; keep strict builds clean. */\n"
+    set h to h + "#if defined(__GNUC__) || defined(__clang__)\n"
+    set h to h + "#define KZ_MAYBE_UNUSED __attribute__((unused))\n"
+    set h to h + "#else\n"
+    set h to h + "#define KZ_MAYBE_UNUSED\n"
+    set h to h + "#endif\n\n"
+    set h to h + "/* Bulk allocation: every dynamic structure comes from this arena and is\n"
+    set h to h + "   released in one reset. KAZE_ARENA_BYTES sizes it. */\n"
+    set h to h + "static kaze_arena_t kz_arena;\n"
+    set h to h + "/* KAZE_ARENA_BYTES sizes the arena; 64 MiB default. */\n"
+    set h to h + "static size_t kz_arena_bytes(void) {\n"
+    set h to h + "    const char* env = getenv(\"KAZE_ARENA_BYTES\");\n"
+    set h to h + "    if (env && env[0]) { long n = strtol(env, NULL, 10); if (n > 0) return (size_t)n; }\n"
+    set h to h + "    return (size_t)1024 * 1024 * 1024;\n"
+    set h to h + "}\n"
+    set h to h + "/* Per-function allocation accounting: KAZE_ARENA_STATS=1 answers where the\n"
+    set h to h + "   memory went, from data. __func__ names the emitting helper, so no call site\n"
+    set h to h + "   has to be tagged. */\n"
+    set h to h + "#define KZ_ALLOC_SITES 16\n"
+    set h to h + "static const char* kz_site_name[KZ_ALLOC_SITES];\n"
+    set h to h + "static size_t kz_site_bytes[KZ_ALLOC_SITES];\n"
+    set h to h + "static size_t kz_site_calls[KZ_ALLOC_SITES];\n"
+    set h to h + "static void kz_note_site(const char* site, size_t n) {\n"
+    set h to h + "    for (int i = 0; i < KZ_ALLOC_SITES; i++) {\n"
+    set h to h + "        if (kz_site_name[i] == site || kz_site_name[i] == NULL) {\n"
+    set h to h + "            if (kz_site_name[i] == NULL) kz_site_name[i] = site;\n"
+    set h to h + "            kz_site_bytes[i] += n;\n"
+    set h to h + "            kz_site_calls[i] += 1;\n"
+    set h to h + "            return;\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
+    set h to h + "static void* kz_alloc_site(const char* site, size_t n);\n"
+    set h to h + "#define kz_alloc(n) kz_alloc_site(__func__, (n))\n"
+    set h to h + "static void* kz_alloc_raw(size_t n) {\n"
+    set h to h + "    void* p = kmalloc(&kz_arena, n);\n"
+    set h to h + "    if (p == NULL) {\n"
+    set h to h + "        kaze_trap(KAZE_ERR_OOM, \"the arena is full; raise KAZE_ARENA_BYTES\");\n"
+    set h to h + "        exit(70);\n"
+    set h to h + "    }\n"
+    set h to h + "    return p;\n"
+    set h to h + "}\n\n"
+    set h to h + "static void* kz_alloc_site(const char* site, size_t n) {\n"
+    set h to h + "    kz_note_site(site, n);\n"
+    set h to h + "    return kz_alloc_raw(n);\n"
+    set h to h + "}\n"
+    set h to h + "static void kz_print_alloc_sites(void) {\n"
+    set h to h + "    const char* env = getenv(\"KAZE_ARENA_STATS\");\n"
+    set h to h + "    if (env == NULL || env[0] == 0 || env[0] == 48) return;\n"
+    set h to h + "    fprintf(stderr, \"kaze-alloc: %zu bytes used in the arena\\n\", kaze_arena_used(&kz_arena));\n"
+    set h to h + "    for (int i = 0; i < KZ_ALLOC_SITES; i++) {\n"
+    set h to h + "        if (kz_site_name[i] != NULL)\n"
+    set h to h + "            fprintf(stderr, \"kaze-alloc:   %-12s %12zu bytes %10zu calls\\n\", kz_site_name[i], kz_site_bytes[i], kz_site_calls[i]);\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
     set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD, KZ_VAL_POINT } KzValKind;\n"
     set h to h + "struct KzValue;\n"
     set h to h + "typedef struct { size_t len; size_t cap; struct KzValue* items; } KzList;\n"
     set h to h + "typedef struct { const char* type_name; size_t field_count; const char** keys; struct KzValue* values; } KzRecord;\n"
-    set h to h + "typedef struct { double x, y, z; } KzPoint;\n"
+    set h to h + "typedef struct { const char* data; size_t len; } KzStr;\n"
+    set h to h + "typedef struct { kaze_float_t x, y, z; } KzPoint;\n"
     set h to h + "typedef struct KzValue {\n"
     set h to h + "    KzValKind kind;\n"
-    set h to h + "    union { bool boolean; double number; const char* str; KzList* list; KzRecord* record; KzPoint point; } as;\n"
+    set h to h + "    union { bool boolean; kaze_float_t number; KzStr str; KzList* list; KzRecord* record; KzPoint point; } as;\n"
     set h to h + "} KzValue;\n\n"
-    set h to h + "static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"
-    set h to h + "static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"
-    set h to h + "static inline KzValue kz_num(double n) { KzValue v; v.kind = KZ_VAL_NUM; v.as.number = n; return v; }\n"
-    set h to h + "static inline KzValue kz_str(const char* s) { KzValue v; v.kind = KZ_VAL_STR; v.as.str = s ? s : \"\"; return v; }\n"
-    set h to h + "static inline KzValue kz_point(KzValue x, KzValue y, KzValue z);\n"
-    set h to h + "static inline double kz_pt(KzValue v, int i);\n"
-    set h to h + "static inline bool kz_is_truthy(KzValue v) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_num(double n) { KzValue v; v.kind = KZ_VAL_NUM; v.as.number = n; return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_str(const char* s) {\n"
+    set h to h + "    KzValue v; v.kind = KZ_VAL_STR;\n"
+    set h to h + "    v.as.str.data = s ? s : \"\";\n"
+    set h to h + "    v.as.str.len = strlen(v.as.str.data);   /* measured once, never again */\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_point(KzValue x, KzValue y, KzValue z);\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_pt(KzValue v, int i);\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline bool kz_is_truthy(KzValue v) {\n"
     set h to h + "    switch (v.kind) {\n"
     set h to h + "        case KZ_VAL_BOOL: return v.as.boolean;\n"
     set h to h + "        case KZ_VAL_NUM: return v.as.number != 0.0;\n"
-    set h to h + "        case KZ_VAL_STR: return v.as.str && v.as.str[0] != '\\0';\n"
+    set h to h + "        case KZ_VAL_STR: return v.as.str.data && v.as.str.data[0] != '\\0';\n"
     set h to h + "        case KZ_VAL_LIST: return v.as.list && v.as.list->len > 0;\n"
     set h to h + "        case KZ_VAL_RECORD: return true;\n"
     set h to h + "        default: return false;\n"
     set h to h + "    }\n"
     set h to h + "}\n\n"
-    set h to h + "static inline char* kz_str_alloc_copy(const char* s) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline char* kz_str_alloc_copy(const char* s) {\n"
     set h to h + "    if (!s) return \"\";\n"
     set h to h + "    size_t l = strlen(s);\n"
-    set h to h + "    char* out = (char*)malloc(l + 1);\n"
+    set h to h + "    char* out = (char*)kz_alloc(l + 1);\n"
     set h to h + "    if (!out) return \"\";\n"
     set h to h + "    memcpy(out, s, l + 1);\n"
     set h to h + "    return out;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline char* kz_str_concat(const char* a, const char* b) {\n"
+    set h to h + "/* Concatenate with known lengths: nothing is re-walked. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline char* kz_str_concat_n(const char* a, size_t la, const char* b, size_t lb) {\n"
+    set h to h + "    char* out = (char*)kz_alloc(la + lb + 1);\n"
+    set h to h + "    if (la) memcpy(out, a, la);\n"
+    set h to h + "    if (lb) memcpy(out + la, b, lb);\n"
+    set h to h + "    out[la + lb] = 0;\n"
+    set h to h + "    return out;\n"
+    set h to h + "}\n"
+
+    set h to h + "KZ_MAYBE_UNUSED static inline char* kz_str_concat(const char* a, const char* b) {\n"
     set h to h + "    size_t la = a ? strlen(a) : 0;\n"
     set h to h + "    size_t lb = b ? strlen(b) : 0;\n"
-    set h to h + "    char* out = (char*)malloc(la + lb + 1);\n"
+    set h to h + "    char* out = (char*)kz_alloc(la + lb + 1);\n"
     set h to h + "    if (!out) return \"\";\n"
     set h to h + "    if (la) memcpy(out, a, la);\n"
     set h to h + "    if (lb) memcpy(out + la, b, lb);\n"
     set h to h + "    out[la + lb] = '\\0';\n"
     set h to h + "    return out;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline void kz_format_number(char* buf, size_t cap, double v) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_add(KzValue a, KzValue b);\n"
+    set h to h + "/* `v = v + x` where v is proved append-only. Same result as kz_add, but a text\n"
+    set h to h + "   or list buffer that is still the newest arena allocation grows in place\n"
+    set h to h + "   instead of being copied. Dispatch is by runtime type, so any operand is safe. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_add_own(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) {\n"
+    set h to h + "        const char* s = a.as.str.data;\n"
+    set h to h + "        size_t la = a.as.str.len, lb = b.as.str.len;\n"
+    set h to h + "        if (kz_arena.base != NULL && s != NULL &&\n"
+    set h to h + "            s + la + 1 == (const char*)kz_arena.base + kz_arena.offset &&\n"
+    set h to h + "            kz_arena.offset + lb <= kz_arena.cap) {\n"
+    set h to h + "            memcpy((char*)s + la, b.as.str.data, lb);\n"
+    set h to h + "            ((char*)s)[la + lb] = 0;\n"
+    set h to h + "            kz_arena.offset += lb;\n"
+    set h to h + "            a.as.str.len = la + lb;   /* the value carries its length: keep it true */\n"
+    set h to h + "            return a;\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST && a.as.list != NULL &&\n"
+    set h to h + "        b.as.list != NULL && b.as.list->len == 1) {\n"
+    set h to h + "        KzList* l = a.as.list;\n"
+    set h to h + "        if (l->len >= l->cap) {\n"
+    set h to h + "            size_t cap = l->cap ? l->cap * 2 : 4;\n"
+    set h to h + "            KzValue* items;\n"
+    set h to h + "            if (kz_arena.base != NULL &&\n"
+    set h to h + "                (const char*)l->items + l->cap * sizeof(KzValue) ==\n"
+    set h to h + "                    (const char*)kz_arena.base + kz_arena.offset &&\n"
+    set h to h + "                kz_arena.offset + (cap - l->cap) * sizeof(KzValue) <= kz_arena.cap) {\n"
+    set h to h + "                items = l->items;\n"
+    set h to h + "                kz_arena.offset += (cap - l->cap) * sizeof(KzValue);\n"
+    set h to h + "            } else {\n"
+    set h to h + "                items = (KzValue*)kz_alloc(cap * sizeof(KzValue));\n"
+    set h to h + "                memcpy(items, l->items, l->len * sizeof(KzValue));\n"
+    set h to h + "            }\n"
+    set h to h + "            l->items = items;\n"
+    set h to h + "            l->cap = cap;\n"
+    set h to h + "        }\n"
+    set h to h + "        l->items[l->len] = b.as.list->items[0];\n"
+    set h to h + "        l->len += 1;\n"
+    set h to h + "        return a;\n"
+    set h to h + "    }\n"
+    set h to h + "    return kz_add(a, b);\n"
+    set h to h + "}\n"
+
+
+
+
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_format_number(char* buf, size_t cap, double v) {\n"
     set h to h + "    if (isnan(v)) { snprintf(buf, cap, \"NaN\"); return; }\n"
     set h to h + "    if (isinf(v)) { snprintf(buf, cap, v > 0 ? \"inf\" : \"-inf\"); return; }\n"
     set h to h + "    if (floor(v) == v && fabs(v) < 1e17) { snprintf(buf, cap, \"%.0f\", v); return; }\n"
@@ -70,7 +188,7 @@ action get_c_runtime_header():
     set h to h + "        if (strtod(buf, NULL) == v) return;\n"
     set h to h + "    }\n"
     set h to h + "}\n\n"
-    set h to h + "static inline const char* kz_to_string(KzValue v) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline const char* kz_to_string(KzValue v) {\n"
     set h to h + "    if (v.kind == KZ_VAL_POINT) {\n"
     set h to h + "        char pbuf[192], b1[40], b2[40], b3[40];\n"
     set h to h + "        kz_format_number(b1, sizeof(b1), v.as.point.x);\n"
@@ -79,7 +197,7 @@ action get_c_runtime_header():
     set h to h + "        snprintf(pbuf, sizeof(pbuf), \"(%s, %s, %s)\", b1, b2, b3);\n"
     set h to h + "        return kz_str_alloc_copy(pbuf);\n"
     set h to h + "    }\n"
-    set h to h + "    if (v.kind == KZ_VAL_STR) return v.as.str ? v.as.str : \"\";\n"
+    set h to h + "    if (v.kind == KZ_VAL_STR) return v.as.str.data ? v.as.str.data : \"\";\n"
     set h to h + "    if (v.kind == KZ_VAL_BOOL) return v.as.boolean ? \"true\" : \"false\";\n"
     set h to h + "    if (v.kind == KZ_VAL_NUM) {\n"
     set h to h + "        char buf[64];\n"
@@ -91,113 +209,155 @@ action get_c_runtime_header():
     set h to h + "    if (v.kind == KZ_VAL_LIST) return \"list\";\n"
     set h to h + "    return \"\";\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_list_new(size_t cap) {\n"
-    set h to h + "    KzList* l = (KzList*)malloc(sizeof(KzList));\n"
+    set h to h + "/* Make room for `need` items. A list may start with no buffer at all, so every\n"
+    set h to h + "   reader that indexes items must come through here (or check len first). */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_list_reserve(KzList* l, size_t need) {\n"
+    set h to h + "    if (l->cap >= need && l->items != NULL) return;\n"
+    set h to h + "    size_t cap = l->cap ? l->cap : 4;\n"
+    set h to h + "    while (cap < need) cap *= 2;\n"
+    set h to h + "    KzValue* items = (KzValue*)kz_alloc(cap * sizeof(KzValue));\n"
+    set h to h + "    if (l->len) memcpy(items, l->items, l->len * sizeof(KzValue));\n"
+    set h to h + "    l->items = items;\n"
+    set h to h + "    l->cap = cap;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_list_new(size_t cap) {\n"
+    set h to h + "    KzList* l = (KzList*)kz_alloc(sizeof(KzList));\n"
     set h to h + "    l->len = 0;\n"
-    set h to h + "    l->cap = cap > 4 ? cap : 4;\n"
-    set h to h + "    l->items = (KzValue*)malloc(l->cap * sizeof(KzValue));\n"
+    set h to h + "    /* Lazy buffer: an empty list costs a header, not a header and a buffer.\n"
+    set h to h + "       Every site that indexes items either checks len first or goes through\n"
+    set h to h + "       kz_list_reserve (audited: concat, from, append, index, for-each). */\n"
+    set h to h + "    l->cap = cap > 4 ? cap : 0;\n"
+    set h to h + "    l->items = (cap > 4) ? (KzValue*)kz_alloc(l->cap * sizeof(KzValue)) : NULL;\n"
     set h to h + "    KzValue v; v.kind = KZ_VAL_LIST; v.as.list = l; return v;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_list_concat(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_list_concat(KzValue a, KzValue b) {\n"
     set h to h + "    size_t la = (a.kind == KZ_VAL_LIST && a.as.list) ? a.as.list->len : 0;\n"
     set h to h + "    size_t lb = (b.kind == KZ_VAL_LIST && b.as.list) ? b.as.list->len : 0;\n"
     set h to h + "    KzValue res = kz_list_new(la + lb);\n"
+    set h to h + "    kz_list_reserve(res.as.list, la + lb);   /* the buffer is lazy: ask first */\n"
     set h to h + "    KzList* l = res.as.list;\n"
     set h to h + "    if (la) { memcpy(l->items, a.as.list->items, la * sizeof(KzValue)); l->len += la; }\n"
     set h to h + "    if (lb) { memcpy(l->items + l->len, b.as.list->items, lb * sizeof(KzValue)); l->len += lb; }\n"
     set h to h + "    return res;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_list_from(size_t n, const KzValue* items) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_list_from(size_t n, const KzValue* items) {\n"
     set h to h + "    KzValue res = kz_list_new(n);\n"
-    set h to h + "    if (n > 0 && items) { memcpy(res.as.list->items, items, n * sizeof(KzValue)); res.as.list->len = n; }\n"
+    set h to h + "    if (n > 0 && items) { kz_list_reserve(res.as.list, n); memcpy(res.as.list->items, items, n * sizeof(KzValue)); res.as.list->len = n; }\n"
     set h to h + "    return res;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_record_create(const char* type_name, size_t n, const char** keys, const KzValue* vals) {\n"
-    set h to h + "    KzRecord* r = (KzRecord*)malloc(sizeof(KzRecord));\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_record_create(const char* type_name, size_t n, const char** keys, const KzValue* vals) {\n"
+    set h to h + "    KzRecord* r = (KzRecord*)kz_alloc(sizeof(KzRecord));\n"
     set h to h + "    r->type_name = type_name;\n"
     set h to h + "    r->field_count = n;\n"
     set h to h + "    r->keys = keys;\n"
-    set h to h + "    r->values = (n > 0) ? (KzValue*)malloc(n * sizeof(KzValue)) : NULL;\n"
+    set h to h + "    r->values = (n > 0) ? (KzValue*)kz_alloc(n * sizeof(KzValue)) : NULL;\n"
     set h to h + "    if (n > 0 && vals && r->values) { memcpy(r->values, vals, n * sizeof(KzValue)); }\n"
     set h to h + "    KzValue v; v.kind = KZ_VAL_RECORD; v.as.record = r; return v;\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_get_field(KzValue obj, const char* field) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_get_field(KzValue obj, const char* field) {\n"
+    set h to h + "    if (obj.kind == KZ_VAL_POINT) {\n"
+    set h to h + "        if (field && field[0] == 'x' && field[1] == 0) return kz_num(obj.as.point.x);\n"
+    set h to h + "        if (field && field[0] == 'y' && field[1] == 0) return kz_num(obj.as.point.y);\n"
+    set h to h + "        if (field && field[0] == 'z' && field[1] == 0) return kz_num(obj.as.point.z);\n"
+    set h to h + "        return kz_nil();\n"
+    set h to h + "    }\n"
     set h to h + "    if (obj.kind != KZ_VAL_RECORD || !obj.as.record) return kz_nil();\n"
     set h to h + "    KzRecord* r = obj.as.record;\n"
     set h to h + "    for (size_t i = 0; i < r->field_count; i++) {\n"
-    set h to h + "        if (strcmp(r->keys[i], field) == 0) return r->values[i];\n"
+    set h to h + "        /* Pointer identity first: record keys and field names come from the same\n"
+    set h to h + "           literals, so the common hit costs one compare instead of a strcmp. */\n"
+    set h to h + "        if (r->keys[i] == field || (field && strcmp(r->keys[i], field) == 0)) return r->values[i];\n"
     set h to h + "    }\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_add(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_add(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_num(a.as.number + b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR || b.kind == KZ_VAL_STR) return kz_str(kz_str_concat(kz_to_string(a), kz_to_string(b)));\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR || b.kind == KZ_VAL_STR) {\n"
+    set h to h + "        KzValue sa = (a.kind == KZ_VAL_STR) ? a : kz_str(kz_to_string(a));\n"
+    set h to h + "        KzValue sb = (b.kind == KZ_VAL_STR) ? b : kz_str(kz_to_string(b));\n"
+    set h to h + "        return kz_str(kz_str_concat_n(sa.as.str.data, sa.as.str.len, sb.as.str.data, sb.as.str.len));\n"
+    set h to h + "    }\n"
     set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST) return kz_list_concat(a, b);\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_sub(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_sub(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_POINT) return kz_point(kz_num(a.as.point.x - b.as.point.x), kz_num(a.as.point.y - b.as.point.y), kz_num(a.as.point.z - b.as.point.z));\n"
     set h to h + "    return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) - ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_mul(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mul(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_NUM) return kz_point(kz_num(a.as.point.x * b.as.number), kz_num(a.as.point.y * b.as.number), kz_num(a.as.point.z * b.as.number));\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_POINT) return kz_mul(b, a);\n"
     set h to h + "    return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) * ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_div(KzValue a, KzValue b) { double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0; return kz_num(d == 0.0 ? 0.0 : (((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) / d)); }\n"
-    set h to h + "static inline KzValue kz_mod(KzValue a, KzValue b) { double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0; return kz_num(d == 0.0 ? 0.0 : fmod(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0), d)); }\n"
-    set h to h + "static inline KzValue kz_not(KzValue a) { return kz_bool(!kz_is_truthy(a)); }\n\n"
-    set h to h + "static inline bool kz_val_eq(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_div(KzValue a, KzValue b) {\n"
+    set h to h + "    kaze_float_t out = 0.0;   /* kaze_rt checks the divisor and the result */\n"
+    set h to h + "    kaze_float_t x = (a.kind == KZ_VAL_NUM) ? a.as.number : 0.0;\n"
+    set h to h + "    kaze_float_t y = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
+    set h to h + "    if (!kaze_float_div_checked(x, y, &out)) { kaze_trap(KAZE_ERR_DIV0, \"division by zero\"); exit(70); }\n"
+    set h to h + "    return kz_num(out);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mod(KzValue a, KzValue b) {\n"
+    set h to h + "    kaze_float_t y = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
+    set h to h + "    kaze_float_t x = (a.kind == KZ_VAL_NUM) ? a.as.number : 0.0;\n"
+    set h to h + "    if (y == 0.0) { kaze_trap(KAZE_ERR_DIV0, \"remainder by zero\"); exit(70); }\n"
+    set h to h + "    return kz_num(fmod(x, y));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_not(KzValue a) { return kz_bool(!kz_is_truthy(a)); }\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline bool kz_val_eq(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind != b.kind) return false;\n"
     set h to h + "    switch (a.kind) {\n"
     set h to h + "        case KZ_VAL_NIL: return true;\n"
     set h to h + "        case KZ_VAL_BOOL: return a.as.boolean == b.as.boolean;\n"
     set h to h + "        case KZ_VAL_NUM: return a.as.number == b.as.number;\n"
-    set h to h + "        case KZ_VAL_STR: return (a.as.str && b.as.str) ? (strcmp(a.as.str, b.as.str) == 0) : (a.as.str == b.as.str);\n"
+    set h to h + "        case KZ_VAL_STR: return (a.as.str.data && b.as.str.data) ? (strcmp(a.as.str.data, b.as.str.data) == 0) : (a.as.str.data == b.as.str.data);\n"
     set h to h + "        default: return a.as.list == b.as.list;\n"
     set h to h + "    }\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_eq(KzValue a, KzValue b) { return kz_bool(kz_val_eq(a, b)); }\n"
-    set h to h + "static inline KzValue kz_ne(KzValue a, KzValue b) { return kz_bool(!kz_val_eq(a, b)); }\n"
-    set h to h + "static inline KzValue kz_lt(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_eq(KzValue a, KzValue b) { return kz_bool(kz_val_eq(a, b)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_ne(KzValue a, KzValue b) { return kz_bool(!kz_val_eq(a, b)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_lt(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number < b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) < 0);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) < 0);\n"
     set h to h + "    return kz_bool(false);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_le(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_le(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number <= b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) <= 0);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) <= 0);\n"
     set h to h + "    return kz_bool(false);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_gt(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_gt(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number > b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) > 0);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) > 0);\n"
     set h to h + "    return kz_bool(false);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_ge(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_ge(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number >= b.as.number);\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str, b.as.str) >= 0);\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) >= 0);\n"
     set h to h + "    return kz_bool(false);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_and(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) && kz_is_truthy(b)); }\n"
-    set h to h + "static inline KzValue kz_or(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) || kz_is_truthy(b)); }\n\n"
-    set h to h + "static inline KzValue kz_len(KzValue a) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_and(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) && kz_is_truthy(b)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_or(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) || kz_is_truthy(b)); }\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_len(KzValue a) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT) return kz_num(sqrt(a.as.point.x * a.as.point.x + a.as.point.y * a.as.point.y + a.as.point.z * a.as.point.z));\n"
-    set h to h + "    if (a.kind == KZ_VAL_STR && a.as.str) return kz_num((double)strlen(a.as.str));\n"
+    set h to h + "    if (a.kind == KZ_VAL_STR) return kz_num((double)a.as.str.len);\n"
     set h to h + "    if (a.kind == KZ_VAL_LIST && a.as.list) return kz_num((double)a.as.list->len);\n"
-    set h to h + "    return kz_num(0.0);\n"
+    set h to h + "    /* length of applies to text, lists and points. Returning 0 for anything\n"
+    set h to h + "       else would make a guard clause fall through instead of refusing. */\n"
+    set h to h + "    kaze_trap(KAZE_ERR_TYPE, \"length of does not apply to this value\");\n"
+    set h to h + "    exit(70);\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_index(KzValue coll, KzValue idx) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_index(KzValue coll, KzValue idx) {\n"
     set h to h + "    size_t i = (idx.kind == KZ_VAL_NUM && idx.as.number >= 0.0) ? (size_t)idx.as.number : 0;\n"
     set h to h + "    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"
     set h to h + "        if (i < coll.as.list->len) return coll.as.list->items[i];\n"
     set h to h + "        return kz_nil();\n"
     set h to h + "    }\n"
-    set h to h + "    if (coll.kind == KZ_VAL_STR && coll.as.str) {\n"
-    set h to h + "        size_t l = strlen(coll.as.str);\n"
+    set h to h + "    if (coll.kind == KZ_VAL_STR && coll.as.str.data) {\n"
+    set h to h + "        size_t l = coll.as.str.len;\n"
     set h to h + "        if (i < l) {\n"
-    set h to h + "            char* one = (char*)malloc(2);\n"
-    set h to h + "            one[0] = coll.as.str[i];\n"
+    set h to h + "            char* one = (char*)kz_alloc(2);\n"
+    set h to h + "            one[0] = coll.as.str.data[i];\n"
     set h to h + "            one[1] = '\\0';\n"
     set h to h + "            return kz_str(one);\n"
     set h to h + "        }\n"
@@ -205,10 +365,10 @@ action get_c_runtime_header():
     set h to h + "    }\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n\n"
-    set h to h + "static inline void kz_builtin_log(KzValue msg) { printf(\"[info] %s\\n\", kz_to_string(msg)); }\n\n"
-    set h to h + "static inline KzValue kz_read_stream(FILE* f) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_builtin_log(KzValue msg) { printf(\"[info] %s\\n\", kz_to_string(msg)); }\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_read_stream(FILE* f) {\n"
     set h to h + "    size_t cap = 4096; size_t len = 0;\n"
-    set h to h + "    char* buf = (char*)malloc(cap);\n"
+    set h to h + "    char* buf = (char*)kz_alloc(cap);\n"
     set h to h + "    if (!buf) return kz_str(\"\");\n"
     set h to h + "    size_t n;\n"
     set h to h + "    while ((n = fread(buf + len, 1, cap - len - 1, f)) > 0) {\n"
@@ -216,21 +376,51 @@ action get_c_runtime_header():
     set h to h + "        if (len + 1024 >= cap) { cap *= 2; char* nb = (char*)realloc(buf, cap); if (!nb) break; buf = nb; }\n"
     set h to h + "    }\n"
     set h to h + "    buf[len] = '\\0';\n"
+    set h to h + "    if (len == 0) return kz_nil();   /* nothing on stdin is no value, not empty text */\n"
     set h to h + "    return kz_str(buf);\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_read_file_or_string(const char* path_or_str) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_read_file_or_string(const char* path_or_str) {\n"
     set h to h + "    if (!path_or_str) return kz_str(\"\");\n"
     set h to h + "    FILE* f = fopen(path_or_str, \"rb\");\n"
     set h to h + "    if (!f) return kz_str(path_or_str);\n"
     set h to h + "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n"
     set h to h + "    if (sz < 0) { fclose(f); return kz_str(path_or_str); }\n"
-    set h to h + "    char* buf = (char*)malloc((size_t)sz + 1);\n"
+    set h to h + "    char* buf = (char*)kz_alloc((size_t)sz + 1);\n"
     set h to h + "    if (!buf) { fclose(f); return kz_str(path_or_str); }\n"
     set h to h + "    size_t rd = fread(buf, 1, (size_t)sz, f);\n"
     set h to h + "    buf[rd] = '\\0'; fclose(f);\n"
     set h to h + "    return kz_str(buf);\n"
     set h to h + "}\n\n"
-    set h to h + "static inline KzValue kz_resolve_cli_arg(int argc, char** argv, const char* name, int index) {\n"
+    set h to h + "/* 12-factor input: --arg > AGENT_* > config > signature default. A parameter\n"
+    set h to h + "   declared with a type must arrive with a value of that type; silently using 0\n"
+    set h to h + "   or raw text is how a script acts on a number nobody gave it. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_param(const char* ty, const char* name, const char* routine, KzValue v) {\n"
+    set h to h + "    if (ty == NULL || ty[0] == 0) return v;\n"
+    set h to h + "    int wants_text = (strcmp(ty, \"text\") == 0 || strcmp(ty, \"string\") == 0);\n"
+    set h to h + "    int wants_bool = (strcmp(ty, \"bool\") == 0);\n"
+    set h to h + "    if (v.kind == KZ_VAL_NIL) {\n"
+    set h to h + "        fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s and has no value; provide --arg %s=<value>, the environment variable AGENT_%s, or \\\"%s\\\" in the config file\\n\", name, routine, ty, name, name, name);\n"
+    set h to h + "        exit(2);\n"
+    set h to h + "    }\n"
+    set h to h + "    if (wants_text) return (v.kind == KZ_VAL_STR) ? v : kz_str(kz_to_string(v));\n"
+    set h to h + "    if (wants_bool) {\n"
+    set h to h + "        if (v.kind == KZ_VAL_BOOL) return v;\n"
+    set h to h + "        if (v.kind == KZ_VAL_STR) {\n"
+    set h to h + "            if (strcmp(v.as.str.data, \"true\") == 0) return kz_bool(true);\n"
+    set h to h + "            if (strcmp(v.as.str.data, \"false\") == 0) return kz_bool(false);\n"
+    set h to h + "        }\n"
+    set h to h + "    } else {\n"
+    set h to h + "        if (v.kind == KZ_VAL_NUM) return v;\n"
+    set h to h + "        if (v.kind == KZ_VAL_STR) {\n"
+    set h to h + "            char* end = NULL;\n"
+    set h to h + "            double d = strtod(v.as.str.data, &end);\n"
+    set h to h + "            if (end != NULL && end != v.as.str.data && *end == 0) return kz_num(d);\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s but the value given is not one\\n\", name, routine, ty);\n"
+    set h to h + "    exit(2);\n"
+    set h to h + "}\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_resolve_cli_arg(int argc, char** argv, const char* name, int index) {\n"
     set h to h + "    size_t nlen = strlen(name);\n"
     set h to h + "    for (int i = 1; i < argc; i++) {\n"
     set h to h + "        const char* a = argv[i];\n"
@@ -258,36 +448,43 @@ action get_c_runtime_header():
     set h to h + "    if (ev) return kz_read_file_or_string(ev);\n"
     set h to h + "    int pos_idx = 0;\n"
     set h to h + "    for (int i = 1; i < argc; i++) {\n"
+    set h to h + "        /* An option value is not a positional argument: --ticks 2 used to\n"
+    set h to h + "           hand the 2 to the first parameter. */\n"
+    set h to h + "        if (strcmp(argv[i], \"--ticks\") == 0 || strcmp(argv[i], \"--cap\") == 0 ||\n"
+    set h to h + "            strcmp(argv[i], \"--config\") == 0 || strcmp(argv[i], \"--arg\") == 0 ||\n"
+    set h to h + "            strcmp(argv[i], \"--entry\") == 0 || strcmp(argv[i], \"-o\") == 0) { i++; continue; }\n"
     set h to h + "        if (argv[i][0] != '-') {\n"
     set h to h + "            if (pos_idx == index) return kz_read_file_or_string(argv[i]);\n"
     set h to h + "            pos_idx++;\n"
     set h to h + "        }\n"
     set h to h + "    }\n"
     set h to h + "    if (index == 0 && !isatty(fileno(stdin))) return kz_read_stream(stdin);\n"
-    set h to h + "    return kz_str(\"\");\n"
+    set h to h + "    /* No layer supplied this argument: nothing, not empty text, so a\n"
+    set h to h + "       guard clause on it refuses the way the interpreter does. */\n"
+    set h to h + "    return kz_nil();\n"
     set h to h + "}\n\n"
     set h to h + "\n"
-    set h to h + "static inline KzValue kz_fb_div(KzValue a, KzValue b, KzValue fb) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_fb_div(KzValue a, KzValue b, KzValue fb) {\n"
     set h to h + "    double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
     set h to h + "    if (d == 0.0) return fb;\n"
     set h to h + "    return kz_div(a, b);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_fb_mod(KzValue a, KzValue b, KzValue fb) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_fb_mod(KzValue a, KzValue b, KzValue fb) {\n"
     set h to h + "    double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
     set h to h + "    if (d == 0.0) return fb;\n"
     set h to h + "    return kz_mod(a, b);\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_fb_index(KzValue coll, KzValue idx, KzValue fb) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_fb_index(KzValue coll, KzValue idx, KzValue fb) {\n"
     set h to h + "    double d = (idx.kind == KZ_VAL_NUM) ? idx.as.number : -1.0;\n"
     set h to h + "    if (d < 0.0) return fb;\n"
     set h to h + "    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"
     set h to h + "        if ((size_t)d >= coll.as.list->len) return fb;\n"
-    set h to h + "    } else if (coll.kind == KZ_VAL_STR && coll.as.str) {\n"
-    set h to h + "        if ((size_t)d >= strlen(coll.as.str)) return fb;\n"
+    set h to h + "    } else if (coll.kind == KZ_VAL_STR && coll.as.str.data) {\n"
+    set h to h + "        if ((size_t)d >= coll.as.str.len) return fb;\n"
     set h to h + "    }\n"
     set h to h + "    return kz_index(coll, idx);\n"
     set h to h + "}\n"
-    set h to h + "static inline void kz_record_set(KzValue* vals, const char** keys, size_t count, size_t pos, const char* key, KzValue value) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_record_set(KzValue* vals, const char** keys, size_t count, size_t pos, const char* key, KzValue value) {\n"
     set h to h + "    if (key != NULL) {\n"
     set h to h + "        for (size_t j = 0; j < count; j++) {\n"
     set h to h + "            if (strcmp(keys[j], key) == 0) { vals[j] = value; return; }\n"
@@ -296,33 +493,33 @@ action get_c_runtime_header():
     set h to h + "    }\n"
     set h to h + "    if (pos < count) vals[pos] = value;\n"
     set h to h + "}\n"
-    set h to h + "static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"
-    set h to h + "static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"
-    set h to h + "static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
-    set h to h + "static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
-    set h to h + "static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
-    set h to h + "static inline KzValue kz_math_to_radians(KzValue a) { return kz_num(kz_to_num(a) * 0.017453292519943295); }\n"
-    set h to h + "static inline KzValue kz_math_to_degrees(KzValue a) { return kz_num(kz_to_num(a) * 57.29577951308232); }\n"
-    set h to h + "static inline KzValue kz_point(KzValue x, KzValue y, KzValue z) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_to_radians(KzValue a) { return kz_num(kz_to_num(a) * 0.017453292519943295); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_to_degrees(KzValue a) { return kz_num(kz_to_num(a) * 57.29577951308232); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_point(KzValue x, KzValue y, KzValue z) {\n"
     set h to h + "    KzValue v; v.kind = KZ_VAL_POINT;\n"
     set h to h + "    v.as.point.x = (x.kind == KZ_VAL_NUM) ? x.as.number : 0.0;\n"
     set h to h + "    v.as.point.y = (y.kind == KZ_VAL_NUM) ? y.as.number : 0.0;\n"
     set h to h + "    v.as.point.z = (z.kind == KZ_VAL_NUM) ? z.as.number : 0.0;\n"
     set h to h + "    return v;\n"
     set h to h + "}\n"
-    set h to h + "static inline double kz_pt(KzValue v, int i) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_pt(KzValue v, int i) {\n"
     set h to h + "    if (v.kind != KZ_VAL_POINT) return 0.0;\n"
     set h to h + "    return i == 0 ? v.as.point.x : (i == 1 ? v.as.point.y : v.as.point.z);\n"
     set h to h + "}\n"
-    set h to h + "static inline double kz_list_num(KzValue v, size_t i) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_list_num(KzValue v, size_t i) {\n"
     set h to h + "    if (v.kind == KZ_VAL_LIST && v.as.list && i < v.as.list->len) return kz_to_num(v.as.list->items[i]);\n"
     set h to h + "    return 0.0;\n"
     set h to h + "}\n"
     set h to h + "#define KZ_EARTH_RADIUS_M 6371008.8\n"
-    set h to h + "static inline double kz_geo_rad(double d) { return d * (3.14159265358979323846 / 180.0); }\n"
-    set h to h + "static inline double kz_geo_deg(double r) { return r * (180.0 / 3.14159265358979323846); }\n"
-    set h to h + "static inline double kz_geo_norm(double d) { double m = fmod(d, 360.0); if (m < 0.0) m += 360.0; return m; }\n"
-    set h to h + "static inline double kz_geo_haversine(double alat, double alon, double blat, double blon) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_geo_rad(double d) { return d * (3.14159265358979323846 / 180.0); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_geo_deg(double r) { return r * (180.0 / 3.14159265358979323846); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_geo_norm(double d) { double m = fmod(d, 360.0); if (m < 0.0) m += 360.0; return m; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_geo_haversine(double alat, double alon, double blat, double blon) {\n"
     set h to h + "    double lat1 = kz_geo_rad(alat), lon1 = kz_geo_rad(alon);\n"
     set h to h + "    double lat2 = kz_geo_rad(blat), lon2 = kz_geo_rad(blon);\n"
     set h to h + "    double dlat = lat2 - lat1, dlon = lon2 - lon1;\n"
@@ -331,34 +528,40 @@ action get_c_runtime_header():
     set h to h + "    if (hv > 1.0) hv = 1.0;\n"
     set h to h + "    return 2.0 * KZ_EARTH_RADIUS_M * asin(sqrt(hv));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_geo_distance(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_geo_distance(KzValue a, KzValue b) {\n"
     set h to h + "    return kz_num(kz_geo_haversine(kz_pt(a, 0), kz_pt(a, 1), kz_pt(b, 0), kz_pt(b, 1)));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_geo_slant_distance(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_geo_slant_distance(KzValue a, KzValue b) {\n"
     set h to h + "    double ground = kz_geo_haversine(kz_pt(a, 0), kz_pt(a, 1), kz_pt(b, 0), kz_pt(b, 1));\n"
     set h to h + "    double dz = kz_pt(b, 2) - kz_pt(a, 2);\n"
     set h to h + "    return kz_num(sqrt(ground * ground + dz * dz));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_geo_bearing_from(KzValue a, KzValue b) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_geo_bearing_from(KzValue a, KzValue b) {\n"
     set h to h + "    double lat1 = kz_geo_rad(kz_pt(a, 0)), lat2 = kz_geo_rad(kz_pt(b, 0));\n"
     set h to h + "    double dlon = kz_geo_rad(kz_pt(b, 1) - kz_pt(a, 1));\n"
     set h to h + "    double y = sin(dlon) * cos(lat2);\n"
     set h to h + "    double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon);\n"
     set h to h + "    return kz_num(kz_geo_norm(kz_geo_deg(atan2(y, x))));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_geo_bearing_of(KzValue p) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_geo_bearing_of(KzValue p) {\n"
     set h to h + "    return kz_num(kz_geo_norm(kz_geo_deg(atan2(kz_pt(p, 0), kz_pt(p, 1)))));\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_unavailable(const char* what) {\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_unavailable(const char* what) {\n"
     set h to h + "    fprintf(stderr, \"E_KAZE_UNSUPPORTED: %s is not lowered by the pure-Kaze C emitter\\n\", what);\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_cap_call(const char* recv, const char* op, int n, KzValue* args) {\n"
+    set h to h + "/* A bare telemetry field is a capability read. Returning nothing here would\n"
+    set h to h + "   let `when battery < 20%` compare nothing against a percent. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_cap_get(const char* family, const char* field) {\n"
+    set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", family, field);\n"
+    set h to h + "    exit(70);\n"
+    set h to h + "}\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_cap_call(const char* recv, const char* op, int n, KzValue* args) {\n"
     set h to h + "    (void)n; (void)args;\n"
     set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", recv, op);\n"
     set h to h + "    exit(70);\n"
     set h to h + "}\n"
-    set h to h + "static inline void kz_builtin_alert(KzValue msg) { fprintf(stderr, \"[alert] %s\\n\", kz_to_string(msg)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline void kz_builtin_alert(KzValue msg) { fprintf(stderr, \"[alert] %s\\n\", kz_to_string(msg)); }\n"
     return h
 
 action sanitize_c_id(name):
@@ -565,7 +768,10 @@ action emit_c_call(node: AstNode):
                 return "kz_geo_bearing_from(" + two_args(args) + ")"
             if tail == "bearing_of":
                 return "kz_geo_bearing_of(" + nth_arg(args, 0) + ")"
-        return "kz_cap_call(" + escape_c_str(head) + ", " + escape_c_str(tail) + ", " + cnt + ", (KzValue[]){ " + arg_str + " })"
+        let arr = "NULL"
+        if cnt != 0:
+            set arr to "(KzValue[]){ " + arg_str + " }"
+        return "kz_cap_call(" + escape_c_str(head) + ", " + escape_c_str(tail) + ", " + cnt + ", " + arr + ")"
 
     # 3. Pure builtins.
     if name == "link_lost":
@@ -584,7 +790,23 @@ action emit_c_call(node: AstNode):
         return "kz_unavailable(" + escape_c_str(name) + ")"
 
     # 4. A routine written in this program.
-    return "kz_fn_" + sanitize_c_id(name) + "(" + arg_str + ")"
+    return "kaze_fn_" + sanitize_c_id(name) + "(" + arg_str + ")"
+
+action is_plain_integer(t: string) -> num:
+    # Digits only (an optional leading minus): no dot, no exponent.
+    if t == "":
+        return 0
+    let i = 0
+    let n = length of t
+    while i < n bounded 64:
+        let c = t[i] otherwise "?"
+        if c == "-" and i == 0:
+            set i to i + 1
+        otherwise:
+            if c < "0" or c > "9":
+                return 0
+            set i to i + 1
+    return 1
 
 action emit_c_expr(node: AstNode):
     recursion bounded 200
@@ -595,12 +817,21 @@ action emit_c_expr(node: AstNode):
         # lowering the reference engine applies, so sin/cos agree.
         if node.name == "degrees":
             return "kz_math_to_radians(kz_num(" + node.val_str + "))"
+        if is_plain_integer(node.val_str) == 1:
+            # INT64_C-style portability without an integer literal: 3300000000 is
+            # an int on a 64-bit host and does not fit one on a 32-bit target.
+            return "kz_num((kaze_float_t)" + node.val_str + ")"
         return "kz_num(" + node.val_str + ")"
     if k == "STR":
         return "kz_str(" + escape_c_str(node.val_str) + ")"
     if k == "BOOL":
         return "kz_bool(" + node.val_str + ")"
+    if k == "TELEMETRY":
+        # A bare telemetry word that no declaration shadows: a capability read.
+        return "kz_cap_get(" + escape_c_str(node.val_str) + ", " + escape_c_str(node.name) + ")"
     if k == "IDENT":
+        # A declared name: parameter, local, or record field. Telemetry words that
+        # no declaration shadows were already rewritten to TELEMETRY above.
         return sanitize_c_id(node.name)
     if k == "LEN":
         return "kz_len(" + emit_c_expr(child_at(node, 0)) + ")"
@@ -645,8 +876,31 @@ action emit_c_stmt(stmt: AstNode, ind):
             return ind + "return " + emit_c_expr(child_at(stmt, 0)) + ";\n"
         return ind + "return kz_nil();\n"
 
+    if k == "RETURN_CHECKED":
+        # A return site in a routine with ensures clauses: bind, check, return.
+        let out = ind + "KzValue _kz_ret = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
+        let i = 1
+        while i < (length of stmt.children) bounded 32:
+            set out to out + ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, i)) + ")) {\n"
+            set out to out + ind + "    fprintf(stderr, \"E_KAZE_CONTRACT: an ensures clause is false for this result\\n\");\n"
+            set out to out + ind + "    exit(70);\n"
+            set out to out + ind + "}\n"
+            set i to i + 1
+        set out to out + ind + "return _kz_ret;\n"
+        return out
+
+    if k == "APPEND_OWN":
+        # Proved append-only: kz_add_own does exactly what `+` would, but grows the
+        # buffer in place when it is still the newest arena allocation.
+        let target = sanitize_c_id(stmt.name)
+        return ind + target + " = kz_add_own(" + target + ", " + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
     if k == "EXPR":
         return ind + "(void)(" + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
+    if k == "APPEND_LIST_OWN":
+        let target = sanitize_c_id(stmt.name)
+        return ind + target + " = kz_list_append_own(" + target + ", " + emit_c_expr(child_at(stmt, 0)) + ");\n"
 
     # guard <expr>: an executed assertion. A false invariant stops the run.
     if k == "GUARD":
@@ -782,12 +1036,32 @@ action emit_record_ctor(item: AstNode):
     set out to out + "}\n\n"
     return out
 
+# Contracts at routine entry: a `requires` clause that is false for the arguments
+# given is a refusal, not an assertion in the C sense -- the interpreter's
+# E_KAZE_CONTRACT. Elision when every call site is proved comes later; correctness
+# first.
+action emit_requires(item: AstNode) -> string:
+    recursion bounded 200
+    let contracts = child_at(item, 1)
+    let out = ""
+    for each c in contracts.children:
+        if c.kind == "CONTRACT" and c.name == "requires":
+            let cond = child_at(c, 0)
+            set out to out + "    if (!kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
+            set out to out + "        fprintf(stderr, \"E_KAZE_CONTRACT: the requires clause at line " + c.line + " is false for these arguments\\n\");\n"
+            set out to out + "        exit(70);\n"
+            set out to out + "    }\n"
+    return out
+
 action emit_routine(item: AstNode):
     recursion bounded 200
     let id = sanitize_c_id(item.name)
     let params_node = child_at(item, 0)
     let body = child_at(item, 2)
-    let out = "static KzValue kz_fn_" + id + "(" + param_list(params_node) + ") {\n"
+    let out = "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + id + "(" + param_list(params_node) + ") {\n"
+    for each prm in params_node.children:
+        set out to out + "    (void)" + sanitize_c_id(prm.name) + ";   /* a routine need not use every parameter */\n"
+    set out to out + emit_requires(item)
     for each s in body.children:
         set out to out + emit_c_stmt(s, "    ")
     set out to out + "    return kz_nil();\n"
@@ -841,11 +1115,30 @@ action emit_hook_driver(items):
     set out to out + "}\n\n"
     return out
 
+action single_routine(items):
+    # The interpreter's default entry is `main`, else the only action/check/filter
+    # in the root file. Without this the native binary printed "no main entry"
+    # and exited 0 where the VM actually ran the routine.
+    let found = none_node()
+    let count = 0
+    for each item in items:
+        if is_routine(item) == 1:
+            set found to item
+            set count to count + 1
+    if count == 1:
+        return found
+    return none_node()
+
 action emit_c_entry(items):
     recursion bounded 200
     let out = "/* --- Main Entry Point --- */\n"
     set out to out + "int main(int argc, char** argv) {\n"
+    set out to out + "    /* One arena for the whole run; KAZE_ARENA_BYTES overrides the default. */\n"
+    set out to out + "    if (!kaze_arena_init_heap(&kz_arena, kz_arena_bytes())) { fprintf(stderr, \"E_KAZE_OOM: cannot reserve the arena\\n\"); return 70; }\n"
+    set out to out + "    atexit(kz_print_alloc_sites);   /* KAZE_ARENA_STATS=1 reports by function */\n"
     let main_item = find_named(items, "main")
+    if is_routine(main_item) == 0:
+        set main_item to single_routine(items)
     if is_routine(main_item) == 0:
         set out to out + "    (void)argc; (void)argv;\n"
         set out to out + "    kz_run_hooks(argc, argv);\n"
@@ -855,23 +1148,24 @@ action emit_c_entry(items):
         let cnt = length of params_node.children
         if cnt == 0:
             set out to out + "    (void)argc; (void)argv;\n"
-            set out to out + "    KzValue res = kz_fn__kz_main();\n"
+            set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "();\n"
         otherwise:
             let i = 0
             let call_args = ""
             while i < cnt bounded 1000:
                 let prm = child_at(params_node, i)
-                set out to out + "    KzValue arg_" + i + " = kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + ");\n"
+                set out to out + "    KzValue arg_" + i + " = kz_param(" + escape_c_str(prm.val_str) + ", " + escape_c_str(prm.name) + ", " + escape_c_str(main_item.name) + ", kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + "));\n"
                 if i > 0:
                     set call_args to call_args + ", "
                 set call_args to call_args + "arg_" + i
                 set i to i + 1
-            set out to out + "    KzValue res = kz_fn__kz_main(" + call_args + ");\n"
+            set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "(" + call_args + ");\n"
         set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
-        set out to out + "        if (floor(res.as.number) == res.as.number) { printf(\"%.0f\\n\", res.as.number); }\n"
-        set out to out + "        else { printf(\"%.16g\\n\", res.as.number); }\n"
+        set out to out + "        char numbuf[64];\n"
+        set out to out + "        kz_format_number(numbuf, sizeof numbuf, res.as.number);\n"
+        set out to out + "        printf(\"%s\\n\", numbuf);\n"
         set out to out + "    } else if (res.kind == KZ_VAL_STR) {\n"
-        set out to out + "        printf(\"%s\\n\", res.as.str ? res.as.str : \"\");\n"
+        set out to out + "        printf(\"%s\\n\", res.as.str.data ? res.as.str.data : \"\");\n"
         set out to out + "    } else if (res.kind == KZ_VAL_BOOL) {\n"
         set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
         set out to out + "    }\n"
@@ -880,9 +1174,374 @@ action emit_c_entry(items):
     set out to out + "}\n"
     return out
 
+# ── ambient telemetry ──────────────────────────────────────────────────
+# A bare telemetry word (battery, altitude, ...) is a capability read, but an
+# emitter cannot tell it from a variable without name resolution -- `distance` is
+# an ordinary local in this compiler's own source, and lowering every telemetry
+# word blindly broke the compiler's own build. This pass resolves it once, on the
+# tree, where each routine's declarations are known.
+
+# ── in-place append ────────────────────────────────────────────────────
+# `set out to out + piece` copies the whole string every time, which is where the
+# translators' memory and time go. When a variable is only ever built this way and
+# read once at the end, its buffer can be extended in place instead -- the runtime
+# checks that the buffer is still the newest arena allocation before writing.
+
+action count_ident(n: AstNode, v: string) -> num:
+    recursion bounded 256
+    let total = 0
+    if n.kind == "IDENT" and n.name == v:
+        set total to 1
+    for each c in n.children:
+        set total to total + count_ident(c, v)
+    return total
+
+action count_appends(n: AstNode, v: string) -> num:
+    recursion bounded 256
+    let total = 0
+    if n.kind == "SET" and n.name == v:
+        let rhs = child_at(n, 0)
+        if rhs.kind == "BIN" and rhs.name == "+":
+            let left = child_at(rhs, 0)
+            # kz_add_own dispatches on the runtime type, so any operand shape is safe
+            # here: the result is exactly what `+` would have produced.
+            if left.kind == "IDENT" and left.name == v:
+                set total to 1
+    for each c in n.children:
+        set total to total + count_appends(c, v)
+    return total
+
+action count_return_reads(n: AstNode, v: string) -> num:
+    recursion bounded 256
+    let total = 0
+    if n.kind == "RETURN":
+        set total to total + count_ident(n, v)
+    for each c in n.children:
+        set total to total + count_return_reads(c, v)
+    return total
+
+action string_lets(n: AstNode, acc: list) -> list:
+    recursion bounded 256
+    let out = acc
+    if n.kind == "LET":
+        let rhs = child_at(n, 0)
+        if rhs.kind == "STR" or rhs.kind == "LIST" or rhs.kind == "CALL" or (rhs.kind == "BIN" and rhs.name == "+"):
+            set out to out + [n.name]
+    for each c in n.children:
+        set out to string_lets(c, out)
+    return out
+
+action append_plan(body: AstNode) -> list:
+    recursion bounded 200
+    # A name qualifies when every occurrence of it is either the left operand of an
+    # append or inside a return: nothing else can hold its buffer.
+    let out = []
+    for each v in string_lets(body, []):
+        let app = count_appends(body, v)
+        if app > 0:
+            let occ = count_ident(body, v)
+            let ret = count_return_reads(body, v)
+            if occ == app + ret:
+                set out to out + [v]
+    return out
+
+action rewrite_appends(n: AstNode, plan: list) -> AstNode:
+    recursion bounded 256
+    if n.kind == "SET" and has_name(plan, n.name):
+        let rhs = child_at(n, 0)
+        if rhs.kind == "BIN" and rhs.name == "+":
+            let left = child_at(rhs, 0)
+            if left.kind == "IDENT" and left.name == n.name:
+                return make_node("APPEND_OWN", n.name, n.val_str, n.val_num, [child_at(rhs, 1)], n.line)
+    let kids = []
+    for each c in n.children:
+        set kids to kids + [rewrite_appends(c, plan)]
+    return make_node(n.kind, n.name, n.val_str, n.val_num, kids, n.line)
+
+action has_name(names: list, w: string) -> num:
+    recursion bounded 256
+    for each n in names:
+        if n == w:
+            return 1
+    return 0
+
+action collect_declared(n: AstNode, acc: list) -> list:
+    recursion bounded 256
+    let out = acc
+    if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH" or n.kind == "PARAM":
+        if n.name != "" and has_name(acc, n.name) == 0:
+            set out to out + [n.name]
+    for each c in n.children:
+        set out to collect_declared(c, out)
+    return out
+
+action relabel_telemetry(n: AstNode, declared: list) -> AstNode:
+    recursion bounded 256
+    if n.kind == "IDENT":
+        if is_telemetry(n.name) == 1 and has_name(declared, n.name) == 0:
+            return make_node("TELEMETRY", n.name, family_of_word(n.name), 0, [], n.line)
+        return n
+    let kids = []
+    for each c in n.children:
+        set kids to kids + [relabel_telemetry(c, declared)]
+    return make_node(n.kind, n.name, n.val_str, n.val_num, kids, n.line)
+
+# ── contract elision ───────────────────────────────────────────────────
+# A `requires` clause costs a branch per call. When every call site passes
+# constants that satisfy it, the branch can go -- the reference rule
+# (src/compiler.rs::requires_proved_everywhere), on the tree.
+
+action num_of_text(t: string) -> num:
+    recursion bounded 64
+    let i = 0
+    let n = length of t
+    let sign = 1
+    if n > 0 and (t[0] otherwise "?") == "-":
+        set sign to -1
+        set i to 1
+    let whole = 0
+    let seen_dot = 0
+    let scale = 1
+    while i < n bounded 64:
+        let c = t[i] otherwise "?"
+        if c == ".":
+            set seen_dot to 1
+        otherwise:
+            if c >= "0" and c <= "9":
+                let d = digit_value(c)
+                if seen_dot == 1:
+                    set scale to scale * 10
+                    set whole to whole + (d / scale otherwise 0)
+                otherwise:
+                    set whole to whole * 10 + d
+        set i to i + 1
+    return sign * whole
+
+action eval_const(n: AstNode, params: list, values: list) -> list:
+    recursion bounded 256
+    # [1, v] when this node is a constant under the bindings, else [0, 0].
+    if n.kind == "NUM":
+        return [1, num_of_text(n.val_str)]
+    if n.kind == "IDENT":
+        let i = 0
+        for each p in params:
+            if p == n.name and i < (length of values):
+                return [1, values[i] otherwise 0]
+            set i to i + 1
+        return [0, 0]
+    if n.kind == "BIN":
+        let l = eval_const(child_at(n, 0), params, values)
+        let r = eval_const(child_at(n, 1), params, values)
+        if (l[0] otherwise 0) == 0 or (r[0] otherwise 0) == 0:
+            return [0, 0]
+        let a = l[1] otherwise 0
+        let b = r[1] otherwise 0
+        if n.name == ">=":
+            if a >= b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == "<=":
+            if a <= b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == ">":
+            if a > b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == "<":
+            if a < b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == "==":
+            if a == b:
+                return [1, 1]
+            return [1, 0]
+        if n.name == "!=":
+            if a != b:
+                return [1, 1]
+            return [1, 0]
+        return [0, 0]
+    return [0, 0]
+
+action calls_to(n: AstNode, name: string, acc: list) -> list:
+    recursion bounded 256
+    let out = acc
+    if n.kind == "CALL" and n.name == name:
+        set out to out + [n.children]
+    for each c in n.children:
+        set out to calls_to(c, name, out)
+    return out
+
+action routine_param_names(params: AstNode) -> list:
+    recursion bounded 64
+    let out = []
+    for each p in params.children:
+        set out to out + [p.name]
+    return out
+
+action all_calls_proved(name: string, items: list, params: list, clauses: list) -> num:
+    recursion bounded 200
+    let sites = []
+    for each it in items:
+        set sites to calls_to(it, name, sites)
+    if (length of sites) == 0:
+        # Nothing in this program calls it; the host still might.
+        return 0
+    for each args in sites:
+        if (length of args) != (length of params):
+            return 0
+        let values = []
+        for each a in args:
+            let v = eval_const(a, [], [])
+            if (v[0] otherwise 0) == 0:
+                return 0
+            set values to values + [v[1] otherwise 0]
+        for each cl in clauses:
+            let c = eval_const(child_at(cl, 0), params, values)
+            if (c[0] otherwise 0) == 0 or (c[1] otherwise 0) == 0:
+                return 0
+    return 1
+
+action elidable_names(items: list) -> list:
+    recursion bounded 200
+    let out = []
+    for each it in items:
+        if it.kind == "ACTION" or it.kind == "CHECK" or it.kind == "FILTER":
+            let params = routine_param_names(child_at(it, 0))
+            let ctr = child_at(it, 1)
+            let clauses = []
+            for each c in ctr.children:
+                if c.kind == "CONTRACT" and c.name == "requires":
+                    set clauses to clauses + [c]
+            if (length of clauses) > 0:
+                if all_calls_proved(it.name, items, params, clauses) == 1:
+                    set out to out + [it.name]
+    return out
+
+# ── ensures ────────────────────────────────────────────────────────────
+# `ensures` speaks about `result`, so each return site binds the value first and
+# checks the clause against it. The rewrite happens on the tree, where the
+# routine's contracts and its return statements are both visible.
+
+
+action subst_result(n: AstNode) -> AstNode:
+    recursion bounded 256
+    if n.kind == "IDENT" and n.name == "result":
+        return make_node("IDENT", "_kz_ret", n.val_str, n.val_num, [], n.line)
+    let kids = []
+    for each c in n.children:
+        set kids to kids + [subst_result(c)]
+    return make_node(n.kind, n.name, n.val_str, n.val_num, kids, n.line)
+
+action returns_of(n: AstNode, acc: list) -> list:
+    recursion bounded 256
+    let out = acc
+    if n.kind == "RETURN" and (length of n.children) > 0:
+        set out to out + [child_at(n, 0)]
+    for each c in n.children:
+        set out to returns_of(c, out)
+    return out
+
+action ensures_proved(clauses: list, body: AstNode) -> num:
+    recursion bounded 200
+    # An ensures clause is elidable when every return value is a literal that
+    # satisfies it: no branch is needed for a proof already in the tree.
+    if (length of clauses) == 0:
+        return 1
+    let sites = returns_of(body, [])
+    if (length of sites) == 0:
+        return 1
+    for each r in sites:
+        let v = eval_const(r, [], [])
+        if (v[0] otherwise 0) == 0:
+            return 0
+        let value = v[1] otherwise 0
+        for each cl in clauses:
+            let c = eval_const(cl, ["_kz_ret"], [value])
+            if (c[0] otherwise 0) == 0 or (c[1] otherwise 0) == 0:
+                return 0
+    return 1
+
+action drop_proved_ensures(contracts: AstNode, body: AstNode) -> AstNode:
+    recursion bounded 64
+    let clauses = []
+    for each c in contracts.children:
+        if c.kind == "CONTRACT" and c.name == "ensures":
+            set clauses to clauses + [subst_result(child_at(c, 0))]
+    if ensures_proved(clauses, body) == 0:
+        return contracts
+    let kept = []
+    for each c in contracts.children:
+        let proven = 0
+        if c.kind == "CONTRACT" and c.name == "ensures":
+            set proven to 1
+        if proven == 0:
+            set kept to kept + [c]
+    return make_node("CONTRACTS", contracts.name, contracts.val_str, contracts.val_num, kept, contracts.line)
+
+action ensures_clauses(contracts: AstNode) -> list:
+    recursion bounded 64
+    let out = []
+    for each c in contracts.children:
+        if c.kind == "CONTRACT" and c.name == "ensures":
+            set out to out + [subst_result(child_at(c, 0))]
+    return out
+
+action rewrite_returns(n: AstNode, clauses: list) -> AstNode:
+    recursion bounded 256
+    if n.kind == "RETURN" and (length of clauses) > 0 and (length of n.children) > 0:
+        let kids = [child_at(n, 0)]
+        for each cl in clauses:
+            set kids to kids + [cl]
+        return make_node("RETURN_CHECKED", n.name, n.val_str, n.val_num, kids, n.line)
+    let kids = []
+    for each c in n.children:
+        set kids to kids + [rewrite_returns(c, clauses)]
+    return make_node(n.kind, n.name, n.val_str, n.val_num, kids, n.line)
+
+action drop_proved_requires(contracts: AstNode, name: string, elided: list) -> AstNode:
+    recursion bounded 64
+    # A routine whose every call site passes constants satisfying its requires
+    # clauses needs no entry branch at all.
+    if has_name(elided, name) == 0:
+        return contracts
+    let kept = []
+    for each c in contracts.children:
+        let proven = 0
+        if c.kind == "CONTRACT" and c.name == "requires":
+            set proven to 1
+        if proven == 0:
+            set kept to kept + [c]
+    return make_node("CONTRACTS", contracts.name, contracts.val_str, contracts.val_num, kept, contracts.line)
+
+action mark_item(item: AstNode, elided: list) -> AstNode:
+    recursion bounded 200
+    if item.kind == "WHEN" or item.kind == "EVERY":
+        let declared = collect_declared(child_at(item, 1), [])
+        let cond = relabel_telemetry(child_at(item, 0), declared)
+        let body = relabel_telemetry(child_at(item, 1), declared)
+        return make_node(item.kind, item.name, item.val_str, item.val_num, [cond, body], item.line)
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+        let params = child_at(item, 0)
+        let declared = collect_declared(params, [])
+        set declared to collect_declared(child_at(item, 2), declared)
+        let raw_contracts = drop_proved_requires(child_at(item, 1), item.name, elided)
+        let contracts = relabel_telemetry(raw_contracts, declared)
+        let checked = rewrite_returns(child_at(item, 2), ensures_clauses(drop_proved_ensures(raw_contracts, child_at(item, 2))))
+        let plan = append_plan(checked)
+        set checked to rewrite_appends(checked, plan)
+        let body = relabel_telemetry(checked, declared)
+        return make_node(item.kind, item.name, item.val_str, item.val_num, [params, contracts, body], item.line)
+    return item
+
 action emit_c_program(prog: AstNode):
     recursion bounded 200
-    let items = program_items(prog)
+    # Resolve bare telemetry words once, with each routine's declarations in hand.
+    let raw_items = program_items(prog)
+    let elided = elidable_names(raw_items)
+    let items = []
+    for each it in raw_items:
+        set items to items + [mark_item(it, elided)]
     let out = get_c_runtime_header()
 
     # 1. Forward declarations.
@@ -893,7 +1552,7 @@ action emit_c_program(prog: AstNode):
         otherwise:
             if is_routine(item) == 1:
                 let params_node = child_at(item, 0)
-                set out to out + "static KzValue kz_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
+                set out to out + "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
 
     # 2. Record constructors.
     set out to out + "\n/* --- Record Constructors --- */\n"

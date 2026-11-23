@@ -39,22 +39,23 @@ if [ "$DIRTY" -gt 0 ] && [ "$ALLOW_DIRTY" -ne 1 ]; then
 fi
 echo
 
-echo "== tests (all features) =="
-cargo test --all-features
+echo "== bootstrap and fixed point (no Rust) =="
+bash scripts/kaze-bootstrap-verify.sh
 
-echo "== clippy =="
-cargo clippy --all-targets --all-features -- -D warnings
+echo "== verdict parity with the frozen reference =="
+bash scripts/golden-check.sh
 
-echo "== build =="
-cargo build --release --bin kaze --bin kaze-lsp
-KAZE_SHA="$(shasum -a 256 target/release/kaze | cut -d' ' -f1)"
-LSP_SHA="$(shasum -a 256 target/release/kaze-lsp | cut -d' ' -f1)"
+echo "== bytecode writer against its frozen golden =="
+KAZE_BIN="$ROOT/bin/kaze" python3 scripts/bytecode-check.py
 
-echo "== selftest =="
-target/release/kaze selftest
+echo "== conformance harness, Rust-free =="
+bash scripts/self-test.sh
 
 echo "== format =="
 scripts/fmt-check.sh
+
+echo "== single-command build and release footprint =="
+make -C "$ROOT/.." kaze-build kaze-core | tail -4
 
 echo "== editor extension =="
 node --check editors/vscode/extension.js
@@ -79,7 +80,9 @@ if [ "$DIRTY" -gt 0 ]; then
     echo "certify: WARNING — development receipt: $DIRTY uncommitted path(s), tree $TREE_FP."
     echo "certify: this is not release evidence until the tree is committed."
 fi
-echo "certify: PASS (software gates; kaze sha256 $KAZE_SHA; kaze-lsp sha256 $LSP_SHA)"
+DIST_SHA=$( (shasum -a 256 "$ROOT/dist/kaze.c" | cut -d' ' -f1) 2>/dev/null || echo unknown)
+CORE_SHA=$( (shasum -a 256 "$ROOT/bin/kaze-core" 2>/dev/null | cut -d' ' -f1) || echo 'not built')
+echo "certify: PASS (software gates; dist/kaze.c sha256 $DIST_SHA; kaze-core sha256 $CORE_SHA)"
 echo "certify: SITL and Pi 5 soak remain HARDWARE-DEPENDENT:"
 echo "  scripts/sitl/eight_waypoints.sh"
 echo "  KAZE_DEVICE=... scripts/pi/soak.sh"

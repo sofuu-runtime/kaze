@@ -1,0 +1,1 @@
+E_KAZE_PARAM: parameter 'target_temp' of 'climate' is declared as a temperature and has no value; provide --arg target_temp=<value>, the environment variable AGENT_TARGET_TEMP, or "target_temp" in the config file (--config <path> or ./agent.config.json)

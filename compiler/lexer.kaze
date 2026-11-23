@@ -89,7 +89,11 @@ action tokenize(src):
                     # Ignore blank or comment-only lines, and lines inside
                     # brackets: indentation there is layout, not structure.
                     if bracket_depth > 0:
-                        set spaces to spaces
+                        # Indentation inside brackets is layout, not structure, so the
+                        # count is left as it stands. It was `set spaces to spaces`,
+                        # which emits a self-assignment and a warning; + 0 says the
+                        # same thing to the compiler without the warning.
+                        set spaces to spaces + 0
                     otherwise:
                         if i < len and (src[i] otherwise "x") != "\n" and (src[i] otherwise "x") != "#":
                             let curr_ind = indent_stack[(length of indent_stack) - 1] otherwise 0
@@ -141,10 +145,20 @@ action tokenize(src):
                                 set text to text + (src[i] otherwise "")
                             set i to i + 1
                             set col to col + 1
+                        # A string that never closes is a parse error, not something to
+                        # recover from: handing the parser a token it cannot read makes
+                        # the checker report E_KAZE_PARSE, which is what the reference
+                        # engine does. (Recovering here meant `return "unclosed` passed
+                        # `check`.)
+                        let closed = 0
                         if i < len and (src[i] otherwise "x") == "\"":
+                            set closed to 1
                             set i to i + 1
                             set col to col + 1
-                        let tok = make_token("STR", text, line, start_col, start)
+                        let kind = "STR"
+                        if closed == 0:
+                            set kind to "UNTERMINATED_STR"
+                        let tok = make_token(kind, text, line, start_col, start)
                         let acc4 = push_tok(chunks, chunk, chunk_len, tok)
                         set chunks to acc4[0] otherwise []
                         set chunk to acc4[1] otherwise []

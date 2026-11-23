@@ -1,0 +1,4 @@
+# expect: E_KAZE_MISSING_FALLBACK - the fallback guards the head, not its children
+action read_value(reading) -> num:
+    let v = (reading.value + 1) otherwise 0
+    return v

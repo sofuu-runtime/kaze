@@ -1,9 +1,10 @@
 /* kaze_rt.c — the Kaze C99 runtime substrate (roadmap Phase 1).
  *
  * Implementation notes that matter to a reader auditing this file:
- *   - No dynamic allocation except kaze_arena_init_heap. Containers take the
- *     arena they allocate from as a parameter, so a lowered program has one
- *     memory story, not two.
+ *   - No dynamic allocation except the arena's heap blocks. kaze_arena_init_heap
+ *     creates the first block and a growing kmalloc chains later ones through
+ *     the same single helper. Containers take the arena they allocate from as
+ *     a parameter, so a lowered program has one memory story, not two.
  *   - No abort(), no longjmp(), no exit() on a trap path. Traps are codes the
  *     embedder handles; the process keeps running with a documented fallback
  *     value (0, false, NULL).
@@ -24,8 +25,8 @@
 #ifndef KAZE_NO_HEAP
 /* Declared here rather than by including <stdlib.h>: the runtime's include
  * allowlist is deliberate (embedded targets frequently have no hosted stdlib),
- * and these two symbols are referenced only from kaze_arena_init_heap, which
- * KAZE_NO_HEAP removes entirely. */
+ * and these two symbols are referenced only from the arena block helpers,
+ * which KAZE_NO_HEAP removes entirely. */
 extern void *malloc(size_t size);
 extern void free(void *ptr);
 #endif
@@ -101,6 +102,8 @@ const char *kaze_code_name(kaze_code_t code)
         return "E_SAFETY_VIOLATION";
     case KAZE_ERR_BADARG:
         return "E_KAZE_BADARG";
+    case KAZE_ERR_TYPE:
+        return "E_KAZE_TYPE";
     default:
         return "E_KAZE_BADCODE";
     }
@@ -126,6 +129,11 @@ static void kaze_trap_int(kaze_code_t code, const char *what, kaze_int_t a, char
 /* Arena                                                                      */
 /* ------------------------------------------------------------------------- */
 
+/* A heap arena is a chain of blocks. Each block's header sits at the start of
+ * the malloc'd region and the usable bytes follow it, advanced to the 8-byte
+ * boundary the rest of the runtime promises. Every block goes through one
+ * allocation helper, so the runtime still has exactly one malloc call site;
+ * free() has one per link and is only reached from reset and release. */
 static size_t kaze_align_pad(size_t offset)
 {
     return (size_t)((KAZE_ALIGN - (offset % KAZE_ALIGN)) % KAZE_ALIGN);
@@ -154,12 +162,9 @@ void kaze_arena_init(kaze_arena_t *arena, void *buffer, size_t capacity)
         (void)kaze_trap(KAZE_ERR_BADARG, "kaze_arena_init: arena header is NULL");
         return;
     }
-    arena->base = NULL;
-    arena->cap = 0;
-    arena->offset = 0;
-    arena->failed = false;
-    arena->owned = false;
-    arena->raw = NULL;
+    /* Caller-owned storage: one fixed block, no chain, nothing to free later.
+     * Zero first so an uninitialised header never looks like an owned one. */
+    memset(arena, 0, sizeof *arena);
     if (buffer == NULL || capacity == 0) {
         return;
     }
@@ -176,52 +181,135 @@ void kaze_arena_init(kaze_arena_t *arena, void *buffer, size_t capacity)
 }
 
 #ifndef KAZE_NO_HEAP
+/* The runtime's one malloc call site. Every block, first or chained, is taken
+ * here so the "single allocation point" audit in scripts/rt-check.sh stays a
+ * one-line fact. */
+static void *kaze_heap_alloc(size_t bytes)
+{
+    return malloc(bytes);
+}
+
+/* One block with exactly capacity usable bytes, or NULL when the request is
+ * not representable or the host refused it. The caller reports E_KAZE_OOM. */
+static kaze_arena_block_t *kaze_arena_block_new(size_t capacity)
+{
+    size_t header = sizeof(kaze_arena_block_t);
+    size_t request;
+    kaze_arena_block_t *block;
+    uint8_t *raw;
+    size_t pad;
+
+    if (capacity == 0) {
+        capacity = 1; /* a zero-sized block could never serve an allocation */
+    }
+    /* header + up to 7 alignment bytes + capacity, without wrapping. */
+    if (capacity > (SIZE_MAX - header - (KAZE_ALIGN - 1u))) {
+        return NULL;
+    }
+    request = header + (KAZE_ALIGN - 1u) + capacity;
+    raw = (uint8_t *)kaze_heap_alloc(request);
+    if (raw == NULL) {
+        return NULL;
+    }
+    block = (kaze_arena_block_t *)raw;
+    pad = (size_t)((KAZE_ALIGN - (((uintptr_t)(raw + header)) % KAZE_ALIGN)) % KAZE_ALIGN);
+    block->next = NULL;
+    block->raw = raw;
+    block->data = raw + header + pad;
+    block->cap = capacity;
+    block->used = 0;
+    return block;
+}
+
+/* Size of the block to chain for a request of size bytes: twice the current
+ * block, capped, but never smaller than the request that must fit. Doubling is
+ * what keeps a compiler's hundreds of megabytes at a logarithmic number of
+ * blocks. The current block's capacity is the whole growth state, so reset
+ * restores the original hint by making the first block current again. */
+static size_t kaze_arena_growth_size(const kaze_arena_t *arena, size_t size)
+{
+    size_t limit = (size_t)KAZE_ARENA_BLOCK_MAX_BYTES;
+    size_t current = (arena->cur != NULL) ? arena->cur->cap : 0u;
+    size_t target;
+
+    if (limit < 1u) {
+        limit = 1u;
+    }
+    if (current >= limit || current > (SIZE_MAX / 2u)) {
+        target = limit;
+    } else {
+        target = current * 2u;
+        if (target > limit) {
+            target = limit;
+        }
+    }
+    if (target < 1u) {
+        target = 1u;
+    }
+    if (size > target) {
+        target = size; /* a dedicated block for an oversized request */
+    }
+    return target;
+}
+
+/* Chain a block that can serve size bytes and make it current. The previous
+ * block keeps its contents; nothing is freed, because pointers into it are
+ * still live until reset. */
+static void *kaze_arena_grow(kaze_arena_t *arena, size_t size)
+{
+    kaze_arena_block_t *block = kaze_arena_block_new(kaze_arena_growth_size(arena, size));
+
+    if (block == NULL) {
+        return NULL;
+    }
+    arena->cur->next = block;
+    arena->cur = block;
+    arena->base = block->data;
+    arena->cap = block->cap;
+    arena->offset = 0;
+    return arena->base;
+}
+
 bool kaze_arena_init_heap(kaze_arena_t *arena, size_t capacity)
 {
-    void *block;
-    size_t request;
+    kaze_arena_block_t *first;
 
     if (arena == NULL) {
         (void)kaze_trap(KAZE_ERR_BADARG, "kaze_arena_init_heap: arena header is NULL");
         return false;
     }
     memset(arena, 0, sizeof *arena);
-    if (capacity == 0) {
-        capacity = 1;
-    }
-    /* Up to 15 bytes of alignment headroom, so the arena can still promise
-     * exactly capacity usable bytes from its aligned base. */
-    if (capacity > (SIZE_MAX - 16u)) {
-        (void)kaze_trap(KAZE_ERR_OOM, "kaze_arena_init_heap: capacity is not representable");
-        return false;
-    }
-    request = capacity + 16u;
-    block = malloc(request);
-    if (block == NULL) {
+    first = kaze_arena_block_new(capacity);
+    if (first == NULL) {
         char buf[96];
         snprintf(buf, sizeof buf, "arena heap allocation of %llu bytes failed",
-                 (unsigned long long)request);
+                 (unsigned long long)capacity);
         (void)kaze_trap(KAZE_ERR_OOM, buf);
         return false;
     }
-    kaze_arena_init(arena, block, request);
-    if (arena->base == NULL) {
-        free(block);
-        return false;
-    }
-    arena->cap = capacity;
+    arena->base = first->data;
+    arena->cap = first->cap;
+    arena->offset = 0;
+    arena->failed = false;
     arena->owned = true;
-    arena->raw = block;
+    arena->raw = first->raw;
+    arena->first = first;
+    arena->cur = first;
     return true;
 }
 
 void kaze_arena_free(kaze_arena_t *arena)
 {
+    kaze_arena_block_t *block;
+
     if (arena == NULL) {
         return;
     }
-    if (arena->owned && arena->raw != NULL) {
-        free(arena->raw);
+    block = arena->first;
+    while (block != NULL) {
+        kaze_arena_block_t *next = block->next;
+        free(block->raw);
+        block = next;
     }
     memset(arena, 0, sizeof *arena);
 }
@@ -230,6 +318,7 @@ void kaze_arena_free(kaze_arena_t *arena)
 void *kmalloc(kaze_arena_t *arena, size_t size)
 {
     size_t pad;
+    size_t remaining;
     size_t start;
 
     if (arena == NULL || arena->base == NULL) {
@@ -239,21 +328,35 @@ void *kmalloc(kaze_arena_t *arena, size_t size)
     if (arena->offset > arena->cap) {
         return kaze_arena_oom(arena, size); /* defensive: only a corrupt header gets here */
     }
+    remaining = arena->cap - arena->offset;
     pad = kaze_align_pad(arena->offset);
-    if (pad > (arena->cap - arena->offset)) {
-        return kaze_arena_oom(arena, size);
-    }
     start = arena->offset + pad;
     if (size == 0) {
         /* A zero-size request consumes nothing and still yields a pointer the
-         * caller may compare or pass along. */
+         * caller may compare or pass along. It never triggers growth. */
+        if (pad > remaining) {
+            return kaze_arena_oom(arena, size);
+        }
         return arena->base + start;
     }
-    if (size > (arena->cap - start)) {
-        return kaze_arena_oom(arena, size);
+    if (pad <= remaining && size <= (remaining - pad)) {
+        arena->offset = start + size;
+        if (arena->cur != NULL) {
+            arena->cur->used = arena->offset;
+        }
+        return arena->base + start;
     }
-    arena->offset = start + size;
-    return arena->base + start;
+    /* The current block cannot serve this request. A heap arena chains another
+     * block (old blocks stay live); caller-owned storage has nowhere to grow
+     * and reports E_KAZE_OOM like it always did. */
+#ifndef KAZE_NO_HEAP
+    if (arena->owned && kaze_arena_grow(arena, size) != NULL) {
+        arena->offset = size; /* a new block's data is already 8-byte aligned */
+        arena->cur->used = size;
+        return arena->base;
+    }
+#endif
+    return kaze_arena_oom(arena, size);
 }
 
 void kaze_arena_reset(kaze_arena_t *arena)
@@ -261,8 +364,27 @@ void kaze_arena_reset(kaze_arena_t *arena)
     if (arena == NULL) {
         return;
     }
-    /* The bulk free. Capacity, ownership and the base pointer survive; only
-     * the run's live range (and the OOM flag that described it) goes. */
+#ifndef KAZE_NO_HEAP
+    if (arena->owned && arena->first != NULL) {
+        kaze_arena_block_t *block = arena->first->next;
+
+        while (block != NULL) {
+            kaze_arena_block_t *next = block->next;
+            free(block->raw);
+            block = next;
+        }
+        arena->first->next = NULL;
+        arena->first->used = 0;
+        arena->cur = arena->first;
+        arena->base = arena->first->data;
+        arena->cap = arena->first->cap;
+        arena->offset = 0;
+        arena->failed = false;
+        return;
+    }
+#endif
+    /* Caller-owned storage or an unbound header: the bulk free is a cursor
+     * move. Capacity, ownership and the base pointer survive. */
     arena->offset = 0;
     arena->failed = false;
 }
@@ -270,6 +392,7 @@ void kaze_arena_reset(kaze_arena_t *arena)
 bool kaze_arena_require(kaze_arena_t *arena, size_t size)
 {
     size_t pad;
+    size_t remaining;
 
     if (arena == NULL || arena->base == NULL) {
         (void)kaze_trap(KAZE_ERR_BADARG, "kaze_arena_require: arena is not bound to storage");
@@ -279,22 +402,68 @@ bool kaze_arena_require(kaze_arena_t *arena, size_t size)
         (void)kaze_arena_oom(arena, size);
         return false;
     }
+    remaining = arena->cap - arena->offset;
     pad = kaze_align_pad(arena->offset);
-    if (pad > (arena->cap - arena->offset) || size > (arena->cap - arena->offset - pad)) {
+    if (size == 0) {
+        if (pad <= remaining) {
+            return true;
+        }
         (void)kaze_arena_oom(arena, size);
         return false;
     }
-    return true;
+    if (pad <= remaining && size <= (remaining - pad)) {
+        return true;
+    }
+    /* A growable arena can back the plan with a new block, so reserve it now:
+     * true means the storage exists, not merely that it could be obtained. */
+#ifndef KAZE_NO_HEAP
+    if (arena->owned && kaze_arena_grow(arena, size) != NULL) {
+        return true;
+    }
+#endif
+    (void)kaze_arena_oom(arena, size);
+    return false;
 }
 
 size_t kaze_arena_used(const kaze_arena_t *arena)
 {
-    return (arena != NULL) ? arena->offset : 0;
+    const kaze_arena_block_t *block;
+    size_t total = 0;
+
+    if (arena == NULL) {
+        return 0;
+    }
+    if (!arena->owned) {
+        return arena->offset;
+    }
+    for (block = arena->first; block != NULL; block = block->next) {
+        size_t used = (block == arena->cur) ? arena->offset : block->used;
+        if (used > (SIZE_MAX - total)) {
+            return SIZE_MAX;
+        }
+        total += used;
+    }
+    return total;
 }
 
 size_t kaze_arena_capacity(const kaze_arena_t *arena)
 {
-    return (arena != NULL) ? arena->cap : 0;
+    const kaze_arena_block_t *block;
+    size_t total = 0;
+
+    if (arena == NULL) {
+        return 0;
+    }
+    if (!arena->owned) {
+        return arena->cap;
+    }
+    for (block = arena->first; block != NULL; block = block->next) {
+        if (block->cap > (SIZE_MAX - total)) {
+            return SIZE_MAX;
+        }
+        total += block->cap;
+    }
+    return total;
 }
 
 bool kaze_arena_failed(const kaze_arena_t *arena)
