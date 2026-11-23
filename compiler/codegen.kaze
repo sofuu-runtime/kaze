@@ -9,7 +9,8 @@ action get_c_runtime_header():
     set h to h + "#include <stdlib.h>\n"
     set h to h + "#include <string.h>\n"
     set h to h + "#include <stdio.h>\n"
-    set h to h + "#include <math.h>\n\n"
+    set h to h + "#include <math.h>\n"
+    set h to h + "#pragma STDC FP_CONTRACT OFF\n\n"
     set h to h + "#if !defined(_WIN32)\n"
     set h to h + "#include <unistd.h>\n"
     set h to h + "#else\n"
@@ -17,18 +18,21 @@ action get_c_runtime_header():
     set h to h + "#define isatty _isatty\n"
     set h to h + "#define fileno _fileno\n"
     set h to h + "#endif\n\n"
-    set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD } KzValKind;\n"
+    set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD, KZ_VAL_POINT } KzValKind;\n"
     set h to h + "struct KzValue;\n"
     set h to h + "typedef struct { size_t len; size_t cap; struct KzValue* items; } KzList;\n"
     set h to h + "typedef struct { const char* type_name; size_t field_count; const char** keys; struct KzValue* values; } KzRecord;\n"
+    set h to h + "typedef struct { double x, y, z; } KzPoint;\n"
     set h to h + "typedef struct KzValue {\n"
     set h to h + "    KzValKind kind;\n"
-    set h to h + "    union { bool boolean; double number; const char* str; KzList* list; KzRecord* record; } as;\n"
+    set h to h + "    union { bool boolean; double number; const char* str; KzList* list; KzRecord* record; KzPoint point; } as;\n"
     set h to h + "} KzValue;\n\n"
     set h to h + "static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"
     set h to h + "static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"
     set h to h + "static inline KzValue kz_num(double n) { KzValue v; v.kind = KZ_VAL_NUM; v.as.number = n; return v; }\n"
     set h to h + "static inline KzValue kz_str(const char* s) { KzValue v; v.kind = KZ_VAL_STR; v.as.str = s ? s : \"\"; return v; }\n"
+    set h to h + "static inline KzValue kz_point(KzValue x, KzValue y, KzValue z);\n"
+    set h to h + "static inline double kz_pt(KzValue v, int i);\n"
     set h to h + "static inline bool kz_is_truthy(KzValue v) {\n"
     set h to h + "    switch (v.kind) {\n"
     set h to h + "        case KZ_VAL_BOOL: return v.as.boolean;\n"
@@ -57,16 +61,29 @@ action get_c_runtime_header():
     set h to h + "    out[la + lb] = '\\0';\n"
     set h to h + "    return out;\n"
     set h to h + "}\n\n"
+    set h to h + "static inline void kz_format_number(char* buf, size_t cap, double v) {\n"
+    set h to h + "    if (isnan(v)) { snprintf(buf, cap, \"NaN\"); return; }\n"
+    set h to h + "    if (isinf(v)) { snprintf(buf, cap, v > 0 ? \"inf\" : \"-inf\"); return; }\n"
+    set h to h + "    if (floor(v) == v && fabs(v) < 1e17) { snprintf(buf, cap, \"%.0f\", v); return; }\n"
+    set h to h + "    for (int prec = 15; prec <= 17; prec++) {\n"
+    set h to h + "        snprintf(buf, cap, \"%.*g\", prec, v);\n"
+    set h to h + "        if (strtod(buf, NULL) == v) return;\n"
+    set h to h + "    }\n"
+    set h to h + "}\n\n"
     set h to h + "static inline const char* kz_to_string(KzValue v) {\n"
+    set h to h + "    if (v.kind == KZ_VAL_POINT) {\n"
+    set h to h + "        char pbuf[192], b1[40], b2[40], b3[40];\n"
+    set h to h + "        kz_format_number(b1, sizeof(b1), v.as.point.x);\n"
+    set h to h + "        kz_format_number(b2, sizeof(b2), v.as.point.y);\n"
+    set h to h + "        kz_format_number(b3, sizeof(b3), v.as.point.z);\n"
+    set h to h + "        snprintf(pbuf, sizeof(pbuf), \"(%s, %s, %s)\", b1, b2, b3);\n"
+    set h to h + "        return kz_str_alloc_copy(pbuf);\n"
+    set h to h + "    }\n"
     set h to h + "    if (v.kind == KZ_VAL_STR) return v.as.str ? v.as.str : \"\";\n"
     set h to h + "    if (v.kind == KZ_VAL_BOOL) return v.as.boolean ? \"true\" : \"false\";\n"
     set h to h + "    if (v.kind == KZ_VAL_NUM) {\n"
     set h to h + "        char buf[64];\n"
-    set h to h + "        if (floor(v.as.number) == v.as.number && !isnan(v.as.number) && !isinf(v.as.number)) {\n"
-    set h to h + "            snprintf(buf, sizeof(buf), \"%.0f\", v.as.number);\n"
-    set h to h + "        } else {\n"
-    set h to h + "            snprintf(buf, sizeof(buf), \"%g\", v.as.number);\n"
-    set h to h + "        }\n"
+    set h to h + "        kz_format_number(buf, sizeof(buf), v.as.number);\n"
     set h to h + "        return kz_str_alloc_copy(buf);\n"
     set h to h + "    }\n"
     set h to h + "    if (v.kind == KZ_VAL_NIL) return \"nil\";\n"
@@ -118,8 +135,15 @@ action get_c_runtime_header():
     set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST) return kz_list_concat(a, b);\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n"
-    set h to h + "static inline KzValue kz_sub(KzValue a, KzValue b) { return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) - ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)); }\n"
-    set h to h + "static inline KzValue kz_mul(KzValue a, KzValue b) { return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) * ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)); }\n"
+    set h to h + "static inline KzValue kz_sub(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_POINT) return kz_point(kz_num(a.as.point.x - b.as.point.x), kz_num(a.as.point.y - b.as.point.y), kz_num(a.as.point.z - b.as.point.z));\n"
+    set h to h + "    return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) - ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0));\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_mul(KzValue a, KzValue b) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_NUM) return kz_point(kz_num(a.as.point.x * b.as.number), kz_num(a.as.point.y * b.as.number), kz_num(a.as.point.z * b.as.number));\n"
+    set h to h + "    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_POINT) return kz_mul(b, a);\n"
+    set h to h + "    return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) * ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0));\n"
+    set h to h + "}\n"
     set h to h + "static inline KzValue kz_div(KzValue a, KzValue b) { double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0; return kz_num(d == 0.0 ? 0.0 : (((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) / d)); }\n"
     set h to h + "static inline KzValue kz_mod(KzValue a, KzValue b) { double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0; return kz_num(d == 0.0 ? 0.0 : fmod(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0), d)); }\n"
     set h to h + "static inline KzValue kz_not(KzValue a) { return kz_bool(!kz_is_truthy(a)); }\n\n"
@@ -158,6 +182,7 @@ action get_c_runtime_header():
     set h to h + "static inline KzValue kz_and(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) && kz_is_truthy(b)); }\n"
     set h to h + "static inline KzValue kz_or(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) || kz_is_truthy(b)); }\n\n"
     set h to h + "static inline KzValue kz_len(KzValue a) {\n"
+    set h to h + "    if (a.kind == KZ_VAL_POINT) return kz_num(sqrt(a.as.point.x * a.as.point.x + a.as.point.y * a.as.point.y + a.as.point.z * a.as.point.z));\n"
     set h to h + "    if (a.kind == KZ_VAL_STR && a.as.str) return kz_num((double)strlen(a.as.str));\n"
     set h to h + "    if (a.kind == KZ_VAL_LIST && a.as.list) return kz_num((double)a.as.list->len);\n"
     set h to h + "    return kz_num(0.0);\n"
@@ -241,6 +266,99 @@ action get_c_runtime_header():
     set h to h + "    if (index == 0 && !isatty(fileno(stdin))) return kz_read_stream(stdin);\n"
     set h to h + "    return kz_str(\"\");\n"
     set h to h + "}\n\n"
+    set h to h + "\n"
+    set h to h + "static inline KzValue kz_fb_div(KzValue a, KzValue b, KzValue fb) {\n"
+    set h to h + "    double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
+    set h to h + "    if (d == 0.0) return fb;\n"
+    set h to h + "    return kz_div(a, b);\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_fb_mod(KzValue a, KzValue b, KzValue fb) {\n"
+    set h to h + "    double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
+    set h to h + "    if (d == 0.0) return fb;\n"
+    set h to h + "    return kz_mod(a, b);\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_fb_index(KzValue coll, KzValue idx, KzValue fb) {\n"
+    set h to h + "    double d = (idx.kind == KZ_VAL_NUM) ? idx.as.number : -1.0;\n"
+    set h to h + "    if (d < 0.0) return fb;\n"
+    set h to h + "    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"
+    set h to h + "        if ((size_t)d >= coll.as.list->len) return fb;\n"
+    set h to h + "    } else if (coll.kind == KZ_VAL_STR && coll.as.str) {\n"
+    set h to h + "        if ((size_t)d >= strlen(coll.as.str)) return fb;\n"
+    set h to h + "    }\n"
+    set h to h + "    return kz_index(coll, idx);\n"
+    set h to h + "}\n"
+    set h to h + "static inline void kz_record_set(KzValue* vals, const char** keys, size_t count, size_t pos, const char* key, KzValue value) {\n"
+    set h to h + "    if (key != NULL) {\n"
+    set h to h + "        for (size_t j = 0; j < count; j++) {\n"
+    set h to h + "            if (strcmp(keys[j], key) == 0) { vals[j] = value; return; }\n"
+    set h to h + "        }\n"
+    set h to h + "        return;\n"
+    set h to h + "    }\n"
+    set h to h + "    if (pos < count) vals[pos] = value;\n"
+    set h to h + "}\n"
+    set h to h + "static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"
+    set h to h + "static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"
+    set h to h + "static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
+    set h to h + "static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
+    set h to h + "static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
+    set h to h + "static inline KzValue kz_math_to_radians(KzValue a) { return kz_num(kz_to_num(a) * 0.017453292519943295); }\n"
+    set h to h + "static inline KzValue kz_math_to_degrees(KzValue a) { return kz_num(kz_to_num(a) * 57.29577951308232); }\n"
+    set h to h + "static inline KzValue kz_point(KzValue x, KzValue y, KzValue z) {\n"
+    set h to h + "    KzValue v; v.kind = KZ_VAL_POINT;\n"
+    set h to h + "    v.as.point.x = (x.kind == KZ_VAL_NUM) ? x.as.number : 0.0;\n"
+    set h to h + "    v.as.point.y = (y.kind == KZ_VAL_NUM) ? y.as.number : 0.0;\n"
+    set h to h + "    v.as.point.z = (z.kind == KZ_VAL_NUM) ? z.as.number : 0.0;\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "static inline double kz_pt(KzValue v, int i) {\n"
+    set h to h + "    if (v.kind != KZ_VAL_POINT) return 0.0;\n"
+    set h to h + "    return i == 0 ? v.as.point.x : (i == 1 ? v.as.point.y : v.as.point.z);\n"
+    set h to h + "}\n"
+    set h to h + "static inline double kz_list_num(KzValue v, size_t i) {\n"
+    set h to h + "    if (v.kind == KZ_VAL_LIST && v.as.list && i < v.as.list->len) return kz_to_num(v.as.list->items[i]);\n"
+    set h to h + "    return 0.0;\n"
+    set h to h + "}\n"
+    set h to h + "#define KZ_EARTH_RADIUS_M 6371008.8\n"
+    set h to h + "static inline double kz_geo_rad(double d) { return d * (3.14159265358979323846 / 180.0); }\n"
+    set h to h + "static inline double kz_geo_deg(double r) { return r * (180.0 / 3.14159265358979323846); }\n"
+    set h to h + "static inline double kz_geo_norm(double d) { double m = fmod(d, 360.0); if (m < 0.0) m += 360.0; return m; }\n"
+    set h to h + "static inline double kz_geo_haversine(double alat, double alon, double blat, double blon) {\n"
+    set h to h + "    double lat1 = kz_geo_rad(alat), lon1 = kz_geo_rad(alon);\n"
+    set h to h + "    double lat2 = kz_geo_rad(blat), lon2 = kz_geo_rad(blon);\n"
+    set h to h + "    double dlat = lat2 - lat1, dlon = lon2 - lon1;\n"
+    set h to h + "    double s1 = sin(dlat / 2.0), s2 = sin(dlon / 2.0);\n"
+    set h to h + "    double hv = s1 * s1 + cos(lat1) * cos(lat2) * s2 * s2;\n"
+    set h to h + "    if (hv > 1.0) hv = 1.0;\n"
+    set h to h + "    return 2.0 * KZ_EARTH_RADIUS_M * asin(sqrt(hv));\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_geo_distance(KzValue a, KzValue b) {\n"
+    set h to h + "    return kz_num(kz_geo_haversine(kz_pt(a, 0), kz_pt(a, 1), kz_pt(b, 0), kz_pt(b, 1)));\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_geo_slant_distance(KzValue a, KzValue b) {\n"
+    set h to h + "    double ground = kz_geo_haversine(kz_pt(a, 0), kz_pt(a, 1), kz_pt(b, 0), kz_pt(b, 1));\n"
+    set h to h + "    double dz = kz_pt(b, 2) - kz_pt(a, 2);\n"
+    set h to h + "    return kz_num(sqrt(ground * ground + dz * dz));\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_geo_bearing_from(KzValue a, KzValue b) {\n"
+    set h to h + "    double lat1 = kz_geo_rad(kz_pt(a, 0)), lat2 = kz_geo_rad(kz_pt(b, 0));\n"
+    set h to h + "    double dlon = kz_geo_rad(kz_pt(b, 1) - kz_pt(a, 1));\n"
+    set h to h + "    double y = sin(dlon) * cos(lat2);\n"
+    set h to h + "    double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon);\n"
+    set h to h + "    return kz_num(kz_geo_norm(kz_geo_deg(atan2(y, x))));\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_geo_bearing_of(KzValue p) {\n"
+    set h to h + "    return kz_num(kz_geo_norm(kz_geo_deg(atan2(kz_pt(p, 0), kz_pt(p, 1)))));\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_unavailable(const char* what) {\n"
+    set h to h + "    fprintf(stderr, \"E_KAZE_UNSUPPORTED: %s is not lowered by the pure-Kaze C emitter\\n\", what);\n"
+    set h to h + "    return kz_nil();\n"
+    set h to h + "}\n"
+    set h to h + "static inline KzValue kz_cap_call(const char* recv, const char* op, int n, KzValue* args) {\n"
+    set h to h + "    (void)n; (void)args;\n"
+    set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", recv, op);\n"
+    set h to h + "    exit(70);\n"
+    set h to h + "}\n"
+    set h to h + "static inline void kz_builtin_alert(KzValue msg) { fprintf(stderr, \"[alert] %s\\n\", kz_to_string(msg)); }\n"
     return h
 
 action sanitize_c_id(name):
@@ -252,8 +370,8 @@ action escape_c_str(s):
     let res = "\""
     let len = length of s
     let i = 0
-    while i < len:
-        let c = s[i]
+    while i < len bounded 1000000:
+        let c = s[i] otherwise "x"
         if c == "\\":
             set res to res + "\\\\"
         otherwise:
@@ -271,298 +389,529 @@ action escape_c_str(s):
     set res to res + "\""
     return res
 
-action emit_c_expr(node):
+# ── name helpers ────────────────────────────────────────────────────────
+
+action c_has_dot(name):
+    let len = length of name
+    let i = 0
+    let found = 0
+    while i < len bounded 1000:
+        if (name[i] otherwise "x") == ".":
+            set found to 1
+        set i to i + 1
+    return found
+
+# The part before the first dot: a capability family, or a plain name.
+action name_head(name):
+    let len = length of name
+    let i = 0
+    let out = ""
+    let done = 0
+    while i < len and done == 0 bounded 1000:
+        let c = name[i] otherwise "x"
+        if c == ".":
+            set done to 1
+        otherwise:
+            set out to out + c
+        set i to i + 1
+    return out
+
+# The part after the first dot: a capability operation.
+action name_tail(name):
+    let len = length of name
+    let i = 0
+    let out = ""
+    let seen = 0
+    while i < len bounded 1000:
+        let c = name[i] otherwise "x"
+        if seen == 1:
+            set out to out + c
+        if c == "." and seen == 0:
+            set seen to 1
+        set i to i + 1
+    return out
+
+# A capitalised call is a record constructor: Token(..), AstNode(..).
+action is_record_name(name):
+    let len = length of name
+    if len == 0:
+        return 0
+    let c = name[0] otherwise "?"
+    if c >= "A" and c <= "Z":
+        return 1
+    return 0
+
+# ── expressions ─────────────────────────────────────────────────────────
+
+action emit_bin_op(op, l, r):
+    if op == "+":
+        return "kz_add(" + l + ", " + r + ")"
+    if op == "-":
+        return "kz_sub(" + l + ", " + r + ")"
+    if op == "*":
+        return "kz_mul(" + l + ", " + r + ")"
+    if op == "/":
+        return "kz_div(" + l + ", " + r + ")"
+    if op == "%":
+        return "kz_mod(" + l + ", " + r + ")"
+    if op == "==":
+        return "kz_eq(" + l + ", " + r + ")"
+    if op == "!=":
+        return "kz_ne(" + l + ", " + r + ")"
+    if op == "<":
+        return "kz_lt(" + l + ", " + r + ")"
+    if op == "<=":
+        return "kz_le(" + l + ", " + r + ")"
+    if op == ">":
+        return "kz_gt(" + l + ", " + r + ")"
+    if op == ">=":
+        return "kz_ge(" + l + ", " + r + ")"
+    if op == "and":
+        return "kz_and(" + l + ", " + r + ")"
+    if op == "or":
+        return "kz_or(" + l + ", " + r + ")"
+    return "kz_nil()"
+
+# An inline fallback. Division, modulo and indexing lower to the phase 2
+# runtime helpers, which take the fallback value eagerly so the operand is
+# evaluated exactly once. Any other fallback (a capability read) has no native
+# failure path, so the inner expression is emitted as it is.
+action emit_c_fallback(node: AstNode):
+    recursion bounded 200
+    ensures length of result >= 0
+    let inner = child_at(node, 0)
+    let fb = child_at(node, 1)
+    let fb_s = emit_c_expr(fb)
+    if inner.kind == "BIN":
+        if inner.name == "/":
+            return "kz_fb_div(" + emit_c_expr(child_at(inner, 0)) + ", " + emit_c_expr(child_at(inner, 1)) + ", " + fb_s + ")"
+        if inner.name == "%":
+            return "kz_fb_mod(" + emit_c_expr(child_at(inner, 0)) + ", " + emit_c_expr(child_at(inner, 1)) + ", " + fb_s + ")"
+    if inner.kind == "INDEX":
+        return "kz_fb_index(" + emit_c_expr(child_at(inner, 0)) + ", " + emit_c_expr(child_at(inner, 1)) + ", " + fb_s + ")"
+    return emit_c_expr(inner)
+
+action emit_c_args(args):
+    recursion bounded 200
+    let out = ""
+    let first = 1
+    for each a in args:
+        if first == 0:
+            set out to out + ", "
+        if a.kind == "NAMED_ARG":
+            set out to out + emit_c_expr(child_at(a, 0))
+        otherwise:
+            set out to out + emit_c_expr(a)
+        set first to 0
+    return out
+
+# The key table a record constructor reads: the field name for a named
+# argument, NULL for a positional one.
+action emit_c_keys(args):
+    recursion bounded 200
+    let out = ""
+    let first = 1
+    for each a in args:
+        if first == 0:
+            set out to out + ", "
+        if a.kind == "NAMED_ARG":
+            set out to out + escape_c_str(a.name)
+        otherwise:
+            set out to out + "NULL"
+        set first to 0
+    return out
+
+action nth_arg(args, n):
+    recursion bounded 200
+    if (length of args) <= n:
+        return "kz_nil()"
+    let holder = make_node("ARGS", "", "", 0, args, 0)
+    let a = child_at(holder, n)
+    if a.kind == "NAMED_ARG":
+        return emit_c_expr(child_at(a, 0))
+    return emit_c_expr(a)
+
+action two_args(args):
+    recursion bounded 200
+    return nth_arg(args, 0) + ", " + nth_arg(args, 1)
+
+action emit_c_call(node: AstNode):
+    recursion bounded 200
+    let name = node.name
+    let args = node.children
+    let cnt = length of args
+    let arg_str = emit_c_args(args)
+
+    # 1. Record construction.
+    if is_record_name(name) == 1:
+        if cnt == 0:
+            return "kz_record_new_" + sanitize_c_id(name) + "(0, NULL, NULL)"
+        return "kz_record_new_" + sanitize_c_id(name) + "(" + cnt + ", (KzValue[]){ " + arg_str + " }, (const char*[]){ " + emit_c_keys(args) + " })"
+
+    # 2. Effects and geometry expressed as family.operation.
+    if c_has_dot(name) == 1:
+        let head = name_head(name)
+        let tail = name_tail(name)
+        if head == "log":
+            return "kz_builtin_log(" + nth_arg(args, 0) + ")"
+        if head == "alert":
+            return "kz_builtin_alert(" + nth_arg(args, 0) + ")"
+        if head == "geo":
+            if tail == "distance":
+                return "kz_geo_distance(" + two_args(args) + ")"
+            if tail == "slant_distance":
+                return "kz_geo_slant_distance(" + two_args(args) + ")"
+            if tail == "bearing_from":
+                return "kz_geo_bearing_from(" + two_args(args) + ")"
+            if tail == "bearing_of":
+                return "kz_geo_bearing_of(" + nth_arg(args, 0) + ")"
+        return "kz_cap_call(" + escape_c_str(head) + ", " + escape_c_str(tail) + ", " + cnt + ", (KzValue[]){ " + arg_str + " })"
+
+    # 3. Pure builtins.
+    if name == "link_lost":
+        return "kz_bool(false)"
+    if name == "sin":
+        return "kz_math_sin(" + nth_arg(args, 0) + ")"
+    if name == "cos":
+        return "kz_math_cos(" + nth_arg(args, 0) + ")"
+    if name == "sqrt":
+        return "kz_math_sqrt(" + nth_arg(args, 0) + ")"
+    if name == "atan2":
+        return "kz_math_atan2(" + two_args(args) + ")"
+    if name == "vector":
+        return "kz_point(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ", " + nth_arg(args, 2) + ")"
+    if name == "min" or name == "max" or name == "abs" or name == "floor" or name == "ceil" or name == "round":
+        return "kz_unavailable(" + escape_c_str(name) + ")"
+
+    # 4. A routine written in this program.
+    return "kz_fn_" + sanitize_c_id(name) + "(" + arg_str + ")"
+
+action emit_c_expr(node: AstNode):
+    recursion bounded 200
     let k = node.kind
 
     if k == "NUM":
-        return "kz_num(" + node.val_num + ")"
-
+        # An angle literal is folded to radians on the way out, the same
+        # lowering the reference engine applies, so sin/cos agree.
+        if node.name == "degrees":
+            return "kz_math_to_radians(kz_num(" + node.val_str + "))"
+        return "kz_num(" + node.val_str + ")"
     if k == "STR":
         return "kz_str(" + escape_c_str(node.val_str) + ")"
-
     if k == "BOOL":
         return "kz_bool(" + node.val_str + ")"
-
     if k == "IDENT":
         return sanitize_c_id(node.name)
-
     if k == "LEN":
-        let inner = node.children[0]
-        return "kz_len(" + emit_c_expr(inner) + ")"
-
+        return "kz_len(" + emit_c_expr(child_at(node, 0)) + ")"
     if k == "FIELD":
-        let base = node.children[0]
-        return "kz_get_field(" + emit_c_expr(base) + ", \"" + node.name + "\")"
-
+        return "kz_get_field(" + emit_c_expr(child_at(node, 0)) + ", " + escape_c_str(node.name) + ")"
     if k == "INDEX":
-        let coll = node.children[0]
-        let idx = node.children[1]
-        return "kz_index(" + emit_c_expr(coll) + ", " + emit_c_expr(idx) + ")"
-
+        return "kz_index(" + emit_c_expr(child_at(node, 0)) + ", " + emit_c_expr(child_at(node, 1)) + ")"
     if k == "BIN":
-        let left = node.children[0]
-        let right = node.children[1]
-        let op = node.name
-        if op == "+":
-            return "kz_add(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "-":
-            return "kz_sub(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "*":
-            return "kz_mul(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "/":
-            return "kz_div(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "%":
-            return "kz_mod(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "==":
-            return "kz_eq(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "!=":
-            return "kz_ne(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "<":
-            return "kz_lt(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "<=":
-            return "kz_le(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == ">":
-            return "kz_gt(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == ">=":
-            return "kz_ge(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "and":
-            return "kz_and(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        if op == "or":
-            return "kz_or(" + emit_c_expr(left) + ", " + emit_c_expr(right) + ")"
-        return "kz_nil()"
-
-    if k == "CALL":
-        let fn_id = sanitize_c_id(node.name)
-        let arg_strs = ""
-        let is_first = 1
-        for each a in node.children:
-            if is_first == 0:
-                set arg_strs to arg_strs + ", "
-            # check if named field arg
-            if a.kind == "BIN" and a.name == ":":
-                let val_e = a.children[1]
-                set arg_strs to arg_strs + emit_c_expr(val_e)
-            otherwise:
-                set arg_strs to arg_strs + emit_c_expr(a)
-            set is_first to 0
-
-        # Check if log call
-        if node.name == "log":
-            return "kz_builtin_log(" + arg_strs + ")"
-        let n_name = node.name
-        if length of n_name > 0:
-            let first_char = n_name[0]
-            if first_char >= "A" and first_char <= "Z":
-                return "kz_record_new_" + fn_id + "(" + arg_strs + ")"
-        return "kz_fn_" + fn_id + "(" + arg_strs + ")"
-
+        if node.name == "not":
+            return "kz_not(" + emit_c_expr(child_at(node, 0)) + ")"
+        return emit_bin_op(node.name, emit_c_expr(child_at(node, 0)), emit_c_expr(child_at(node, 1)))
+    if k == "FALLBACK":
+        return emit_c_fallback(node)
+    if k == "IN_UNIT":
+        if node.name == "radians":
+            return "kz_math_to_radians(" + emit_c_expr(child_at(node, 0)) + ")"
+        return "kz_math_to_degrees(" + emit_c_expr(child_at(node, 0)) + ")"
     if k == "LIST":
-        let arg_strs = ""
-        let is_first = 1
-        for each item in node.children:
-            if is_first == 0:
-                set arg_strs to arg_strs + ", "
-            set arg_strs to arg_strs + emit_c_expr(item)
-            set is_first to 0
-        let l_ch = node.children
-        let cnt = length of l_ch
+        let items = node.children
+        let cnt = length of items
         if cnt == 0:
             return "kz_list_new(0)"
-        return "kz_list_from(" + cnt + ", (KzValue[]){ " + arg_strs + " })"
-
+        return "kz_list_from(" + cnt + ", (KzValue[]){ " + emit_c_args(items) + " })"
+    if k == "CALL":
+        return emit_c_call(node)
     return "kz_nil()"
 
-action emit_c_stmt(stmt, ind):
+# ── statements ──────────────────────────────────────────────────────────
+
+action emit_c_stmt(stmt: AstNode, ind):
+    recursion bounded 200
     let k = stmt.kind
-    let out = ""
 
     if k == "LET":
-        let v_id = sanitize_c_id(stmt.name)
-        let val_e = stmt.children[0]
-        set out to ind + "KzValue " + v_id + " = " + emit_c_expr(val_e) + ";\n"
-        return out
+        return ind + "KzValue " + sanitize_c_id(stmt.name) + " = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
 
     if k == "SET":
-        let v_id = sanitize_c_id(stmt.name)
-        let val_e = stmt.children[0]
-        set out to ind + v_id + " = " + emit_c_expr(val_e) + ";\n"
-        return out
+        return ind + sanitize_c_id(stmt.name) + " = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
 
     if k == "RETURN":
-        let r_ch = stmt.children
-        if (length of r_ch) > 0:
-            let val_e = r_ch[0]
-            set out to ind + "return " + emit_c_expr(val_e) + ";\n"
-        otherwise:
-            set out to ind + "return kz_nil();\n"
-        return out
+        if (length of stmt.children) > 0:
+            return ind + "return " + emit_c_expr(child_at(stmt, 0)) + ";\n"
+        return ind + "return kz_nil();\n"
 
     if k == "EXPR":
-        let val_e = stmt.children[0]
-        set out to ind + "(void)(" + emit_c_expr(val_e) + ");\n"
-        return out
+        return ind + "(void)(" + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
+    # guard <expr>: an executed assertion. A false invariant stops the run.
+    if k == "GUARD":
+        return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + stmt.line + " is false\\n\"); return kz_nil(); }\n"
 
     if k == "IF":
-        let cond_e = stmt.children[0]
-        let then_block = stmt.children[1]
-        let other_block = stmt.children[2]
-        set out to ind + "if (kz_is_truthy(" + emit_c_expr(cond_e) + ")) {\n"
+        let cond = child_at(stmt, 0)
+        let then_block = child_at(stmt, 1)
+        let other_block = child_at(stmt, 2)
+        let out = ind + "if (kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
         for each s in then_block.children:
             set out to out + emit_c_stmt(s, ind + "    ")
-        let oth_ch = other_block.children
-        if (length of oth_ch) > 0:
+        if (length of other_block.children) > 0:
             set out to out + ind + "} else {\n"
-            for each s in oth_ch:
+            for each s in other_block.children:
                 set out to out + emit_c_stmt(s, ind + "    ")
         set out to out + ind + "}\n"
         return out
 
+    # while cond bounded n: a counter guard, so a stuck loop stops the run.
     if k == "WHILE":
-        let cond_e = stmt.children[0]
-        let body_block = stmt.children[1]
-        set out to ind + "while (kz_is_truthy(" + emit_c_expr(cond_e) + ")) {\n"
-        for each s in body_block.children:
-            set out to out + emit_c_stmt(s, ind + "    ")
+        let cond = child_at(stmt, 0)
+        let body = child_at(stmt, 1)
+        let bound = child_at(stmt, 2)
+        let guard_id = "_kz_loop_l" + stmt.line
+        let out = ind + "{ long " + guard_id + " = 0;\n"
+        set out to out + ind + "    while (kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
+        if bound.val_str == "" or bound.val_str == "?":
+            set out to out + ind + "        /* no ceiling declared */\n"
+        otherwise:
+            set out to out + ind + "        if (" + guard_id + " >= " + bound.val_str + "L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); return kz_nil(); }\n"
+        set out to out + ind + "        " + guard_id + " = " + guard_id + " + 1;\n"
+        for each s in body.children:
+            set out to out + emit_c_stmt(s, ind + "        ")
+        set out to out + ind + "    }\n"
         set out to out + ind + "}\n"
         return out
 
     if k == "FOR_EACH":
-        let var_id = sanitize_c_id(stmt.name)
-        let list_e = stmt.children[0]
-        let body_block = stmt.children[1]
-        set out to ind + "{\n"
+        let list_e = child_at(stmt, 0)
+        let body = child_at(stmt, 1)
+        let out = ind + "{\n"
         set out to out + ind + "    KzValue _iter_target = " + emit_c_expr(list_e) + ";\n"
         set out to out + ind + "    if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {\n"
         set out to out + ind + "        size_t _len = _iter_target.as.list->len;\n"
         set out to out + ind + "        for (size_t _i = 0; _i < _len; _i++) {\n"
-        set out to out + ind + "            KzValue " + var_id + " = _iter_target.as.list->items[_i];\n"
-        for each s in body_block.children:
+        set out to out + ind + "            KzValue " + sanitize_c_id(stmt.name) + " = _iter_target.as.list->items[_i];\n"
+        for each s in body.children:
             set out to out + emit_c_stmt(s, ind + "            ")
         set out to out + ind + "        }\n"
         set out to out + ind + "    }\n"
         set out to out + ind + "}\n"
         return out
 
+    # try: the recovery block runs only in the virtual machine today.
+    if k == "TRY":
+        let body = child_at(stmt, 0)
+        let other = child_at(stmt, 1)
+        let out = ind + "{\n"
+        set out to out + ind + "    /* try block */\n"
+        for each s in body.children:
+            set out to out + emit_c_stmt(s, ind + "    ")
+        if (length of other.children) > 0:
+            set out to out + ind + "    if (0) {\n"
+            if stmt.name != "":
+                set out to out + ind + "        KzValue " + sanitize_c_id(stmt.name) + " = kz_nil(); (void)" + sanitize_c_id(stmt.name) + ";\n"
+            for each s in other.children:
+                set out to out + emit_c_stmt(s, ind + "        ")
+            set out to out + ind + "    }\n"
+        set out to out + ind + "}\n"
+        return out
+
+    return ""
+
+# ── items and program ───────────────────────────────────────────────────
+
+action param_list(params_node: AstNode):
+    recursion bounded 200
+    let out = ""
+    let first = 1
+    for each p in params_node.children:
+        if first == 0:
+            set out to out + ", "
+        set out to out + "KzValue " + sanitize_c_id(p.name)
+        set first to 0
+    if first == 1:
+        return "void"
     return out
 
-action emit_c_program(items):
+action find_named(items, name):
+    recursion bounded 200
+    let i = 0
+    let len = length of items
+    let found = none_node()
+    while i < len bounded 1000000:
+        let it = node_at(items, i)
+        if it.name == name:
+            set found to it
+        set i to i + 1
+    return found
+
+action is_routine(item: AstNode):
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+        return 1
+    return 0
+
+action emit_record_ctor(item: AstNode):
+    recursion bounded 200
+    let id = sanitize_c_id(item.name)
+    let fields = item.children
+    let cnt = length of fields
+    let out = "static inline KzValue kz_record_new_" + id + "(size_t n, KzValue* v, const char** k) {\n"
+    set out to out + "    (void)n; (void)v; (void)k;\n"
+    if cnt == 0:
+        set out to out + "    return kz_record_create(" + escape_c_str(item.name) + ", 0, NULL, NULL);\n"
+    otherwise:
+        let keys = ""
+        let i = 0
+        while i < cnt bounded 1000:
+            let f = node_at(fields, i)
+            if i > 0:
+                set keys to keys + ", "
+            set keys to keys + escape_c_str(f.name)
+            set i to i + 1
+        set out to out + "    static const char* _keys[" + cnt + "] = { " + keys + " };\n"
+        set out to out + "    KzValue _vals[" + cnt + "];\n"
+        let j = 0
+        while j < cnt bounded 1000:
+            set out to out + "    _vals[" + j + "] = kz_nil();\n"
+            set j to j + 1
+        set out to out + "    for (size_t _i = 0; _i < n; _i++) kz_record_set(_vals, _keys, " + cnt + ", _i, k ? k[_i] : NULL, v[_i]);\n"
+        set out to out + "    return kz_record_create(" + escape_c_str(item.name) + ", " + cnt + ", _keys, _vals);\n"
+    set out to out + "}\n\n"
+    return out
+
+action emit_routine(item: AstNode):
+    recursion bounded 200
+    let id = sanitize_c_id(item.name)
+    let params_node = child_at(item, 0)
+    let body = child_at(item, 2)
+    let out = "static KzValue kz_fn_" + id + "(" + param_list(params_node) + ") {\n"
+    for each s in body.children:
+        set out to out + emit_c_stmt(s, "    ")
+    set out to out + "    return kz_nil();\n"
+    set out to out + "}\n\n"
+    return out
+
+action emit_hook(item: AstNode):
+    recursion bounded 200
+    let body = child_at(item, 1)
+    let kind = "when"
+    if item.kind == "EVERY":
+        set kind to "every"
+    let out = "static KzValue kz_hook_" + kind + "_" + item.line + "(void) {\n"
+    for each s in body.children:
+        set out to out + emit_c_stmt(s, "    ")
+    set out to out + "    return kz_nil();\n"
+    set out to out + "}\n\n"
+    return out
+
+# The hook driver: `when` and `every` items fire on host ticks, the same way the
+# interpreter drives them. The tick count comes from --ticks or KAZE_TICKS, and a
+# predicate that needs telemetry the binary cannot supply is false, not assumed
+# true, so hooks stay fail-closed.
+action emit_hook_driver(items):
+    recursion bounded 200
+    let preds = []
+    let calls = []
+    for each item in items:
+        if item.kind == "WHEN":
+            let cond = child_at(item, 0)
+            set preds to preds + ["        if (kz_is_truthy(" + emit_c_expr(cond) + ")) { kz_hook_when_" + item.line + "(); }\n"]
+        if item.kind == "EVERY":
+            set calls to calls + ["        kz_hook_every_" + item.line + "();\n"]
+    let out = "/* --- Hook driver --- */\n"
+    set out to out + "static int kz_ticks(int argc, char** argv) {\n"
+    set out to out + "    for (int i = 1; i + 1 < argc; i++) {\n"
+    set out to out + "        if (strcmp(argv[i], \"--ticks\") == 0) { long n = strtol(argv[i + 1], NULL, 10); if (n > 0) return (int)n; }\n"
+    set out to out + "    }\n"
+    set out to out + "    const char* env = getenv(\"KAZE_TICKS\");\n"
+    set out to out + "    if (env && env[0]) { long n = strtol(env, NULL, 10); if (n > 0) return (int)n; }\n"
+    set out to out + "    return 0;\n"
+    set out to out + "}\n"
+    set out to out + "static void kz_run_hooks(int argc, char** argv) {\n"
+    set out to out + "    int ticks = kz_ticks(argc, argv);\n"
+    set out to out + "    for (int t = 0; t < ticks; t++) {\n"
+    for each p in preds:
+        set out to out + p
+    for each c in calls:
+        set out to out + c
+    set out to out + "    }\n"
+    set out to out + "}\n\n"
+    return out
+
+action emit_c_entry(items):
+    recursion bounded 200
+    let out = "/* --- Main Entry Point --- */\n"
+    set out to out + "int main(int argc, char** argv) {\n"
+    let main_item = find_named(items, "main")
+    if is_routine(main_item) == 0:
+        set out to out + "    (void)argc; (void)argv;\n"
+        set out to out + "    kz_run_hooks(argc, argv);\n"
+        set out to out + "    printf(\"Kaze module loaded (no main entry)\\n\");\n"
+    otherwise:
+        let params_node = child_at(main_item, 0)
+        let cnt = length of params_node.children
+        if cnt == 0:
+            set out to out + "    (void)argc; (void)argv;\n"
+            set out to out + "    KzValue res = kz_fn__kz_main();\n"
+        otherwise:
+            let i = 0
+            let call_args = ""
+            while i < cnt bounded 1000:
+                let prm = child_at(params_node, i)
+                set out to out + "    KzValue arg_" + i + " = kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + ");\n"
+                if i > 0:
+                    set call_args to call_args + ", "
+                set call_args to call_args + "arg_" + i
+                set i to i + 1
+            set out to out + "    KzValue res = kz_fn__kz_main(" + call_args + ");\n"
+        set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
+        set out to out + "        if (floor(res.as.number) == res.as.number) { printf(\"%.0f\\n\", res.as.number); }\n"
+        set out to out + "        else { printf(\"%.16g\\n\", res.as.number); }\n"
+        set out to out + "    } else if (res.kind == KZ_VAL_STR) {\n"
+        set out to out + "        printf(\"%s\\n\", res.as.str ? res.as.str : \"\");\n"
+        set out to out + "    } else if (res.kind == KZ_VAL_BOOL) {\n"
+        set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
+        set out to out + "    }\n"
+        set out to out + "    kz_run_hooks(argc, argv);\n"
+    set out to out + "    return 0;\n"
+    set out to out + "}\n"
+    return out
+
+action emit_c_program(prog: AstNode):
+    recursion bounded 200
+    let items = program_items(prog)
     let out = get_c_runtime_header()
 
-    # 1. Forward Declarations
+    # 1. Forward declarations.
     set out to out + "/* --- Forward Declarations --- */\n"
     for each item in items:
         if item.kind == "RECORD":
-            let rec_id = sanitize_c_id(item.name)
-            let params = ""
-            let is_first = 1
-            for each f in item.children:
-                if is_first == 0:
-                    set params to params + ", "
-                set params to params + "KzValue " + sanitize_c_id(f.name)
-                set is_first = 0
-            if is_first == 1:
-                set params = "void"
-            set out to out + "static inline KzValue kz_record_new_" + rec_id + "(" + params + ");\n"
+            set out to out + "static inline KzValue kz_record_new_" + sanitize_c_id(item.name) + "(size_t n, KzValue* v, const char** k);\n"
         otherwise:
-            let fn_id = sanitize_c_id(item.name)
-            let params_node = item.children[0]
-            let params = ""
-            let is_first = 1
-            for each p in params_node.children:
-                if is_first == 0:
-                    set params to params + ", "
-                set params to params + "KzValue " + sanitize_c_id(p.name)
-                set is_first = 0
-            if is_first == 1:
-                set params = "void"
-            set out to out + "static KzValue kz_fn_" + fn_id + "(" + params + ");\n"
+            if is_routine(item) == 1:
+                let params_node = child_at(item, 0)
+                set out to out + "static KzValue kz_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
 
+    # 2. Record constructors.
     set out to out + "\n/* --- Record Constructors --- */\n"
     for each item in items:
         if item.kind == "RECORD":
-            let rec_id = sanitize_c_id(item.name)
-            let params = ""
-            let keys = ""
-            let vals = ""
-            let is_first = 1
-            for each f in item.children:
-                if is_first == 0:
-                    set params to params + ", "
-                    set keys to keys + ", "
-                    set vals to vals + ", "
-                set params to params + "KzValue " + sanitize_c_id(f.name)
-                set keys to keys + "\"" + f.name + "\""
-                set vals to vals + sanitize_c_id(f.name)
-                set is_first = 0
-            if is_first == 1:
-                set params = "void"
-            set out to out + "static inline KzValue kz_record_new_" + rec_id + "(" + params + ") {\n"
-            let r_fields = item.children
-            let cnt = length of r_fields
-            if cnt == 0:
-                set out to out + "    return kz_record_create(\"" + item.name + "\", 0, NULL, NULL);\n"
-            otherwise:
-                set out to out + "    static const char* _keys[] = { " + keys + " };\n"
-                set out to out + "    KzValue _vals[] = { " + vals + " };\n"
-                set out to out + "    return kz_record_create(\"" + item.name + "\", " + cnt + ", _keys, _vals);\n"
-            set out to out + "}\n\n"
+            set out to out + emit_record_ctor(item)
 
+    # 3. Routines. A when/every hook has no native scheduler, so it is named in
+    # a comment rather than dropped in silence.
     set out to out + "/* --- Routines --- */\n"
     for each item in items:
-        if item.kind != "RECORD":
-            let fn_id = sanitize_c_id(item.name)
-            let params_node = item.children[0]
-            let body_node = item.children[1]
-            let params = ""
-            let is_first = 1
-            for each p in params_node.children:
-                if is_first == 0:
-                    set params to params + ", "
-                set params to params + "KzValue " + sanitize_c_id(p.name)
-                set is_first = 0
-            if is_first == 1:
-                set params = "void"
-            set out to out + "static KzValue kz_fn_" + fn_id + "(" + params + ") {\n"
-            for each s in body_node.children:
-                set out to out + emit_c_stmt(s, "    ")
-            set out to out + "    return kz_nil();\n"
-            set out to out + "}\n\n"
+        if is_routine(item) == 1:
+            set out to out + emit_routine(item)
+        otherwise:
+            if item.kind == "WHEN" or item.kind == "EVERY":
+                set out to out + emit_hook(item)
 
-    # Main Entry Point
-    set out to out + "/* --- Main Entry Point --- */\n"
-    set out to out + "int main(int argc, char** argv) {\n"
-    let main_found = 0
-    for each item in items:
-        if item.name == "main":
-            set main_found = 1
-            let params_node = item.children[0]
-            let p_ch = params_node.children
-            let p_count = length of p_ch
-            if p_count == 0:
-                set out to out + "    (void)argc; (void)argv;\n"
-                set out to out + "    KzValue res = kz_fn__kz_main();\n"
-            otherwise:
-                let idx = 0
-                let call_args = ""
-                for each p in params_node.children:
-                    set out to out + "    KzValue arg_" + idx + " = kz_resolve_cli_arg(argc, argv, \"" + p.name + "\", " + idx + ");\n"
-                    if idx > 0:
-                        set call_args to call_args + ", "
-                    set call_args to call_args + "arg_" + idx
-                    set idx to idx + 1
-                set out to out + "    KzValue res = kz_fn__kz_main(" + call_args + ");\n"
-            set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
-            set out to out + "        if (floor(res.as.number) == res.as.number) { printf(\"%.0f\\n\", res.as.number); }\n"
-            set out to out + "        else { printf(\"%g\\n\", res.as.number); }\n"
-            set out to out + "    } else if (res.kind == KZ_VAL_STR) {\n"
-            set out to out + "        printf(\"%s\\n\", res.as.str ? res.as.str : \"\");\n"
-            set out to out + "    } else if (res.kind == KZ_VAL_BOOL) {\n"
-            set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
-            set out to out + "    }\n"
-    if main_found == 0:
-        set out to out + "    (void)argc; (void)argv;\n"
-        set out to out + "    printf(\"Kaze module loaded (no main entry)\\n\");\n"
-    set out to out + "    return 0;\n"
-    set out to out + "}\n"
-
+    # 4. Hook driver, then the entry point.
+    set out to out + "\n" + emit_hook_driver(items)
+    set out to out + emit_c_entry(items)
     return out

@@ -1,0 +1,6 @@
+# rule: CAP_UNDECLARED — the drone family is used but never declared
+# expect: E_CAP_UNDECLARED
+needs: log
+
+action lift():
+    arm drone  # BAD

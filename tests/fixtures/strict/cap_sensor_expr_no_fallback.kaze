@@ -1,0 +1,6 @@
+# rule: MISSING_FALLBACK — a value-returning capability call needs an inline fallback
+# expect: E_KAZE_MISSING_FALLBACK
+needs: sensor
+
+action sample():
+    let t = sensor.temperature()  # BAD

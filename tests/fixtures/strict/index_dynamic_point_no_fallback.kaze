@@ -1,0 +1,5 @@
+# rule: MISSING_FALLBACK — a point read at a dynamic component needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action component(at):
+    let p = vector(1, 2, 3)
+    let part = p[at]  # BAD

@@ -1,0 +1,6 @@
+# rule: RECURSION_UNBOUNDED — a recursive call in 'return' position is still recursion
+# expect: E_KAZE_RECURSION_UNBOUNDED
+action sum_to(n):
+    if n <= 1:
+        return n
+    return n + sum_to(n - 1)  # BAD

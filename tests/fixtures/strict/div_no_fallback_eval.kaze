@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — an unused division expression is checked too
+# expect: E_KAZE_MISSING_FALLBACK
+action probe(a, b):
+    a / b  # BAD

@@ -1,0 +1,5 @@
+# expect: ok — a constant index inside a text literal's length is fine
+# value: 1 (length of the single character "z")
+action main():
+    let c = "kaze"[2]
+    return length of c

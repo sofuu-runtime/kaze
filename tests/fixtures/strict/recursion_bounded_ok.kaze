@@ -1,0 +1,10 @@
+# expect: ok — a routine that declares its recursion ceiling compiles and runs
+# value: 120
+action main():
+    return fact(5)
+
+action fact(n):
+    recursion bounded 64
+    if n <= 1:
+        return 1
+    return n * fact(n - 1)

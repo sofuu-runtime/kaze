@@ -1,0 +1,5 @@
+# rule: BOUNDS — a constant out-of-bounds read inside a loop body is refused
+# expect: E_KAZE_BOUNDS
+action bad_pick_all():
+    for each n in [1, 2]:
+        let v = [9][1]  # BAD

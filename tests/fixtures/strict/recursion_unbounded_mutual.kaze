@@ -1,0 +1,9 @@
+# rule: RECURSION_UNBOUNDED — mutual recursion is recursion through a cycle
+# expect: E_KAZE_RECURSION_UNBOUNDED
+action ping(n):
+    if n > 0:
+        pong(n - 1)  # BAD
+
+action pong(n):
+    if n > 0:
+        ping(n - 1)

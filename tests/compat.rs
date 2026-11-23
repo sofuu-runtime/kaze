@@ -1,11 +1,16 @@
-// v0.9/v1.0: the artifact compatibility lock. A source compiled by v1.0 must
-// produce exactly the bytes in the fixture, and those bytes must still load and
-// run through the current reader.
+// The artifact compatibility lock, in two halves:
+//
+//   * kaze-v1.0-format4.kazebc.hex is a module written by the v1.0 writer. It
+//     must keep loading and running under the current reader, forever, because
+//     users have those files on disk.
+//   * kaze-v1.1-format5.kazebc.hex is what today's writer produces for the same
+//     source. It must not change unless the format version changes with it.
 
 use kaze::{isa, run_module, RunOptions};
 
 const SRC: &str = "needs: log\naction main():\n    log \"release\"\n";
 
+#[allow(dead_code)] // kept for hand-checking a fixture against the writer output
 fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -14,18 +19,23 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
-#[test]
-fn the_v1_artifact_bytes_are_frozen() {
-    let module = kaze::compile_source(SRC, "lock.kaze").expect("compiles");
-    let bytes = isa::serialize(&module);
-    let expected = include_str!("fixtures/kaze-v1.0.kazebc.hex").trim();
-    assert_eq!(
-        hex(&bytes),
-        expected,
-        "the v1.0 module bytes changed; a format bump is required"
-    );
+fn fixture_hex(name: &str) -> Vec<u8> {
+    let text = match name {
+        "format4" => include_str!("fixtures/kaze-v1.0-format4.kazebc.hex").trim(),
+        _ => include_str!("fixtures/kaze-v1.1-format5.kazebc.hex").trim(),
+    };
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("fixture is hex"))
+        .collect()
+}
 
-    let module = isa::deserialize(&bytes).expect("the frozen artifact still loads");
+#[test]
+fn a_format_4_artifact_still_loads_and_runs() {
+    // A v1.0 module has no per-item recursion ceiling; the reader fills in 0
+    // and the VM applies its global frame bound.
+    let bytes = fixture_hex("format4");
+    let module = isa::deserialize(&bytes).expect("the v1.0 artifact still loads");
     let opts = RunOptions {
         grants: vec!["log".to_string()],
         policy: Some(serde_json::json!({ "deny": [] })),
@@ -36,8 +46,19 @@ fn the_v1_artifact_bytes_are_frozen() {
 }
 
 #[test]
+fn the_current_artifact_bytes_are_frozen() {
+    let module = kaze::compile_source(SRC, "lock.kaze").expect("compiles");
+    let bytes = isa::serialize(&module);
+    let expected = fixture_hex("format5");
+    assert_eq!(
+        bytes, expected,
+        "the module bytes changed; a format bump (and a new fixture) is required"
+    );
+}
+
+#[test]
 fn the_format_version_is_locked() {
-    assert_eq!(isa::FORMAT_VERSION, 4);
+    assert_eq!(isa::FORMAT_VERSION, 5);
 }
 
 #[test]

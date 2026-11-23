@@ -1,0 +1,6 @@
+# rule: CAP_UNDECLARED — the memory family is used but never declared
+# expect: E_CAP_UNDECLARED
+needs: log
+
+action remember_one():
+    remember 3 as "three"  # BAD

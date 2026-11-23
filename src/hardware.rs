@@ -6,6 +6,9 @@
 //   H-3: host policy does not deny operation        (E_CAP_DENIED)
 //   H-4: physical argument ranges (reject, not clamp) (E_KAZE_RANGE)
 
+use std::io::Write;
+use std::sync::{Mutex, OnceLock};
+
 use serde_json::Value as Json;
 use crate::value::{Heap, Value};
 
@@ -28,7 +31,130 @@ impl Denial {
     }
 }
 
+// ── Structured audit trail (Phase 5) ─────────────────────────────────────
+//
+// One line per gate decision, off by default. An operator who wants the trail
+// sets `KAZE_AUDIT=file:<path>` (a bare path is accepted). A line records the
+// family, the operation, the decision and the reason — never an argument value,
+// so a credential a script happens to pass to a capability cannot reach it. If
+// a trail was asked for and cannot be written, capability calls are denied:
+// security telemetry that silently disappears is worse than no telemetry.
+
+/// Environment variable naming the audit sink. Off when absent or empty.
+pub const AUDIT_ENV: &str = "KAZE_AUDIT";
+/// The longest reason one audit line carries, in bytes.
+pub const AUDIT_REASON_BYTES: usize = 240;
+
+enum AuditTarget {
+    Off,
+    File { file: Mutex<std::fs::File>, label: String },
+    Broken(String),
+}
+
+static AUDIT: OnceLock<AuditTarget> = OnceLock::new();
+
+fn audit_target() -> &'static AuditTarget {
+    AUDIT.get_or_init(|| {
+        let spec = match std::env::var(AUDIT_ENV) {
+            Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+            _ => return AuditTarget::Off,
+        };
+        let path = spec.strip_prefix("file:").unwrap_or(&spec).trim().to_string();
+        if path.is_empty() {
+            return AuditTarget::Broken(format!(
+                "{} names no file; use {}=file:<path>",
+                AUDIT_ENV, AUDIT_ENV
+            ));
+        }
+        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => AuditTarget::File { file: Mutex::new(file), label: path },
+            Err(e) => AuditTarget::Broken(format!(
+                "cannot open the audit sink '{}': {} (fix the path or unset {})",
+                path, e, AUDIT_ENV
+            )),
+        }
+    })
+}
+
+/// Append one decision line: `<utc> capability <family>.<op> decision=<d> reason=<r>`.
+pub fn record_audit(family: &str, op: &str, decision: &str, reason: &str) -> Result<(), String> {
+    match audit_target() {
+        AuditTarget::Off => Ok(()),
+        AuditTarget::Broken(why) => Err(why.clone()),
+        AuditTarget::File { file, label } => {
+            let reason: String = crate::caps::redact_secrets(reason)
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            let (reason, _) = crate::caps::truncate_utf8(&reason, AUDIT_REASON_BYTES);
+            let line = format!(
+                "{} capability {}.{} decision={} reason={}\n",
+                crate::caps::utc_timestamp(),
+                family,
+                op,
+                decision,
+                reason
+            );
+            let mut guard = file
+                .lock()
+                .map_err(|_| format!("the audit sink '{}' cannot be locked", label))?;
+            guard
+                .write_all(line.as_bytes())
+                .map_err(|e| format!("cannot write the audit sink '{}': {}", label, e))?;
+            guard
+                .flush()
+                .map_err(|e| format!("cannot flush the audit sink '{}': {}", label, e))
+        }
+    }
+}
+
+/// Record a host-side refusal (the 1500 ms freshness watchdog) in the trail.
+/// The refusal stands whether or not the trail can be written.
+pub fn record_safety_veto(family: &str, op: &str, reason: &str) -> Result<(), String> {
+    record_audit(family, op, "deny", reason)
+}
+
+/// Fold one gate outcome into the audit trail. A trail that cannot be written
+/// turns the call into an `E_CAP_DENIED`: the gate fails closed, not open.
+fn audited(
+    result: Result<(), Denial>,
+    family: &str,
+    op: &str,
+    allow_reason: &str,
+) -> Result<(), Denial> {
+    let recording = match &result {
+        Ok(()) => record_audit(family, op, "allow", allow_reason),
+        Err(d) => record_audit(family, op, "deny", &format!("{}/{}", d.code, d.rule)),
+    };
+    match recording {
+        Ok(()) => result,
+        Err(why) => Err(Denial::new(
+            "E_CAP_DENIED",
+            "H-5/audit",
+            format!(
+                "{}; '{}.{}' is refused because the audit trail cannot be written",
+                why, family, op
+            ),
+        )),
+    }
+}
+
 pub fn authorise(
+    declared: &[String],
+    grants: &[String],
+    policy: Option<&Json>,
+    family: &str,
+    op: &str,
+) -> Result<(), Denial> {
+    audited(
+        authorise_gate(declared, grants, policy, family, op),
+        family,
+        op,
+        "H-1..H-3 passed",
+    )
+}
+
+fn authorise_gate(
     declared: &[String],
     grants: &[String],
     policy: Option<&Json>,
@@ -204,6 +330,28 @@ fn range(
 }
 
 pub fn validate_arguments(
+    family: &str,
+    op: &str,
+    args: &[Value],
+    heap: &Heap,
+) -> Result<(), Denial> {
+    let result = validate_arguments_gate(family, op, args, heap);
+    // The gate above already recorded its allow; a refusal here is a second,
+    // later decision and is recorded as such, so the last line for a call is
+    // always the effective one.
+    if let Err(d) = &result {
+        if let Err(why) = record_audit(family, op, "deny", &format!("{}/{}", d.code, d.rule)) {
+            return Err(Denial::new(
+                "E_CAP_DENIED",
+                "H-5/audit",
+                format!("{}; the call is refused because the audit trail cannot be written", why),
+            ));
+        }
+    }
+    result
+}
+
+fn validate_arguments_gate(
     family: &str,
     op: &str,
     args: &[Value],

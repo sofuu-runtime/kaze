@@ -1,0 +1,6 @@
+# rule: CAP_UNDECLARED — the device family is used but never declared
+# expect: E_CAP_UNDECLARED
+needs: log
+
+action cool_down():
+    turn on fan  # BAD

@@ -19,7 +19,7 @@ fn the_selftest_scorecard_passes() {
         "{}",
         report
     );
-    assert_eq!(report["format"], 4);
+    assert_eq!(report["format"], 5, "the scorecard reports the current module format");
 
     let checks = report["checks"].as_array().expect("checks");
     assert_eq!(checks.len(), 11);

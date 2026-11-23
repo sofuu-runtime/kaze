@@ -18,6 +18,7 @@ pub mod caps;
 pub mod checker;
 pub mod compiler;
 pub mod deadline;
+pub mod diag;
 pub mod fmt;
 pub mod gpio;
 #[cfg(feature = "chardev")]
@@ -32,6 +33,7 @@ pub mod pwm;
 pub mod lexer;
 pub mod lsp;
 pub mod machine;
+pub mod strict;
 pub mod parser;
 pub mod value;
 pub mod vm;
@@ -63,14 +65,30 @@ pub struct KazeError {
 
 impl KazeError {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
+        // Plain messages are written as multi-line string literals, and the
+        // line continuations leave runs of indentation in the text. Collapse
+        // them so an operator reads one sentence, not a column of spaces. A
+        // rendered diagnostic block is exempt: its indentation is the point.
+        let mut message = message.into();
+        if !message.starts_with("error[") {
+            while message.contains("  ") {
+                message = message.replace("  ", " ");
+            }
+        }
         KazeError {
             code: code.to_string(),
-            message: message.into(),
+            message,
         }
     }
 
     pub fn render(&self) -> String {
-        format!("{}: {}", self.code, self.message)
+        // A detailed diagnostic already carries its own header; anything else
+        // gets the code prefix.
+        if self.message.starts_with("error[") {
+            self.message.clone()
+        } else {
+            format!("{}: {}", self.code, self.message)
+        }
     }
 }
 
@@ -93,6 +111,10 @@ impl From<parser::ParseError> for KazeError {
 pub struct Prepared {
     pub module: Module,
     pub name: String,
+    /// The checked syntax tree. The compiled module is what runs; the tree is
+    /// kept so parameter types, defaults and contracts are still available when
+    /// arguments are resolved or a contract has to be reported.
+    pub program: ast::Program,
 }
 
 /// Read a script from disk (or stdin when path is "-").
@@ -208,6 +230,7 @@ impl Loader {
             needs: program.needs,
             uses: Vec::new(),
             root: String::new(),
+            records: program.records,
             items: program.items,
         };
         self.merge_into(&mut out, own, origin, &mut names)?;
@@ -313,8 +336,20 @@ fn prepare_with(
     base: &Path,
     loader: &mut Loader,
 ) -> Result<Prepared, KazeError> {
+    let map = diag::SourceMap::new(src);
     let program = parser::parse(src).map_err(|e| {
-        KazeError::new("E_KAZE_PARSE", e.render(display_name))
+        // A parse error knows its line and column exactly, so it always renders
+        // as a block with a caret.
+        let block = diag::render(
+            "E_KAZE_PARSE",
+            &e.msg,
+            display_name,
+            e.line,
+            Some((e.col.max(1), 1)),
+            Some("fix the syntax here"),
+            Some(&map),
+        );
+        KazeError::new("E_KAZE_PARSE", block)
     })?;
     let program = loader.expand(program, root_origin, base)?;
     checker::check(&program).map_err(|errors| {
@@ -323,15 +358,25 @@ fn prepare_with(
             if i > 0 {
                 message.push('\n');
             }
-            message.push_str(&err.render(display_name));
+            // Only the root file's source is in hand here; an imported file's
+            // diagnostic still names its file and line, one line at a time.
+            let root_source = err.origin.is_empty() || err.origin == root_origin;
+            if root_source {
+                message.push_str(&err.render_detailed(display_name, &map));
+            } else {
+                message.push_str(&err.render(display_name));
+            }
         }
-        KazeError::new("E_KAZE_CHECK", message)
+        // The first error code wins, so a caller can branch on the specific refusal.
+        let code = errors.first().map(|e| e.code.clone()).unwrap_or_else(|| "E_KAZE_CHECK".to_string());
+        KazeError::new(&code, message)
     })?;
     let module = compiler::compile(&program)
         .map_err(|e| KazeError::new("E_KAZE_COMPILE", e.render(display_name)))?;
     Ok(Prepared {
         module,
         name: display_name.to_string(),
+        program,
     })
 }
 
@@ -368,6 +413,42 @@ pub fn check_source(src: &str, name: &str) -> Result<(), KazeError> {
     prepare(src, name).map(|_| ())
 }
 
+/// Structured diagnostics for tooling: every problem with its code, line,
+/// needle and suggestion, not a rendered string. Imports are resolved against
+/// `base` like `prepare_in`.
+pub fn diagnose_in(src: &str, name: &str, base: &Path) -> Vec<checker::CheckError> {
+    match parser::parse(src) {
+        Err(e) => vec![checker::CheckError {
+            spans: Vec::new(),
+            code: "E_KAZE_PARSE".to_string(),
+            line: e.line,
+            needle: None,
+            hint: Some("fix the syntax here".to_string()),
+            msg: e.msg,
+            origin: String::new(),
+        }],
+        Ok(program) => {
+            let root_origin = Path::new(name)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| name.to_string());
+            let mut loader = Loader::new(base.to_path_buf());
+            match loader.expand(program, &root_origin, base) {
+                Ok(expanded) => checker::check(&expanded).err().unwrap_or_default(),
+                Err(e) => vec![checker::CheckError {
+                    spans: Vec::new(),
+                    code: e.code.clone(),
+                    line: 0,
+                    needle: None,
+                    hint: None,
+                    msg: e.message.clone(),
+                    origin: String::new(),
+                }],
+            }
+        }
+    }
+}
+
 pub fn check_file(path: &str) -> Result<(), KazeError> {
     prepare_file(path).map(|_| ())
 }
@@ -385,7 +466,9 @@ pub fn emit_c_source(src: &str, name: &str, opts: &c_codegen::CodegenOptions) ->
             }
             message.push_str(&err.render(name));
         }
-        KazeError::new("E_KAZE_CHECK", message)
+        // The first error code wins, so a caller can branch on the specific refusal.
+        let code = errors.first().map(|e| e.code.clone()).unwrap_or_else(|| "E_KAZE_CHECK".to_string());
+        KazeError::new(&code, message)
     })?;
     Ok(c_codegen::emit_c(&program, opts))
 }
@@ -418,7 +501,9 @@ pub fn emit_c_file(path: &str, opts: &c_codegen::CodegenOptions) -> Result<Strin
             }
             message.push_str(&err.render(path));
         }
-        KazeError::new("E_KAZE_CHECK", message)
+        // The first error code wins, so a caller can branch on the specific refusal.
+        let code = errors.first().map(|e| e.code.clone()).unwrap_or_else(|| "E_KAZE_CHECK".to_string());
+        KazeError::new(&code, message)
     })?;
     Ok(c_codegen::emit_c(&program, opts))
 }
@@ -434,6 +519,10 @@ pub fn compile_file(path: &str) -> Result<Module, KazeError> {
 /// Everything a run needs besides the script itself.
 #[derive(Debug, Clone)]
 pub struct RunOptions {
+    /// The value read from a pipe, if the caller supplied one. It fills the
+    /// first parameter when nothing on the command line, in the environment or
+    /// in the config file does — the same layer the compiled binary applies.
+    pub stdin_value: Option<String>,
     /// Item to run first. Default: the root file's `main`, else the only
     /// routine in the root file, else none (hooks only). Imported routines are
     /// selected only when named explicitly.
@@ -460,11 +549,16 @@ pub struct RunOptions {
     pub pins: Vec<(String, u16)>,
     /// `name -> (chip, channel)` from `--pwm fan=0:0` (v0.2).
     pub pwm: Vec<(String, u16, u16)>,
+    /// The parsed configuration document (--config <path>, or
+    /// ./agent.config.json). Sits below the environment and above a signature
+    /// default in the 12-factor resolution order.
+    pub config: Option<serde_json::Value>,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
         RunOptions {
+            stdin_value: None,
             entry: None,
             args: serde_json::Map::new(),
             grants: Vec::new(),
@@ -477,6 +571,7 @@ impl Default for RunOptions {
             backend: Vec::new(),
             pins: Vec::new(),
             pwm: Vec::new(),
+            config: None,
         }
     }
 }
@@ -546,7 +641,17 @@ pub fn run_file(path: &str, opts: &RunOptions) -> Result<RunReport, KazeError> {
 /// Run a compiled module directly: no lexer, no parser, no checker. This is the
 /// path a `.kazebc` artifact takes, so a deployed script needs no front end.
 pub fn run_module(module: Module, name: &str, opts: &RunOptions) -> Result<RunReport, KazeError> {
-    run_prepared(Prepared { module, name: name.to_string() }, opts)
+    // A bare artifact carries no syntax tree, so parameter types, defaults and
+    // contracts are unavailable: arguments bind positionally, as they always
+    // did for a compiled module.
+    run_prepared(
+        Prepared {
+            module,
+            name: name.to_string(),
+            program: ast::Program::default(),
+        },
+        opts,
+    )
 }
 
 /// Attribute a run-time failure to the item's own file when modules were
@@ -635,7 +740,22 @@ pub fn run_prepared(prepared: Prepared, opts: &RunOptions) -> Result<RunReport, 
             let item = module
                 .item(name)
                 .ok_or_else(|| KazeError::new("E_KAZE_ENTRY", format!("there is no '{}' in this script", name)))?;
-            let args = bind_args(item.params.as_slice(), &opts.args, &mut vm);
+            let ast_item = prepared.program.item(&item.name);
+            let args = match ast_item {
+                Some(decl) => bind_args(decl, opts, &prepared.name, &mut vm)?,
+                None => item
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let json = opts
+                            .args
+                            .get(p)
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        json_to_value(&json, &mut vm.arena, &mut vm.heap)
+                    })
+                    .collect(),
+            };
             let value = vm
                 .run_item(item, &args)
                 .map_err(|e| item_error(&prepared.name, &module.root, item, e))?;
@@ -719,20 +839,168 @@ fn resolve_entry(module: &Module, opts: &RunOptions) -> Result<Option<String>, K
     ))
 }
 
+/// Resolve one parameter through the 12-factor hierarchy:
+/// CLI flag, then AGENT_<PARAM> / SOFUU_<PARAM>, then the config document,
+/// then the signature default. A typed parameter with no value anywhere is
+/// E_KAZE_PARAM with the exact flags to add; an untyped one keeps the legacy
+/// "missing means nothing" behaviour so older scripts still run.
 fn bind_args(
-    params: &[String],
-    args: &serde_json::Map<String, serde_json::Value>,
+    item: &ast::Item,
+    opts: &RunOptions,
+    source_name: &str,
     vm: &mut Vm,
-) -> Vec<value::Value> {
-    let mut out = Vec::with_capacity(params.len());
-    for (i, p) in params.iter().enumerate() {
-        let json = args
+) -> Result<Vec<value::Value>, KazeError> {
+    let mut out = Vec::with_capacity(item.params.len());
+    for (i, p) in item.params.iter().enumerate() {
+        let declared = item.contracts.param_types.get(i).and_then(|t| t.clone());
+        let mut found: Option<serde_json::Value> = opts
+            .args
             .get(p)
-            .or_else(|| args.get(&i.to_string()))
-            .unwrap_or(&serde_json::Value::Null);
-        out.push(json_to_value(json, &mut vm.arena, &mut vm.heap));
+            .or_else(|| opts.args.get(&i.to_string()))
+            .cloned();
+        if found.is_none() {
+            found = env_param(p);
+        }
+        if found.is_none() {
+            found = config_param(opts, p);
+        }
+        // Third and a half: a pipe fills the first parameter, as it does for a
+        // compiled agent binary. An empty pipe is not a value.
+        if found.is_none() && i == 0 {
+            if let Some(text) = opts.stdin_value.as_deref() {
+                let trimmed = text.trim_end_matches(['\n', '\r']);
+                if !trimmed.is_empty() {
+                    found = Some(serde_json::Value::String(trimmed.to_string()));
+                }
+            }
+        }
+        let json = match found {
+            Some(v) => coerce_param(item, p, v, declared.as_ref(), source_name)?,
+            None => match item.contracts.param_defaults.get(i).and_then(|d| d.as_ref()) {
+                Some(expr) => literal_default(item, p, expr, source_name)?,
+                None => {
+                    if declared.is_some() {
+                        return Err(KazeError::new(
+                            "E_KAZE_PARAM",
+                            format!(
+                                "{}: parameter '{}' of '{}' is declared as {} and has no value.                                  Provide it with --arg {}=<value>, the environment variable                                  AGENT_{}, or \"{}\" in the config file (--config <path> or                                  ./agent.config.json).",
+                                source_name,
+                                p,
+                                item.name,
+                                declared.map(|t| t.label().to_string()).unwrap_or_default(),
+                                p,
+                                p.to_uppercase(),
+                                p
+                            ),
+                        ));
+                    }
+                    serde_json::Value::Null
+                }
+            },
+        };
+        out.push(json_to_value(&json, &mut vm.arena, &mut vm.heap));
     }
-    out
+    Ok(out)
+}
+
+/// AGENT_<NAME>, then SOFUU_<NAME>. A value that parses as JSON keeps its type
+/// (so AGENT_DUTY=50 is a number), otherwise it is the text.
+fn env_param(name: &str) -> Option<serde_json::Value> {
+    let upper = name.to_uppercase();
+    for prefix in ["AGENT_", "SOFUU_"] {
+        if let Ok(raw) = std::env::var(format!("{}{}", prefix, upper)) {
+            return Some(match serde_json::from_str(&raw) {
+                Ok(v) => v,
+                Err(_) => serde_json::Value::String(raw),
+            });
+        }
+    }
+    None
+}
+
+/// A config document may hold the parameter at the top level or under "args".
+fn config_param(opts: &RunOptions, name: &str) -> Option<serde_json::Value> {
+    let cfg = opts.config.as_ref()?;
+    cfg.get(name)
+        .or_else(|| cfg.get("args").and_then(|a| a.get(name)))
+        .cloned()
+}
+
+fn literal_default(
+    item: &ast::Item,
+    param: &str,
+    expr: &ast::Expr,
+    source_name: &str,
+) -> Result<serde_json::Value, KazeError> {
+    Ok(match expr {
+        ast::Expr::Num(n, _) => serde_json::json!(n),
+        ast::Expr::Bool(b) => serde_json::json!(b),
+        ast::Expr::Str(s) => serde_json::json!(s),
+        _ => {
+            return Err(KazeError::new(
+                "E_KAZE_PARAM",
+                format!(
+                    "{}: the default for parameter '{}' of '{}' must be a literal",
+                    source_name, param, item.name
+                ),
+            ))
+        }
+    })
+}
+
+/// A value from a flag or an environment variable arrives as text; the declared
+/// type decides what it becomes, and a value that cannot become that type is
+/// refused with the type named rather than silently coerced.
+fn coerce_param(
+    item: &ast::Item,
+    param: &str,
+    value: serde_json::Value,
+    declared: Option<&ast::TypeRef>,
+    source_name: &str,
+) -> Result<serde_json::Value, KazeError> {
+    use ast::TypeRef;
+    let bad = |want: &str| {
+        KazeError::new(
+            "E_KAZE_PARAM",
+            format!(
+                "{}: parameter '{}' of '{}' is declared as {} but was given {:?}",
+                source_name, param, item.name, want, value
+            ),
+        )
+    };
+    let numeric = matches!(
+        declared,
+        Some(TypeRef::Int)
+            | Some(TypeRef::Number)
+            | Some(TypeRef::Percent)
+            | Some(TypeRef::Length)
+            | Some(TypeRef::Time)
+            | Some(TypeRef::Angle)
+            | Some(TypeRef::Temperature)
+    );
+    if numeric {
+        return match &value {
+            serde_json::Value::Number(_) => Ok(value),
+            serde_json::Value::String(s) => match s.trim().parse::<f64>() {
+                Ok(n) => Ok(serde_json::json!(n)),
+                Err(_) => Err(bad("a number")),
+            },
+            _ => Err(bad("a number")),
+        };
+    }
+    if matches!(declared, Some(TypeRef::Bool)) {
+        return match &value {
+            serde_json::Value::Bool(_) => Ok(value),
+            serde_json::Value::String(s) if s == "true" || s == "false" => {
+                Ok(serde_json::json!(s == "true"))
+            }
+            _ => Err(bad("true or false")),
+        };
+    }
+    if matches!(declared, Some(TypeRef::Text)) && !value.is_string() {
+        return Err(bad("text"));
+    }
+    Ok(value)
 }
 
 fn json_to_value(

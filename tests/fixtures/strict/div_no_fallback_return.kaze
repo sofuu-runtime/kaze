@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — returning a ratio to the host is still a fallible read
+# expect: E_KAZE_MISSING_FALLBACK
+action ratio(part, whole):
+    return part / whole  # BAD

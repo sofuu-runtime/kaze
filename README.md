@@ -24,6 +24,36 @@ cargo run -- run hello.kaze
 Here, `hello.kaze` contains the example above. It returns `5` and needs no
 external capabilities.
 
+## The language, shortly
+
+A routine names what it may touch, and the checker refuses what it cannot prove:
+
+```kaze
+needs: log
+
+action duty_check(duty: percent) -> bool:
+    requires duty >= 0
+    guard duty <= 100
+    let reading = sensor.temperature() otherwise 0 Celsius
+    if reading > 30 Celsius and duty > 50:
+        log "hot and loaded"
+        return true
+    return false
+```
+
+- `requires`/`ensures` are contracts; `guard` is an executed assertion.
+- A division, a dynamic index or a device read the checker cannot prove safe
+  needs an inline `otherwise <fallback>`.
+- `while` loops declare `bounded <n>`; recursive routines declare
+  `recursion bounded <n>`.
+- Numbers carry physical dimensions (`1 km + 500 meters` is `1500`), checked at
+  compile time and free at run time.
+- Parameters resolve as `--arg` > `AGENT_<PARAM>` > `--config` > signature default.
+
+See [docs/SPEC.md](docs/SPEC.md) for the contract, [docs/STRICTNESS.md](docs/STRICTNESS.md)
+for the strictness rules and [docs/PHASE-1-6-REPORT.md](docs/PHASE-1-6-REPORT.md)
+for what the last roadmap round landed.
+
 ## Design
 
 - Kaze is independently designed and implemented; the current compiler is

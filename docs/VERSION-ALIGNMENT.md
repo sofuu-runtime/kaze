@@ -6,7 +6,7 @@ work below unifies the language contract and opcode sets across standalone Kaze
 and embedded Sofuu.
 
 **Status: implemented and verified.** Standalone Kaze and Kaze in Sofuu implement
-and report the same Kaze 1.0 language contract, with 0 opcode drift (47 opcodes:
+and report the same Kaze 1.0 language contract, with 0 opcode drift (49 opcodes:
 spatial kinematics, vectors, trigonometric math, and try/catch fault recovery)
 and 0 verb drift (17 capabilities).
 
@@ -18,7 +18,7 @@ bounds, and fail-closed security checks.
 
 | Surface | Language reported | Bytecode | Scope |
 | --- | --- | --- | --- |
-| Standalone `kaze/` | `1.0` | Writes format 4; reads format 4 | Standalone Kaze parser, checker, compiler, VM, CLI, and tooling. |
+| Standalone `kaze/` | `1.0` + v1.1 strict surface | Writes format 5; reads formats 4 and 5 | Standalone Kaze parser, checker, compiler, VM, CLI, and tooling. |
 | Sofuu embedded engine | `1.0` | Writes format 2 (with line map); reads formats 1, 2, and 4 | Embedded engine used by `sofuu script`, `sofuu.kaze`, `sofuu.sfs`, and Sofuu-compiled agents. |
 
 Both implementations adhere to the unified 47-opcode contract, supporting spatial

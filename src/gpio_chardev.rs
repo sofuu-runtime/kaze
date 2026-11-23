@@ -119,6 +119,12 @@ pub struct ChipLine {
 }
 
 impl ChipLine {
+    /// The requested line's descriptor. The cleanup table duplicates it, so it
+    /// can still de-assert the line after the owning handle is gone.
+    pub fn raw_fd(&self) -> std::os::fd::RawFd {
+        self.fd.as_raw_fd()
+    }
+
     /// Drive the line high or low.
     pub fn set(&self, on: bool) -> Result<(), String> {
         let mut values = LineValues { bits: if on { 1 } else { 0 }, mask: 1 };
@@ -147,6 +153,14 @@ impl ChipLine {
         }
         Ok(values.bits & values.mask != 0)
     }
+}
+
+/// De-assert one requested line from the signal cleanup path: drive it low
+/// with the line's own descriptor. A failure is ignored — the process is
+/// already dying and there is no one left to tell.
+pub fn deassert(fd: std::os::fd::RawFd) {
+    let mut values = LineValues { bits: 0, mask: 1 };
+    let _ = unsafe { ioctl(fd, GPIO_V2_LINE_SET_VALUES, &mut values) };
 }
 
 /// Open `chip` and request `offset` as an output, ready to drive.

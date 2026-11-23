@@ -126,7 +126,7 @@ module containing every inlined item. The artifact:
 ## 6. Local checks
 
 ```bash
-cargo test                                  # 267 default-feature tests
+cargo test                                  # 143 default-feature tests
 cargo run -- check examples/modular/mission.kaze
 cargo run -- compile examples/modular/mission.kaze -o /tmp/mission.kazebc --disasm
 cargo run -- run examples/modular/mission.kaze \

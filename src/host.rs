@@ -12,12 +12,131 @@
 //! arrives here (declared, granted, in range). This module only decides *which*
 //! backend answers, and refuses to invent a device that was not named.
 
+use std::io::Write;
+
 use crate::caps::{render_value, Action, CapHost, SimHost, SimState};
 use crate::gpio::GpioBus;
-use crate::link::{command_name, copter_mode_name, DroneLink, COPTER_MODE_GUIDED};
+use crate::link::{
+    command_name, copter_mode_name, DroneLink, Telemetry, COPTER_MODE_GUIDED,
+    SAFETY_FRESHNESS_MS,
+};
 use crate::mavlink;
 use crate::value::{Heap, Value};
 use crate::arena::Arena;
+
+/// The ceiling one alert record's message may occupy, in bytes. Shared with
+/// `caps::MAX_ALERT_BYTES` so the language-level constant and the sink cannot
+/// drift apart.
+pub const MAX_ALERT_BYTES: usize = crate::caps::MAX_ALERT_BYTES;
+
+/// The families with a real in-process implementation. Everything else must
+/// have a configured live backend or be refused; nothing falls through to the
+/// simulator by accident.
+const IN_PROCESS_FAMILIES: &[&str] = &["log", "policy"];
+
+/// A real alert destination selected with `--cap alert=stdout|stderr|file:<path>`.
+///
+/// Every record is one line: a UTC timestamp, the word `alert`, then the
+/// message with its credentials redacted and its length capped at
+/// [`MAX_ALERT_BYTES`]. A message that does not fit is truncated and marked,
+/// never dropped: an alert that vanishes is worse than a long one.
+#[derive(Debug)]
+pub struct AlertSink {
+    target: AlertTarget,
+    label: String,
+}
+
+#[derive(Debug)]
+enum AlertTarget {
+    Stdout,
+    Stderr,
+    File(std::fs::File),
+}
+
+impl AlertSink {
+    /// Interpret the device half of `--cap alert=<spec>`. A sink that cannot be
+    /// opened is refused here, before the script runs, with the fix named.
+    pub fn parse(spec: &str) -> Result<AlertSink, String> {
+        let spec = spec.trim();
+        if spec.eq_ignore_ascii_case("stdout") {
+            return Ok(AlertSink { target: AlertTarget::Stdout, label: "stdout".to_string() });
+        }
+        if spec.eq_ignore_ascii_case("stderr") {
+            return Ok(AlertSink { target: AlertTarget::Stderr, label: "stderr".to_string() });
+        }
+        if let Some(path) = spec.strip_prefix("file:") {
+            let path = path.trim();
+            if path.is_empty() {
+                return Err(
+                    "E_CAP_MISSING: 'alert=file:' needs a path, for example --cap alert=file:alerts.log"
+                        .to_string(),
+                );
+            }
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| {
+                    format!(
+                        "E_CAP_MISSING: cannot open the alert file '{}': {} (fix the path, or use --cap alert=stdout)",
+                        path, e
+                    )
+                })?;
+            return Ok(AlertSink {
+                target: AlertTarget::File(file),
+                label: format!("file:{}", path),
+            });
+        }
+        Err(format!(
+            "E_CAP_MISSING: '{}' is not an alert sink; use --cap alert=stdout, alert=stderr, or alert=file:<path>",
+            spec
+        ))
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Write one record and return once the bytes are flushed. A sink that
+    /// cannot accept the record is a failure, never a silent success.
+    pub fn send(&mut self, message: &str) -> Result<(), String> {
+        let line = format!("{} alert {}\n", crate::caps::utc_timestamp(), capped_alert_body(message));
+        let label = self.label.clone();
+        match &mut self.target {
+            AlertTarget::Stdout => {
+                let mut out = std::io::stdout().lock();
+                out.write_all(line.as_bytes())
+                    .and_then(|_| out.flush())
+                    .map_err(|e| format!("E_KAZE_HOST: cannot write the alert to stdout: {}", e))
+            }
+            AlertTarget::Stderr => {
+                let mut out = std::io::stderr().lock();
+                out.write_all(line.as_bytes())
+                    .and_then(|_| out.flush())
+                    .map_err(|e| format!("E_KAZE_HOST: cannot write the alert to stderr: {}", e))
+            }
+            AlertTarget::File(file) => file
+                .write_all(line.as_bytes())
+                .and_then(|_| file.flush())
+                .map_err(|e| format!("E_KAZE_HOST: cannot write the alert to {}: {}", label, e)),
+        }
+    }
+}
+
+/// The redacted, size-capped body of one alert record. Redaction runs first so
+/// truncation can never expose the tail of a credential the redactor removed.
+pub fn capped_alert_body(message: &str) -> String {
+    let redacted = crate::caps::redact_secrets(message);
+    if redacted.len() <= MAX_ALERT_BYTES {
+        return redacted;
+    }
+    const MARKER: &str = " …[truncated]";
+    let (head, _) = crate::caps::truncate_utf8(&redacted, MAX_ALERT_BYTES - MARKER.len());
+    let mut body = String::with_capacity(MAX_ALERT_BYTES);
+    body.push_str(head);
+    body.push_str(MARKER);
+    body
+}
 
 /// A host with live backends.
 pub struct LiveHost {
@@ -27,6 +146,7 @@ pub struct LiveHost {
     sim_families: Vec<String>,
     gpio: Option<GpioBus>,
     pwm: Option<crate::pwm::PwmBus>,
+    alerts: Option<AlertSink>,
 }
 
 impl LiveHost {
@@ -41,6 +161,7 @@ impl LiveHost {
     ) -> Result<LiveHost, String> {
         let mut drone_device = None;
         let mut sim_families = Vec::new();
+        let mut alerts = None;
         let mut configured = Vec::new();
         for (family, device) in backends {
             let device = device.trim();
@@ -81,9 +202,15 @@ impl LiveHost {
                         ));
                     }
                 }
+                // An alert sink is a real output channel: stdout, stderr, or a
+                // file. It is opened here so a bad path fails before the script
+                // runs rather than on the first emergency it has to report.
+                "alert" => {
+                    alerts = Some(AlertSink::parse(device)?);
+                }
                 other => {
                     return Err(format!(
-                        "E_CAP_MISSING: the '{}' family has no configured live backend (drone and device do)",
+                        "E_CAP_MISSING: the '{}' family has no configured live backend (drone, device and alert do)",
                         other
                     ));
                 }
@@ -98,6 +225,7 @@ impl LiveHost {
             sim_families,
             gpio,
             pwm: pwm_bus,
+            alerts,
         })
     }
 
@@ -111,6 +239,7 @@ impl LiveHost {
             sim_families: Vec::new(),
             gpio: None,
             pwm: None,
+            alerts: None,
         }
     }
 
@@ -161,18 +290,25 @@ impl CapHost for LiveHost {
                 }
                 return Err("E_CAP_MISSING: no drone backend is configured; select a live device or drone=sim for testing".to_string());
             }
-            // The live link currently tracks the age of received bytes, not
-            // heartbeat and individual telemetry fields. Until those safety
-            // checks exist, even an authorised command must not actuate a
-            // physical vehicle. Read-only telemetry remains available.
-            if op != "telemetry" {
-                return Err("E_CAP_DENIED: live drone actuation is disabled until heartbeat and telemetry freshness safety checks are implemented".to_string());
-            }
             self.ensure_drone_link()?;
             if let Some(mut link) = self.link.take() {
                 let shown: Vec<String> =
                     args.iter().map(|v| render_value(*v, arena, heap)).collect();
-                let result = drone_op(&mut link, op, args, arena, heap);
+                // The 1500 ms freshness veto runs before every verb: a command
+                // computed from a stale world model is never put on the wire.
+                // `E_SAFETY_VIOLATION` is not catchable, so a script cannot
+                // recover from a stale link and retry with the same stale model.
+                let result = if op == "telemetry" {
+                    drone_op(&mut link, op, args, arena, heap)
+                } else {
+                    match live_freshness_veto(&link.telemetry(), op, args, heap) {
+                        Ok(()) => drone_op(&mut link, op, args, arena, heap),
+                        Err(veto) => {
+                            let _ = crate::hardware::record_safety_veto("drone", op, &veto);
+                            Err(veto)
+                        }
+                    }
+                };
                 self.link = Some(link);
                 let rendered = match &result {
                     Ok(value) => render_value(*value, arena, heap),
@@ -183,6 +319,36 @@ impl CapHost for LiveHost {
                 return result;
             }
             return Err("E_KAZE_HOST_UNCLASSIFIED: the authorised drone link is unavailable".to_string());
+        }
+
+        // `send alert`: one redacted, size-capped line to the sink the operator
+        // selected. With no sink the call fails closed rather than pretending to
+        // have told anyone.
+        if family == "alert" {
+            let shown: Vec<String> = args.iter().map(|v| render_value(*v, arena, heap)).collect();
+            let message = match args.first() {
+                Some(Value::Str(s)) => arena.get(*s).to_string(),
+                Some(other) => render_value(*other, arena, heap),
+                None => String::new(),
+            };
+            let result = match self.alerts.as_mut() {
+                Some(sink) => sink.send(&message).map(|_| Value::Unit),
+                None => Err(
+                    "E_CAP_MISSING: no alert sink is configured; add --cap alert=stdout, --cap alert=stderr, or --cap alert=file:<path>"
+                        .to_string(),
+                ),
+            };
+            let rendered = match &result {
+                Ok(value) => render_value(*value, arena, heap),
+                Err(e) => format!("error: {}", e),
+            };
+            // The record is redacted, so the trace is too: an alert's text is
+            // the payload that leaves the process, and the run report is no
+            // place to print the credential the sink just removed.
+            let trace_args: Vec<String> =
+                shown.iter().map(|arg| crate::caps::redact_secrets(arg)).collect();
+            self.sim.note("alert", op, &trace_args, rendered);
+            return result;
         }
 
         // PWM belongs to the device family but has its own backend, so it is
@@ -230,8 +396,20 @@ impl CapHost for LiveHost {
             return Err("E_CAP_MISSING: no GPIO backend is configured; provide a named --pin".to_string());
         }
 
-        if family == "rover" && !self.sim_families.iter().any(|f| f == "rover") {
+        if family == "rover" {
+            if self.sim_families.iter().any(|f| f == "rover") {
+                return self.sim.call(family, op, args, arena, heap);
+            }
             return Err("E_CAP_MISSING: no live rover backend is available; rover=sim is only for explicit testing".to_string());
+        }
+        // Only families with a real in-process implementation may use the
+        // in-process host. Everything else is refused here by name, so a family
+        // that later gains a simulator arm cannot start fabricating answers.
+        if !IN_PROCESS_FAMILIES.contains(&family) {
+            return Err(format!(
+                "E_CAP_MISSING: the '{}' family has no configured live backend; {}.{} is refused rather than fabricated",
+                family, family, op
+            ));
         }
         self.sim.call(family, op, args, arena, heap)
     }
@@ -268,6 +446,86 @@ impl CapHost for LiveHost {
         })?;
         Ok(Some(link.silence_ms()))
     }
+}
+
+/// The telemetry a live actuation command's decision depends on, beyond the
+/// HEARTBEAT. Kept in step with [`drone_op`] and [`resolve_drone_target`],
+/// which read exactly these fields to fill a partial target; the freshness
+/// unit tests walk the same table so the two cannot drift.
+pub fn dependent_fields(op: &str, args: &[Value], heap: &Heap) -> &'static [&'static str] {
+    match op {
+        // A GUIDED takeoff starts from the position estimate the vehicle will
+        // fly from; without one the autopilot either refuses or flies blind.
+        "takeoff" => &["latitude", "longitude", "altitude"],
+        "goto" => match args.first() {
+            None => &[],
+            Some(Value::Vec(v)) => {
+                if args.len() >= 2 {
+                    &[]
+                } else {
+                    match heap.vec3(*v) {
+                        Some(point) if point[2] != 0.0 => &[],
+                        _ => &["altitude"],
+                    }
+                }
+            }
+            Some(_) => match args.len() {
+                1 => &["longitude", "altitude"],
+                2 => &["longitude"],
+                _ => &[],
+            },
+        },
+        // arm, land, rtl, hold and stop are judged on the HEARTBEAT alone.
+        _ => &[],
+    }
+}
+
+/// The 1500 ms physical-effector gate.
+///
+/// Returns `E_SAFETY_VIOLATION` when the vehicle's HEARTBEAT is older than
+/// [`SAFETY_FRESHNESS_MS`] or a field the command depends on is stale or was
+/// never reported. The code is deliberately one the VM refuses to catch: a
+/// script may not recover from a stale link and retry with the same stale
+/// world model.
+pub fn live_freshness_veto(
+    tele: &Telemetry,
+    op: &str,
+    args: &[Value],
+    heap: &Heap,
+) -> Result<(), String> {
+    match tele.heartbeat_age_ms() {
+        Some(age) if age <= SAFETY_FRESHNESS_MS => {}
+        Some(age) => {
+            return Err(format!(
+                "E_SAFETY_VIOLATION: drone.{} refused: the last HEARTBEAT is {} ms old (limit {} ms); the vehicle is not under control",
+                op, age, SAFETY_FRESHNESS_MS
+            ))
+        }
+        None => {
+            return Err(format!(
+                "E_SAFETY_VIOLATION: drone.{} refused: no HEARTBEAT has been received (limit {} ms); nothing confirms the vehicle is alive",
+                op, SAFETY_FRESHNESS_MS
+            ))
+        }
+    }
+    for field in dependent_fields(op, args, heap) {
+        match tele.field_age_ms(field) {
+            Some(age) if age <= SAFETY_FRESHNESS_MS => {}
+            Some(age) => {
+                return Err(format!(
+                    "E_SAFETY_VIOLATION: drone.{} refused: '{}' telemetry is {} ms old (limit {} ms); the command would act on a stale world model",
+                    op, field, age, SAFETY_FRESHNESS_MS
+                ))
+            }
+            None => {
+                return Err(format!(
+                    "E_SAFETY_VIOLATION: drone.{} refused: '{}' telemetry has not been reported (limit {} ms); the command would act on a stale world model",
+                    op, field, SAFETY_FRESHNESS_MS
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One Kaze drone verb, one gated MAVLink command.
@@ -349,17 +607,18 @@ fn drone_op(
                 .map(|v| render_value(*v, arena, heap))
                 .unwrap_or_default();
             let field = field.trim_matches('"').to_string();
-            // A reading the vehicle has not sent yet is not a zero: wait a
-            // moment for it, then say so instead of inventing a number.
+            // A reading the vehicle has not sent yet is not a zero, and a
+            // reading it sent a while ago is not the present: wait for a value
+            // inside the 1500 ms window, then say so instead of inventing one.
             for _ in 0..40 {
-                if let Some(value) = link.telemetry().read(&field) {
+                if let Some(value) = link.fresh_field(&field, SAFETY_FRESHNESS_MS) {
                     return Ok(Value::Num(value));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
             Err(format!(
-                "E_KAZE_LINK: the vehicle has not reported '{}' yet",
-                field
+                "E_KAZE_LINK: the vehicle has not reported '{}' within {} ms",
+                field, SAFETY_FRESHNESS_MS
             ))
         }
         other => Err(format!("E_KAZE_LINK: the live drone link has no '{}'", other)),
@@ -493,6 +752,146 @@ pub fn op_name(command: u16) -> &'static str {
 #[cfg(test)]
 mod safety_tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A heartbeat and every field a command could depend on, all heard now.
+    fn fresh_telemetry() -> Telemetry {
+        let mut tele = heartbeat_only_telemetry();
+        let now = Instant::now();
+        tele.heard.lat = Some(now);
+        tele.heard.lon = Some(now);
+        tele.heard.alt_m = Some(now);
+        tele.heard.rel_alt_m = Some(now);
+        tele
+    }
+
+    /// A fresh HEARTBEAT, but no position has ever been reported.
+    fn heartbeat_only_telemetry() -> Telemetry {
+        let mut tele = Telemetry::default();
+        let now = Instant::now();
+        tele.heard.heartbeat = Some(now);
+        tele.heard.armed = Some(now);
+        tele.heard.mode = Some(now);
+        tele
+    }
+
+    #[test]
+    fn the_freshness_veto_refuses_a_stale_heartbeat_and_a_stale_field() {
+        let heap = Heap::default();
+
+        // Nothing has been heard: no heartbeat is not a healthy link.
+        let tele = Telemetry::default();
+        let err = live_freshness_veto(&tele, "arm", &[], &heap).expect_err("silence is not consent");
+        assert!(err.starts_with("E_SAFETY_VIOLATION:"), "{}", err);
+        assert!(err.contains("HEARTBEAT"), "{}", err);
+        assert!(err.contains("1500"), "the limit is named: {}", err);
+
+        // A heartbeat older than the limit is refused even if a field is fresh.
+        let mut tele = fresh_telemetry();
+        tele.heard.heartbeat =
+            Some(Instant::now() - Duration::from_millis(SAFETY_FRESHNESS_MS + 1));
+        let err = live_freshness_veto(&tele, "land", &[], &heap).expect_err("stale heartbeat");
+        assert!(err.contains("HEARTBEAT is 1501 ms old") || err.contains("HEARTBEAT is 1502 ms old"), "{}", err);
+        assert!(err.starts_with("E_SAFETY_VIOLATION:"), "{}", err);
+
+        // A fresh heartbeat is not enough for a command that reads a field.
+        let mut tele = heartbeat_only_telemetry();
+        let err = live_freshness_veto(&tele, "takeoff", &[Value::Num(10.0)], &heap)
+            .expect_err("takeoff needs a position");
+        assert!(err.contains("'latitude' telemetry has not been reported"), "{}", err);
+        tele.heard.lat = Some(Instant::now() - Duration::from_millis(SAFETY_FRESHNESS_MS + 1));
+        let err = live_freshness_veto(&tele, "takeoff", &[Value::Num(10.0)], &heap)
+            .expect_err("stale latitude");
+        assert!(err.contains("'latitude' telemetry is"), "{}", err);
+
+        // Everything fresh: the same command passes.
+        let tele = fresh_telemetry();
+        assert!(live_freshness_veto(&tele, "takeoff", &[Value::Num(10.0)], &heap).is_ok());
+        assert!(live_freshness_veto(&tele, "arm", &[], &heap).is_ok());
+        assert!(
+            live_freshness_veto(&tele, "rtl", &[], &heap).is_ok(),
+            "a failsafe command with a fresh heartbeat passes"
+        );
+    }
+
+    #[test]
+    fn the_veto_depends_on_exactly_the_fields_a_goto_reads() {
+        let mut heap = Heap::default();
+        let three = heap.push_vec([47.6, 8.5, 20.0]).expect("point");
+        let ground = heap.push_vec([47.6, 8.5, 0.0]).expect("point without altitude");
+
+        assert_eq!(dependent_fields("arm", &[], &heap), &[] as &[&str]);
+        assert_eq!(dependent_fields("takeoff", &[], &heap), &["latitude", "longitude", "altitude"]);
+        assert_eq!(dependent_fields("goto", &[Value::Num(47.6)], &heap), &["longitude", "altitude"]);
+        assert_eq!(dependent_fields("goto", &[Value::Num(47.6), Value::Num(20.0)], &heap), &["longitude"]);
+        assert_eq!(dependent_fields("goto", &[Value::Num(47.6), Value::Num(8.5), Value::Num(20.0)], &heap), &[] as &[&str]);
+        assert_eq!(dependent_fields("goto", &[three], &heap), &[] as &[&str]);
+        assert_eq!(dependent_fields("goto", &[ground], &heap), &["altitude"]);
+        assert_eq!(
+            dependent_fields("goto", &[ground, Value::Num(20.0)], &heap),
+            &[] as &[&str]
+        );
+        for op in ["land", "rtl", "hold", "stop"] {
+            assert_eq!(dependent_fields(op, &[], &heap), &[] as &[&str], "{}", op);
+        }
+    }
+
+    #[test]
+    fn an_alert_record_is_redacted_and_capped() {
+        let body = capped_alert_body("contact ops with key sk-live-0123456789 and standby");
+        assert!(body.contains("***"), "{}", body);
+        assert!(!body.contains("0123456789"), "{}", body);
+
+        let long = format!("{} password=hunter2", "x".repeat(4_000));
+        let body = capped_alert_body(&long);
+        assert!(body.len() <= MAX_ALERT_BYTES, "{} bytes", body.len());
+        assert!(!body.contains("hunter2"), "redaction runs before truncation");
+        let tail: String = body.chars().rev().take(12).collect::<String>().chars().rev().collect();
+        assert!(tail.contains("[truncated]"), "the reader is told it was cut: {}", tail);
+    }
+
+    #[test]
+    fn an_alert_sink_needs_a_known_destination() {
+        assert!(AlertSink::parse("stdout").is_ok());
+        assert!(AlertSink::parse("stderr").is_ok());
+        let err = AlertSink::parse("telegram").expect_err("not a sink");
+        assert!(err.contains("alert=stdout"), "the fix is named: {}", err);
+        let err = AlertSink::parse("file:").expect_err("no path");
+        assert!(err.contains("needs a path"), "{}", err);
+        let err = AlertSink::parse("file:/kaze-no-such-directory/alerts.log").expect_err("unwritable");
+        assert!(err.contains("cannot open the alert file"), "{}", err);
+    }
+
+    #[test]
+    fn a_file_alert_sink_appends_one_timestamped_line_per_alert() {
+        let path = std::env::temp_dir().join(format!(
+            "kaze-alert-sink-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let spec = format!("file:{}", path.display());
+        {
+            let mut sink = AlertSink::parse(&spec).expect("a fresh file opens");
+            sink.send("gate opened with password=hunter2").expect("first alert");
+            sink.send("gate closed").expect("second alert");
+        }
+        let text = std::fs::read_to_string(&path).expect("the sink wrote a file");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "one line per alert: {}", text);
+        for line in &lines {
+            assert!(line.contains(" alert "), "{}", line);
+            assert!(line.len() >= 24, "a timestamp and a body: {}", line);
+            assert_eq!(line.as_bytes().get(4), Some(&b'-'), "YYYY-MM-DD: {}", line);
+            assert_eq!(line.as_bytes().get(10), Some(&b'T'), "date and time split: {}", line);
+        }
+        assert!(lines[0].contains("password=***"), "{}", lines[0]);
+        assert!(!text.contains("hunter2"), "{}", text);
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn partial_drone_targets_require_real_valid_telemetry() {

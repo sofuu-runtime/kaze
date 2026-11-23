@@ -3,8 +3,8 @@
 ## 1. What is frozen
 
 - **Language version:** `1.0`.
-- **Module format:** `4` (`isa::FORMAT_VERSION`).
-- **Opcode numbers:** 0–46, exactly as listed in `docs/SPEC.md` §6.3.
+- **Module format:** `5` (`isa::FORMAT_VERSION`). A format-4 artifact still loads.
+- **Opcode numbers:** 0–48, exactly as listed in `docs/SPEC.md` §6.3 (49 opcodes).
 - **Artifact bytes:** a fixed source compiles to the bytes in
   `tests/fixtures/kaze-v1.0.kazebc.hex`; `tests/compat.rs` compares every byte.
 - **Error codes:** the names in `docs/SPEC.md` §7 are stable.

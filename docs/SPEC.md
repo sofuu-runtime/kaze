@@ -1,6 +1,33 @@
-# Kaze Language Specification — v1.0
+# Kaze Language Specification — v1.1
 
-> **Status: FROZEN 2026-11-05 (ALIGNED 2026-11-21).** This is the normative specification of the
+> **Status: v1.1 (2026-11-22) — roadmap phases 1-6 landed.** v1.0 was frozen on
+> 2026-11-05 and aligned on 2026-11-21. v1.1 is additive: it keeps every v1.0
+> program that was already safe, and it changes four things.
+>
+> 1. **A fallible operation must say what happens when it fails.** Division and
+>    modulo by a value the checker cannot prove non-zero, a dynamic index, and a
+>    value read from a device that can go silent all need either a proof or an
+>    inline `otherwise <fallback>` (§3.6).
+> 2. **A loop declares its ceiling.** `while <cond> bounded <n>:` is mandatory;
+>    a routine on a call cycle declares `recursion bounded <n>` (§3.7).
+> 3. **Numbers carry dimensions.** 22 unit spellings over seven dimensions are
+>    checked and folded at compile time (§4.2).
+> 4. **Routines carry contracts.** `requires`, `ensures`, typed parameters with
+>    defaults and `untrusted<T>` (§3.8), resolved through a 12-factor hierarchy
+>    (§5.10).
+>
+> The module format is **5**: Phase 2 added the per-item recursion ceiling. A
+> format-4 artifact still loads (its items carry no declared ceiling).
+> The evidence for each acceptance gate is in
+> [PHASE-1-6-REPORT.md](PHASE-1-6-REPORT.md).
+>
+> **Compatibility note.** The embedded Sofuu engine implements the v1.0 surface
+> (records and intra-module calls included). The constructs listed above are
+> documented for this standalone engine and are not claimed for the embedded one;
+> `scripts/kaze-drift-check.sh --strict` keeps the shared instruction set and
+> capability verbs honest.
+>
+> This is the normative specification of the
 > Kaze 1.0 language contract, unified across standalone Kaze and the embedded
 > engine in `sofuu` (`crates/sofuu-core/src/domains/kaze/`). Both implementations
 > share the 47-opcode instruction set, fail-closed capability gates, and spatial math.
@@ -44,11 +71,21 @@ An implementation conforms to v1.0 if it:
   that is not finite in `f64` is a lexical error.
 - Identifiers are ASCII `[A-Za-z_][A-Za-z0-9_]*`.
 - Punctuation: `: ( ) , . % + - * / < > = [ ]`; two-character `<= >= == !=`.
-- Units (only immediately after a numeric literal): `m`/`meters`, `m/s`,
-  `degrees`, `s`/`seconds`, `ms`/`milliseconds`, `%`/`percent`. Time units
-  normalize to seconds (`500 ms` → `0.5 s`); `%` stays a whole number (`20%` is
-  20). Angle conversion is the separate postfix form `x in radians` /
-  `x in degrees`, not a unit.
+- Units (only immediately after a numeric literal), by dimension:
+  - length: `m`/`meter(s)`, `km`, `cm`, `mm`
+  - time: `s`/`second(s)`, `ms`, `h`/`hour(s)`, `min`/`minute(s)`
+  - mass: `kg`, `g`/`gram(s)`
+  - angle: `deg`/`degree(s)`, `rad`/`radian(s)`
+  - temperature: `Celsius`, `Kelvin`
+  - pressure: `Pa`/`Pascal`, `mbar`, `hPa`
+  - speed: `m/s`, `km/h`; acceleration: `m/s2`; current: `ampere`/`A`
+  - ratio: `%`/`percent`
+
+  Every literal is normalised into its dimension's base unit at parse time
+  (`500 ms` is `0.5` seconds, `1 km` is `1000` meters, `20 Celsius` is
+  `293.15` kelvin, `0.5 rad` is `28.6479` degrees). `%` stays a whole number
+  (`20%` is 20). The postfix forms `x in radians` / `x in degrees` remain
+  numeric conversions for the trig functions.
 
 ## 3. Grammar
 
@@ -58,20 +95,35 @@ header      = needs | use ;
 needs       = "needs" ":" ident ("," ident)* newline ;
 use         = "use" string newline ;              (* .kaze path *)
 
-item        = action | check | filter | when | every ;
-action      = ("action" | "check" | "filter") ident "(" params? ")" ":" block ;
+item        = action | check | filter | record | when | every ;
+action      = ("action" | "routine" | "check" | "filter") ident "(" params? ")"
+              ("->" type)? ":" rblock ;
+record      = "record" ident ":" newline indent (ident (":" type)?)+ dedent ;
 when        = "when" expr ":" block ;
 every       = "every" number timeunit ":" block ;
-params      = ident ("," ident)* ;
+params      = param ("," param)* ;
+param       = ident (":" type ("=" expr)?)? ;
+type        = "int" | "number" | "text" | "bool" | "percent" | "length" | "time"
+            | "angle" | "temperature" | "untrusted" "<" type ">" | record-name ;
+
+(* A routine body starts with its declarations, then its statements. *)
+rblock      = ":" newline indent declaration* stmt+ dedent ;
+declaration = "requires" expr | "ensures" expr
+            | "recursion" "bounded" number
+            | "needs" ":" capability ("," capability)* ;
+
+(* The loosest expression level: an inline recovery. *)
+expr        = or_expr ("otherwise" expr)? ;
 
 block       = newline indent stmt+ dedent ;
 
-stmt        = let | set | if | for | while | try | return | eval ;
+stmt        = let | set | if | for | while | try | return | guard | eval ;
 let         = "let" ident "=" expr ;
 set         = "set" ident ("=" | "to") expr ;
 if          = "if" expr ":" block ("otherwise" ":" block)? ;
 for         = "for" "each" ident "in" expr ":" block ;
-while       = "while" expr ":" block ;
+while       = "while" expr "bounded" number ":" block ;
+guard       = "guard" expr ;
 try         = "try" ":" block
               "otherwise" ("with" ident)? ":" block ;
 return      = "return" expr? | "return" "to" "launch" ;
@@ -111,6 +163,70 @@ args        = expr ("," expr)* ;
 `hold [position]`, `stop ident`, `drive [forward|backward] [at expr]`,
 `recall memories matching expr`. Verbs lower to capability calls (see §5.7).
 
+### 3.6 Inline fallbacks
+
+A fallible operation the checker cannot prove safe must carry
+`otherwise <fallback>`; the fallback runs only when the operation would fail,
+and its value replaces it. The checker proves these cases and then needs no
+fallback:
+
+| Operation | Proof that satisfies the checker |
+| :--- | :--- |
+| `a / b`, `a % b` | the divisor is a non-zero literal |
+| `xs[i]` | `i` is a literal inside a known length (list/text literal, a point, or a value whose length a callee promised with `ensures length of result == k`) |
+| `xs[i]` | `i` is proved non-negative and proved `< length of xs` by an enclosing `if`/`while` condition, a `guard`, or a `requires` clause |
+| `xs[length of xs - k]` | `k < length of xs` is proved |
+| a device read (`sensor.*`, `device.read*`, `memory.recall`) | it is inside a `try:` block |
+
+A capability fallback must be the whole value of its statement (give it a
+`let`), because the VM's recovery handler starts with an empty operand stack.
+The fallback of a capability call recovers operational failures only:
+`E_CAP_*` and `E_SAFETY_VIOLATION` stay fatal, so a missing grant is never
+silently papered over by a fallback value.
+
+### 3.7 Termination
+
+- `while` requires an iteration ceiling (`bounded <n>`, a positive integer).
+  The compiler keeps a hidden counter and stops the run with
+  `E_KAZE_LOOP_BOUND` when the ceiling is passed; the counter is cheap and the
+  error is uncatchable.
+- `for each` iterates a value, so it always terminates.
+- A routine that can call itself, directly or through another routine, declares
+  `recursion bounded <n>` with `1 <= n <= 256` as one of its first lines. The
+  ceiling counts that routine's **own live frames**, which is what the
+  declaration means; the compiler records it in the artifact (format 5) and both
+  engines refuse the call that would break it with `E_KAZE_RECURSION_DEPTH`.
+  Independently of any declaration, the whole call stack is bounded at 256
+  frames.
+- `guard <expr>` is an executed assertion: everything after it may assume it
+  held, and a false guard stops the run with `E_KAZE_GUARD`.
+
+### 3.8 Signatures, contracts and untrusted data
+
+A routine declaration may type its parameters and its result:
+
+```kaze
+action set_throttle(channel: int, duty: percent = 50) -> bool:
+    requires channel >= 0
+    requires channel <= 8
+    requires duty <= 100
+    ensures result == (duty > 50)
+    return duty > 50
+```
+
+- `requires` clauses are checked against constant arguments at compile time
+  (`E_KAZE_CONTRACT`) and asserted at routine entry at run time — unless the
+  compiler can prove every call site passes arguments that satisfy them, in
+  which case the assertion is dead code and is left out.
+- `ensures` clauses are asserted at every return, where `result` names the
+  returned value.
+- A parameter typed `untrusted<T>` is data that crossed a system boundary; it
+  must be validated by a `requires` clause that names it (`E_KAZE_UNTRUSTED`).
+- A routine may also declare its own `needs:` line. It may only name
+  capabilities the module already declared, it may only use the ones it named,
+  and a caller must hold everything its callee declares: capabilities narrow
+  down the call graph and can never escalate (`E_CAP_UNDECLARED`).
+
 ## 4. Types and values
 
 | Type | Meaning |
@@ -123,9 +239,14 @@ args        = expr ("," expr)* ;
 | record | a heap map supplied by a host (readable with `.field`) |
 | nothing | unit |
 
-Units are checked loosely: numeric literals carry a unit so `meters + m/s` is
-a checker error, and a point used as a **place** must have `lat` in `[-90, 90]`
-and `lon` in `[-180, 180]` (`E_KAZE_RANGE`). Units have no runtime effect.
+Numeric literals carry a dimension. Addition and subtraction need the same
+dimension, multiplication adds exponents and division subtracts them, and a
+comparison needs both sides in one dimension; anything else is
+`E_KAZE_UNIT_MISMATCH` with both quantities named. Because every literal is
+normalised into its base unit at parse time, a unit never reaches an
+instruction: the same program written with units and with plain numbers compiles
+to the same bytecode. A point used as a **place** must have `lat` in
+`[-90, 90]` and `lon` in `[-180, 180]` (`E_KAZE_RANGE`).
 Points additionally support `p.x`/`p.lat`, `p.y`/`p.lon`,
 `p.z`/`p.alt`/`p.altitude` and `p[0..2]`.
 
@@ -230,6 +351,22 @@ the same source twice produces the same bytes; origins are relative to the root
 directory (an import outside it is recorded as written), and the tables use
 ordered insertion, never hashing.
 
+## 5.10 Parameter resolution (12-factor)
+
+A routine's parameters resolve in this order, first value found wins:
+
+1. `--arg <name>=<value>` (or a positional argument for the compiled-binary path)
+2. the environment: `AGENT_<NAME>`, then `SOFUU_<NAME>` (upper-cased), parsed as
+   JSON when it parses, text otherwise
+3. the configuration document: `--config <path>`, else `./agent.config.json`;
+   the value is the entry `name` or `args.name`
+4. the signature default
+
+A typed parameter with no value anywhere is `E_KAZE_PARAM` and the message names
+all three ways to provide it. A value that cannot become the declared type is
+refused with the type named, never coerced. An untyped parameter keeps the v1.0
+behaviour: a missing value binds `nothing`.
+
 ## 6. Bytecode and module format
 
 ### 6.1 Encoding
@@ -238,11 +375,15 @@ One instruction is `opcode:8 | a:8 | b:8 | c:8` little-endian. Instructions
 with an immediate are followed by one 32-bit word. Jumps are relative to the
 end of the instruction, signed.
 
-### 6.2 Module format 4
+### 6.2 Module format 5
+
+Format 5 adds one field: the routine's declared recursion ceiling. A format-4
+module still loads (every item then reads bound 0, meaning "not declared") and
+the VM still applies the global 256-frame bound.
 
 ```
 KAZEBC1\0            8 bytes magic
-u16                  format version (4)
+u16                  format version (5)
 text                 root origin
 u32 + text[]         needs
 u32 + const[]        constants: u8 kind (0 num f64, 1 text, 2 bool), value
@@ -252,6 +393,7 @@ u32 + item[]         item:
                        f64 period_ms
                        u32 line
                        u8 slots
+                       u16 recursion_bound   (0 = not declared)
                        text name
                        text origin
                        u32 + text[] params
@@ -305,6 +447,10 @@ cannot restore a deeper stack. A module that fails is refused
 `CODE: message` (`file:line[:col]` is added by the CLI). Stable codes:
 
 `E_KAZE_PARSE`, `E_KAZE_CHECK`, `E_KAZE_COMPILE`, `E_KAZE_ENTRY`, `E_KAZE_IO`,
+`E_KAZE_MISSING_FALLBACK`, `E_KAZE_BOUNDS`, `E_KAZE_UNIT_MISMATCH`,
+`E_KAZE_LOOP_UNBOUNDED`, `E_KAZE_LOOP_BOUND`, `E_KAZE_RECURSION_UNBOUNDED`,
+`E_KAZE_RECURSION_DEPTH`, `E_KAZE_CONTRACT`, `E_KAZE_UNTRUSTED`,
+`E_KAZE_PARAM`, `E_KAZE_GUARD`,
 `E_KAZE_IMPORT`, `E_KAZE_FMT`, `E_KAZE_BADCODE`, `E_KAZE_TYPE`,
 `E_KAZE_RANGE`, `E_KAZE_BOUNDS`, `E_KAZE_DIV0`, `E_KAZE_MATH`,
 `E_KAZE_OVERFLOW`, `E_KAZE_STACK`, `E_KAZE_MEMORY`, `E_KAZE_TRAP`,
@@ -312,9 +458,73 @@ cannot restore a deeper stack. A module that fails is refused
 `E_SAFETY_VIOLATION`, `E_KAZE_LINK`, `E_KAZE_LINK_TIMEOUT`,
 `E_COMMAND_REJECTED`, `E_ARMING_DENIED`, `E_KAZE_HOST`.
 
-## 8. Known limits (v1.0)
+### 5.11 Native binaries and memory
 
-- No user-routine call syntax; routines are reached by `--entry` or hooks.
+A program emitted as C99 counts every allocation against a budget: **1 GiB by
+default**, overridable with the environment variable `KAZE_MAX_MEMORY` (bytes).
+Past it the program stops with `E_KAZE_MEMORY` and exit code 70, which is a
+diagnostic, not an OOM kill. The interpreter has its own bound
+(`Limits::arena_bytes`, 256 KiB by default) and stops with the same code.
+
+`KAZE_STATS=1` prints the peak and live bytes plus a per-site allocation table
+when the program exits, so "where did the memory go" is answerable from the
+binary itself.
+
+**Append in place.** A list is copied on `+`, which makes `set xs = xs + [x]` in
+a loop quadratic. When the compiler can prove that a local is the only holder of
+its list — every mention is the append itself, a read that copies (index,
+length, `for each`, arithmetic), or the routine's return value, and the name is
+never bound twice, **never bound from a parameter**, never handed to a call, and
+never stored in another value — the append becomes an in-place push with
+amortized constant cost. A list that *could* be aliased keeps the copying
+append, so what a script observes does not change.
+
+A parameter is therefore never appended to in place: the caller may hold another
+name for the same list. Consuming a parameter in place needs an inter-procedural
+proof (every call site passes a name the caller cannot alias, and the callee only
+appends to and returns that parameter); it is not implemented yet, so helper
+routines that accumulate into a parameter still copy.
+
+**Arithmetic is evaluated exactly as written.** Floating-point expressions are not
+contracted into fused multiply-adds, in either engine, so a native build produces
+bit-identical results to the interpreter. The emitted C carries
+`#pragma STDC FP_CONTRACT OFF` for that reason: without it, `a*b - c*d` may round
+once instead of twice, which turned a bearing between two identical points from 0
+into 180.
+
+**A fallback runs only when the operation fails.** `x / y otherwise f` and
+`xs[i] otherwise f` evaluate their operands once and evaluate `f` only when the
+division or the read would fail. Both engines behave this way, so a fallback with
+an observable effect (a `log` call, an allocation) is not a hidden side effect of
+the happy path. The native backend covers the statement forms (`let`, `set`,
+`return`) by evaluating the operands into temporaries, and a fallback nested
+inside a larger expression when its operands are pure (names, literals and reads
+built from them), where evaluating them twice cannot be observed. A fallback
+whose operands have effects is handled by hoisting: the operands are evaluated
+once into temporaries declared before the statement and the fallback stays in a
+ternary, so it is still lazy and each operand still runs exactly once. Every
+fallback is therefore lazy in both engines, in every position.
+
+The native path refuses what the interpreter refuses, with the same codes and
+exit status 70:
+
+| Situation | Code |
+| :--- | :--- |
+| Division or remainder by zero | `E_KAZE_DIV0` |
+| A non-finite arithmetic result (overflow, NaN) | `E_KAZE_OVERFLOW` / `E_KAZE_MATH` |
+| A read outside a list or text | `E_KAZE_BOUNDS` |
+| A call that breaks its declared recursion ceiling, or frame 256 | `E_KAZE_RECURSION_DEPTH` |
+| A false `requires` at entry or `ensures` at return | `E_KAZE_CONTRACT` |
+
+## 8. Known limits (v1.1)
+
+- Routine calls take positional arguments and are in-module only: no namespaces,
+  no method syntax, no first-class functions.
+- `10 % 4` is not writable: `%` directly after a number is the percent unit, so
+  the source means `10%` and then a stray `4`. Name the dividend (`total % 4`) or
+  parenthesise it (`(10) % 4`).
+- A capability call's inline fallback must be the whole value of its statement
+  (bind it with `let`); the VM's recovery frame needs an empty operand stack.
 - Modules are global: no namespaces, conditional imports or aliases.
 - Bare telemetry is per-file, not merged across modules.
 - Nesting is bounded to **64 expression levels** and **64 blocks**; deeper

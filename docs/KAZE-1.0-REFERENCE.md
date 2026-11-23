@@ -9,6 +9,13 @@ and machine-oriented syntaxes with shared semantics and authorization. Machine
 syntax, conversion and parity are not implemented in this inventory; design
 details remain open.
 
+**Superseded in part (2026-11-22):** this inventory predates roadmap phases 1-6.
+The current contract is [SPEC.md](SPEC.md): 49 opcodes, module format 5, inline
+fallbacks, bounded loops, guards, routine contracts, typed signatures and the
+widened unit lexicon. Rows below that say "47 opcodes", "no direct call from one
+routine to another", "no record literal" or "units are checked loosely" are
+historical. [PHASE-1-6-REPORT.md](PHASE-1-6-REPORT.md) records what changed.
+
 **Snapshot:** 2026-11-10. This inventory describes the current standalone
 `kaze/` source and its CLI after the capability-safety changes. It does
 not establish the contents of a published release, the behavior of a different
@@ -304,22 +311,22 @@ possible custom `CapHost` supplied by an embedding application.
 | Live host fallback | `[IMPLEMENTED]` `[POST-BASELINE]` `[VERIFIED]` | Unconfigured sensor, device, alert, memory, AI, and tool operations return unavailable errors rather than simulated success. |
 | Link-loss gate | `[IMPLEMENTED]` `[POST-BASELINE]` `[VERIFIED]` | Link monitoring checks the drone declaration, grant, policy, and backend before reading the host. |
 | Lazy live link | `[IMPLEMENTED]` `[POST-BASELINE]` `[VERIFIED]` | The live drone connection opens only after the relevant VM gate approves the operation. |
-| Live telemetry freshness | `[PARTIAL]` `[TARGET]` | The live link uses a two-second timeout on received bytes, not a 1.5-second heartbeat and per-field telemetry freshness veto. Partial targets can use a previously reported value whose age is unknown. The `RULES.md` safety requirement is not yet met. |
-| Live drone actuation | `[POST-BASELINE]` `[VERIFIED]` `[UNSUPPORTED]` | The built-in host returns `E_CAP_DENIED` for live actuation before opening the link until the required freshness checks are implemented. Explicit drone simulation remains available for testing. |
+| Live telemetry freshness | `[IMPLEMENTED]` `[VERIFIED]` | The live link stamps the heartbeat and every telemetry field; a value older than 1500 ms is not returned and cannot be used as a command target. Verified against a scripted autopilot over a real UDP socket. |
+| Live drone actuation | `[LIVE-PATH]` `[VERIFIED]` `[UNVERIFIED]` | Enabled behind the 1500 ms heartbeat and per-field freshness veto: a stale or silent link refuses the command with `E_SAFETY_VIOLATION` (uncatchable) and nothing leaves the process. Verified against a scripted autopilot; not verified on a real vehicle. |
 | Physical hardware execution | `[UNVERIFIED]` | The source has MAVLink and Linux GPIO/PWM paths; this inventory did not run a vehicle or device. |
 
 ### 4.2 Drone operations
 
-These require `needs: drone`, a `drone` grant and a valid policy. MAVLink
-actuation code exists but is disabled by the built-in host until freshness
-checks are implemented. The explicitly selected simulator is for testing only;
-the live path was not physically verified here.
+These require `needs: drone`, a `drone` grant and a valid policy. On the live
+link every command also needs a heartbeat and the fields it reads to be at most
+1500 ms old. The explicitly selected simulator is for testing only; the live
+path was verified against a scripted autopilot, not a physical vehicle.
 
 | Operation | Tag | Arguments and behavior |
 | --- | --- | --- |
 | `drone.arm()` | `[LIVE-PATH]` `[UNVERIFIED]` | No arguments; request arming and wait for armed telemetry on the live path. |
 | `drone.takeoff(height)` | `[LIVE-PATH]` `[UNVERIFIED]` | One number in meters; gate checks `0..500`. |
-| `drone.goto(target)` | `[LIVE-PATH]` `[UNVERIFIED]` `[PARTIAL]` | One point or numeric latitude. The currently disabled partial live-target code requires previously reported telemetry rather than fabricated coordinates or altitude; freshness is not checked. |
+| `drone.goto(target)` | `[LIVE-PATH]` `[UNVERIFIED]` | One point or numeric latitude. A partial target is completed from previously reported telemetry, and the command is refused when that field is stale or was never reported. |
 | `drone.goto(target, altitude)` | `[LIVE-PATH]` `[UNVERIFIED]` | Two arguments; supported point/altitude or numeric forms have backend-specific interpretation. |
 | `drone.goto(lat, lon, altitude)` | `[LIVE-PATH]` `[UNVERIFIED]` | Three numeric arguments; latitude is checked `-90..90`, longitude `-180..180`, and altitude `0..500` meters. |
 | `drone.land()` | `[LIVE-PATH]` `[UNVERIFIED]` | No arguments; request landing. |

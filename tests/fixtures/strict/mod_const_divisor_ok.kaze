@@ -1,0 +1,5 @@
+# expect: ok — a literal non-zero modulo divisor is provably safe
+# value: 2 with total=10 (10 % 4)
+action main(total):
+    let left = total % 4
+    return left

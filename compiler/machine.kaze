@@ -1,0 +1,748 @@
+# machine.kaze — the dual-syntax engine.
+#
+# Kaze has two spellings of the same program:
+#
+#   * the human, indentation-based form the compiler reads by default;
+#   * the canonical machine S-expression form, one form per line,
+#     (kaze (format 1) (needs ..) (action "f" (params ..) (body ..))).
+#
+# This module emits the machine form from the AST, reads it back into the same
+# AST, and prints the human form from an AST. The round-trip the tests pin is
+#
+#   HUMAN -> AST -> MACHINE -> AST -> HUMAN -> AST
+#
+# where the two ASTs must check identically. A construct this module does not
+# support is emitted as (unsupported ..) or lowered to an UNKNOWN node, which
+# the checker reports as E_KAZE_PARSE; nothing is dropped in silence.
+#
+# Machine grammar (format 1), all whitespace between tokens insignificant:
+#
+#   program  := "(" "kaze" (format 1)? (use STR)* (needs STR*)? item* ")"
+#   item     := record | action | check | filter | when | every
+#   record   := "(" "record" STR "(" "fields" field* ")" ")"
+#   field    := "(" NAME TYPE ")" | STR
+#   action   := "(" ("action"|"check"|"filter") STR
+#                 "(" "params" param* ")"
+#                 "(" "contracts" contract* ")"
+#                 "(" "body" stmt* ")" ")"
+#   param    := "(" "param" STR STR expr? ")"
+#   contract := "(" "requires" expr ")" | "(" "ensures" expr ")"
+#             | "(" "recursion" NUM ")" | "(" "needs" STR ")"
+#   expr     := "(" "number" STR STR? ")" | "(" "string" STR ")"
+#             | "(" "bool" ("true"|"false") ")"
+#             | "(" "name" STR ")" | "(" "bin" OP expr expr ")"
+#             | "(" "call" STR expr* ")" | "(" "named" STR expr ")"
+#             | "(" "field" expr NAME ")" | "(" "index" expr expr ")"
+#             | "(" "fallback" expr expr ")" | "(" "len" expr ")"
+#             | "(" "in_unit" STR expr ")" | "(" "list" expr* ")"
+#   stmt     := "(" "let" STR expr ")" | "(" "set" STR expr ")"
+#             | "(" "return" expr? ")" | "(" "eval" expr ")"
+#             | "(" "guard" expr ")"
+#             | "(" "if" expr "(" "then" stmt* ")" "(" "otherwise" stmt* ")" ")"
+#             | "(" "while" expr "(" "bounded" NUM ")"? "(" "body" stmt* ")" ")"
+#             | "(" "for_each" STR expr "(" "body" stmt* ")" ")"
+#             | "(" "try" "(" "body" stmt* ")" "(" "otherwise"
+#                 "(" "with" STR ")"? stmt* ")" ")"
+use "./token.kaze"
+use "./ast.kaze"
+use "./lexer.kaze"
+use "./parser.kaze"
+
+# ── shared text helpers ────────────────────────────────────────────────
+
+action m_pad(n):
+    let out = ""
+    let i = 0
+    while i < n bounded 1000:
+        set out to out + "  "
+        set i to i + 1
+    return out
+
+action h_pad(n):
+    let out = ""
+    let i = 0
+    while i < n bounded 1000:
+        set out to out + "    "
+        set i to i + 1
+    return out
+
+action quoted(s):
+    let out = "\""
+    let len = length of s
+    let i = 0
+    while i < len bounded 1000000:
+        let c = s[i] otherwise "x"
+        if c == "\\":
+            set out to out + "\\\\"
+        otherwise:
+            if c == "\"":
+                set out to out + "\\\""
+            otherwise:
+                if c == "\n":
+                    set out to out + "\\n"
+                otherwise:
+                    if c == "\t":
+                        set out to out + "\\t"
+                    otherwise:
+                        set out to out + c
+        set i to i + 1
+    set out to out + "\""
+    return out
+
+action drop_first(items):
+    let out = []
+    let len = length of items
+    let i = 1
+    while i < len bounded 1000000:
+        set out to out + [node_at(items, i)]
+        set i to i + 1
+    return out
+
+# The head atom of a form, or "" when it is not a tagged list.
+action m_head(form: AstNode):
+    let kids = form.children
+    if form.kind != "L" or (length of kids) == 0:
+        return ""
+    let h = node_at(kids, 0)
+    if h.kind == "A":
+        return h.name
+    return ""
+
+# Argument i of a tagged form (the head is argument -1).
+action m_arg(form: AstNode, i):
+    return child_at(form, i + 1)
+
+# The text of a string or atom position.
+action m_text(node: AstNode):
+    if node.kind == "S":
+        return node.val_str
+    if node.kind == "A":
+        return node.name
+    return ""
+
+# ── human -> machine ───────────────────────────────────────────────────
+
+action emit_expr_machine(e: AstNode):
+    recursion bounded 200
+    let k = e.kind
+    if k == "NUM":
+        if e.name == "":
+            return "(number " + quoted(e.val_str) + ")"
+        return "(number " + quoted(e.val_str) + " " + quoted(e.name) + ")"
+    if k == "STR":
+        return "(string " + quoted(e.val_str) + ")"
+    if k == "BOOL":
+        return "(bool " + e.val_str + ")"
+    if k == "IDENT":
+        return "(name " + quoted(e.name) + ")"
+    if k == "BIN":
+        return "(bin " + quoted(e.name) + " " + emit_expr_machine(child_at(e, 0)) + " " + emit_expr_machine(child_at(e, 1)) + ")"
+    if k == "FALLBACK":
+        return "(fallback " + emit_expr_machine(child_at(e, 0)) + " " + emit_expr_machine(child_at(e, 1)) + ")"
+    if k == "FIELD":
+        return "(field " + emit_expr_machine(child_at(e, 0)) + " " + quoted(e.name) + ")"
+    if k == "INDEX":
+        return "(index " + emit_expr_machine(child_at(e, 0)) + " " + emit_expr_machine(child_at(e, 1)) + ")"
+    if k == "LEN":
+        return "(len " + emit_expr_machine(child_at(e, 0)) + ")"
+    if k == "IN_UNIT":
+        return "(in_unit " + quoted(e.name) + " " + emit_expr_machine(child_at(e, 0)) + ")"
+    if k == "LIST":
+        let parts = ""
+        for each it in e.children:
+            set parts to parts + " " + emit_expr_machine(it)
+        return "(list" + parts + ")"
+    if k == "CALL":
+        let parts = ""
+        for each a in e.children:
+            set parts to parts + " " + emit_expr_machine(a)
+        return "(call " + quoted(e.name) + parts + ")"
+    if k == "NAMED_ARG":
+        return "(named " + quoted(e.name) + " " + emit_expr_machine(child_at(e, 0)) + ")"
+    return "(unsupported " + quoted(k) + ")"
+
+action emit_stmts_machine(stmts):
+    recursion bounded 200
+    let parts = ""
+    for each s in stmts:
+        set parts to parts + " " + emit_stmt_machine(s)
+    return parts
+
+action emit_stmt_machine(s: AstNode):
+    recursion bounded 200
+    let k = s.kind
+    if k == "LET":
+        return "(let " + quoted(s.name) + " " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "SET":
+        return "(set " + quoted(s.name) + " " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "RETURN":
+        if (length of s.children) == 0:
+            return "(return)"
+        return "(return " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "EXPR":
+        return "(eval " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "GUARD":
+        return "(guard " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "IF":
+        return "(if " + emit_expr_machine(child_at(s, 0)) + " (then" + emit_stmts_machine(kids_of(child_at(s, 1))) + ") (otherwise" + emit_stmts_machine(kids_of(child_at(s, 2))) + "))"
+    if k == "WHILE":
+        let bound = child_at(s, 2)
+        let bound_part = ""
+        if bound.val_str != "" and bound.val_str != "?":
+            set bound_part to " (bounded " + bound.val_str + ")"
+        return "(while " + emit_expr_machine(child_at(s, 0)) + bound_part + " (body" + emit_stmts_machine(kids_of(child_at(s, 1))) + "))"
+    if k == "FOR_EACH":
+        return "(for_each " + quoted(s.name) + " " + emit_expr_machine(child_at(s, 0)) + " (body" + emit_stmts_machine(kids_of(child_at(s, 1))) + "))"
+    if k == "TRY":
+        let with_part = ""
+        if s.name != "":
+            set with_part to " (with " + quoted(s.name) + ")"
+        return "(try (body" + emit_stmts_machine(kids_of(child_at(s, 0))) + ") (otherwise" + with_part + emit_stmts_machine(kids_of(child_at(s, 1))) + "))"
+    return "(unsupported_stmt " + quoted(k) + ")"
+
+action emit_params_machine(item: AstNode):
+    let params = child_at(item, 0)
+    let parts = ""
+    for each p in params.children:
+        set parts to parts + " (param " + quoted(p.name) + " " + quoted(p.val_str)
+        if (length of p.children) > 0:
+            set parts to parts + " " + emit_expr_machine(child_at(p, 0))
+        set parts to parts + ")"
+    return "(params" + parts + ")"
+
+action emit_contracts_machine(item: AstNode):
+    let contracts = child_at(item, 1)
+    let parts = ""
+    for each c in contracts.children:
+        if c.kind == "CONTRACT":
+            set parts to parts + " (" + c.name + " " + emit_expr_machine(child_at(c, 0)) + ")"
+        otherwise:
+            if c.kind == "RECURSION_BOUND":
+                set parts to parts + " (recursion " + c.val_str + ")"
+            otherwise:
+                if c.kind == "ROUTINE_NEED":
+                    set parts to parts + " (needs " + quoted(c.name) + ")"
+                otherwise:
+                    set parts to parts + " (unsupported_contract " + quoted(c.kind) + ")"
+    return "(contracts" + parts + ")"
+
+action item_keyword(item: AstNode):
+    if item.kind == "CHECK":
+        return "check"
+    if item.kind == "FILTER":
+        return "filter"
+    return "action"
+
+action emit_item_machine(item: AstNode, depth):
+    recursion bounded 200
+    let ind = m_pad(depth)
+    let out = ""
+    if item.kind == "RECORD":
+        let fields = ""
+        for each f in item.children:
+            set fields to fields + " (" + f.name + " " + f.val_str + ")"
+        return ind + "(record " + quoted(item.name) + "\n" + ind + "  (fields" + fields + "))\n"
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+        let body = child_at(item, 2)
+        set out to ind + "(" + item_keyword(item) + " " + quoted(item.name) + "\n"
+        set out to out + ind + "  " + emit_params_machine(item) + "\n"
+        set out to out + ind + "  " + emit_contracts_machine(item) + "\n"
+        set out to out + ind + "  (body" + emit_stmts_machine(body.children) + "))\n"
+        return out
+    if item.kind == "WHEN":
+        let body = child_at(item, 1)
+        return ind + "(when " + emit_expr_machine(child_at(item, 0)) + "\n" + ind + "  (body" + emit_stmts_machine(body.children) + "))\n"
+    if item.kind == "EVERY":
+        let body = child_at(item, 1)
+        return ind + "(every " + emit_expr_machine(child_at(item, 0)) + "\n" + ind + "  (body" + emit_stmts_machine(body.children) + "))\n"
+    return ind + "(unsupported_item " + quoted(item.kind) + ")\n"
+
+action emit_machine(prog: AstNode):
+    recursion bounded 200
+    let out = "(kaze\n  (format 1)\n"
+    for each u in kids_of(program_uses(prog)):
+        set out to out + "  (use " + quoted(u.name) + ")\n"
+    let needs_node = program_needs(prog)
+    if (length of needs_node.children) > 0:
+        let parts = ""
+        for each n in needs_node.children:
+            set parts to parts + " " + quoted(n.name)
+        set out to out + "  (needs" + parts + ")\n"
+    for each item in program_items(prog):
+        set out to out + emit_item_machine(item, 1)
+    set out to out + ")\n"
+    return out
+
+# ── machine -> AST ─────────────────────────────────────────────────────
+
+# A generic S-expression: kind "L" is a list, "S" a string, "A" an atom.
+action m_sexpr(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let p = skip_nl(tokens, pos)
+    let t = tok(tokens, p)
+    if t.kind == "SYM" and t.text == "(":
+        let kids = []
+        let q = p + 1
+        let done = 0
+        while done == 0 bounded 1000000:
+            set q to skip_nl(tokens, q)
+            if is_sym(tokens, q, ")"):
+                set q to q + 1
+                set done to 1
+            otherwise:
+                if at_end(tokens, q) == 1 or tok_kind(tokens, q) == "EOF":
+                    set done to 1
+                otherwise:
+                    if tok_kind(tokens, q) == "DEDENT" or tok_kind(tokens, q) == "INDENT":
+                        set q to q + 1
+                    otherwise:
+                        let r = m_sexpr(tokens, q)
+                        set kids to kids + [r[0]]
+                        set q to r[1]
+        return [make_node("L", "", "", 0, kids, t.line), q]
+    if t.kind == "STR":
+        return [make_node("S", "", t.text, 0, [], t.line), p + 1]
+    return [make_node("A", t.text, "", 0, [], t.line), p + 1]
+
+action lower_expr(form: AstNode):
+    recursion bounded 200
+    let h = m_head(form)
+    if h == "number":
+        let unit = ""
+        if (length of form.children) > 2:
+            set unit to m_text(m_arg(form, 1))
+        return make_node("NUM", unit, m_text(m_arg(form, 0)), 0, [], form.line)
+    if h == "string":
+        return make_str(m_text(m_arg(form, 0)), form.line)
+    if h == "bool":
+        let b = 0
+        if m_text(m_arg(form, 0)) == "true":
+            set b to 1
+        return make_bool(b, form.line)
+    if h == "name":
+        return make_ident(m_text(m_arg(form, 0)), form.line)
+    if h == "bin":
+        return make_bin(m_text(m_arg(form, 0)), lower_expr(m_arg(form, 1)), lower_expr(m_arg(form, 2)), form.line)
+    if h == "fallback":
+        return make_fallback(lower_expr(m_arg(form, 0)), lower_expr(m_arg(form, 1)), form.line)
+    if h == "field":
+        return make_field(lower_expr(m_arg(form, 0)), m_text(m_arg(form, 1)), form.line)
+    if h == "index":
+        return make_index(lower_expr(m_arg(form, 0)), lower_expr(m_arg(form, 1)), form.line)
+    if h == "len":
+        return make_len(lower_expr(m_arg(form, 0)), form.line)
+    if h == "in_unit":
+        return make_in_unit(m_text(m_arg(form, 0)), lower_expr(m_arg(form, 1)), form.line)
+    if h == "list":
+        let items = []
+        for each c in drop_first(form.children):
+            set items to items + [lower_expr(c)]
+        return make_list_expr(items, form.line)
+    if h == "call":
+        let args = []
+        for each c in drop_first(drop_first(form.children)):
+            set args to args + [lower_expr(c)]
+        return make_call(m_text(m_arg(form, 0)), args, form.line)
+    if h == "named":
+        return make_named_arg(m_text(m_arg(form, 0)), lower_expr(m_arg(form, 1)), form.line)
+    return make_unknown(form.line)
+
+action lower_stmts(forms):
+    recursion bounded 200
+    let out = []
+    for each f in forms:
+        set out to out + [lower_stmt(f)]
+    return out
+
+action lower_block(form: AstNode):
+    recursion bounded 200
+    return lower_stmts(drop_first(form.children))
+
+action lower_stmt(form: AstNode):
+    recursion bounded 200
+    let h = m_head(form)
+    if h == "let":
+        return make_stmt("LET", m_text(m_arg(form, 0)), [lower_expr(m_arg(form, 1))], form.line)
+    if h == "set":
+        return make_stmt("SET", m_text(m_arg(form, 0)), [lower_expr(m_arg(form, 1))], form.line)
+    if h == "return":
+        if (length of form.children) < 2:
+            return make_stmt("RETURN", "", [], form.line)
+        return make_stmt("RETURN", "", [lower_expr(m_arg(form, 0))], form.line)
+    if h == "eval":
+        return make_stmt("EXPR", "", [lower_expr(m_arg(form, 0))], form.line)
+    if h == "guard":
+        return make_guard(lower_expr(m_arg(form, 0)), form.line)
+    if h == "if":
+        let cond = lower_expr(m_arg(form, 0))
+        let then_block = make_block("then", lower_block(m_arg(form, 1)), form.line)
+        let other_block = make_block("otherwise", lower_block(m_arg(form, 2)), form.line)
+        return make_if(cond, then_block, other_block, form.line)
+    if h == "while":
+        let cond = lower_expr(m_arg(form, 0))
+        let bound = make_bound("", form.line)
+        let body_arg = 1
+        let inner = m_arg(form, 1)
+        if m_head(inner) == "bounded":
+            set bound to make_bound(m_text(m_arg(inner, 0)), inner.line)
+            set body_arg to 2
+        return make_while(cond, make_block("body", lower_block(m_arg(form, body_arg)), form.line), bound, form.line)
+    if h == "for_each":
+        let list_expr = lower_expr(m_arg(form, 1))
+        let body = make_block("body", lower_block(m_arg(form, 2)), form.line)
+        return make_for_each(m_text(m_arg(form, 0)), list_expr, body, form.line)
+    if h == "try":
+        let body = make_block("body", lower_block(m_arg(form, 0)), form.line)
+        let other_form = m_arg(form, 1)
+        let inner = drop_first(other_form.children)
+        let err = ""
+        let body_forms = inner
+        if (length of inner) > 0:
+            let first = node_at(inner, 0)
+            if m_head(first) == "with":
+                set err to m_text(m_arg(first, 0))
+                set body_forms to drop_first(inner)
+        let other = make_block("otherwise", lower_stmts(body_forms), form.line)
+        return make_try(err, body, other, form.line)
+    return make_unknown(form.line)
+
+action lower_params(form: AstNode):
+    let out = []
+    for each p in drop_first(form.children):
+        if m_head(p) == "param":
+            let defaults = []
+            if (length of p.children) > 3:
+                set defaults to [lower_expr(m_arg(p, 2))]
+            set out to out + [make_param(m_text(m_arg(p, 0)), m_text(m_arg(p, 1)), defaults, p.line)]
+    return out
+
+action lower_contracts(form: AstNode):
+    let out = []
+    for each c in drop_first(form.children):
+        let h = m_head(c)
+        if h == "requires" or h == "ensures":
+            set out to out + [make_contract(h, lower_expr(m_arg(c, 0)), c.line)]
+        otherwise:
+            if h == "recursion":
+                set out to out + [make_recursion_bound(m_text(m_arg(c, 0)), c.line)]
+            otherwise:
+                if h == "needs":
+                    set out to out + [make_routine_need(m_text(m_arg(c, 0)), c.line)]
+    return out
+
+action lower_item(form: AstNode):
+    recursion bounded 200
+    let h = m_head(form)
+    if h == "record":
+        let fields = []
+        let fields_form = m_arg(form, 1)
+        if m_head(fields_form) == "fields":
+            for each f in drop_first(fields_form.children):
+                if f.kind == "L":
+                    set fields to fields + [make_field_def(m_text(m_arg(f, 0)), m_text(m_arg(f, 1)), f.line)]
+                otherwise:
+                    set fields to fields + [make_field_def(m_text(f), "any", f.line)]
+        return make_record_item(m_text(m_arg(form, 0)), fields, form.line)
+    if h == "action" or h == "check" or h == "filter":
+        let params_form = none_node()
+        let contracts_form = none_node()
+        let body_form = none_node()
+        let line = form.line
+        for each part in drop_first(drop_first(form.children)):
+            let ph = m_head(part)
+            if ph == "params":
+                set params_form to part
+            if ph == "contracts":
+                set contracts_form to part
+            if ph == "body":
+                set body_form to part
+        let params = []
+        if params_form.kind == "L":
+            set params to lower_params(params_form)
+        let contracts = []
+        if contracts_form.kind == "L":
+            set contracts to lower_contracts(contracts_form)
+        let body = make_block("body", [], line)
+        if body_form.kind == "L":
+            set body to make_block("body", lower_block(body_form), line)
+        let params_node = make_node("PARAMS", "", "", 0, params, line)
+        let contracts_node = make_node("CONTRACTS", "", "", 0, contracts, line)
+        return make_item(h, m_text(m_arg(form, 0)), params_node, contracts_node, "", body, line)
+    if h == "when":
+        return make_when(lower_expr(m_arg(form, 0)), make_block("body", lower_block(m_arg(form, 1)), form.line), form.line)
+    if h == "every":
+        return make_every(lower_expr(m_arg(form, 0)), make_block("body", lower_block(m_arg(form, 1)), form.line), form.line)
+    return make_node("UNKNOWN_ITEM", h, "", 0, [], form.line)
+
+action lower_program(root: AstNode):
+    recursion bounded 200
+    let uses = []
+    let needs = []
+    let items = []
+    if root.kind != "L":
+        return make_program(uses, needs, items)
+    for each form in root.children:
+        let h = m_head(form)
+        if form.kind != "L":
+            set h to "kaze"
+        if h == "use":
+            set uses to uses + [make_node("USE", m_text(m_arg(form, 0)), "", 0, [], form.line)]
+        otherwise:
+            if h == "needs":
+                for each c in drop_first(form.children):
+                    set needs to needs + [make_node("NEED", m_text(c), "", 0, [], form.line)]
+            otherwise:
+                if h != "kaze" and h != "format":
+                    set items to items + [lower_item(form)]
+    return make_program(uses, needs, items)
+
+# Read the canonical machine form back into a PROGRAM node.
+action parse_machine(src):
+    recursion bounded 200
+    let tokens = tokenize(src)
+    let r = m_sexpr(tokens, 0)
+    return lower_program(r[0])
+
+# ── AST -> human ───────────────────────────────────────────────────────
+
+# Binding power, so a chain prints flat instead of one group per operator. A
+# chain of two hundred terms used to be two hundred nested groups, and the
+# parser needs a frame per group.
+action tier_of(op):
+    if op == "or":
+        return 1
+    if op == "and":
+        return 2
+    if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=":
+        return 4
+    if op == "+" or op == "-":
+        return 5
+    return 6
+
+action emit_bin_human(e: AstNode):
+    recursion bounded 200
+    let t = tier_of(e.name)
+    # Flatten the same-tier chain first, then build the text once, left to
+    # right. Recursing instead copies the whole left subtree at every step,
+    # which is quadratic: on this compiler's own string building that meant
+    # gigabytes of intermediate strings and a memory stop.
+    let ops = []
+    let rights = []
+    let cur = e
+    let guard = 0
+    while cur.kind == "BIN" and cur.name != "not" and tier_of(cur.name) == t and guard < 100000 bounded 100000:
+        set ops to ops + [cur.name]
+        set rights to rights + [child_at(cur, 1)]
+        set cur to child_at(cur, 0)
+        set guard to guard + 1
+    let out = emit_expr_human(cur)
+    let i = (length of ops) - 1
+    while i >= 0 bounded 100000:
+        set out to out + " " + (ops[i] otherwise "") + " " + emit_expr_human(node_at(rights, i))
+        set i to i - 1
+    return out
+
+action emit_expr_human(e: AstNode):
+    recursion bounded 200
+    let k = e.kind
+    if k == "NUM":
+        let text = e.val_str
+        if text == "":
+            set text to "0"
+        if e.name == "":
+            return text
+        if e.name == "%":
+            return text + "%"
+        return text + " " + e.name
+    if k == "STR":
+        return quoted(e.val_str)
+    if k == "BOOL":
+        if e.val_str == "true":
+            return "true"
+        return "false"
+    if k == "IDENT":
+        return e.name
+    if k == "BIN":
+        if e.name == "not":
+            return "(not " + emit_expr_human(child_at(e, 0)) + ")"
+        return "(" + emit_bin_human(e) + ")"
+    if k == "FALLBACK":
+        return "(" + emit_expr_human(child_at(e, 0)) + " otherwise " + emit_expr_human(child_at(e, 1)) + ")"
+    if k == "FIELD":
+        return "(" + emit_expr_human(child_at(e, 0)) + ")." + e.name
+    if k == "INDEX":
+        return "(" + emit_expr_human(child_at(e, 0)) + ")[" + emit_expr_human(child_at(e, 1)) + "]"
+    if k == "LEN":
+        return "length of (" + emit_expr_human(child_at(e, 0)) + ")"
+    if k == "IN_UNIT":
+        return "(" + emit_expr_human(child_at(e, 0)) + " in " + e.name + ")"
+    if k == "LIST":
+        let parts = ""
+        let first = 1
+        for each it in e.children:
+            if first == 0:
+                set parts to parts + ", "
+            set parts to parts + emit_expr_human(it)
+            set first to 0
+        return "[" + parts + "]"
+    if k == "CALL":
+        let parts = ""
+        let first = 1
+        for each a in e.children:
+            if first == 0:
+                set parts to parts + ", "
+            set parts to parts + emit_expr_human(a)
+            set first to 0
+        return e.name + "(" + parts + ")"
+    if k == "NAMED_ARG":
+        return e.name + ": " + emit_expr_human(child_at(e, 0))
+    if k == "UNKNOWN":
+        return "# the machine reader could not lower an expression here\n    guard false"
+    return "0"
+
+action emit_stmts_human(stmts, depth):
+    recursion bounded 200
+    let out = ""
+    for each s in stmts:
+        set out to out + emit_stmt_human(s, depth)
+    return out
+
+# A block must have at least one indented line in the human syntax. An empty
+# block is written as a comment plus an always-true assertion.
+action emit_block_human(block: AstNode, depth):
+    recursion bounded 200
+    let stmts = block.children
+    if (length of stmts) == 0:
+        return h_pad(depth) + "# empty block\n" + h_pad(depth) + "guard true\n"
+    return emit_stmts_human(stmts, depth)
+
+action emit_stmt_human(s: AstNode, depth):
+    recursion bounded 200
+    let ind = h_pad(depth)
+    let k = s.kind
+    if k == "LET":
+        return ind + "let " + s.name + " = " + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "SET":
+        return ind + "set " + s.name + " to " + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "RETURN":
+        if (length of s.children) == 0:
+            return ind + "return\n"
+        return ind + "return " + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "EXPR":
+        return ind + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "GUARD":
+        return ind + "guard " + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "IF":
+        let out = ind + "if " + emit_expr_human(child_at(s, 0)) + ":\n"
+        set out to out + emit_block_human(child_at(s, 1), depth + 1)
+        if (length of kids_of(child_at(s, 2))) > 0:
+            set out to out + ind + "otherwise:\n"
+            set out to out + emit_block_human(child_at(s, 2), depth + 1)
+        return out
+    if k == "WHILE":
+        let bound = child_at(s, 2)
+        let head = ind + "while " + emit_expr_human(child_at(s, 0))
+        if bound.val_str != "" and bound.val_str != "?":
+            set head to head + " bounded " + bound.val_str
+        return head + ":\n" + emit_block_human(child_at(s, 1), depth + 1)
+    if k == "FOR_EACH":
+        return ind + "for each " + s.name + " in " + emit_expr_human(child_at(s, 0)) + ":\n" + emit_block_human(child_at(s, 1), depth + 1)
+    if k == "TRY":
+        let out = ind + "try:\n"
+        set out to out + emit_block_human(child_at(s, 0), depth + 1)
+        set out to out + ind + "otherwise"
+        if s.name != "":
+            set out to out + " with " + s.name
+        set out to out + ":\n"
+        set out to out + emit_block_human(child_at(s, 1), depth + 1)
+        return out
+    if k == "UNKNOWN":
+        return ind + "# unreadable statement\n" + ind + "guard false\n"
+    return ind + "guard false\n"
+
+action emit_params_human(item: AstNode):
+    let params = child_at(item, 0)
+    let out = ""
+    let first = 1
+    for each p in params.children:
+        if first == 0:
+            set out to out + ", "
+        set out to out + p.name
+        if p.val_str != "":
+            set out to out + ": " + p.val_str
+        if (length of p.children) > 0:
+            set out to out + " = " + emit_expr_human(child_at(p, 0))
+        set first to 0
+    return out
+
+action emit_item_human(item: AstNode, depth):
+    recursion bounded 200
+    let ind = h_pad(depth)
+    if item.kind == "RECORD":
+        let out = ind + "record " + item.name + ":\n"
+        for each f in item.children:
+            set out to out + ind + "    " + f.name + ": " + f.val_str + "\n"
+        return out
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+        let head = ind + item_keyword(item) + " " + item.name + "(" + emit_params_human(item) + ")"
+        if item.val_str != "":
+            set head to head + " -> " + item.val_str
+        let out = head + ":\n"
+        let contracts = child_at(item, 1)
+        for each c in contracts.children:
+            if c.kind == "CONTRACT":
+                set out to out + ind + "    " + c.name + " " + emit_expr_human(child_at(c, 0)) + "\n"
+            otherwise:
+                if c.kind == "RECURSION_BOUND":
+                    set out to out + ind + "    recursion bounded " + c.val_str + "\n"
+                otherwise:
+                    if c.kind == "ROUTINE_NEED":
+                        set out to out + ind + "    needs: " + c.name + "\n"
+        set out to out + emit_block_human(child_at(item, 2), depth + 1)
+        return out
+    if item.kind == "WHEN":
+        return ind + "when " + emit_expr_human(child_at(item, 0)) + ":\n" + emit_block_human(child_at(item, 1), depth + 1)
+    if item.kind == "EVERY":
+        return ind + "every " + emit_expr_human(child_at(item, 0)) + ":\n" + emit_block_human(child_at(item, 1), depth + 1)
+    return ind + "# E_KAZE_UNSUPPORTED: the machine reader does not know " + item.kind + " at machine line " + item.line + "\n"
+
+action emit_human(prog: AstNode):
+    recursion bounded 200
+    let out = ""
+    for each u in kids_of(program_uses(prog)):
+        set out to out + "use " + quoted(u.name) + "\n"
+    let needs_node = program_needs(prog)
+    if (length of needs_node.children) > 0:
+        let parts = ""
+        let first = 1
+        for each n in needs_node.children:
+            if first == 0:
+                set parts to parts + ", "
+            set parts to parts + n.name
+            set first to 0
+        set out to out + "needs: " + parts + "\n"
+    for each item in program_items(prog):
+        set out to out + "\n" + emit_item_human(item, 0)
+    return out
+
+# Does the source look like machine syntax? Same rule as the reference engine:
+# the first non-space, non-comment character opens a (kaze ...) root.
+action is_machine_source(src):
+    let len = length of src
+    let i = 0
+    let looking = 1
+    let found = 0
+    while i < len and looking == 1 bounded 1000000:
+        let c = src[i] otherwise "x"
+        if c == " " or c == "\n" or c == "\t":
+            set i to i + 1
+        otherwise:
+            if c == "#":
+                while i < len and (src[i] otherwise "x") != "\n" bounded 1000000:
+                    set i to i + 1
+            otherwise:
+                set looking to 0
+                if c == "(":
+                    set found to 1
+    return found

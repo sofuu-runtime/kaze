@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — a dynamic index returned to the host needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action first(items, at):
+    return items[at]  # BAD

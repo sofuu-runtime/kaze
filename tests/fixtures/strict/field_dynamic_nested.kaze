@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — a host-record field in arithmetic needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action read_scaled(entry, scale):
+    let v = entry.count + scale  # BAD

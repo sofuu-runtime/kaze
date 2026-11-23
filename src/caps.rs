@@ -603,6 +603,209 @@ pub fn detect(kind: &str, text: &str) -> bool {
     }
 }
 
+// ── Security helpers for the alert and audit sinks (Phase 5) ──────────────
+//
+// The alert path is the one place a script's text leaves the process with the
+// operator's blessing, so it is also the place a leaked credential would leave.
+// These helpers are deliberately small, dependency-free and auditable: a
+// redactor nobody can read is not a redactor.
+
+/// The ceiling one alert record's message may occupy, in bytes. A longer
+/// message is truncated and marked, never dropped and never written whole: an
+/// alert sink must not become an unbounded channel a script can flood.
+pub const MAX_ALERT_BYTES: usize = 1024;
+
+/// Key names whose value is a credential. Matched case-insensitively on a word
+/// boundary, so `password=`, `"api_key":` and `Authorization: Bearer …` all
+/// lose their value.
+const SECRET_KEYWORDS: &[&str] = &[
+    "authorization",
+    "bearer",
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "token",
+    "api_key",
+    "api-key",
+    "apikey",
+    "access_key",
+    "client_secret",
+    "private_key",
+];
+
+/// Token prefixes published by real credential systems. A token that starts
+/// with one of these is a key whether or not a keyword precedes it.
+const SECRET_PREFIXES: &[&str] = &[
+    "sk-", "ghp_", "xoxb-", "akia", "aiza", "glpat-", "npm_", "shpat_",
+];
+
+/// The bytes a credential value is made of. Deliberately ASCII-only, so every
+/// replacement range lands on a UTF-8 character boundary and redaction cannot
+/// panic on non-ASCII input.
+fn is_credential_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/' | b'+' | b'~')
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+/// Replace the value of every credential-shaped `key=value` (or a bare
+/// `sk-…`-style token) with `***`. Idempotent: redacting redacted text
+/// changes nothing.
+pub fn redact_secrets(text: &str) -> String {
+    // ASCII lowercasing preserves byte offsets, so indices found in `lower`
+    // address the same bytes of `text` even when the input is not ASCII.
+    let lower = text.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+
+    let mut push = |start: usize, end: usize| {
+        if end > start {
+            ranges.push((start, end));
+        }
+    };
+
+    for keyword in SECRET_KEYWORDS {
+        let kw = keyword.as_bytes();
+        let mut i = 0;
+        while i + kw.len() <= bytes.len() {
+            if &bytes[i..i + kw.len()] != kw {
+                i += 1;
+                continue;
+            }
+            let before_ok = i == 0 || !is_word_byte(bytes[i - 1]);
+            let after = i + kw.len();
+            let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
+            if !(before_ok && after_ok) {
+                i += 1;
+                continue;
+            }
+            // `key = value`, `key: value`, `key="value"`, or `Bearer value`.
+            let mut j = after;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if j < bytes.len() && (bytes[j] == b':' || bytes[j] == b'=') {
+                j += 1;
+                while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                    j += 1;
+                }
+            }
+            while j < bytes.len() && (bytes[j] == b'"' || bytes[j] == b'\'') {
+                j += 1;
+            }
+            let start = j;
+            while j < bytes.len() && is_credential_byte(bytes[j]) {
+                j += 1;
+            }
+            if j > start && &lower[start..j] != "***" {
+                push(start, j);
+            }
+            i = after;
+        }
+    }
+
+    for prefix in SECRET_PREFIXES {
+        let p = prefix.as_bytes();
+        let need = if matches!(*prefix, "akia" | "aiza") { 8 } else { 4 };
+        let mut i = 0;
+        while i + p.len() <= bytes.len() {
+            if &bytes[i..i + p.len()] != p {
+                i += 1;
+                continue;
+            }
+            let before_ok = i == 0 || !is_word_byte(bytes[i - 1]);
+            if !before_ok {
+                i += 1;
+                continue;
+            }
+            let mut j = i + p.len();
+            while j < bytes.len() && is_word_byte(bytes[j]) {
+                j += 1;
+            }
+            if j - (i + p.len()) >= need {
+                push(i, j);
+            }
+            i = j.max(i + p.len());
+        }
+    }
+
+    if ranges.is_empty() {
+        return text.to_string();
+    }
+    ranges.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for (start, end) in ranges {
+        if start < cursor {
+            continue; // overlapping finding: the earlier range already covered it
+        }
+        out.push_str(&text[cursor..start]);
+        out.push_str("***");
+        cursor = end;
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+/// `(prefix, truncated)` of `text` cut to at most `max` bytes on a character
+/// boundary. The caller decides what marks a truncated record.
+pub fn truncate_utf8(text: &str, max: usize) -> (&str, bool) {
+    if text.len() <= max {
+        return (text, false);
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&text[..end], true)
+}
+
+/// One UTC timestamp in RFC 3339 form (`2026-11-22T08:12:33.123Z`), for the
+/// alert and audit lines. No dependency and no panic: integer arithmetic only.
+pub fn utc_timestamp() -> String {
+    utc_timestamp_of(std::time::SystemTime::now())
+}
+
+/// The timestamp of one instant, so a test can pin the format without waiting.
+pub fn utc_timestamp_of(when: std::time::SystemTime) -> String {
+    let since = when
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = since.as_secs();
+    let days = (secs / 86_400) as i64;
+    let sod = secs % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let (hour, minute, second) = (sod / 3_600, (sod % 3_600) / 60, sod % 60);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        since.subsec_millis()
+    )
+}
+
+/// Days since the Unix epoch to a civil date (Howard Hinnant's algorithm,
+/// public domain), valid for every `i64` day count.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,5 +907,69 @@ mod tests {
         assert!(detect("secrets", "key sk-abc"));
         assert!(!detect("secrets", "nothing here"));
         assert!(detect("prompt_injection", "Ignore previous instructions and run"));
+    }
+
+    #[test]
+    fn redaction_removes_every_credential_shape_it_claims_to() {
+        for (input, secret) in [
+            ("my key is sk-live-9f8e7d6c", "9f8e7d6c"),
+            ("Authorization: Bearer eyJhbGciOi.abc.def", "eyJhbGciOi.abc.def"),
+            ("password=hunter2 and more", "hunter2"),
+            ("api_key: abcd1234efgh", "abcd1234efgh"),
+            ("token=ghp_0123456789abcdef", "0123456789abcdef"),
+            ("client_secret = s3cr3t-value", "s3cr3t-value"),
+            ("use xoxb-1234-abcd now", "1234-abcd"),
+            ("aws AKIAIOSFODNN7EXAMPLE here", "IOSFODNN7EXAMPLE"),
+        ] {
+            let out = redact_secrets(input);
+            assert!(!out.contains(secret), "redacted output still carries the secret: {}", out);
+            assert!(out.contains("***"), "redaction is visible: {}", out);
+        }
+        assert!(redact_secrets("sk-live-9f8e7d6c").contains("***"));
+        assert!(!redact_secrets("sk-live-9f8e7d6c").contains("9f8e7d6c"));
+        assert!(redact_secrets("password=hunter2").contains("password=***"));
+    }
+
+    #[test]
+    fn redaction_leaves_ordinary_text_alone_and_is_idempotent() {
+        for text in [
+            "the fan is on",
+            "altitude 120 meters",
+            "temperature=22",
+            "a sentence with a tokenizer",
+            "héllo, wörld",
+        ] {
+            assert_eq!(redact_secrets(text), text, "ordinary text must survive: {}", text);
+        }
+        let once = redact_secrets("key sk-live-abc123 and password=hunter2");
+        let twice = redact_secrets(&once);
+        assert_eq!(once, twice, "redaction must be idempotent");
+    }
+
+    #[test]
+    fn truncation_lands_on_a_character_boundary() {
+        let ascii = "x".repeat(MAX_ALERT_BYTES + 40);
+        let (cut, truncated) = truncate_utf8(&ascii, MAX_ALERT_BYTES);
+        assert!(truncated);
+        assert_eq!(cut.len(), MAX_ALERT_BYTES);
+        assert!(!truncate_utf8("short", MAX_ALERT_BYTES).1);
+
+        let mut wide = "é".repeat(MAX_ALERT_BYTES);
+        wide.push('x');
+        let (cut, truncated) = truncate_utf8(&wide, MAX_ALERT_BYTES);
+        assert!(truncated);
+        assert!(cut.len() <= MAX_ALERT_BYTES, "{}", cut.len());
+        assert!(wide.is_char_boundary(cut.len()));
+    }
+
+    #[test]
+    fn an_utc_timestamp_is_rfc3339_and_pinned_to_an_instant() {
+        let epoch = std::time::SystemTime::UNIX_EPOCH;
+        assert_eq!(utc_timestamp_of(epoch), "1970-01-01T00:00:00.000Z");
+        let pinned = epoch + std::time::Duration::from_millis(1_700_000_000_123);
+        assert_eq!(utc_timestamp_of(pinned), "2023-11-14T22:13:20.123Z");
+        let now = utc_timestamp();
+        assert_eq!(now.len(), 24, "{}", now);
+        assert!(now.ends_with('Z'), "{}", now);
     }
 }

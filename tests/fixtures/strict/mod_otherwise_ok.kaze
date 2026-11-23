@@ -1,0 +1,5 @@
+# expect: ok — a dynamic modulo with an inline fallback is accepted and runs
+# value: 1 with total=10, parts=3
+action main(total, parts):
+    let left = total % parts otherwise 0
+    return left

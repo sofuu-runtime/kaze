@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — a modulo returned to the host needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action wraparound(value, span):
+    return value % span  # BAD

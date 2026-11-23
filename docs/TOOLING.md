@@ -1,7 +1,12 @@
 # Kaze Developer Tooling (v0.6)
 
 Three tools: the formatter (`kaze fmt`), the language server (`kaze-lsp`), and
-the VS Code / Cursor extension. All three are zero-dependency and built from the
+the VS Code / Cursor extension. The CLI itself gained one flag in the strictness
+round: `--config <path>` (default `./agent.config.json`) sits in the 12-factor
+parameter hierarchy below `--arg` and the `AGENT_<PARAM>` environment variables
+and above a signature default; a typed parameter with no value anywhere is
+`E_KAZE_PARAM` naming all three fixes. Diagnostics now carry their specific code
+(for example `E_KAZE_MISSING_FALLBACK`) rather than `E_KAZE_CHECK` for everything. All three are zero-dependency and built from the
 same front end the runtime uses.
 
 ## 1. `kaze fmt`

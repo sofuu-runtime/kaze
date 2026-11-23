@@ -2,8 +2,10 @@
 needs: sensor, log
 
 action report_temperature():
-    log sensor.temperature()
+    let temperature = sensor.temperature() otherwise 0 Celsius
+    log temperature
 
 every 100 ms:
-    if sensor.temperature() > 30:
+    let temperature = sensor.temperature() otherwise 0 Celsius
+    if temperature > 30 Celsius:
         log warning "sensor is hot"

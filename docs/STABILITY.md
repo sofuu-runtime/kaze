@@ -7,7 +7,9 @@
 
 > **Scope.** This guarantee covers the standalone Kaze prototype in this
 > repository. The Kaze engine inside `sofuu` is aligned on the same v1.0
-> language contract (47 opcodes and 17 capability verbs).
+> language contract (49 opcodes and 17 capability verbs). This standalone engine
+> additionally carries the v1.1 strict surface: see [SPEC.md](SPEC.md) and
+> [PHASE-1-6-REPORT.md](PHASE-1-6-REPORT.md).
 
 ## 1. Versioning
 
@@ -21,7 +23,7 @@ Kaze follows semantic versioning for the **prototype**:
 - **Patch (1.0.x):** bug fixes, documentation, tests and benchmark updates with
   no format or surface change.
 
-The module format is **4** and the opcode table is **locked** for the life of
+The module format is **5** (a format-4 artifact still loads) and the opcode table is **locked** for the life of
 v1.x (see `docs/COMPATIBILITY.md`).
 
 ## 2. What is stable
@@ -35,8 +37,8 @@ v1.x (see `docs/COMPATIBILITY.md`).
   `prepare`, `prepare_file`, `prepare_in`, `compile_source`, `compile_file`,
   `run_source`, `run_file`, `run_module`, `run_prepared`, `RunOptions`,
   `RunReport`, `KazeError`, the `isa` module (types and `verify`), `fmt`, `lsp`.
-- File formats: format 4 `.kazebc`, `.kaze` source, format-framed LSP over
-  stdio.
+- File formats: format 5 `.kazebc` (format 4 still reads), `.kaze` source,
+  format-framed LSP over stdio.
 
 ## 3. Deprecation
 

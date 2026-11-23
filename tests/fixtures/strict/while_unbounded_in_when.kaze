@@ -1,0 +1,5 @@
+# rule: LOOP_UNBOUNDED — a 'when' body cannot open an unbounded loop either
+# expect: E_KAZE_LOOP_UNBOUNDED
+when 1 < 2:
+    while 1 == 1:  # BAD
+        let x = 1

@@ -18,10 +18,24 @@
 
 use crate::ast::*;
 use crate::caps;
+use crate::strict;
 
 #[derive(Debug, Clone)]
 pub struct CheckError {
+    /// Labelled spans on the offending line (the two operands of a unit
+    /// mismatch). Empty means \`needle\` alone.
+    pub spans: Vec<(String, String)>,
+    /// The stable diagnostic code. Most checker errors are "E_KAZE_CHECK"; the
+    /// Phase 2/3/4 rules name their own code so a caller (and a test) can act on
+    /// the specific refusal instead of parsing prose.
+    pub code: String,
     pub line: u32,
+    /// The text the caret should point at (an operator, a name, a bracket).
+    /// The renderer searches the source line for it, so the checker does not
+    /// have to carry a column on every AST node.
+    pub needle: Option<String>,
+    /// A concrete suggestion printed under the caret.
+    pub hint: Option<String>,
     pub msg: String,
     /// The file this error belongs to when modules were inlined. Empty means
     /// the root source; `render` then uses the caller's name.
@@ -29,19 +43,125 @@ pub struct CheckError {
 }
 
 impl CheckError {
+    /// One line: file:line: message. Used where a block would be noise (JSON
+    /// reports, imported files whose source is not at hand).
     pub fn render(&self, source_name: &str) -> String {
         let source = if self.origin.is_empty() { source_name } else { &self.origin };
         format!("{}:{}: {}", source, self.line, self.msg)
     }
+
+    /// The block a person reads: code, path:line:col, the source line, a caret
+    /// under the construct and the suggestion.
+    pub fn render_detailed(&self, source_name: &str, map: &crate::diag::SourceMap<'_>) -> String {
+        let source = if self.origin.is_empty() { source_name } else { &self.origin };
+        // Two labelled spans draw the picture a reader expects of a mismatch:
+        // one caret per operand, with the unit under each.
+        if !self.spans.is_empty() {
+            let spans: Vec<crate::diag::Span> = self
+                .spans
+                .iter()
+                .map(|(needle, label)| crate::diag::Span {
+                    needle: needle.clone(),
+                    label: label.clone(),
+                })
+                .collect();
+            if let Some(block) =
+                crate::diag::render_spans(&self.code, &self.msg, source, self.line, &spans, Some(map))
+            {
+                return block;
+            }
+        }
+        let needles: Vec<&str> = self.needle.as_deref().map(|n| vec![n]).unwrap_or_default();
+        let caret = map.locate(self.line, &needles);
+        crate::diag::render(
+            &self.code,
+            &self.msg,
+            source,
+            self.line,
+            caret,
+            self.hint.as_deref(),
+            Some(map),
+        )
+    }
 }
 
-fn e(line: u32, msg: impl Into<String>) -> CheckError {
-    CheckError { line, msg: msg.into(), origin: String::new() }
+pub(crate) fn e(line: u32, msg: impl Into<String>) -> CheckError {
+    CheckError {
+        spans: Vec::new(),
+        code: "E_KAZE_CHECK".to_string(),
+        line,
+        needle: None,
+        hint: None,
+        msg: msg.into(),
+        origin: String::new(),
+    }
+}
+
+/// A checker error with its own diagnostic code.
+pub(crate) fn ec(code: &str, line: u32, msg: impl Into<String>) -> CheckError {
+    CheckError {
+        spans: Vec::new(),
+        code: code.to_string(),
+        line,
+        needle: None,
+        hint: None,
+        msg: msg.into(),
+        origin: String::new(),
+    }
+}
+
+/// A diagnostic with two labelled spans, for a mismatch between two operands.
+pub(crate) fn at_spans(
+    code: &str,
+    line: u32,
+    spans: Vec<(String, String)>,
+    needle: impl Into<String>,
+    msg: impl Into<String>,
+) -> CheckError {
+    CheckError {
+        spans,
+        code: code.to_string(),
+        line,
+        needle: Some(needle.into()),
+        hint: None,
+        msg: msg.into(),
+        origin: String::new(),
+    }
+}
+
+/// A diagnostic that knows where to point and what to suggest.
+pub(crate) fn at(
+    code: &str,
+    line: u32,
+    needle: impl Into<String>,
+    hint: impl Into<String>,
+    msg: impl Into<String>,
+) -> CheckError {
+    CheckError {
+        spans: Vec::new(),
+        code: code.to_string(),
+        line,
+        needle: Some(needle.into()),
+        hint: Some(hint.into()),
+        msg: msg.into(),
+        origin: String::new(),
+    }
+}
+
+thread_local! {
+    /// The statement being checked. An expression node has no line of its own,
+    /// so the checker records the enclosing statement here; a diagnostic built
+    /// from a bare expression still names a real line instead of 0.
+    static CURRENT_LINE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+pub(crate) fn current_line() -> u32 {
+    CURRENT_LINE.with(|c| c.get())
 }
 
 /// What the checker can prove about a value. `Any` is "the host decides".
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Ty {
+pub(crate) enum Ty {
     Num(Option<Unit>),
     Str,
     Bool,
@@ -57,7 +177,7 @@ enum Ty {
 }
 
 impl Ty {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Ty::Num(Some(u)) => u.label(),
             Ty::Num(None) => "a number",
@@ -130,6 +250,9 @@ pub fn check(p: &Program) -> Result<(), Vec<CheckError>> {
         }
     }
 
+    // Phase 2/3/4: fallibility, termination, dimensions, contracts.
+    strict::check(p, &declared, &mut errors);
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -145,6 +268,7 @@ fn check_block(
     errors: &mut Vec<CheckError>,
 ) {
     for stmt in stmts {
+        CURRENT_LINE.with(|c| c.set(stmt.line()));
         match stmt {
             Stmt::Let(name, value, line) => {
                 let t = infer(value, scope, declared, items, errors);
@@ -189,7 +313,7 @@ fn check_block(
                 inner.push((var.clone(), Ty::Any));
                 check_block(body, &mut inner, declared, items, errors);
             }
-            Stmt::While { cond, body, line } => {
+            Stmt::While { cond, body, line, .. } => {
                 let t = infer(cond, scope, declared, items, errors);
                 if !matches!(t, Ty::Bool | Ty::Any) {
                     errors.push(e(
@@ -215,6 +339,15 @@ fn check_block(
                     infer(v, scope, declared, items, errors);
                 }
             }
+            Stmt::Guard(cond, line) => {
+                let t = infer(cond, scope, declared, items, errors);
+                if !matches!(t, Ty::Bool | Ty::Any) {
+                    errors.push(e(
+                        *line,
+                        format!("a 'guard' must be true or false, but this is {}", t.label()),
+                    ));
+                }
+            }
         }
     }
 }
@@ -231,7 +364,7 @@ fn expr_label(e: &Expr) -> String {
     }
 }
 
-fn infer(
+pub(crate) fn infer(
     expr: &Expr,
     scope: &mut Vec<(String, Ty)>,
     declared: &[&str],
@@ -316,7 +449,8 @@ fn infer(
         },
         Expr::Ambient { field, family } => {
             if !declared.iter().any(|d| caps::family_of(d) == *family) {
-                errors.push(e(
+                errors.push(ec(
+                    "E_CAP_UNDECLARED",
                     0,
                     format!("'{}' is read from '{}', which this script does not declare", field, family),
                 ));
@@ -400,8 +534,11 @@ fn infer(
         Expr::Call { recv, op, args, line } => {
             let family = caps::family_of(recv);
             if !declared.iter().any(|d| *d == recv || caps::family_of(d) == family) {
-                errors.push(e(
+                errors.push(at(
+                    "E_CAP_UNDECLARED",
                     *line,
+                    family,
+                    format!("add '{}' to needs: ...", family),
                     format!(
                         "'{}' is not declared. Add '{}' to the script's first line: needs: {}",
                         family, family, family
@@ -453,13 +590,30 @@ fn infer(
             if negation {
                 return Ty::Point;
             }
-            point_aware_bin(*op, lt, rt, errors)
+            point_aware_bin(*op, lt, rt, left, right, 0, errors)
+        }
+        Expr::Fallback { inner, fallback, line } => {
+            let t = infer(inner, scope, declared, items, errors);
+            let f = infer(fallback, scope, declared, items, errors);
+            // The fallback has to be usable where the value is: same shape.
+            if !compatible(t, f) {
+                errors.push(e(
+                    *line,
+                    format!(
+                        "the fallback is {}, but the value it replaces is {}; make them the same kind",
+                        f.label(),
+                        t.label()
+                    ),
+                ));
+            }
+            t
         }
         Expr::Math { kind, args, line } => infer_math(*kind, args, *line, scope, declared, items, errors),
         Expr::LinkLost { after_ms, line } => {
             let _ = after_ms;
             if !declared.iter().any(|d| caps::family_of(d) == "drone") {
-                errors.push(e(
+                errors.push(ec(
+                    "E_CAP_UNDECLARED",
                     *line,
                     "'link lost' reads the drone link; declare it first with 'needs: drone'",
                 ));
@@ -472,10 +626,18 @@ fn infer(
 /// Arithmetic that understands points: two points add or subtract to a point
 /// (an offset), a number scales a point, and every other mixture is refused
 /// here rather than at run time.
-fn point_aware_bin(op: BinOp, lt: Ty, rt: Ty, errors: &mut Vec<CheckError>) -> Ty {
+fn point_aware_bin(
+    op: BinOp,
+    lt: Ty,
+    rt: Ty,
+    left: &Expr,
+    right: &Expr,
+    line: u32,
+    errors: &mut Vec<CheckError>,
+) -> Ty {
     use BinOp::*;
     if lt != Ty::Point && rt != Ty::Point {
-        return bin_result(op, lt, rt);
+        return dim_result(op, lt, rt, left, right, line, errors);
     }
     match (op, lt, rt) {
         (Add | Sub, Ty::Point, Ty::Point) => Ty::Point,
@@ -616,18 +778,160 @@ fn capability_result(family: &str, op: &str) -> Ty {
     match (family, op) {
         ("policy", "detects") | ("policy", "detect") => Ty::Bool,
         ("memory", "recall") => Ty::List,
-        ("sensor", "temperature")
-        | ("sensor", "humidity")
-        | ("sensor", "distance")
-        | ("sensor", "front_distance")
-        | ("sensor", "read")
-        | ("device", "read_gpio") => Ty::Num(None),
+        // A sensor reads a physical quantity, so it carries a dimension: a
+        // distance compares against meters, a temperature against Celsius.
+        ("sensor", "distance") | ("sensor", "front_distance") => Ty::Num(Some(Unit::Meter)),
+        ("sensor", "temperature") => Ty::Num(Some(Unit::Celsius)),
+        ("sensor", "humidity") => Ty::Num(Some(Unit::Pct)),
+        ("sensor", "read") | ("device", "read_gpio") => Ty::Num(None),
         ("log", _) | ("alert", _) | ("memory", "save") | ("policy", "reject") | ("drone", "arm")
         | ("drone", "takeoff") | ("drone", "land") | ("drone", "rtl") | ("drone", "hold")
         | ("drone", "goto") | ("drone", "stop") | ("rover", "forward") | ("rover", "backward")
         | ("rover", "turn_left") | ("rover", "turn_right") | ("rover", "stop")
         | ("device", "set_relay") | ("device", "pulse") | ("device", "set_duty") => Ty::Unit,
         _ => Ty::Any,
+    }
+}
+
+/// Are two inferred types interchangeable for a fallback?
+fn compatible(a: Ty, b: Ty) -> bool {
+    matches!(a, Ty::Any) || matches!(b, Ty::Any) || a == b
+        || matches!((a, b), (Ty::Num(_), Ty::Num(_)))
+}
+
+/// The dimensional arithmetic the checker enforces (Phase 3).
+///
+/// Addition and subtraction need the same dimension; multiplication and
+/// division combine them (length divided by time is a velocity). Every literal
+/// was normalised into its base unit at parse time, so this is a pure check:
+/// no conversion instruction is ever emitted.
+/// A mismatch diagnostic that points at both operands when they are named.
+fn unit_spans(
+    left: &Expr,
+    right: &Expr,
+    a: crate::ast::Dim,
+    b: crate::ast::Dim,
+    line: u32,
+    op: BinOp,
+    msg: String,
+) -> CheckError {
+    let mut spans: Vec<(String, String)> = Vec::new();
+    if let Expr::Name(n) = left {
+        spans.push((n.clone(), a.describe()));
+    }
+    if let Expr::Name(n) = right {
+        spans.push((n.clone(), b.describe()));
+    }
+    if spans.len() == 2 {
+        at_spans("E_KAZE_UNIT_MISMATCH", line, spans, op.symbol(), msg)
+    } else {
+        at(
+            "E_KAZE_UNIT_MISMATCH",
+            line,
+            op.symbol(),
+            format!("here: {} and {}", a.describe(), b.describe()),
+            msg,
+        )
+    }
+}
+
+fn dim_result(
+    op: BinOp,
+    lt: Ty,
+    rt: Ty,
+    left: &Expr,
+    right: &Expr,
+    line: u32,
+    errors: &mut Vec<CheckError>,
+) -> Ty {
+    use BinOp::*;
+    let dim_of = |t: Ty| match t {
+        Ty::Num(Some(u)) => Some(u.dim()),
+        Ty::Num(None) => Some(Dim::NONE),
+        _ => None,
+    };
+    let (da, db) = (dim_of(lt), dim_of(rt));
+    let (a, b) = match (da, db) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return bin_result(op, lt, rt),
+    };
+    match op {
+        Add | Sub => {
+            if a != b {
+                // Point at both operands when they are named, which is how the
+                // roadmap draws this diagnostic.
+                let mut spans: Vec<(String, String)> = Vec::new();
+                if let Expr::Name(n) = left {
+                    spans.push((n.clone(), a.describe()));
+                }
+                if let Expr::Name(n) = right {
+                    spans.push((n.clone(), b.describe()));
+                }
+                let line_now = if current_line() == 0 { line } else { current_line() };
+                let msg = format!(
+                    "cannot {} {} and {}: E_KAZE_UNIT_MISMATCH",
+                    if op == Add { "add" } else { "subtract" },
+                    a.describe(),
+                    b.describe()
+                );
+                errors.push(if spans.len() == 2 {
+                    at_spans("E_KAZE_UNIT_MISMATCH", line_now, spans, op.symbol(), msg)
+                } else {
+                    at(
+                        "E_KAZE_UNIT_MISMATCH",
+                        line_now,
+                        op.symbol(),
+                        format!("here: {} and {}", a.describe(), b.describe()),
+                        msg,
+                    )
+                });
+                return Ty::Num(unit_for(a));
+            }
+            Ty::Num(unit_for(a))
+        }
+        Mul => Ty::Num(unit_for(a.plus(b))),
+        Div => Ty::Num(unit_for(a.minus(b))),
+        Mod => {
+            if a != b {
+                let msg = format!(
+                    "cannot take the remainder of {} and {}: E_KAZE_UNIT_MISMATCH",
+                    a.describe(),
+                    b.describe()
+                );
+                errors.push(unit_spans(left, right, a, b, if current_line() == 0 { line } else { current_line() }, op, msg));
+            }
+            Ty::Num(unit_for(a))
+        }
+        Lt | Le | Gt | Ge | Eq | Ne => {
+            if a != b && !matches!((lt, rt), (Ty::Str, Ty::Str)) {
+                let msg = format!(
+                    "cannot compare {} with {}: E_KAZE_UNIT_MISMATCH",
+                    a.describe(),
+                    b.describe()
+                );
+                errors.push(unit_spans(left, right, a, b, if current_line() == 0 { line } else { current_line() }, op, msg));
+            }
+            Ty::Bool
+        }
+        And | Or => Ty::Bool,
+    }
+}
+
+/// The canonical unit for a dimension, used as the static type of an
+/// arithmetic result. None for a derived dimension with no single spelling.
+fn unit_for(d: Dim) -> Option<Unit> {
+    match d.quantity() {
+        Some("plain number") => None,
+        Some("length") => Some(Unit::Meter),
+        Some("time") => Some(Unit::Sec),
+        Some("mass") => Some(Unit::Kg),
+        Some("angle") => Some(Unit::Deg),
+        Some("temperature") => Some(Unit::Kelvin),
+        Some("pressure") => Some(Unit::Pascal),
+        Some("current") => Some(Unit::Ampere),
+        Some("velocity") => Some(Unit::Mps),
+        Some("acceleration") => Some(Unit::Mps2),
+        _ => None,
     }
 }
 
@@ -715,8 +1019,8 @@ mod tests {
     fn the_four_plan_examples_typecheck() {
         for src in [
             "needs: drone, log\n\naction patrol(points):\n    log \"go\"\n    arm drone\n    takeoff to 15 meters\n    for each point in points:\n        fly to point at 15 meters\n    return to launch\n\nwhen battery < 20%:\n    log warning \"low\"\n    return to launch\n",
-            "needs: rover, lidar, log\n\nevery 100ms:\n    let front = lidar.front_distance()\n    if front < 0.5 meters:\n        log warning \"obstacle\"\n        stop rover\n        turn right by 90 degrees\n    otherwise:\n        drive forward at 1.2 m/s\n",
-            "needs: sensor, fan, mister, alert\n\ncheck climate(t, h):\n    if sensor.temperature() > t + 2:\n        turn on fan\n        send alert \"cooling\"\n    otherwise:\n        turn off fan\n    if sensor.humidity() < h:\n        pulse mister for 5 seconds\n",
+            "needs: rover, lidar, log\n\nevery 100ms:\n    let front = lidar.front_distance() otherwise 10 meters\n    if front < 0.5 meters:\n        log warning \"obstacle\"\n        stop rover\n        turn right by 90 degrees\n    otherwise:\n        drive forward at 1.2 m/s\n",
+            "needs: sensor, fan, mister, alert\n\ncheck climate(t: Celsius, h: percent):\n    let temperature = sensor.temperature() otherwise 20 Celsius\n    let humidity = sensor.humidity() otherwise 50%\n    if temperature > t:\n        turn on fan\n        send alert \"cooling\"\n    otherwise:\n        turn off fan\n    if humidity < h:\n        pulse mister for 5 seconds\n",
             "needs: memory, policy\n\nfilter user_prompt(prompt):\n    if length of prompt > 2000:\n        reject with \"too long\"\n    if policy detects secrets in prompt:\n        reject with \"secrets\"\n    remember prompt as \"last\"\n    allow prompt\n",
         ] {
             check_src(src).unwrap_or_else(|e| panic!("{}", e[0].msg));
@@ -770,9 +1074,10 @@ mod tests {
     #[test]
     fn a_dotted_receiver_must_resolve_to_a_declared_family() {
         // `lidar` is an instance of `sensor`, so declaring the instance is enough…
-        check_src("needs: lidar\naction a():\n    let d = lidar.front_distance()\n").expect("alias");
+        check_src("needs: lidar\naction a():\n    let d = lidar.front_distance() otherwise 1 meter\n")
+            .expect("alias");
         // …but using a family nobody declared is refused.
-        let msg = first_error("needs: drone\naction a():\n    lidar.front_distance()\n");
+        let msg = first_error("needs: drone\naction a():\n    lidar.front_distance() otherwise 1 meter\n");
         assert!(msg.contains("not declared"), "{}", msg);
         assert!(msg.contains("needs: sensor"), "{}", msg);
     }

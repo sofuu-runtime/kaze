@@ -1,0 +1,5 @@
+# rule: LOOP_UNBOUNDED — 'while true' is the canonical unbounded loop
+# expect: E_KAZE_LOOP_UNBOUNDED
+action spin():
+    while true:  # BAD
+        let x = 1

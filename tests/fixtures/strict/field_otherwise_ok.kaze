@@ -1,0 +1,5 @@
+# expect: ok — a host-record field with an inline fallback is accepted and runs
+# value: 7 with reading={"value": 7}
+action main(reading):
+    let v = reading.value otherwise 0
+    return v

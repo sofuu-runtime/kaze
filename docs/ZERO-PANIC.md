@@ -54,11 +54,16 @@ scripts/panic-audit.sh
 ```
 
 The script stops each file at its `#[cfg(test)]` marker (test modules are at the
-bottom of every file here) and skips comment lines. On the v1.0 tree it prints
-exactly the six lines named in §3: three `levels.last().unwrap()` calls in
+bottom of every file here) and skips comment lines. On the current tree it
+prints exactly the six lines named in §3: three `levels.last().unwrap()` calls in
 `fmt.rs` and three `Frame::new(...).expect(...)` calls in `mavlink.rs`. A new
 line is a review item: either it is unreachable by construction and gets a
-comment here, or it becomes a typed error with a test.
+comment here, or it becomes a typed error with a test. The strictness work
+(roadmap phases 1-6) added no panic-shaped call: the new traps
+(`E_KAZE_GUARD`, `E_KAZE_CONTRACT`, `E_KAZE_LOOP_BOUND`,
+`E_KAZE_RECURSION_DEPTH`) are typed errors, and two pre-existing
+`machine.rs` sites (an `unwrap` on the unclosed-paren path and an
+`unreachable!()` in the routine-kind match) were converted to typed errors.
 
 ## 5. The Rust `panic = "abort"` caveat
 

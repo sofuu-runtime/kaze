@@ -1,0 +1,6 @@
+# rule: MISSING_FALLBACK — a memory recall in expression position needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+needs: memory
+
+action recall_one():
+    let found = memory.recall("last")  # BAD

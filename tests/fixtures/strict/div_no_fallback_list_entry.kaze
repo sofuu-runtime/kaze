@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — a list literal element is a checked expression position
+# expect: E_KAZE_MISSING_FALLBACK
+action spread(total, parts):
+    let shares = [total / parts, 0]  # BAD

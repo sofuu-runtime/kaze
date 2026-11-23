@@ -1,0 +1,5 @@
+# rule: RECURSION_UNBOUNDED — a routine that calls itself must declare a ceiling
+# expect: E_KAZE_RECURSION_UNBOUNDED
+action countdown(n):
+    if n > 0:
+        countdown(n - 1)  # BAD

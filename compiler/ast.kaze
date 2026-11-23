@@ -1,4 +1,22 @@
-# ast.kaze — Kaze AST node representations
+# ast.kaze — Kaze AST node representations.
+#
+# Every shape the front end produces is an AstNode:
+#
+#   kind       the shape ("NUM", "BIN", "LET", "ACTION", ...)
+#   name       an identifier, operator, unit or sub-tag
+#   val_str    a literal payload (number text, string text, type name, ...)
+#   val_num    a numeric payload (a declared bound, or a default value)
+#   children   sub-nodes
+#   line       1-based source line; 0 for a synthesised node
+#
+# Items carry three children, always in this order:
+#
+#   children[0]  PARAMS    one PARAM per parameter
+#   children[1]  CONTRACTS REQUIRES / ENSURES / RECURSION_BOUND / ROUTINE_NEED
+#   children[2]  BODY      the statement block
+#
+# Contracts and a routine's own needs: line are declarations. They live on the
+# item, never in the body, so no backend has to filter them out of a run.
 
 record AstNode:
     kind: str
@@ -11,41 +29,285 @@ record AstNode:
 action make_node(k, n, vs, vn, ch, l):
     return AstNode(kind: k, name: n, val_str: vs, val_num: vn, children: ch, line: l)
 
-action make_ident(name, l):
-    return AstNode(kind: "IDENT", name: name, val_str: "", val_num: 0, children: [], line: l)
+# The empty node. Lookups return it instead of trapping, which is what keeps
+# this front end free of run-time panics on a malformed tree.
+action none_node():
+    return AstNode(kind: "NONE", name: "", val_str: "", val_num: 0, children: [], line: 0)
 
-action make_num(n, l):
-    return AstNode(kind: "NUM", name: "", val_str: "", val_num: n, children: [], line: l)
+action kids_of(n: AstNode):
+    return n.children
+
+# A guarded read: the index is proved in range before the read, so the call
+# allocates nothing on the hit path. The old form --
+#   node_at(kids, i)
+# -- evaluated the fallback eagerly in native code, which meant a fresh record
+# and list for every child access: hundreds of thousands of allocations on a
+# 4,000-line file.
+action node_at(nodes, i):
+    # The proof has to be the *positive* condition of the guard: the checker
+    # learns facts from an if body, not from an early return.
+    if i >= 0 and i < (length of nodes):
+        return nodes[i]
+    return none_node()
+
+action child_at(n: AstNode, i):
+    return node_at(n.children, i)
+
+# ── expressions ─────────────────────────────────────────────────────────
+
+action make_ident(name, l):
+    return make_node("IDENT", name, "", 0, [], l)
+
+# A numeric literal keeps its source text in val_str, so "1.5" and "500" print
+# back exactly as written and the C emitter needs no float formatting.
+action make_num(text, l):
+    return make_node("NUM", "", text, 0, [], l)
 
 action make_str(s, l):
-    return AstNode(kind: "STR", name: "", val_str: s, val_num: 0, children: [], line: l)
+    return make_node("STR", "", s, 0, [], l)
 
 action make_bool(b, l):
     let vs = "false"
     if b:
         set vs to "true"
-    return AstNode(kind: "BOOL", name: "", val_str: vs, val_num: 0, children: [], line: l)
+    return make_node("BOOL", "", vs, 0, [], l)
 
 action make_bin(op, left, right, l):
-    return AstNode(kind: "BIN", name: op, val_str: "", val_num: 0, children: [left, right], line: l)
+    return make_node("BIN", op, "", 0, [left, right], l)
 
 action make_call(target, args, l):
-    return AstNode(kind: "CALL", name: target, val_str: "", val_num: 0, children: args, line: l)
+    return make_node("CALL", target, "", 0, args, l)
 
 action make_field(base, field, l):
-    return AstNode(kind: "FIELD", name: field, val_str: "", val_num: 0, children: [base], line: l)
+    return make_node("FIELD", field, "", 0, [base], l)
 
 action make_index(coll, idx, l):
-    return AstNode(kind: "INDEX", name: "", val_str: "", val_num: 0, children: [coll, idx], line: l)
+    return make_node("INDEX", "", "", 0, [coll, idx], l)
 
 action make_len(inner, l):
-    return AstNode(kind: "LEN", name: "", val_str: "", val_num: 0, children: [inner], line: l)
+    return make_node("LEN", "", "", 0, [inner], l)
+
+# Only a literal's length is known to the front end; the checker uses this to
+# prove a constant index without running anything.
+action make_len_lit(n, l):
+    return make_node("LEN_LIT", "", "", n, [], l)
 
 action make_list_expr(items, l):
-    return AstNode(kind: "LIST", name: "", val_str: "", val_num: 0, children: items, line: l)
+    return make_node("LIST", "", "", 0, items, l)
+
+# The phase 2 inline fallback: <expr> otherwise <fallback>.
+action make_fallback(inner, fb, l):
+    return make_node("FALLBACK", "", "", 0, [inner, fb], l)
+
+# <expr> in radians / <expr> in degrees.
+action make_in_unit(unit, inner, l):
+    return make_node("IN_UNIT", unit, "", 0, [inner], l)
+
+# f(name: value) keeps the field name on the argument.
+action make_named_arg(field, value, l):
+    return make_node("NAMED_ARG", field, "", 0, [value], l)
+
+# An expression the parser could not read. The checker reports it; it is never
+# silently dropped.
+action make_unknown(l):
+    return make_node("UNKNOWN", "", "", 0, [], l)
+
+# ── statements ──────────────────────────────────────────────────────────
 
 action make_stmt(kind, name, children, l):
-    return AstNode(kind: kind, name: name, val_str: "", val_num: 0, children: children, line: l)
+    return make_node(kind, name, "", 0, children, l)
 
-action make_item(kind, name, params, body, l):
-    return AstNode(kind: kind, name: name, val_str: "", val_num: 0, children: [params, body], line: l)
+action make_block(label, stmts, l):
+    return make_node("BLOCK", label, "", 0, stmts, l)
+
+action make_guard(cond, l):
+    return make_node("GUARD", "", "", 0, [cond], l)
+
+# The ceiling of a while ... bounded n: loop. An empty spelling means the loop
+# declared no ceiling, which the checker refuses.
+action make_bound(text, l):
+    return make_node("BOUND", "", text, 0, [], l)
+
+action make_while(cond, body, bound, l):
+    return make_node("WHILE", "", "", 0, [cond, body, bound], l)
+
+action make_if(cond, then_block, other_block, l):
+    return make_node("IF", "", "", 0, [cond, then_block, other_block], l)
+
+action make_for_each(var, list_expr, body, l):
+    return make_node("FOR_EACH", var, "", 0, [list_expr, body], l)
+
+action make_try(err_name, body, other_block, l):
+    return make_node("TRY", err_name, "", 0, [body, other_block], l)
+
+# ── items ───────────────────────────────────────────────────────────────
+
+action make_param(name, ty, defaults, l):
+    return make_node("PARAM", name, ty, 0, defaults, l)
+
+action make_field_def(name, ty, l):
+    return make_node("FIELD_DEF", name, ty, 0, [], l)
+
+# kind_word is the keyword that was written (action, routine, func, check,
+# filter); the node kind is the semantic item kind.
+action make_item(kind_word, name, params, contracts, result, body, l):
+    let kind = "ACTION"
+    if kind_word == "check":
+        set kind to "CHECK"
+    if kind_word == "filter":
+        set kind to "FILTER"
+    return make_node(kind, name, result, 0, [params, contracts, body], l)
+
+action make_record_item(name, fields, l):
+    return make_node("RECORD", name, "", 0, fields, l)
+
+action make_contract(kind_word, expr, l):
+    return make_node("CONTRACT", kind_word, "", 0, [expr], l)
+
+action make_recursion_bound(text, l):
+    return make_node("RECURSION_BOUND", "", text, 0, [], l)
+
+action make_routine_need(name, l):
+    return make_node("ROUTINE_NEED", name, "", 0, [], l)
+
+action make_when(cond, body, l):
+    return make_node("WHEN", "", "", 0, [cond, body], l)
+
+action make_every(duration, body, l):
+    return make_node("EVERY", "", "", 0, [duration, body], l)
+
+action make_program(uses, needs, items):
+    let uses_node = make_node("USES", "", "", 0, uses, 0)
+    let needs_node = make_node("NEEDS", "", "", 0, needs, 0)
+    let items_node = make_node("ITEMS", "", "", 0, items, 0)
+    return make_node("PROGRAM", "", "", 0, [uses_node, needs_node, items_node], 0)
+
+action program_uses(prog: AstNode):
+    return child_at(prog, 0)
+
+action program_needs(prog: AstNode):
+    return child_at(prog, 1)
+
+action program_items(prog: AstNode):
+    let items_node = child_at(prog, 2)
+    return items_node.children
+
+# ── vocabulary shared by the parser and the checker ─────────────────────
+
+# The unit suffixes the language knows (the phase 3 lexicon). A unit word here
+# is consumed as a suffix and recorded on the literal it follows.
+action unit_word(w):
+    if w == "m" or w == "meter" or w == "meters":
+        return "m"
+    if w == "km" or w == "kilometer" or w == "kilometers":
+        return "km"
+    if w == "cm" or w == "centimeter" or w == "centimeters":
+        return "cm"
+    if w == "mm" or w == "millimeter" or w == "millimeters":
+        return "mm"
+    if w == "s" or w == "sec" or w == "second" or w == "seconds":
+        return "seconds"
+    if w == "ms" or w == "millisecond" or w == "milliseconds":
+        return "ms"
+    if w == "h" or w == "hour" or w == "hours":
+        return "hours"
+    if w == "min" or w == "minute" or w == "minutes":
+        return "minutes"
+    if w == "kg" or w == "kilogram" or w == "kilograms":
+        return "kg"
+    if w == "g" or w == "gram" or w == "grams":
+        return "gram"
+    if w == "Celsius" or w == "celsius" or w == "C":
+        return "Celsius"
+    if w == "Kelvin" or w == "kelvin" or w == "K":
+        return "Kelvin"
+    if w == "Pascal" or w == "pascal" or w == "Pa":
+        return "Pascal"
+    if w == "mbar" or w == "millibar" or w == "millibars":
+        return "mbar"
+    if w == "hPa" or w == "hpa" or w == "hectopascal" or w == "hectopascals":
+        return "hPa"
+    if w == "ampere" or w == "amperes" or w == "amp" or w == "A":
+        return "ampere"
+    if w == "percent":
+        return "%"
+    if w == "degrees" or w == "degree" or w == "deg":
+        return "degrees"
+    if w == "radians" or w == "radian" or w == "rad":
+        return "radians"
+    return ""
+
+action is_angle_unit(u):
+    if u == "degrees" or u == "radians":
+        return 1
+    return 0
+
+# Declared capability names resolve to a family: fan is a device instance,
+# lidar a sensor, and a family name is itself.
+action family_of_word(w):
+    if w == "drone" or w == "rover" or w == "sensor" or w == "device" or w == "memory" or w == "policy" or w == "log" or w == "alert" or w == "ai" or w == "tool":
+        return w
+    if w == "tools":
+        return "tool"
+    if w == "agent" or w == "model" or w == "llm":
+        return "ai"
+    if w == "lidar" or w == "camera" or w == "thermostat" or w == "probe":
+        return "sensor"
+    if w == "fan" or w == "mister" or w == "pump" or w == "relay" or w == "valve" or w == "motor" or w == "light":
+        return "device"
+    return "device"
+
+# Bare telemetry names, read through the script's hardware family.
+action is_telemetry(w):
+    if w == "battery" or w == "altitude" or w == "heading" or w == "speed" or w == "position" or w == "temperature" or w == "humidity" or w == "distance" or w == "armed":
+        return 1
+    if w == "latitude" or w == "longitude" or w == "satellites":
+        return 1
+    return 0
+
+action digit_value(c):
+    if c == "0":
+        return 0
+    if c == "1":
+        return 1
+    if c == "2":
+        return 2
+    if c == "3":
+        return 3
+    if c == "4":
+        return 4
+    if c == "5":
+        return 5
+    if c == "6":
+        return 6
+    if c == "7":
+        return 7
+    if c == "8":
+        return 8
+    if c == "9":
+        return 9
+    return 0
+
+# Read a decimal literal's text as a number. Used where the front end has to
+# reason about the value (a divisor, an index, a loop ceiling); it never fails.
+action text_to_num(s):
+    let len = length of s
+    let i = 0
+    let whole = 0
+    let frac = 0
+    let scale = 1
+    let seen_dot = 0
+    while i < len bounded 64:
+        let c = s[i] otherwise "x"
+        if c == ".":
+            set seen_dot to 1
+        otherwise:
+            if c >= "0" and c <= "9":
+                let d = digit_value(c)
+                if seen_dot == 1:
+                    set scale to scale * 10
+                    set frac to frac + (d / scale otherwise 0)
+                otherwise:
+                    set whole to whole * 10 + d
+        set i to i + 1
+    return whole + frac

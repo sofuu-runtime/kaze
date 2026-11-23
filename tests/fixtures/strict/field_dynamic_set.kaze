@@ -1,0 +1,5 @@
+# rule: MISSING_FALLBACK — a host-record field assigned through 'set' needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action copy_field(entry):
+    let v = 0
+    set v = entry.count  # BAD

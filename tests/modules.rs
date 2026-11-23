@@ -75,7 +75,7 @@ fn needs_are_merged_and_deduplicated() {
         ),
         (
             "lib.kaze",
-            "needs: sensor, log\naction read():\n    log sensor.temperature()\n",
+            "needs: sensor, log\naction read():\n    let temperature = sensor.temperature() otherwise 0 Celsius\n    log temperature\n",
         ),
     ]);
 
@@ -409,7 +409,7 @@ fn needs_may_come_before_use() {
         ),
         (
             "lib.kaze",
-            "needs: sensor\naction read():\n    log sensor.temperature()\n",
+            "needs: sensor\naction read():\n    let temperature = sensor.temperature() otherwise 0 Celsius\n    log temperature\n",
         ),
     ]);
     let prepared =

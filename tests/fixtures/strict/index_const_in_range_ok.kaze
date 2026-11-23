@@ -1,0 +1,4 @@
+# expect: ok — a constant index inside a literal's known length needs no fallback
+# value: 20
+action main():
+    return [10, 20, 30][1]

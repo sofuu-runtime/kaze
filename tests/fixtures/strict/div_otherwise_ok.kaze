@@ -1,0 +1,5 @@
+# expect: ok — a dynamic divisor with an inline fallback is accepted and runs
+# value: 3 with d=4 (12 / 4)
+action main(d):
+    let share = 12 / d otherwise 0
+    return share

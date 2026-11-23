@@ -1,0 +1,5 @@
+# rule: MISSING_FALLBACK — a division assigned through 'set' is still fallible
+# expect: E_KAZE_MISSING_FALLBACK
+action rebase(value, factor):
+    let scaled = 0
+    set scaled = value / factor  # BAD

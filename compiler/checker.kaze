@@ -1,0 +1,846 @@
+# checker.kaze — the pure-Kaze semantic checker.
+#
+# It reads the AST the parser produced and returns a list of Diagnostic
+# records. It never runs the program, never prints and never fabricates a pass:
+# a rule it cannot decide produces no diagnostic, and SELF-HOSTING.md names
+# every rule it implements.
+#
+# Rules implemented from the AST alone (phase 2 and phase 5, H-1):
+#
+#   1. a capability family used but not declared in needs:   E_CAP_UNDECLARED
+#   2. a capability operation the registry does not know:     E_KAZE_CAP_OP
+#   3. a name that is not bound and not a known builtin:      E_KAZE_UNKNOWN_NAME
+#   4. a filter whose body can fall off the end:              E_KAZE_FILTER_FALLTHROUGH
+#   5. division or modulo with no fallback and a divisor
+#      that is not a non-zero literal:                         E_KAZE_MISSING_FALLBACK
+#   6. a dynamic index with no fallback and no enclosing
+#      length guard:                                          E_KAZE_MISSING_FALLBACK
+#   7. a constant index outside a literal's length:           E_KAZE_BOUNDS
+#   8. a while loop with no bounded ceiling:                  E_KAZE_LOOP_UNBOUNDED
+#   9. a recursive routine with no recursion bounded:         E_KAZE_RECURSION_UNBOUNDED
+#  10. a requires/ensures clause that is not boolean:         E_KAZE_CONTRACT_NOT_BOOL
+#  11. a needs: entry that is not a family or an instance:    E_KAZE_CAP_UNKNOWN
+#  12. an expression the parser could not read:               E_KAZE_PARSE
+#
+# The Rust front end (kaze/src/checker.rs, strict.rs) remains the reference for
+# everything else: type inference, unit algebra, host-record field fallbacks,
+# capability argument counts, contract satisfiability and interval propagation.
+use "./ast.kaze"
+
+record Diagnostic:
+    code: str
+    line: num
+    msg: str
+
+action diag(code, line, msg):
+    return Diagnostic(code: code, line: line, msg: msg)
+
+action render_diag(d: Diagnostic):
+    return d.code + " at line " + d.line + ": " + d.msg
+
+# ── small text and list helpers ─────────────────────────────────────────
+
+action list_has(items, want):
+    let i = 0
+    let len = length of items
+    let found = 0
+    while i < len and found == 0 bounded 1000000:
+        let cur = items[i] otherwise ""
+        if cur == want:
+            set found to 1
+        set i to i + 1
+    return found
+
+action drop_last(items):
+    let out = []
+    let len = length of items
+    let i = 0
+    while i < len - 1 bounded 1000000:
+        set out to out + [items[i] otherwise ""]
+        set i to i + 1
+    return out
+
+# The part of a name before the first dot, or the whole name.
+action head_words(name):
+    let len = length of name
+    let i = 0
+    let out = ""
+    let done = 0
+    while i < len and done == 0 bounded 1000:
+        let c = name[i] otherwise "x"
+        if c == ".":
+            set done to 1
+        otherwise:
+            set out to out + c
+        set i to i + 1
+    return out
+
+# The part of a name after the first dot.
+action tail_words(name):
+    let len = length of name
+    let i = 0
+    let out = ""
+    let seen = 0
+    while i < len bounded 1000:
+        let c = name[i] otherwise "x"
+        if seen == 1:
+            set out to out + c
+        if c == "." and seen == 0:
+            set seen to 1
+        set i to i + 1
+    return out
+
+action has_dot(name):
+    let len = length of name
+    let i = 0
+    let found = 0
+    while i < len bounded 1000:
+        if (name[i] otherwise "x") == ".":
+            set found to 1
+        set i to i + 1
+    return found
+
+action is_upper(word):
+    let len = length of word
+    if len == 0:
+        return 0
+    let c = word[0] otherwise "?"
+    if c >= "A" and c <= "Z":
+        return 1
+    return 0
+
+# ── the capability registry the checker knows ──────────────────────────
+#
+# The same table as kaze/src/caps.rs. It lives here so the pure-Kaze front end
+# can answer "is this operation real" without a host.
+
+action cap_name_known(w):
+    if w == "drone" or w == "rover" or w == "sensor" or w == "device" or w == "memory" or w == "policy" or w == "log" or w == "alert" or w == "ai" or w == "tool":
+        return 1
+    if w == "tools" or w == "agent" or w == "model" or w == "llm":
+        return 1
+    if w == "lidar" or w == "camera" or w == "thermostat" or w == "probe":
+        return 1
+    if w == "fan" or w == "mister" or w == "pump" or w == "relay" or w == "valve" or w == "motor" or w == "light":
+        return 1
+    return 0
+
+action op_known(family, op):
+    if family == "drone":
+        if op == "arm" or op == "land" or op == "rtl" or op == "hold" or op == "stop" or op == "takeoff" or op == "goto" or op == "telemetry":
+            return 1
+    if family == "rover":
+        if op == "forward" or op == "backward" or op == "turn_left" or op == "turn_right" or op == "stop" or op == "telemetry":
+            return 1
+    if family == "sensor":
+        if op == "temperature" or op == "humidity" or op == "distance" or op == "front_distance" or op == "read" or op == "telemetry":
+            return 1
+    if family == "device":
+        if op == "set_relay" or op == "pulse" or op == "read_gpio" or op == "set_duty":
+            return 1
+    if family == "memory":
+        if op == "save" or op == "recall":
+            return 1
+    if family == "policy":
+        if op == "detects" or op == "detect" or op == "allow" or op == "reject":
+            return 1
+    if family == "log":
+        if op == "info" or op == "warn" or op == "error" or op == "debug":
+            return 1
+    if family == "alert":
+        if op == "send":
+            return 1
+    if family == "ai":
+        if op == "prompt" or op == "complete" or op == "classify":
+            return 1
+    if family == "tool":
+        if op == "call" or op == "run":
+            return 1
+    return 0
+
+action pure_builtin(name):
+    if name == "sin" or name == "cos" or name == "tan" or name == "sqrt" or name == "atan2":
+        return 1
+    if name == "abs" or name == "min" or name == "max" or name == "floor" or name == "ceil" or name == "round":
+        return 1
+    if name == "vector" or name == "link_lost" or name == "length":
+        return 1
+    return 0
+
+# ── facts: what an enclosing guard proves ──────────────────────────────
+#
+# Two fact shapes, both plain text:
+#   "lt:<index-key>:<collection-key>"  the index is below the collection length
+#   "len:<collection-key>:<n>"         the collection has a known length
+
+action key_of(e: AstNode):
+    recursion bounded 64
+    if e.kind == "IDENT":
+        return e.name
+    if e.kind == "FIELD":
+        let base = key_of(child_at(e, 0))
+        if base == "":
+            return ""
+        return base + "." + e.name
+    return ""
+
+# The collection a bound compares against: "length of xs" directly, or a local
+# that a let bound to "length of xs" ("let len = length of src", then "i < len").
+action bound_coll_key(bound: AstNode, facts):
+    if bound.kind == "LEN":
+        return key_of(child_at(bound, 0))
+    if bound.kind == "IDENT":
+        return alias_target(facts, bound.name)
+    return ""
+
+action alias_target(facts, name):
+    let prefix = "alias:" + name + ":"
+    let i = 0
+    let len = length of facts
+    let out = ""
+    while i < len bounded 100000:
+        let f = facts[i] otherwise ""
+        if starts_with(f, prefix) == 1:
+            set out to tail_from(f, prefix)
+        set i to i + 1
+    return out
+
+action fact_lt(idx: AstNode, bound: AstNode, facts):
+    let out = []
+    let ik = key_of(idx)
+    let ck = bound_coll_key(bound, facts)
+    if ik != "" and ck != "":
+        set out to out + ["lt:" + ik + ":" + ck]
+    return out
+
+action facts_from_cond(cond: AstNode, facts):
+    recursion bounded 200
+    let out = []
+    if cond.kind == "BIN":
+        if cond.name == "and":
+            set out to out + facts_from_cond(child_at(cond, 0), facts)
+            set out to out + facts_from_cond(child_at(cond, 1), facts)
+        if cond.name == "<":
+            set out to out + fact_lt(child_at(cond, 0), child_at(cond, 1), facts)
+        if cond.name == ">":
+            set out to out + fact_lt(child_at(cond, 1), child_at(cond, 0), facts)
+    return out
+
+action is_constant(e: AstNode):
+    if e.kind == "NUM":
+        return 1
+    return 0
+
+action constant_value(e: AstNode):
+    return text_to_num(e.val_str)
+
+# A non-zero literal divisor is provably safe: 4, 4.0, but not 0.
+action nonzero_literal(e: AstNode):
+    if e.kind != "NUM":
+        return 0
+    let v = text_to_num(e.val_str)
+    if v > 0:
+        return 1
+    if v < 0:
+        return 1
+    return 0
+
+# ── boolean shaping for contract clauses ───────────────────────────────
+
+action is_boolean_expr(e: AstNode):
+    recursion bounded 200
+    if e.kind == "BOOL":
+        return 1
+    if e.kind == "BIN":
+        if e.name == "==" or e.name == "!=" or e.name == "<" or e.name == "<=" or e.name == ">" or e.name == ">=":
+            return 1
+        if e.name == "and" or e.name == "or" or e.name == "not":
+            return 1
+    if e.kind == "CALL":
+        if has_dot(e.name) == 1 and head_words(e.name) == "policy":
+            return 1
+        if e.name == "link_lost":
+            return 1
+    return 0
+
+# ── name resolution ────────────────────────────────────────────────────
+
+action name_allowed(name, names):
+    if list_has(names, name) == 1:
+        return 1
+    if is_telemetry(name) == 1:
+        return 1
+    if name == "result":
+        return 1
+    return 0
+
+action routine_named(items, name):
+    let i = 0
+    let len = length of items
+    let found = none_node()
+    while i < len bounded 1000000:
+        let it = node_at(items, i)
+        if it.name == name:
+            set found to it
+        set i to i + 1
+    return found
+
+action record_named(items, name):
+    let i = 0
+    let len = length of items
+    let found = 0
+    while i < len bounded 1000000:
+        let it = node_at(items, i)
+        if it.name == name and it.kind == "RECORD":
+            set found to 1
+        set i to i + 1
+    return found
+
+# ── promised result length ─────────────────────────────────────────────
+#
+# "ensures length of result == 2" is how a routine tells the checker that its
+# result is a fixed-size tuple, so r[0] and r[1] need no fallback.
+
+action promised_length(item: AstNode):
+    let contracts = child_at(item, 1)
+    let i = 0
+    let len = length of contracts.children
+    let out = 0
+    while i < len bounded 1000:
+        let c = child_at(contracts, i)
+        if c.kind == "CONTRACT" and c.name == "ensures":
+            let e = child_at(c, 0)
+            if e.kind == "BIN" and e.name == "==":
+                let left = child_at(e, 0)
+                let right = child_at(e, 1)
+                if left.kind == "LEN" and right.kind == "NUM":
+                    set out to text_to_num(right.val_str)
+        set i to i + 1
+    return out
+
+# ── string prefix helpers for the length facts ─────────────────────────
+
+action starts_with(s, prefix):
+    let plen = length of prefix
+    if (length of s) < plen:
+        return 0
+    let i = 0
+    let ok = 1
+    while i < plen bounded 1000:
+        if (s[i] otherwise "x") != (prefix[i] otherwise "y"):
+            set ok to 0
+        set i to i + 1
+    return ok
+
+action tail_from(s, prefix):
+    let plen = length of prefix
+    let len = length of s
+    let i = plen
+    let out = ""
+    while i < len bounded 1000:
+        set out to out + (s[i] otherwise "")
+        set i to i + 1
+    return out
+
+action find_len_fact(facts, ck):
+    let i = 0
+    let len = length of facts
+    let out = 0
+    let prefix = "len:" + ck + ":"
+    while i < len bounded 100000:
+        let f = facts[i] otherwise ""
+        if starts_with(f, prefix) == 1:
+            set out to text_to_num(tail_from(f, prefix))
+        set i to i + 1
+    return out
+
+# ── the expression walk ────────────────────────────────────────────────
+
+action check_expr(e: AstNode, names, facts, items, needs, open, diags):
+    recursion bounded 200
+    let k = e.kind
+    if k == "NUM" or k == "STR" or k == "BOOL":
+        return diags
+
+    if k == "IDENT":
+        if name_allowed(e.name, names) == 1:
+            return diags
+        set diags to diags + [diag("E_KAZE_UNKNOWN_NAME", e.line, "'" + e.name + "' is not a parameter, a let binding or a known value")]
+        return diags
+
+    if k == "UNKNOWN":
+        set diags to diags + [diag("E_KAZE_PARSE", e.line, "the parser could not read this expression")]
+        return diags
+
+    if k == "LEN" or k == "FIELD" or k == "IN_UNIT":
+        return check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
+
+    if k == "LIST":
+        let out = diags
+        for each item in e.children:
+            set out to check_expr(item, names, facts, items, needs, open, out)
+        return out
+
+    if k == "INDEX":
+        return check_index(e, names, facts, items, needs, open, diags)
+
+    if k == "BIN":
+        # A long left-deep chain (this compiler's own string building has chains
+        # of hundreds of "+") must not cost one frame per operator. Walk the left
+        # spine with a loop, then check each right operand and the head.
+        let rights = []
+        let ops = []
+        let cur = e
+        let guard = 0
+        while cur.kind == "BIN" and guard < 100000 bounded 100000:
+            set rights to rights + [child_at(cur, 1)]
+            set ops to ops + [cur.name]
+            set cur to child_at(cur, 0)
+            set guard to guard + 1
+        let out = check_expr(cur, names, facts, items, needs, open, diags)
+        let i = (length of rights) - 1
+        while i >= 0 bounded 100000:
+            let right = node_at(rights, i)
+            let op = ops[i] otherwise ""
+            set out to check_expr(right, names, facts, items, needs, open, out)
+            if op == "/" or op == "%":
+                if nonzero_literal(right) == 0:
+                    set out to out + [diag("E_KAZE_MISSING_FALLBACK", right.line, "this '" + op + "' can divide by zero and has no fallback; write '<value> " + op + " <divisor> otherwise <fallback>'")]
+            set i to i - 1
+        return out
+
+    if k == "FALLBACK":
+        let inner = child_at(e, 0)
+        let fb = child_at(e, 1)
+        # The fallback covers the fallible head; its operands are still checked.
+        if inner.kind == "INDEX":
+            let out = check_expr(child_at(inner, 0), names, facts, items, needs, open, diags)
+            set out to check_expr(child_at(inner, 1), names, facts, items, needs, open, out)
+            return check_expr(fb, names, facts, items, needs, open, out)
+        if inner.kind == "BIN" and (inner.name == "/" or inner.name == "%"):
+            let out = check_expr(child_at(inner, 0), names, facts, items, needs, open, diags)
+            set out to check_expr(child_at(inner, 1), names, facts, items, needs, open, out)
+            return check_expr(fb, names, facts, items, needs, open, out)
+        let out = check_expr(inner, names, facts, items, needs, open, diags)
+        return check_expr(fb, names, facts, items, needs, open, out)
+
+    if k == "CALL":
+        return check_call(e, names, facts, items, needs, open, diags)
+
+    return diags
+
+action check_index(e: AstNode, names, facts, items, needs, open, diags):
+    recursion bounded 200
+    let coll = child_at(e, 0)
+    let idx = child_at(e, 1)
+    let out = check_expr(coll, names, facts, items, needs, open, diags)
+    set out to check_expr(idx, names, facts, items, needs, open, out)
+    let ck = key_of(coll)
+    if is_constant(idx) == 1:
+        # A literal collection is checked against its own length.
+        if coll.kind == "LIST":
+            let n = length of coll.children
+            let k = constant_value(idx)
+            if k >= 0 and k < n:
+                return out
+            set out to out + [diag("E_KAZE_BOUNDS", e.line, "this index is outside the value it reads; a constant position past the end is refused")]
+            return out
+        if ck != "":
+            if list_has(facts, "lt:" + idx.val_str + ":" + ck) == 1:
+                return out
+            let promised = find_len_fact(facts, ck)
+            let k = constant_value(idx)
+            if promised > 0:
+                if k >= 0 and k < promised:
+                    return out
+                set out to out + [diag("E_KAZE_BOUNDS", e.line, "this index is outside the value it reads; a constant position past the end is refused")]
+                return out
+        set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this index is not proved to be inside the value; guard it (if i < length of xs:) or write '<value>[<i>] otherwise <fallback>'")]
+        return out
+    if ck == "":
+        set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this index is not proved to be inside the value; guard it (if i < length of xs:) or write '<value>[<i>] otherwise <fallback>'")]
+        return out
+    let ik = key_of(idx)
+    if ik != "" and list_has(facts, "lt:" + ik + ":" + ck) == 1:
+        return out
+    set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this index is not proved to be inside the value; guard it (if i < length of xs:) or write '<value>[<i>] otherwise <fallback>'")]
+    return out
+
+action check_call(e: AstNode, names, facts, items, needs, open, diags):
+    recursion bounded 200
+    let name = e.name
+    let out = diags
+    for each a in e.children:
+        if a.kind == "NAMED_ARG":
+            set out to check_expr(child_at(a, 0), names, facts, items, needs, open, out)
+        otherwise:
+            set out to check_expr(a, names, facts, items, needs, open, out)
+
+    if has_dot(name) == 1:
+        let head = head_words(name)
+        # Geometry is a pure builtin family, not a capability.
+        if head == "geo":
+            return out
+        let family = family_of_word(head)
+        let op = tail_words(name)
+        if list_has(needs, family) == 0:
+            set out to out + [diag("E_CAP_UNDECLARED", e.line, "'" + family + "' is used but this file does not declare it; add it to the needs: line")]
+        if op_known(family, op) == 0:
+            set out to out + [diag("E_KAZE_CAP_OP", e.line, "'" + family + "." + op + "' is not an operation Kaze knows")]
+        return out
+
+    if is_upper(name) == 1:
+        if open == 0 and record_named(items, name) == 0:
+            set out to out + [diag("E_KAZE_UNKNOWN_NAME", e.line, "record '" + name + "' is not defined in this file")]
+        return out
+
+    if pure_builtin(name) == 1:
+        return out
+
+    let callee = routine_named(items, name)
+    if callee.kind != "NONE":
+        return out
+    if open == 1:
+        return out
+    set out to out + [diag("E_KAZE_UNKNOWN_NAME", e.line, "'" + name + "' is not a routine in this file")]
+    return out
+
+# ── statements ─────────────────────────────────────────────────────────
+
+action check_stmt(s: AstNode, names, facts, items, needs, open, diags):
+    recursion bounded 200
+    let k = s.kind
+    if k == "LET":
+        return check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+    if k == "SET":
+        let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        if list_has(names, s.name) == 0:
+            set out to out + [diag("E_KAZE_UNKNOWN_NAME", s.line, "'" + s.name + "' is set but never bound; use 'let " + s.name + " = ...' first")]
+        return out
+    if k == "RETURN":
+        if (length of s.children) > 0:
+            return check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        return diags
+    if k == "EXPR":
+        return check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+    if k == "GUARD":
+        return check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+    if k == "IF":
+        let cond = child_at(s, 0)
+        let inner_facts = facts + facts_from_cond(cond, facts)
+        let out = check_expr(cond, names, facts, items, needs, open, diags)
+        set out to check_stmts(kids_of(child_at(s, 1)), names, inner_facts, items, needs, open, out)
+        set out to check_stmts(kids_of(child_at(s, 2)), names, facts, items, needs, open, out)
+        return out
+    if k == "WHILE":
+        let cond = child_at(s, 0)
+        let bound = child_at(s, 2)
+        let out = check_expr(cond, names, facts, items, needs, open, diags)
+        if bound.val_str == "" or bound.val_str == "?":
+            set out to out + [diag("E_KAZE_LOOP_UNBOUNDED", s.line, "this while loop declares no fuel ceiling; write a bounded form")]
+        otherwise:
+            if text_to_num(bound.val_str) < 1:
+                set out to out + [diag("E_KAZE_LOOP_UNBOUNDED", s.line, "this while loop needs a whole number of iterations from 1 up")]
+        let inner_facts = facts + facts_from_cond(cond, facts)
+        set out to check_stmts(kids_of(child_at(s, 1)), names, inner_facts, items, needs, open, out)
+        return out
+    if k == "FOR_EACH":
+        let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        set out to check_stmts(kids_of(child_at(s, 1)), names + [s.name], facts, items, needs, open, out)
+        return out
+    if k == "TRY":
+        let out = check_stmts(kids_of(child_at(s, 0)), names, facts, items, needs, open, diags)
+        let inner = names
+        if s.name != "":
+            set inner to names + [s.name]
+        set out to check_stmts(kids_of(child_at(s, 1)), inner, facts, items, needs, open, out)
+        return out
+    return diags
+
+action check_stmts(stmts, names, facts, items, needs, open, diags):
+    recursion bounded 200
+    let i = 0
+    let len = length of stmts
+    let cur_names = names
+    let cur_facts = facts
+    let out = diags
+    while i < len bounded 1000000:
+        let s = node_at(stmts, i)
+        set out to check_stmt(s, cur_names, cur_facts, items, needs, open, out)
+        if s.kind == "LET":
+            set cur_names to cur_names + [s.name]
+            let v = child_at(s, 0)
+            if v.kind == "LIST":
+                set cur_facts to cur_facts + ["len:" + s.name + ":" + (length of v.children)]
+            if v.kind == "CALL":
+                let callee = routine_named(items, v.name)
+                let n = promised_length(callee)
+                if n > 0:
+                    set cur_facts to cur_facts + ["len:" + s.name + ":" + n]
+        if s.kind == "LET":
+            let v2 = child_at(s, 0)
+            if v2.kind == "LEN":
+                let ck2 = key_of(child_at(v2, 0))
+                if ck2 != "":
+                    set cur_facts to cur_facts + ["alias:" + s.name + ":" + ck2]
+        if s.kind == "GUARD":
+            set cur_facts to cur_facts + facts_from_cond(child_at(s, 0), cur_facts)
+        set i to i + 1
+    return out
+
+# ── recursion cycles ───────────────────────────────────────────────────
+
+action calls_in_expr(e: AstNode, out):
+    recursion bounded 200
+    let acc = out
+    if e.kind == "CALL":
+        if has_dot(e.name) == 0:
+            set acc to acc + [e.name]
+    for each c in e.children:
+        set acc to calls_in_expr(c, acc)
+    return acc
+
+action calls_in_stmt_blocks(s: AstNode, out):
+    recursion bounded 200
+    let acc = out
+    if s.kind == "IF":
+        set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
+        set acc to calls_in_stmts(kids_of(child_at(s, 2)), acc)
+    if s.kind == "WHILE":
+        set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
+    if s.kind == "FOR_EACH":
+        set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
+    if s.kind == "TRY":
+        set acc to calls_in_stmts(kids_of(child_at(s, 0)), acc)
+        set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
+    return acc
+
+action calls_in_stmts(stmts, out):
+    recursion bounded 200
+    let acc = out
+    let i = 0
+    let len = length of stmts
+    while i < len bounded 1000000:
+        let s = node_at(stmts, i)
+        set acc to calls_in_expr(s, acc)
+        set acc to calls_in_stmt_blocks(s, acc)
+        set i to i + 1
+    return acc
+
+# The call graph, built once and kept as two parallel number lists (edge source
+# index, edge target index). The first version keyed every edge by routine
+# *name*, so each reachability query scanned every edge and allocated a string
+# per match: on this compiler's own monolith that was gigabytes. Indices make
+# the whole check integer work.
+action routine_names(items):
+    let out = []
+    for each item in items:
+        set out to out + [item.name]
+    return out
+
+action index_of(names, name):
+    let i = 0
+    let len = length of names
+    while i < len bounded 1000000:
+        if (names[i] otherwise "") == name:
+            return i
+        set i to i + 1
+    return -1
+
+action call_edges(items, names):
+    let froms = []
+    let tos = []
+    for each item in items:
+        let from = index_of(names, item.name)
+        let callees = calls_in_stmts(kids_of(child_at(item, 2)), [])
+        for each c in callees:
+            let to = index_of(names, c)
+            if to >= 0:
+                set froms to froms + [from]
+                set tos to tos + [to]
+    return [froms, tos]
+
+action neighbours(froms, tos, idx):
+    let out = []
+    let i = 0
+    let len = length of froms
+    while i < len bounded 1000000:
+        if (froms[i] otherwise -1) == idx:
+            set out to out + [tos[i] otherwise -1]
+        set i to i + 1
+    return out
+
+# Does one routine reach another through the call graph? A cycle back to the
+# starting routine is recursion, and recursion needs a declared ceiling.
+action reaches(start_idx, target_idx, froms, tos):
+    let stack = neighbours(froms, tos, start_idx)
+    let visited = []
+    let found = 0
+    let fuel = 0
+    while (length of stack) > 0 and found == 0 and fuel < 100000 bounded 100000:
+        set fuel to fuel + 1
+        let cur = stack[(length of stack) - 1] otherwise -1
+        set stack to drop_last(stack)
+        if cur == target_idx:
+            set found to 1
+        otherwise:
+            if list_has(visited, cur) == 0:
+                set visited to visited + [cur]
+                for each c in neighbours(froms, tos, cur):
+                    # Push only what is neither visited nor already waiting.
+                    # Without this check a dense call graph pushes the same
+                    # callee over and over, and the stack list (copied on every
+                    # push) grows exponentially: that was gigabytes on this
+                    # compiler's own monolith.
+                    if list_has(visited, c) == 0 and list_has(stack, c) == 0:
+                        set stack to stack + [c]
+    return found
+
+action recursion_bound_of(item: AstNode):
+    let contracts = child_at(item, 1)
+    let i = 0
+    let len = length of contracts.children
+    let out = 0
+    while i < len bounded 1000:
+        let c = child_at(contracts, i)
+        if c.kind == "RECURSION_BOUND":
+            set out to text_to_num(c.val_str)
+        set i to i + 1
+    return out
+
+# ── filters must not fall off the end ──────────────────────────────────
+
+action ends_with_verdict(stmts):
+    recursion bounded 64
+    let len = length of stmts
+    if len == 0:
+        return 0
+    let last = node_at(stmts, len - 1)
+    if last.kind == "RETURN":
+        return 1
+    if last.kind == "EXPR":
+        let e = child_at(last, 0)
+        if e.kind == "CALL":
+            let head = head_words(e.name)
+            let op = tail_words(e.name)
+            if head == "policy" and (op == "allow" or op == "reject"):
+                return 1
+    if last.kind == "IF":
+        let then_ok = ends_with_verdict(kids_of(child_at(last, 1)))
+        let else_ok = ends_with_verdict(kids_of(child_at(last, 2)))
+        if then_ok == 1 and else_ok == 1:
+            return 1
+    return 0
+
+# ── items ──────────────────────────────────────────────────────────────
+
+action param_names(item: AstNode):
+    let params = child_at(item, 0)
+    let out = []
+    for each p in params.children:
+        set out to out + [p.name]
+    return out
+
+action routine_needs(item: AstNode):
+    let contracts = child_at(item, 1)
+    let out = []
+    let i = 0
+    let len = length of contracts.children
+    while i < len bounded 1000:
+        let c = child_at(contracts, i)
+        if c.kind == "ROUTINE_NEED":
+            set out to out + [family_of_word(c.name)]
+        set i to i + 1
+    return out
+
+action requires_facts(item: AstNode):
+    let contracts = child_at(item, 1)
+    let out = []
+    let i = 0
+    let len = length of contracts.children
+    while i < len bounded 1000:
+        let c = child_at(contracts, i)
+        if c.kind == "CONTRACT" and c.name == "requires":
+            set out to out + facts_from_cond(child_at(c, 0), out)
+        set i to i + 1
+    return out
+
+action contract_diags(item: AstNode):
+    let contracts = child_at(item, 1)
+    let out = []
+    let i = 0
+    let len = length of contracts.children
+    while i < len bounded 1000:
+        let c = child_at(contracts, i)
+        if c.kind == "CONTRACT":
+            if is_boolean_expr(child_at(c, 0)) == 0:
+                set out to out + [diag("E_KAZE_CONTRACT_NOT_BOOL", c.line, "this '" + c.name + "' clause is not true-or-false; a contract must compare or combine conditions")]
+        if c.kind == "RECURSION_BOUND":
+            let n = text_to_num(c.val_str)
+            if n < 1 or n > 256:
+                set out to out + [diag("E_KAZE_PARSE", c.line, "'recursion bounded' needs a whole number of frames from 1 to 256")]
+        set i to i + 1
+    return out
+
+action check_item(item: AstNode, module_needs, items, names_all, froms, tos, open):
+    let out = contract_diags(item)
+    let needs = module_needs + routine_needs(item)
+    let names = param_names(item)
+    let facts = requires_facts(item)
+    let body = child_at(item, 2)
+    set out to check_stmts(body.children, names, facts, items, needs, open, out)
+    if item.kind == "FILTER":
+        if ends_with_verdict(body.children) == 0:
+            set out to out + [diag("E_KAZE_FILTER_FALLTHROUGH", item.line, "this filter can fall off the end without an allow or a reject verdict")]
+    if recursion_bound_of(item) == 0:
+        if reaches(index_of(names_all, item.name), index_of(names_all, item.name), froms, tos) == 1:
+            set out to out + [diag("E_KAZE_RECURSION_UNBOUNDED", item.line, "'" + item.name + "' reaches itself and declares no ceiling; add a bounded recursion declaration at the top of its body")]
+    return out
+
+action need_names(needs_node: AstNode):
+    let out = []
+    for each n in needs_node.children:
+        set out to out + [n.name]
+    return out
+
+action declared_families(need_list):
+    let out = []
+    for each n in need_list:
+        set out to out + [family_of_word(n)]
+    return out
+
+action check_program(prog: AstNode):
+    recursion bounded 200
+    let out = []
+    let items = program_items(prog)
+    let need_list = need_names(program_needs(prog))
+    let open = 0
+    let use_node = program_uses(prog)
+    if (length of use_node.children) > 0:
+        set open to 1
+    # 1. needs: entries must name a family or a known instance.
+    let i = 0
+    while i < (length of need_list) bounded 100000:
+        let n = need_list[i] otherwise ""
+        if cap_name_known(n) == 0:
+            set out to out + [diag("E_KAZE_CAP_UNKNOWN", 1, "'" + n + "' does not name a capability family or an instance")]
+        set i to i + 1
+    # 2. every routine and hook. The call graph is built once here: rebuilding it
+    # per routine made the recursion check quadratic in the module.
+    let declared = declared_families(need_list)
+    let names_all = routine_names(items)
+    let graph = call_edges(items, names_all)
+    let froms = graph[0] otherwise []
+    let tos = graph[1] otherwise []
+    set i to 0
+    while i < (length of items) bounded 1000000:
+        let item = node_at(items, i)
+        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+            set out to out + check_item(item, declared, items, names_all, froms, tos, open)
+        if item.kind == "UNKNOWN_ITEM":
+            set out to out + [diag("E_KAZE_PARSE", item.line, "the machine reader does not know the form '" + item.name + "'")]
+        if item.kind == "WHEN" or item.kind == "EVERY":
+            let body = child_at(item, 1)
+            set out to check_stmts(body.children, [], [], items, declared, open, out)
+        set i to i + 1
+    return out

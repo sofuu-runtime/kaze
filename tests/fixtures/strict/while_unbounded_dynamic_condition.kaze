@@ -1,0 +1,5 @@
+# rule: LOOP_UNBOUNDED — a condition on a parameter proves nothing about termination
+# expect: E_KAZE_LOOP_UNBOUNDED
+action drain(level):
+    while level > 0:  # BAD
+        set level = level - 1

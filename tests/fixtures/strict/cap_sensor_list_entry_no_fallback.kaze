@@ -1,0 +1,6 @@
+# rule: MISSING_FALLBACK — a sensor call inside a list literal needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+needs: sensor
+
+action sample_pair():
+    let pair = [sensor.temperature(), 0]  # BAD

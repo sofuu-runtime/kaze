@@ -1,0 +1,21 @@
+# hooks.kaze — the tick loop, with no hardware.
+#
+#   A `when` body runs on ticks where its condition holds, an `every` body runs on
+#   every tick. Nothing here touches a device, so both engines can run it:
+#
+#     kaze run examples/hooks.kaze --ticks 3
+#
+#   The interpreter and the compiled binary produce the same output.
+needs: log
+
+action main():
+    log "mission start"
+    return 0
+
+when 1 > 0:
+    log "guard: still holding"
+
+every 100 ms:
+    let reading = 42
+    log "tick reading"
+    log reading

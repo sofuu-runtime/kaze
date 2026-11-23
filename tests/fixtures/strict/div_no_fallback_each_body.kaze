@@ -1,0 +1,5 @@
+# rule: MISSING_FALLBACK — a division inside a 'for each' body needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action normalise(values, n):
+    for each v in values:
+        let share = v / n  # BAD

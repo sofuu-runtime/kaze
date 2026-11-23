@@ -308,6 +308,9 @@ pub struct ItemCode {
     pub period_ms: f64,
     /// Number of local slots the item uses (parameters occupy the first ones).
     pub slots: u8,
+    /// The declared `recursion bounded n` ceiling, or 0 when the routine
+    /// declares none. The VM refuses the call that would exceed it.
+    pub recursion_bound: u16,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -333,11 +336,14 @@ impl Module {
 }
 
 const MAGIC: &[u8; 8] = b"KAZEBC1\0";
-/// 4 since v0.5 added the root name and the per-item source origin (for
-/// multi-file diagnostics and root-only entry resolution). Bumping the version
-/// makes an older reader refuse the module up front instead of misreading the
-/// new fields. Format 2 (v0.3) and 3 (v0.4) modules must be recompiled.
-const VERSION: u16 = 4;
+/// 5 since Phase 2 of the strictness roadmap added the per-item recursion
+/// ceiling, so the VM can refuse a call that breaks the depth the routine
+/// declared (E_KAZE_RECURSION_DEPTH). Format 4 modules still load: their items
+/// simply carry no declared ceiling. Formats 2 and 3 must be recompiled.
+const VERSION: u16 = 5;
+/// The oldest format this reader still accepts. A format-4 module has no
+/// recursion bound, so every item reads one with bound 0 (unset).
+const MIN_READABLE_VERSION: u16 = 4;
 
 /// The on-disk module format, exposed for the compatibility lock.
 pub const FORMAT_VERSION: u16 = VERSION;
@@ -444,6 +450,7 @@ pub fn serialize(m: &Module) -> Vec<u8> {
         w.f64(it.period_ms);
         w.u32(it.line);
         w.u8(it.slots);
+        w.u16(it.recursion_bound);
         w.text(&it.name);
         w.text(&it.origin);
         w.u32(it.params.len() as u32);
@@ -465,10 +472,15 @@ pub fn deserialize(bytes: &[u8]) -> Result<Module, String> {
         return Err("not a Kaze module: the magic number does not match".to_string());
     }
     r.at = 8;
-    match r.u16() {
-        Some(VERSION) => {}
-        Some(other) => return Err(format!("this module was built by Kaze version {}, not {}", other, VERSION)),
+    let format = match r.u16() {
+        Some(v) => v,
         None => return Err("truncated module header".to_string()),
+    };
+    if !(MIN_READABLE_VERSION..=VERSION).contains(&format) {
+        return Err(format!(
+            "this module is format {}, which this build does not read (it reads {} to {})",
+            format, MIN_READABLE_VERSION, VERSION
+        ));
     }
     let root = r.text().ok_or("truncated module root")?;
     let mut m = Module { root, ..Default::default() };
@@ -498,6 +510,11 @@ pub fn deserialize(bytes: &[u8]) -> Result<Module, String> {
         let period_ms = r.f64().ok_or("truncated item period")?;
         let line = r.u32().ok_or("truncated item line")?;
         let slots = r.u8().ok_or("truncated item slots")?;
+        let recursion_bound = if format >= 5 {
+            r.u16().ok_or("truncated item recursion bound")?
+        } else {
+            0
+        };
         let name = r.text().ok_or("truncated item name")?;
         let origin = r.text().ok_or("truncated item origin")?;
         let nparams = r.u32().ok_or("truncated item parameters")?;
@@ -510,7 +527,17 @@ pub fn deserialize(bytes: &[u8]) -> Result<Module, String> {
         for _ in 0..ncode {
             code.push(r.u32().ok_or("truncated code word")?);
         }
-        m.items.push(ItemCode { name, tag, params, code, line, origin, period_ms, slots });
+        m.items.push(ItemCode {
+            name,
+            tag,
+            params,
+            code,
+            line,
+            origin,
+            period_ms,
+            slots,
+            recursion_bound,
+        });
     }
     verify(&m)?;
     Ok(m)
@@ -899,6 +926,7 @@ mod tests {
                 origin: "patrol.kaze".to_string(),
                 period_ms: 0.0,
                 slots: 2,
+                recursion_bound: 0,
             }],
         };
         let bytes = serialize(&m);
@@ -922,6 +950,7 @@ mod tests {
                 origin: "lib/x.kaze".to_string(),
                 period_ms: 0.0,
                 slots: 0,
+                recursion_bound: 0,
             }],
             ..Default::default()
         };
@@ -952,6 +981,7 @@ mod tests {
                 origin: String::new(),
                 period_ms: 0.0,
                 slots: 0,
+                recursion_bound: 0,
             }],
         };
         assert_eq!(serialize(&m), serialize(&m));
@@ -964,8 +994,12 @@ mod tests {
             // MAGIC is 8 bytes; the format version is the next little-endian u16.
             bytes[8..10].copy_from_slice(&old.to_le_bytes());
             let err = deserialize(&bytes)
-                .expect_err("a pre-v0.5 artifact is not a v0.5 artifact");
-            assert!(err.contains("version"), "{}", err);
+                .expect_err("a format-2/3 artifact is not a current artifact");
+            assert!(
+                err.contains("format") || err.contains("version"),
+                "the refusal must say which format it cannot read: {}",
+                err
+            );
         }
     }
 

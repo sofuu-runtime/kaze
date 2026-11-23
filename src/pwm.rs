@@ -30,6 +30,11 @@ pub struct PwmBus {
     exported: Vec<(u16, u16)>,
     /// The last duty written per channel, for the run report.
     last: HashMap<String, f64>,
+    /// Channels this bus switched on, so a normal exit can switch them off even
+    /// when the sysfs channel already existed and was never exported here.
+    enabled: Vec<String>,
+    /// Names whose `enable` file is registered with the signal cleanup table.
+    cleanup_armed: Vec<String>,
 }
 
 impl PwmBus {
@@ -48,6 +53,8 @@ impl PwmBus {
                 .collect(),
             exported: Vec::new(),
             last: HashMap::new(),
+            enabled: Vec::new(),
+            cleanup_armed: Vec::new(),
         }
     }
 
@@ -82,6 +89,11 @@ impl PwmBus {
         }
 
         let dir = self.exported_dir(chip, channel)?;
+        // A channel that will be enabled must be de-assertable on SIGINT or
+        // SIGTERM first: a PWM output nobody can stop is not driven.
+        if percent > 0.0 {
+            self.arm_cleanup(name, &dir.join("enable"))?;
+        }
         write_value(&dir.join("period"), &PERIOD_NS.to_string()).map_err(|e| {
             format!("E_KAZE_LINK: cannot set the PWM period for '{}': {}", name, e)
         })?;
@@ -94,6 +106,13 @@ impl PwmBus {
         })?;
 
         self.last.insert(name.to_string(), percent);
+        if percent > 0.0 {
+            if !self.enabled.iter().any(|n| n == name) {
+                self.enabled.push(name.to_string());
+            }
+        } else {
+            self.enabled.retain(|n| n != name);
+        }
         Ok(())
     }
 
@@ -107,6 +126,29 @@ impl PwmBus {
             })
             .collect();
         json!({ "channels": channels, "period_ns": PERIOD_NS })
+    }
+
+    /// Register the channel's `enable` descriptor with the signal cleanup
+    /// table once, before the channel is switched on.
+    fn arm_cleanup(&mut self, name: &str, enable_path: &Path) -> Result<(), String> {
+        if self.cleanup_armed.iter().any(|armed| armed == name) {
+            return Ok(());
+        }
+        crate::gpio::cleanup::install_signal_handlers()?;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(enable_path)
+            .map_err(|e| {
+                format!(
+                    "E_KAZE_LINK: cannot arm the cleanup for PWM '{}' ({}): {}; the channel was not enabled",
+                    name,
+                    enable_path.display(),
+                    e
+                )
+            })?;
+        crate::gpio::cleanup::register_zero_sink(file)?;
+        self.cleanup_armed.push(name.to_string());
+        Ok(())
     }
 
     fn exported_dir(&mut self, chip: u16, channel: u16) -> Result<PathBuf, String> {
@@ -143,8 +185,19 @@ impl PwmBus {
 
 impl Drop for PwmBus {
     fn drop(&mut self) {
-        // Leave the hardware as it was found: a channel this process turned on
-        // does not keep running after the script ends.
+        // Leave the hardware de-asserted: a channel this process enabled does
+        // not keep running after the script ends, whichever way the process
+        // ends. `enabled` covers a channel that already existed on disk and so
+        // was never exported by this bus.
+        for name in &self.enabled {
+            if let Some((chip, channel)) = self.channels.get(name).copied() {
+                let dir = self
+                    .root
+                    .join(format!("pwmchip{}", chip))
+                    .join(format!("pwm{}", channel));
+                let _ = write_value(&dir.join("enable"), "0");
+            }
+        }
         for (chip, channel) in self.exported.drain(..) {
             let dir = self.root.join(format!("pwmchip{}", chip)).join(format!("pwm{}", channel));
             let _ = write_value(&dir.join("enable"), "0");
@@ -230,6 +283,32 @@ mod tests {
         let err = bus.set_duty("fan", f64::NAN).expect_err("NaN is not a duty cycle");
         assert!(err.contains("is not a duty cycle"), "{err}");
         assert_eq!(read(&root, "enable"), "0", "nothing was switched on");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enabling_a_channel_registers_its_cleanup() {
+        let root = fake_root("armed");
+        let before = crate::gpio::cleanup::registered();
+        let mut bus = PwmBus::new(&[("fan".to_string(), 0u16, 0u16)], Some(&root));
+        bus.set_duty("fan", 60.0).expect("the channel is enabled");
+        assert_eq!(read(&root, "enable"), "1");
+        assert!(
+            crate::gpio::cleanup::registered() > before,
+            "an enabled channel must be covered by the signal cleanup table"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dropping_the_bus_switches_an_enabled_channel_off() {
+        let root = fake_root("exit");
+        {
+            let mut bus = PwmBus::new(&[("fan".to_string(), 0u16, 0u16)], Some(&root));
+            bus.set_duty("fan", 60.0).expect("the channel is enabled");
+            assert_eq!(read(&root, "enable"), "1");
+        }
+        assert_eq!(read(&root, "enable"), "0", "a normal exit disables the channel");
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -1,0 +1,5 @@
+# rule: MISSING_FALLBACK — a division inside a condition must carry a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action sample(total, n):
+    if total / n > 4:  # BAD
+        return 1

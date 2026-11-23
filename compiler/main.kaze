@@ -1,17 +1,65 @@
-# main.kaze — Pure Kaze Self-Hosted Compiler (Stage 1)
+# main.kaze — Pure Kaze Self-Hosted Compiler.
+#
+# One binary, several modes, selected by the first positional argument:
+#
+#   <bin> <file.kaze>              source in, C out (the bootstrap default)
+#   <bin> emit-c <file.kaze>       the same, said explicitly
+#   <bin> check <file.kaze>        parse and check, print diagnostics
+#   <bin> to-machine <file.kaze>   emit the canonical machine S-expression form
+#   <bin> to-human <file.kaze>     read machine S-expressions, print human syntax
+#
+# The first parameter is the mode so that the single-argument form keeps
+# working: when the first positional argument is not a mode name, it is the
+# source itself and the compiler emits C. That is what lets the bootstrap run
+# the same binary it built.
 use "./token.kaze"
 use "./ast.kaze"
 use "./lexer.kaze"
 use "./parser.kaze"
+use "./checker.kaze"
+use "./machine.kaze"
 use "./codegen.kaze"
 
-action compile(src):
-    let tokens = tokenize(src)
-    let program = parse_program(tokens)
-    let c_code = emit_c_program(program)
-    return c_code
+action mode_of(word):
+    if word == "check" or word == "emit-c" or word == "to-machine" or word == "to-human":
+        return word
+    return ""
 
-action main(src):
-    if length of src == 0:
-        return "/* Kaze Stage 1 Compiler — No input provided */\n"
+# Human syntax and machine syntax are detected the same way the reference
+# engine does it: a root form that opens with "(".
+action parse_source(src):
+    if is_machine_source(src) == 1:
+        return parse_machine(src)
+    let tokens = tokenize(src)
+    return parse_program(tokens)
+
+action render_diags(diags):
+    let count = length of diags
+    if count == 0:
+        return "check: ok\n"
+    let out = "check: " + count + " diagnostic(s)\n"
+    for each d in diags:
+        set out to out + render_diag(d) + "\n"
+    return out
+
+action compile(src):
+    let program = parse_source(src)
+    return emit_c_program(program)
+
+action main(mode, src):
+    let selected = mode_of(mode)
+    if selected == "":
+        # Legacy one-argument form: the first parameter holds the source.
+        if length of mode == 0:
+            return "/* Kaze Compiler — No input provided */\n"
+        return compile(mode)
+    if selected == "check":
+        let program = parse_source(src)
+        return render_diags(check_program(program))
+    if selected == "to-machine":
+        let program = parse_source(src)
+        return emit_machine(program)
+    if selected == "to-human":
+        let program = parse_machine(src)
+        return emit_human(program)
     return compile(src)

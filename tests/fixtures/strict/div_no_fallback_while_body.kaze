@@ -1,0 +1,7 @@
+# rule: MISSING_FALLBACK — the fallback rule applies inside an already-bounded loop
+# expect: E_KAZE_MISSING_FALLBACK
+action drain(total, step):
+    let left = total
+    while left > 0 bounded 100:
+        let next = left / step  # BAD
+        set left = left - next

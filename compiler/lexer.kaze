@@ -1,4 +1,13 @@
 # lexer.kaze — Pure Kaze Tokenizer
+#
+# Emits NEWLINE, INDENT, DEDENT, STR, NUM, IDENT, OP (==, !=, <=, >=), SYM, EOF.
+# Every token carries its 1-based line and column.
+#
+# Indentation is the off-side rule: a deeper line opens an INDENT, a shallower
+# one closes as many DEDENTs as needed. Inside brackets (a list literal, a call
+# whose arguments span lines) indentation is not significant, so no INDENT or
+# DEDENT is emitted there. Units are lexed as ordinary words; the parser
+# consumes them after a numeric literal.
 use "./token.kaze"
 
 action is_alpha(c):
@@ -16,17 +25,35 @@ action is_alphanumeric(c):
         return 1
     return 0
 
+# Tokens accumulate in fixed-size chunks and are flattened once at the end, and the
+# chunk size is the optimum of the copy model: appends cost N*C/2 and sealing the
+# chunk list costs N^2/(2C), which balance at C ~= sqrt(N) -- about 190 for this
+# compiler's own 35,000 tokens. Measured on the monolith: C=128 573 MB, C=192
+# 557 MB, C=256 567 MB, C=384 611 MB.
+# Appending to one growing list would copy the whole list per token, which is
+# quadratic: on this compiler's own 3,900 lines that was gigabytes of churn.
+action push_tok(chunks, chunk, chunk_len, tok):
+    ensures length of result == 3
+    let next_chunk = chunk + [tok]
+    let next_len = chunk_len + 1
+    if next_len >= 192:
+        return [chunks + [next_chunk], [], 0]
+    return [chunks, next_chunk, next_len]
+
 action tokenize(src):
-    let tokens = []
+    let chunks = []
+    let chunk = []
+    let chunk_len = 0
     let len = length of src
     let i = 0
     let line = 1
     let col = 1
+    let bracket_depth = 0
 
     let indent_stack = [0]
 
-    while i < len:
-        let c = src[i]
+    while i < len bounded 1000000:
+        let c = src[i] otherwise " "
 
         # 1. Skip spaces and tabs
         if c == " " or c == "\t":
@@ -36,55 +63,69 @@ action tokenize(src):
         # 2. Comments
         otherwise:
             if c == "#":
-                while i < len and src[i] != "\n":
+                while i < len and (src[i] otherwise " ") != "\n" bounded 1000000:
                     set i to i + 1
                 # The newline itself will be processed next
 
             # 3. Newlines and Indentation
             otherwise:
                 if c == "\n":
-                    let nl_tok = make_token("NEWLINE", "\n", line, col)
-                    set tokens to tokens + [nl_tok]
+                    let nl_tok = make_token("NEWLINE", "\n", line, col, i)
+                    let acc1 = push_tok(chunks, chunk, chunk_len, nl_tok)
+                    set chunks to acc1[0] otherwise []
+                    set chunk to acc1[1] otherwise []
+                    set chunk_len to acc1[2] otherwise 0
                     set i to i + 1
                     set line to line + 1
                     set col to 1
 
                     # Count leading spaces on the next line
                     let spaces = 0
-                    while i < len and src[i] == " ":
+                    while i < len and (src[i] otherwise "x") == " " bounded 1000000:
                         set spaces to spaces + 1
                         set i to i + 1
                         set col to col + 1
 
-                    # Ignore blank or comment-only lines
-                    if i < len and src[i] != "\n" and src[i] != "#":
-                        let curr_ind = indent_stack[(length of indent_stack) - 1]
-                        if spaces > curr_ind:
-                            let ind_tok = make_token("INDENT", "", line, col)
-                            set tokens to tokens + [ind_tok]
-                            set indent_stack to indent_stack + [spaces]
-                        otherwise:
-                            if spaces < curr_ind:
-                                while (length of indent_stack) > 1 and indent_stack[(length of indent_stack) - 1] > spaces:
-                                    let ded_tok = make_token("DEDENT", "", line, col)
-                                    set tokens to tokens + [ded_tok]
-                                    # pop indent stack by slicing or list rebuild
-                                    let new_stack = []
-                                    let stk_len = (length of indent_stack) - 1
-                                    let si = 0
-                                    while si < stk_len:
-                                        set new_stack to new_stack + [indent_stack[si]]
-                                        set si to si + 1
-                                    set indent_stack to new_stack
+                    # Ignore blank or comment-only lines, and lines inside
+                    # brackets: indentation there is layout, not structure.
+                    if bracket_depth > 0:
+                        set spaces to spaces
+                    otherwise:
+                        if i < len and (src[i] otherwise "x") != "\n" and (src[i] otherwise "x") != "#":
+                            let curr_ind = indent_stack[(length of indent_stack) - 1] otherwise 0
+                            if spaces > curr_ind:
+                                let ind_tok = make_token("INDENT", "", line, col, i)
+                                let acc2 = push_tok(chunks, chunk, chunk_len, ind_tok)
+                                set chunks to acc2[0] otherwise []
+                                set chunk to acc2[1] otherwise []
+                                set chunk_len to acc2[2] otherwise 0
+                                set indent_stack to indent_stack + [spaces]
+                            otherwise:
+                                if spaces < curr_ind:
+                                    while (length of indent_stack) > 1 and (indent_stack[(length of indent_stack) - 1] otherwise 0) > spaces bounded 64:
+                                        let ded_tok = make_token("DEDENT", "", line, col, i)
+                                        let acc3 = push_tok(chunks, chunk, chunk_len, ded_tok)
+                                        set chunks to acc3[0] otherwise []
+                                        set chunk to acc3[1] otherwise []
+                                        set chunk_len to acc3[2] otherwise 0
+                                        # pop the stack: rebuild it one shorter
+                                        let new_stack = []
+                                        let stk_len = (length of indent_stack) - 1
+                                        let si = 0
+                                        while si < stk_len bounded 64:
+                                            set new_stack to new_stack + [indent_stack[si] otherwise 0]
+                                            set si to si + 1
+                                        set indent_stack to new_stack
 
                 # 4. String literal
                 otherwise:
                     if c == "\"":
                         let start_col = col
+                        let start = i
                         set i to i + 1
                         set col to col + 1
                         let text = ""
-                        while i < len and src[i] != "\"":
+                        while i < len and (src[i] otherwise "\"") != "\"" bounded 1000000:
                             if src[i] == "\\":
                                 set i to i + 1
                                 set col to col + 1
@@ -95,73 +136,110 @@ action tokenize(src):
                                         if src[i] == "t":
                                             set text to text + "\t"
                                         otherwise:
-                                            set text to text + src[i]
+                                            set text to text + (src[i] otherwise "")
                             otherwise:
-                                set text to text + src[i]
+                                set text to text + (src[i] otherwise "")
                             set i to i + 1
                             set col to col + 1
-                        if i < len and src[i] == "\"":
+                        if i < len and (src[i] otherwise "x") == "\"":
                             set i to i + 1
                             set col to col + 1
-                        let tok = make_token("STR", text, line, start_col)
-                        set tokens to tokens + [tok]
+                        let tok = make_token("STR", text, line, start_col, start)
+                        let acc4 = push_tok(chunks, chunk, chunk_len, tok)
+                        set chunks to acc4[0] otherwise []
+                        set chunk to acc4[1] otherwise []
+                        set chunk_len to acc4[2] otherwise 0
 
                     # 5. Number literal
                     otherwise:
                         if is_digit(c) == 1:
                             let start_col = col
+                            let start = i
                             let text = ""
-                            while i < len and (is_digit(src[i]) == 1 or src[i] == "."):
-                                set text to text + src[i]
+                            while i < len and (is_digit(src[i] otherwise "x") == 1 or (src[i] otherwise "x") == ".") bounded 1000000:
+                                set text to text + (src[i] otherwise "")
                                 set i to i + 1
                                 set col to col + 1
-                            let tok = make_token("NUM", text, line, start_col)
-                            set tokens to tokens + [tok]
+                            let tok = make_token("NUM", text, line, start_col, start)
+                            let acc5 = push_tok(chunks, chunk, chunk_len, tok)
+                            set chunks to acc5[0] otherwise []
+                            set chunk to acc5[1] otherwise []
+                            set chunk_len to acc5[2] otherwise 0
 
                         # 6. Identifier or Keyword
                         otherwise:
                             if is_alpha(c) == 1:
                                 let start_col = col
+                                let start = i
                                 let text = ""
-                                while i < len and is_alphanumeric(src[i]) == 1:
-                                    set text to text + src[i]
+                                while i < len and is_alphanumeric(src[i] otherwise "x") == 1 bounded 1000000:
+                                    set text to text + (src[i] otherwise "")
                                     set i to i + 1
                                     set col to col + 1
-                                let tok = make_token("IDENT", text, line, start_col)
-                                set tokens to tokens + [tok]
+                                let tok = make_token("IDENT", text, line, start_col, start)
+                                let acc6 = push_tok(chunks, chunk, chunk_len, tok)
+                                set chunks to acc6[0] otherwise []
+                                set chunk to acc6[1] otherwise []
+                                set chunk_len to acc6[2] otherwise 0
 
                             # 7. Two-character operators
                             otherwise:
                                 let is_two = 0
                                 if i + 1 < len:
-                                    let next_c = src[i + 1]
+                                    let next_c = src[i + 1] otherwise ""
                                     let two_s = c + next_c
                                     if two_s == "==" or two_s == "!=" or two_s == "<=" or two_s == ">=":
-                                        let tok = make_token("OP", two_s, line, col)
-                                        set tokens to tokens + [tok]
+                                        let tok = make_token("OP", two_s, line, col, i)
+                                        let acc7 = push_tok(chunks, chunk, chunk_len, tok)
+                                        set chunks to acc7[0] otherwise []
+                                        set chunk to acc7[1] otherwise []
+                                        set chunk_len to acc7[2] otherwise 0
                                         set i to i + 2
                                         set col to col + 2
                                         set is_two to 1
 
                                 # 8. Single-character symbols
                                 if is_two == 0:
-                                    let tok = make_token("SYM", c, line, col)
-                                    set tokens to tokens + [tok]
+                                    if c == "[" or c == "(":
+                                        set bracket_depth to bracket_depth + 1
+                                    if c == "]" or c == ")":
+                                        if bracket_depth > 0:
+                                            set bracket_depth to bracket_depth - 1
+                                    let tok = make_token("SYM", c, line, col, i)
+                                    let acc8 = push_tok(chunks, chunk, chunk_len, tok)
+                                    set chunks to acc8[0] otherwise []
+                                    set chunk to acc8[1] otherwise []
+                                    set chunk_len to acc8[2] otherwise 0
                                     set i to i + 1
                                     set col to col + 1
 
     # Emit remaining DEDENT tokens at EOF
-    while (length of indent_stack) > 1:
-        let ded_tok = make_token("DEDENT", "", line, col)
-        set tokens to tokens + [ded_tok]
+    while (length of indent_stack) > 1 bounded 64:
+        let ded_tok = make_token("DEDENT", "", line, col, i)
+        let acc9 = push_tok(chunks, chunk, chunk_len, ded_tok)
+        set chunks to acc9[0] otherwise []
+        set chunk to acc9[1] otherwise []
+        set chunk_len to acc9[2] otherwise 0
         let new_stack = []
         let stk_len = (length of indent_stack) - 1
         let si = 0
-        while si < stk_len:
-            set new_stack to new_stack + [indent_stack[si]]
+        while si < stk_len bounded 64:
+            set new_stack to new_stack + [indent_stack[si] otherwise 0]
             set si to si + 1
         set indent_stack to new_stack
 
-    let eof_tok = make_token("EOF", "", line, col)
-    set tokens to tokens + [eof_tok]
-    return tokens
+    let eof_tok = make_token("EOF", "", line, col, i)
+    let acc10 = push_tok(chunks, chunk, chunk_len, eof_tok)
+    set chunks to acc10[0] otherwise []
+    set chunk to acc10[1] otherwise []
+    set chunk_len to acc10[2] otherwise 0
+
+    # Flatten once. Concatenating chunk by chunk is O(tokens * chunks), which is
+    # 256x cheaper than concatenating token by token: the difference between a
+    # compile that peaks in tens of megabytes and one that needs gigabytes.
+    let flat = []
+    for each part in chunks:
+        set flat to flat + part
+    if (length of chunk) > 0:
+        set flat to flat + chunk
+    return flat

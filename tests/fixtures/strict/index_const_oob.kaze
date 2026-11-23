@@ -1,0 +1,4 @@
+# rule: BOUNDS — a constant index outside a list literal is refused at check time
+# expect: E_KAZE_BOUNDS
+action bad_pick():
+    let v = [1, 2, 3][7]  # BAD

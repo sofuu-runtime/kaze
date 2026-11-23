@@ -1,0 +1,4 @@
+# rule: BOUNDS — the first index past the end is out of bounds
+# expect: E_KAZE_BOUNDS
+action last_plus():
+    let v = [10, 20][2]  # BAD

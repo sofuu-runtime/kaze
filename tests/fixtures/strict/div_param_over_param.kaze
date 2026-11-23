@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — two parameters prove nothing, so the division is fallible
+# expect: E_KAZE_MISSING_FALLBACK
+action pace(distance, span):
+    let speed = distance / span  # BAD

@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — modulo by a literal zero still needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action remainder(total):
+    let left = total % 0  # BAD

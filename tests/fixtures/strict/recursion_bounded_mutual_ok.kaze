@@ -1,0 +1,16 @@
+# expect: ok — mutual recursion with a declared ceiling on both routines is accepted
+# value: true
+action main():
+    return even(4)
+
+action even(n):
+    recursion bounded 32
+    if n == 0:
+        return true
+    return odd(n - 1)
+
+action odd(n):
+    recursion bounded 32
+    if n == 0:
+        return false
+    return even(n - 1)

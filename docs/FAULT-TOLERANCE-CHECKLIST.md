@@ -1,8 +1,11 @@
 # Field Checklist — Kaze v0.4 Fault Tolerance & Link-Loss Failsafes
 
-Everything deterministic is covered by `cargo test` (267 unit, integration and
-live tests with default features). This file covers the part only a flight
-controller and real elapsed time can answer.
+Everything deterministic is covered by `cargo test` (143 tests with default
+features as of v1.1). This file covers the part only a flight controller and real
+elapsed time can answer. The strictness round added three uncatchable stops worth
+checking here: `E_KAZE_LOOP_BOUND` (a loop passed its declared ceiling),
+`E_KAZE_RECURSION_DEPTH` (a call broke its declared depth), and
+`E_SAFETY_VIOLATION` (actuation with a stale heartbeat or a stale field).
 
 ## 1. Local checks (no hardware)
 

@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — a dynamic division must carry an inline fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action divide(total, parts):
+    let share = total / parts  # BAD

@@ -134,7 +134,7 @@ fn unavailable_nonrobotics_backends_refuse_instead_of_simulating_success() {
     fixture.policy(r#"{"deny":[]}"#);
     for (family, source) in [
         ("memory", "needs: memory\naction main():\n    remember \"data\" as \"label\"\n"),
-        ("sensor", "needs: sensor\naction main():\n    return sensor.temperature()\n"),
+        ("sensor", "needs: sensor\naction main():\n    return sensor.temperature() otherwise 0 Celsius\n"),
         ("device", "needs: device\naction main():\n    turn on fan\n"),
         ("alert", "needs: alert\naction main():\n    send alert \"message\"\n"),
         ("ai", "needs: ai\naction main():\n    return ai.prompt(\"request\")\n"),
@@ -143,7 +143,7 @@ fn unavailable_nonrobotics_backends_refuse_instead_of_simulating_success() {
     ] {
         check_error(&fixture.run(source, &["--cap", family]), "E_CAP_MISSING");
     }
-    let sensor = "needs: sensor\naction main():\n    return sensor.temperature()\n";
+    let sensor = "needs: sensor\naction main():\n    return sensor.temperature() otherwise 0 Celsius\n";
     check_error(
         &fixture.run(sensor, &["--cap", "sensor=sim"]),
         "E_CAP_MISSING",
@@ -279,26 +279,34 @@ fn live_link_is_not_opened_before_the_policy_gate() {
     check_error(&result, "E_CAP_DENIED");
 }
 
+// PHASE 5 CONTRACT CHANGE. Until the 1500 ms heartbeat/telemetry freshness gate
+// existed, the host refused every live drone actuation with E_CAP_DENIED before
+// it even opened the link, and this test asserted that. Actuation is enabled
+// now; what still holds — and what this test asserts — is that a live command
+// against a vehicle that never speaks is refused for a real, named reason
+// (E_KAZE_LINK: nothing is streaming) instead of being reported as sent. The
+// positive actuation path and the freshness veto are proved with the
+// fake-autopilot harness in tests/live.rs.
 #[test]
-fn live_drone_actuation_is_disabled_before_opening_the_link() {
+fn live_drone_actuation_is_refused_when_nothing_is_streaming() {
     let fixture = Fixture::new();
     fixture.policy(r#"{"deny":[]}"#);
-    let socket = UdpSocket::bind("127.0.0.1:0").expect("reserve a real local UDP port");
-    let backend = format!("drone=udp:{}", socket.local_addr().expect("local address"));
-    for command in [
-        "arm drone",
-        "takeoff to 10 meters",
-        "fly to vector(1, 2, 3)",
-        "land drone",
-        "return to launch",
-        "hold position",
-        "stop drone",
-    ] {
-        let source = format!("needs: drone\naction main():\n    {command}\n");
-        let result = fixture.run(&source, &["--cap", &backend]);
-        check_error(&result, "E_CAP_DENIED");
-        assert!(String::from_utf8_lossy(&result.stderr).contains("live drone actuation is disabled"));
-    }
+    // A free port, not a held socket: the run has to be able to bind it so the
+    // refusal comes from the silent link rather than a bind error.
+    let port = UdpSocket::bind("127.0.0.1:0")
+        .expect("reserve a real local UDP port")
+        .local_addr()
+        .expect("local address")
+        .port();
+    let backend = format!("drone=udp:127.0.0.1:{}", port);
+    let source = "needs: drone\naction main():\n    arm drone\n";
+    let result = fixture.run(source, &["--cap", &backend]);
+    check_error(&result, "E_KAZE_LINK");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("nothing is streaming"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[test]

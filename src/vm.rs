@@ -75,11 +75,16 @@ pub struct Vm<'a> {
     handlers: Vec<Handler>,
     verdict: Option<Verdict>,
     call_depth: usize,
+    /// Live frames per item, so `recursion bounded n` counts that routine's own
+    /// nesting (which is what the declaration means) while `call_depth` still
+    /// enforces the global 256-frame ceiling.
+    frames_by_item: Vec<u32>,
 }
 
 /// The stack is a fixed-size vector; a script cannot grow it without bound.
 const MAX_STACK: usize = 256;
-const MAX_CALL_DEPTH: usize = 128;
+/// The hard frame ceiling for any run, declared or not (KZ-095/099).
+const MAX_CALL_DEPTH: usize = 256;
 
 /// Live `try` handlers. A catchable host failure unwinds to the innermost one.
 const MAX_HANDLERS: usize = 32;
@@ -124,6 +129,7 @@ impl<'a> Vm<'a> {
             handlers: Vec::new(),
             verdict: None,
             call_depth: 0,
+            frames_by_item: vec![0; module.items.len()],
         }
     }
 
@@ -143,8 +149,44 @@ impl<'a> Vm<'a> {
     #[inline(never)]
     fn call_routine(&mut self, item: &ItemCode, args: &[Value]) -> Result<Value, VmError> {
         if self.call_depth >= MAX_CALL_DEPTH {
-            return Err(VmError::new("E_KAZE_OVERFLOW", "call stack overflow"));
+            return Err(VmError::new(
+                "E_KAZE_RECURSION_DEPTH",
+                format!(
+                    "the call stack reached its ceiling of {} frames in '{}'; a routine that can                      recurse declares how deep it may go",
+                    MAX_CALL_DEPTH, item.name
+                ),
+            ));
         }
+        if item.recursion_bound > 0 {
+            let index = self
+                .module
+                .items
+                .iter()
+                .position(|i| i.name == item.name)
+                .unwrap_or(0);
+            let live = self.frames_by_item.get(index).copied().unwrap_or(0) + 1;
+            if live > u32::from(item.recursion_bound) {
+                return Err(VmError::new(
+                    "E_KAZE_RECURSION_DEPTH",
+                    format!(
+                        "'{}' declared 'recursion bounded {}', but this call would be frame {} of itself",
+                        item.name, item.recursion_bound, live
+                    ),
+                ));
+            }
+            if let Some(slot) = self.frames_by_item.get_mut(index) {
+                *slot = live;
+            }
+            let res = self.call_routine_inner(item, args);
+            if let Some(slot) = self.frames_by_item.get_mut(index) {
+                *slot = slot.saturating_sub(1);
+            }
+            return res;
+        }
+        self.call_routine_inner(item, args)
+    }
+
+    fn call_routine_inner(&mut self, item: &ItemCode, args: &[Value]) -> Result<Value, VmError> {
         self.call_depth += 1;
         let saved_locals = std::mem::replace(
             &mut self.locals,

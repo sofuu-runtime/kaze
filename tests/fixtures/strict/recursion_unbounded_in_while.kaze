@@ -1,0 +1,7 @@
+# rule: RECURSION_UNBOUNDED — a bounded loop does not make a recursive call bounded
+# expect: E_KAZE_RECURSION_UNBOUNDED
+action countdown(n):
+    let i = n
+    while i > 0 bounded 50:
+        let next = countdown(i - 1)  # BAD
+        set i = i - 1

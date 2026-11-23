@@ -1,0 +1,7 @@
+# expect: ok — 'for each' over a list literal is bounded by construction
+# value: 6
+action main():
+    let total = 0
+    for each n in [1, 2, 3]:
+        set total = total + n
+    return total

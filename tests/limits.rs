@@ -44,7 +44,7 @@ fn deep_block_nesting_is_a_parse_error() {
 fn the_collection_heap_is_bounded() {
     // Fuel alone would let this loop allocate until the process dies; the
     // heap budget stops it first with a typed, non-catchable error.
-    let src = "action main():\n    let filler = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n    while 1 == 1:\n        let x = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n";
+    let src = "action main():\n    let filler = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n    while 1 == 1 bounded 1000000:\n        let x = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n";
     let opts = kaze::RunOptions { fuel: 200_000, ..Default::default() };
     let err = kaze::run_source(src, "<heap>", &opts).expect_err("the heap is bounded");
     assert_eq!(err.code, "E_KAZE_MEMORY");

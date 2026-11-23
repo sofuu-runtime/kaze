@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — indexing text at a dynamic position is fallible too
+# expect: E_KAZE_MISSING_FALLBACK
+action initial(message, i):
+    let c = message[i]  # BAD

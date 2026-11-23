@@ -1,0 +1,5 @@
+# rule: LOOP_UNBOUNDED — a hook body cannot open an unbounded loop either
+# expect: E_KAZE_LOOP_UNBOUNDED
+every 100ms:
+    while true:  # BAD
+        let x = 1

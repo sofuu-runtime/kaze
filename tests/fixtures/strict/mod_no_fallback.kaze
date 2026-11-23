@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — modulo needs an inline fallback like division
+# expect: E_KAZE_MISSING_FALLBACK
+action remainder(total, parts):
+    let left = total % parts  # BAD

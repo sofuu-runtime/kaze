@@ -1,0 +1,4 @@
+# rule: BOUNDS — index 0 of an empty literal has no element
+# expect: E_KAZE_BOUNDS
+action first_of_nothing():
+    let v = [][0]  # BAD

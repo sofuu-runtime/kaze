@@ -1,0 +1,5 @@
+# expect: ok — a dynamic index with an inline fallback is accepted and runs
+# value: 7 with items=[5, 6, 7], i=2
+action main(items, i):
+    let v = items[i] otherwise 0
+    return v

@@ -9,7 +9,7 @@ action main():
     log "Kaze is running"
     let total = 0
     let n = 1
-    while n < 5:
+    while n < 5 bounded 100:
         set total to total + n
         set n to n + 1
     log "sum 1..4 checked"

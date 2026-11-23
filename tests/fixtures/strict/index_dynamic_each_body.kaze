@@ -1,0 +1,5 @@
+# rule: MISSING_FALLBACK — a dynamic index inside a 'for each' body needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action pick_all(items):
+    for each i in [0, 1]:
+        let v = items[i]  # BAD

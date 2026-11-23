@@ -1,0 +1,9 @@
+# rule: LOOP_UNBOUNDED — a ceiling on the outer loop does not bound the inner one
+# expect: E_KAZE_LOOP_UNBOUNDED
+action nested(limit):
+    let i = 0
+    while i < 2 bounded 10:
+        let j = 0
+        while j < limit:  # BAD
+            set j = j + 1
+        set i = i + 1

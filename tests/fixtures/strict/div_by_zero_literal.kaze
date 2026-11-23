@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — a literal zero divisor is not provably safe, so a fallback is required
+# expect: E_KAZE_MISSING_FALLBACK
+action ratio(total):
+    let q = total / 0  # BAD

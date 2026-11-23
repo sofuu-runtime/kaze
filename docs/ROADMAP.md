@@ -13,8 +13,8 @@ syntax, capabilities, limits, errors, and configuration in detail.
 | Work | Status | Evidence or remaining work |
 | --- | --- | --- |
 | Standalone capability gates | In progress | Declarations, explicit grants, valid policies, link-loss monitoring, and selected physical argument checks are enforced. Malformed policy, including duplicate keys, is refused. |
-| Backend behavior | In progress | Unavailable non-robotics capabilities fail; drone and rover simulation require explicit selection and labelled results. Live drone actuation is disabled pending the freshness safeguards below. |
-| Heartbeat and telemetry freshness | Open | Implement and verify the required 1.5-second heartbeat and per-field freshness veto before enabling live drone actuation. Physical hardware has not been tested. |
+| Backend behavior | Done | Unavailable non-robotics capabilities fail; drone and rover simulation require explicit selection and labelled results; live actuation is enabled behind the freshness veto. |
+| Heartbeat and telemetry freshness | Done | The link stamps the heartbeat and every field; a command is refused with an uncatchable `E_SAFETY_VIOLATION` when the heartbeat or a field it reads is older than 1500 ms. Verified against a scripted autopilot over UDP; physical hardware has not been tested. |
 | Tests and release gates | Partial | 142 selected all-features integration tests, two focused unit tests, Clippy, and Kaze formatting passed locally. Full suites and preflight contain non-robotics stand-ins that require migration under the Sofuu workspace's `RULES.md` §1.9; distribution verification also reported existing artifact failures. |
 | Compatibility | Open | Format-4 bytecode compatibility tests pass, but capability behavior and the Rust run report changed. Decide the release/version treatment before claiming a compatible release. |
 | Sofuu embedded engine | Separate | The standalone changes do not establish policy or backend behavior for the engine embedded in Sofuu. |

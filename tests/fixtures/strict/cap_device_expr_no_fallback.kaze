@@ -1,0 +1,6 @@
+# rule: MISSING_FALLBACK — a device read in expression position needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+needs: device
+
+action read_line():
+    let line = device.read_gpio("fan")  # BAD

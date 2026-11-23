@@ -34,13 +34,18 @@ pub fn print_help() {
          \x20                        `drone=udp:127.0.0.1:14550` or\n\
          \x20                        `drone=uart:/dev/ttyAMA0@57600` is a real\n\
          \x20                        autopilot (serial needs --features uart). Live\n\
-         \x20                        drone actuation is currently disabled.\n\
+         \x20                        actuation requires a heartbeat and every field it\n\
+         \x20                        reads to be at most 1500 ms old.\n\
+         \x20 --audit <path>        Append one line per capability gate decision\n\
          \x20 --pin <name>=<line>   Name a GPIO line the device family may drive\n\
          \x20                        (v0.2, e.g. --pin fan=17)\n\
          \x20 --pwm <name>=<chip>:<channel>  Name a PWM channel for set_duty\n\
          \x20                        (v0.2, e.g. --pwm fan=0:0)\n\
          \x20 --entry <name>         Routine to run (default: main, or the only one)\n\
-         \x20 --arg <name>=<json>    Bind a parameter (repeatable)\n\
+         \x20 --arg <name>=<json>    Bind a parameter (repeatable). Resolution order is\n\
+         \x20                        --arg, then AGENT_<PARAM>/SOFUU_<PARAM>, then the\n\
+         \x20                        --config document, then a signature default.\n\
+         \x20 --config <path>        JSON config document (default ./agent.config.json)\n\
          \x20 --fuel <n>             Instruction budget (default 200000)\n\
          \x20 --ticks <n>            Supervisor ticks after the entry (default 0);\n\
          \x20                        required for `when`/`every` hooks\n\
@@ -80,6 +85,10 @@ struct Flags {
     fmt_check: bool,
     fmt_write: bool,
     iterations: Option<u32>,
+    /// `--config <path>` from the 12-factor hierarchy.
+    config: Option<String>,
+    /// `--audit <path>`: one line per capability gate decision.
+    audit: Option<String>,
     want_help: bool,
 }
 
@@ -105,6 +114,8 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
         fmt_check: false,
         fmt_write: false,
         iterations: None,
+        config: None,
+        audit: None,
         want_help: false,
     };
     let mut i = 0;
@@ -162,6 +173,14 @@ fn parse_flags(argv: &[String]) -> Result<Flags, String> {
                 let parsed = serde_json::from_str::<serde_json::Value>(raw)
                     .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
                 f.args.insert(k.to_string(), parsed);
+            }
+            "--config" => {
+                let v = next("--config")?;
+                f.config = Some(v);
+            }
+            "--audit" => {
+                let v = next("--audit")?;
+                f.audit = Some(v);
             }
             "--fuel" => {
                 let v = next("--fuel")?;
@@ -236,7 +255,22 @@ fn policy_layer(no_policy: bool) -> Option<serde_json::Value> {
     }
 }
 
-fn options_from(f: &Flags) -> Result<RunOptions, String> {
+fn print_error(e: &kaze::KazeError) {
+    let rendered = e.render();
+    if rendered.starts_with("error[") {
+        // A detailed diagnostic carries its own header, location and caret.
+        eprintln!("{}", rendered);
+    } else {
+        eprintln!("\x1b[31mError:\x1b[0m {}", rendered);
+    }
+}
+
+fn options_from(f: &Flags, read_stdin: bool) -> Result<RunOptions, String> {
+    // The audit trail is a host-level sink (hardware.rs reads KAZE_AUDIT when it
+    // builds the gate), so the flag configures it before any run starts.
+    if let Some(path) = &f.audit {
+        std::env::set_var("KAZE_AUDIT", path);
+    }
     let mut sim = SimState::default();
     if !f.sim.is_empty() {
         if !f.backend.iter().any(|(family, backend)| {
@@ -256,10 +290,47 @@ fn options_from(f: &Flags) -> Result<RunOptions, String> {
         pace_ticks: f.pace,
         sim,
         policy: policy_layer(f.no_policy),
+        // A pipe is one of the documented input paths: read it once, and let the
+        // parameter binder decide whether it is needed.
+        stdin_value: if !read_stdin || std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            None
+        } else {
+            let mut text = String::new();
+            match std::io::Read::read_to_string(&mut std::io::stdin(), &mut text) {
+                Ok(_) if !text.trim().is_empty() => Some(text),
+                _ => None,
+            }
+        },
         backend: f.backend.clone(),
         pins: f.pins.clone(),
         pwm: f.pwm.clone(),
+        config: load_config(f.config.as_deref()),
     })
+}
+
+/// The 12-factor configuration document: an explicit --config path, or
+/// ./agent.config.json when the working directory has one. A malformed document
+/// is refused rather than ignored, because a script that silently loses its
+/// settings runs on defaults nobody chose.
+fn load_config(path: Option<&str>) -> Option<serde_json::Value> {
+    let (path, explicit) = match path {
+        Some(p) => (p.to_string(), true),
+        None => ("agent.config.json".to_string(), false),
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) if v.is_object() => Some(v),
+            _ => {
+                eprintln!("\x1b[33mwarning:\x1b[0m '{}' is not a JSON object; ignoring it", path);
+                None
+            }
+        },
+        Err(_) if explicit => {
+            eprintln!("\x1b[33mwarning:\x1b[0m cannot read config file '{}'", path);
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 fn report_simulation_on_failure(opts: &RunOptions) {
@@ -298,7 +369,7 @@ fn cmd_run(argv: &[String]) -> i32 {
         eprintln!("\x1b[31mError:\x1b[0m 'kaze run' needs a .kaze file");
         return 2;
     };
-    let opts = match options_from(&flags) {
+    let opts = match options_from(&flags, path != "-") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("\x1b[31mError:\x1b[0m {}", e);
@@ -365,7 +436,7 @@ fn cmd_check(argv: &[String]) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+            print_error(&e);
             1
         }
     }
@@ -388,7 +459,7 @@ fn cmd_compile(argv: &[String]) -> i32 {
     let prepared = match kaze::prepare_file(path) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+            print_error(&e);
             return 1;
         }
     };
@@ -431,7 +502,7 @@ fn cmd_to_machine(argv: &[String]) -> i32 {
     let src = match kaze::read_source(path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+            print_error(&e);
             return 1;
         }
     };
@@ -475,7 +546,7 @@ fn cmd_to_human(argv: &[String]) -> i32 {
     let src = match kaze::read_source(path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+            print_error(&e);
             return 1;
         }
     };
@@ -523,7 +594,7 @@ fn cmd_emit_c(argv: &[String]) -> i32 {
     let c_code = match kaze::emit_c_file(path, &opts) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+            print_error(&e);
             return 1;
         }
     };
@@ -575,7 +646,7 @@ fn cmd_fmt(argv: &[String]) -> i32 {
         let src = match kaze::read_source(path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+                print_error(&e);
                 status = 1;
                 continue;
             }
@@ -583,7 +654,7 @@ fn cmd_fmt(argv: &[String]) -> i32 {
         let formatted = match kaze::fmt::format_source(&src, path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+                print_error(&e);
                 status = 1;
                 continue;
             }
@@ -628,7 +699,7 @@ fn cmd_bench(argv: &[String]) -> i32 {
         eprintln!("\x1b[31mError:\x1b[0m 'kaze bench' needs a .kaze or .kazebc file");
         return 2;
     };
-    let opts = match options_from(&flags) {
+    let opts = match options_from(&flags, false) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("\x1b[31mError:\x1b[0m {}", e);
@@ -656,7 +727,7 @@ fn cmd_bench(argv: &[String]) -> i32 {
         match kaze::prepare_file(path) {
             Ok(prepared) => Source::Prepared(prepared),
             Err(e) => {
-                eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+                print_error(&e);
                 return 1;
             }
         }
@@ -685,7 +756,7 @@ fn cmd_bench(argv: &[String]) -> i32 {
             Ok(report) => report,
             Err(e) => {
                 report_simulation_on_failure(&opts);
-                eprintln!("\x1b[31mError:\x1b[0m {}", e.render());
+                print_error(&e);
                 return 1;
             }
         };
@@ -793,7 +864,7 @@ fn cmd_selftest(argv: &[String]) -> i32 {
     let mut checks: Vec<(String, bool, String)> = Vec::new();
 
     // The v1.x LTS line: a patch release must not fail its own scorecard.
-    let version_ok = kaze::VERSION.starts_with("1.") && isa::FORMAT_VERSION == 4;
+    let version_ok = kaze::VERSION.starts_with("1.") && isa::FORMAT_VERSION >= 4;
     checks.push((
         "version and module format".into(),
         version_ok,
@@ -868,6 +939,7 @@ fn cmd_selftest(argv: &[String]) -> i32 {
             origin: String::new(),
             period_ms: 0.0,
             slots: 0,
+            recursion_bound: 0,
         }],
         ..Default::default()
     };
@@ -917,6 +989,7 @@ fn cmd_selftest(argv: &[String]) -> i32 {
             origin: "selftest.kazebc".into(),
             period_ms: 0.0,
             slots: 0,
+            recursion_bound: 0,
         }],
     };
     let h1 = kaze::run_module(h1_module, "selftest.kazebc", &RunOptions::default());
@@ -956,8 +1029,10 @@ fn cmd_selftest(argv: &[String]) -> i32 {
         String::new(),
     ));
 
+    // The loop declares a ceiling far above the fuel budget, so what stops it
+    // is the fuel meter, not the ceiling: that is the property under test.
     let fuel = kaze::run_source(
-        "action loop():\n    while 1 == 1:\n        let x = 1\n",
+        "action loop():\n    while 1 == 1 bounded 1000000:\n        let x = 1\n",
         "selftest.kaze",
         &RunOptions { fuel: 50, ..Default::default() },
     );

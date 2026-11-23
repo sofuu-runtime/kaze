@@ -5,6 +5,10 @@ record Token:
     text: str
     line: num
     col: num
+    # Byte offset of the token's first character in the source. Line and column
+    # are what a diagnostic prints; the offset is what a source-to-source tool
+    # needs to splice text without re-scanning.
+    at: num
 
-action make_token(k, t, l, c):
-    return Token(kind: k, text: t, line: l, col: c)
+action make_token(k, t, l, c, at):
+    return Token(kind: k, text: t, line: l, col: c, at: at)

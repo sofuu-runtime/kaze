@@ -41,6 +41,13 @@ pub const WARMUP_MS: u64 = 15_000;
 /// real autopilot streams at 1-4 Hz, so two seconds is generous.
 pub const STALE_MS: u64 = 2_000;
 
+/// The one freshness ceiling that physically matters: a live actuation command
+/// is refused when the vehicle's HEARTBEAT — or a telemetry field the command
+/// depends on — is older than this. 1500 ms is the safety requirement named in
+/// the roadmap and in `RULES.md`; the link layer and the host share this number
+/// so the two can never disagree.
+pub const SAFETY_FRESHNESS_MS: u64 = 1_500;
+
 /// The commands a Kaze script can put on the wire. Anything else is a bug, and
 /// the link refuses it rather than trusting the caller.
 pub const SENT_COMMANDS: &[u16] = &[
@@ -189,6 +196,32 @@ pub struct Telemetry {
     pub satellites: Option<f64>,
     pub armed: Option<bool>,
     pub mode: Option<String>,
+    /// When each value above was last received. A value with no stamp was never
+    /// reported, and a value with an old stamp is a memory of a world the
+    /// vehicle has stopped describing — neither may inform an actuation.
+    pub heard: TelemetryStamps,
+}
+
+/// Reception time of each telemetry value. Kept beside the values so a caller
+/// can never read a number without also being able to ask how old it is.
+#[derive(Clone, Debug, Default)]
+pub struct TelemetryStamps {
+    pub heartbeat: Option<Instant>,
+    pub lat: Option<Instant>,
+    pub lon: Option<Instant>,
+    pub alt_m: Option<Instant>,
+    pub rel_alt_m: Option<Instant>,
+    pub heading_deg: Option<Instant>,
+    pub vx_ms: Option<Instant>,
+    pub vy_ms: Option<Instant>,
+    pub battery_pct: Option<Instant>,
+    pub satellites: Option<Instant>,
+    pub armed: Option<Instant>,
+    pub mode: Option<Instant>,
+}
+
+fn age_of(at: Option<Instant>) -> Option<u64> {
+    at.map(|when| when.elapsed().as_millis() as u64)
 }
 
 impl Telemetry {
@@ -210,16 +243,69 @@ impl Telemetry {
         }
     }
 
+    /// How long ago the vehicle last reported this field, or `None` when it
+    /// never has on this link.
+    pub fn field_age_ms(&self, field: &str) -> Option<u64> {
+        let heard = &self.heard;
+        match field {
+            "battery" => age_of(heard.battery_pct),
+            "altitude" => age_of(heard.rel_alt_m),
+            "altitude_msl" => age_of(heard.alt_m),
+            "heading" => age_of(heard.heading_deg),
+            "lat" | "latitude" => age_of(heard.lat),
+            "lon" | "longitude" => age_of(heard.lon),
+            // A speed is only as fresh as the older of the two components it is
+            // computed from.
+            "speed" => match (heard.vx_ms, heard.vy_ms) {
+                (Some(a), Some(b)) => age_of(Some(a.max(b))),
+                _ => None,
+            },
+            "satellites" => age_of(heard.satellites),
+            "armed" => age_of(heard.armed),
+            "mode" => age_of(heard.mode),
+            _ => None,
+        }
+    }
+
+    /// How long ago the vehicle last sent a HEARTBEAT, or `None` when it has
+    /// not sent one on this link.
+    pub fn heartbeat_age_ms(&self) -> Option<u64> {
+        age_of(self.heard.heartbeat)
+    }
+
+    /// The value only when the vehicle reported it within `limit_ms`. A stale
+    /// or never-reported field is `None`: a script must not act on a world
+    /// model the vehicle has stopped describing.
+    pub fn fresh(&self, field: &str, limit_ms: u64) -> Option<f64> {
+        match self.field_age_ms(field) {
+            Some(age) if age <= limit_ms => self.read(field),
+            _ => None,
+        }
+    }
+
     fn apply(&mut self, frame: &Frame) {
+        let now = Instant::now();
         match frame.msgid {
             0 => {
                 let base = frame.u8_at(6);
                 self.armed = Some(base & 0x80 != 0);
                 self.mode = Some(copter_mode_name((frame.u32_at(0) & 0xFF) as u8));
+                self.heard.heartbeat = Some(now);
+                self.heard.armed = Some(now);
+                self.heard.mode = Some(now);
             }
-            1 => self.battery_pct = Some(frame.u8_at(30) as i8 as f64),
-            24 => self.satellites = Some(frame.u8_at(29) as f64),
-            30 => self.heading_deg = Some((frame.f32_at(12) as f64).to_degrees()),
+            1 => {
+                self.battery_pct = Some(frame.u8_at(30) as i8 as f64);
+                self.heard.battery_pct = Some(now);
+            }
+            24 => {
+                self.satellites = Some(frame.u8_at(29) as f64);
+                self.heard.satellites = Some(now);
+            }
+            30 => {
+                self.heading_deg = Some((frame.f32_at(12) as f64).to_degrees());
+                self.heard.heading_deg = Some(now);
+            }
             33 => {
                 self.lat = Some(frame.i32_at(4) as f64 / 1e7);
                 self.lon = Some(frame.i32_at(8) as f64 / 1e7);
@@ -227,6 +313,12 @@ impl Telemetry {
                 self.rel_alt_m = Some(frame.i32_at(16) as f64 / 1000.0);
                 self.vx_ms = Some(frame.i16_at(20) as f64 / 100.0);
                 self.vy_ms = Some(frame.i16_at(22) as f64 / 100.0);
+                self.heard.lat = Some(now);
+                self.heard.lon = Some(now);
+                self.heard.alt_m = Some(now);
+                self.heard.rel_alt_m = Some(now);
+                self.heard.vx_ms = Some(now);
+                self.heard.vy_ms = Some(now);
             }
             _ => {}
         }
@@ -297,7 +389,7 @@ impl DroneLink {
         let mut io = open_device(device)?;
         let mut core = Core::new(device);
         if is_udp {
-            wait_for_first_bytes(io.as_mut(), PEER_WAIT_MS).map_err(|_| {
+            wait_for_first_bytes(&mut core, io.as_mut(), PEER_WAIT_MS).map_err(|_| {
                 format!("E_KAZE_LINK: nothing is streaming to {} — is the autopilot sending there?", device)
             })?;
         }
@@ -403,6 +495,18 @@ impl DroneLink {
 
     pub fn telemetry(&self) -> Telemetry {
         self.tele.clone().lock().map(|t| t.clone()).unwrap_or_default()
+    }
+
+    /// The latest value of `field`, but only when it arrived within `limit_ms`.
+    /// A stale value is not a value: the caller gets `None` and must say so.
+    pub fn fresh_field(&self, field: &str, limit_ms: u64) -> Option<f64> {
+        self.telemetry().fresh(field, limit_ms)
+    }
+
+    /// How long ago the vehicle last sent a HEARTBEAT, or `None` if it never
+    /// has on this link.
+    pub fn heartbeat_age_ms(&self) -> Option<u64> {
+        self.telemetry().heartbeat_age_ms()
     }
 
     pub fn take_notes(&self) -> Vec<Note> {
@@ -798,17 +902,49 @@ fn open_device(device: &str) -> Result<Box<dyn Io>, String> {
     }
 }
 
-fn wait_for_first_bytes(io: &mut dyn Io, timeout_ms: u64) -> Result<(), ()> {
+/// Wait until the vehicle speaks, and keep what it said.
+///
+/// The datagram that proves the link is up is usually a HEARTBEAT, and it is
+/// the first heartbeat the freshness gate can see. Dropping it (the old
+/// behaviour) left the gate with no heartbeat at all on a healthy link, so the
+/// bytes are handed to the core here instead of being thrown away.
+/// Wait for the vehicle to start talking, and specifically for its HEARTBEAT.
+///
+/// Connecting on "some bytes arrived" is not enough: the freshness veto refuses
+/// every actuation until a heartbeat has been seen, so a script that arms
+/// immediately would fail or succeed depending on which frame the autopilot
+/// happened to send first. Waiting for the heartbeat makes connect mean what an
+/// operator assumes it means: the vehicle is alive and I can talk to it. A
+/// vehicle that only streams telemetry still connects (the bytes flow), but the
+/// veto keeps actuation closed, which is the honest result.
+fn wait_for_first_bytes(core: &mut Core, io: &mut dyn Io, timeout_ms: u64) -> Result<(), ()> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut buf = [0u8; 2048];
+    let mut heard_any = false;
     while Instant::now() < deadline {
         match io.read(&mut buf) {
             Ok(0) => thread::sleep(Duration::from_millis(20)),
-            Ok(_) => return Ok(()),
+            Ok(n) => {
+                for frame in core.on_bytes(&buf[..n]) {
+                    core.tele.apply(&frame);
+                }
+                if core.tele.heartbeat_age_ms().is_some() {
+                    return Ok(());
+                }
+                // Traffic without a heartbeat is still a live peer: keep
+                // waiting for one, but do not fail the connection, because the
+                // refusal that matters happens at actuation time and is
+                // uncatchable (E_SAFETY_VIOLATION).
+                heard_any = true;
+            }
             Err(_) => return Err(()),
         }
     }
-    Err(())
+    if heard_any {
+        Ok(())
+    } else {
+        Err(())
+    }
 }
 
 #[cfg(test)]
@@ -886,6 +1022,35 @@ mod tests {
         assert!((tele.read("lat").expect("lat") - 47.6).abs() < 1e-9);
         assert!((tele.read("altitude").expect("alt") - 120.0).abs() < 1e-6);
         assert!((tele.read("speed").expect("speed") - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_field_is_only_fresh_while_the_vehicle_keeps_reporting_it() {
+        let mut tele = Telemetry::default();
+        assert_eq!(tele.heartbeat_age_ms(), None, "silence has no age");
+        assert_eq!(tele.field_age_ms("altitude"), None);
+        assert_eq!(tele.fresh("altitude", SAFETY_FRESHNESS_MS), None);
+
+        let mut hb = Frame::new(0, 0, 7, 1).expect("heartbeat");
+        hb.set_u32_at(0, 4);
+        hb.set_u8_at(6, 0x80);
+        tele.apply(&hb);
+        let mut pos = Frame::new(33, 1, 7, 1).expect("position");
+        pos.set_i32_at(16, 120_000);
+        tele.apply(&pos);
+
+        assert!(tele.heartbeat_age_ms().expect("a heartbeat was heard") < SAFETY_FRESHNESS_MS);
+        assert_eq!(tele.fresh("altitude", SAFETY_FRESHNESS_MS), Some(120.0));
+
+        // Pretend the frames arrived long ago: the value still exists, but it
+        // is no longer fresh enough to act on.
+        let old = Instant::now() - Duration::from_millis(SAFETY_FRESHNESS_MS + 200);
+        tele.heard.heartbeat = Some(old);
+        tele.heard.rel_alt_m = Some(old);
+        assert!(tele.heartbeat_age_ms().expect("still stamped") > SAFETY_FRESHNESS_MS);
+        assert!(tele.field_age_ms("altitude").expect("still stamped") > SAFETY_FRESHNESS_MS);
+        assert_eq!(tele.read("altitude"), Some(120.0), "the stale value is still readable");
+        assert_eq!(tele.fresh("altitude", SAFETY_FRESHNESS_MS), None, "but never fresh");
     }
 
     #[test]

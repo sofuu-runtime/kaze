@@ -1,0 +1,4 @@
+# expect: ok — a literal non-zero divisor is provably safe, no fallback needed
+# value: 25
+action main():
+    return 100 / 4

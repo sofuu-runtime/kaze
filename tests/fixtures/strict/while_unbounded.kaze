@@ -1,0 +1,6 @@
+# rule: LOOP_UNBOUNDED — a 'while' loop must declare a fuel ceiling
+# expect: E_KAZE_LOOP_UNBOUNDED
+action spin(limit):
+    let i = 0
+    while i < limit:  # BAD
+        set i = i + 1

@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — a field read on a host record may be absent, so it needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action read_value(reading):
+    let v = reading.value  # BAD

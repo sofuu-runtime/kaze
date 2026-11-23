@@ -1,0 +1,7 @@
+# expect: ok — 'for each' over a list value is bounded by the list
+# value: 12 with xs=[2, 4, 6]
+action main(xs):
+    let total = 0
+    for each n in xs:
+        set total = total + n
+    return total

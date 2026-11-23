@@ -1,0 +1,5 @@
+# expect: ok — a provable constant index nested in arithmetic is fine
+# value: 5
+action main():
+    let v = [2, 4][1] + 1
+    return v

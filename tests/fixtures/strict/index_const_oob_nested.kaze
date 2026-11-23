@@ -1,0 +1,4 @@
+# rule: BOUNDS — a constant out-of-bounds read nested in arithmetic is refused
+# expect: E_KAZE_BOUNDS
+action bad_pick():
+    let v = 1 + [4, 5][2]  # BAD

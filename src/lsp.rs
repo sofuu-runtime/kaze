@@ -489,80 +489,45 @@ fn hex(b: u8) -> Option<u8> {
 /// Parse and check one document. Parse errors get an exact column; checker and
 /// import errors come back as rendered `file:line[:col]: message` lines.
 fn diagnostics(text: &str, name: &str, base: &Path, uri: &str) -> Vec<Value> {
-    match crate::parser::parse(text) {
-        Err(e) => vec![diagnostic(uri, text, e.line, e.col, &e.msg, name)],
-        Ok(_) => match crate::prepare_in(text, name, base) {
-            Ok(_) => Vec::new(),
-            Err(e) => rendered_diagnostics(&e.message, uri, text, name),
-        },
-    }
-}
-
-fn rendered_diagnostics(message: &str, uri: &str, text: &str, root: &str) -> Vec<Value> {
-    // `prepare_in` records the root origin as the file's base name, while
-    // `root` here is the full path from the URI. A root-file error must not be
-    // prefixed with its own name.
-    let root_name = Path::new(root)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| root.to_string());
+    // The language server wants structure, not a rendered block: one diagnostic
+    // per problem, with the column located on the line it belongs to.
+    let found = crate::diagnose_in(text, name, base);
+    let map = crate::diag::SourceMap::new(text);
     let mut out = Vec::new();
-    for line in message.lines() {
-        if let Some((file, line_no, col, msg)) = split_rendered(line) {
-            let message = if file == root || file == root_name || file == uri {
-                msg.to_string()
-            } else {
-                format!("{}: {}", file, msg)
-            };
-            out.push(diagnostic(uri, text, line_no, col, &message, root));
-        } else if !line.trim().is_empty() {
-            out.push(diagnostic(uri, text, 1, 1, line.trim(), root));
-        }
+    for err in found {
+        let needle = err.needle.clone().unwrap_or_default();
+        let needles: Vec<&str> = if needle.is_empty() { Vec::new() } else { vec![needle.as_str()] };
+        let (col, width) = map.locate(err.line, &needles).unwrap_or((1, 1));
+        let message = if err.hint.is_some() {
+            format!("{} ({})", err.msg, err.hint.clone().unwrap_or_default())
+        } else {
+            err.msg.clone()
+        };
+        let _ = (uri, name);
+        out.push(diagnostic_span(
+            err.line,
+            col,
+            width,
+            &format!("[{}] {}", err.code, message),
+        ));
     }
     out
 }
 
-fn split_rendered(line: &str) -> Option<(&str, u32, u32, &str)> {
-    for (at, _) in line.match_indices(':') {
-        let rest = &line[at + 1..];
-        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-        if digits == 0 {
-            continue;
-        }
-        let Ok(line_no) = rest[..digits].parse::<u32>() else {
-            continue;
-        };
-        let after = &rest[digits..];
-        if let Some(after) = after.strip_prefix(':') {
-            let digits2 = after.chars().take_while(|c| c.is_ascii_digit()).count();
-            if digits2 > 0 {
-                if let Some(msg) = after[digits2..].strip_prefix(": ") {
-                    if let Ok(col) = after[..digits2].parse::<u32>() {
-                        return Some((&line[..at], line_no, col, msg));
-                    }
-                }
-            }
-        }
-        if let Some(msg) = after.strip_prefix(": ") {
-            return Some((&line[..at], line_no, 1, msg));
-        }
-    }
-    None
-}
-
-fn diagnostic(_uri: &str, _text: &str, line: u32, col: u32, message: &str, _root: &str) -> Value {
-    let line = line.saturating_sub(1);
-    let character = col.saturating_sub(1);
+fn diagnostic_span(line: u32, col: u32, width: u32, message: &str) -> Value {
+    let start_line = line.saturating_sub(1);
+    let start_col = col.saturating_sub(1);
     json!({
         "range": {
-            "start": { "line": line, "character": character },
-            "end": { "line": line, "character": character + 1 }
+            "start": { "line": start_line, "character": start_col },
+            "end": { "line": start_line, "character": start_col + width.max(1) }
         },
         "severity": 1,
         "source": "kaze",
         "message": message
     })
 }
+
 
 fn completion(label: &str, kind: u32, detail: Option<String>, insert: Option<String>) -> Value {
     json!({

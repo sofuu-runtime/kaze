@@ -1,0 +1,7 @@
+# rule: MISSING_FALLBACK — a sensor call inside a condition needs a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+needs: sensor
+
+action humid():
+    if sensor.humidity() > 40:  # BAD
+        return 1

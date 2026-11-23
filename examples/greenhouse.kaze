@@ -8,11 +8,16 @@
 
 needs: sensor, fan, mister, alert
 
-check climate(target_temp, target_humidity):
-    if sensor.temperature() > target_temp + 2:
+# Typed parameters carry their dimension, so the comparison below is checked
+# against real units rather than trusted. A sensor read is fallible (the probe
+# can be silent), so each read states what to use when it is.
+check climate(target_temp: Celsius, target_humidity: percent):
+    let temperature = sensor.temperature() otherwise 0 Celsius
+    let humidity = sensor.humidity() otherwise 0%
+    if temperature > target_temp + 2 Kelvin:
         turn on fan
         send alert "Cooling fan activated"
     otherwise:
         turn off fan
-    if sensor.humidity() < target_humidity:
+    if humidity < target_humidity:
         pulse mister for 5 seconds

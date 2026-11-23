@@ -1,0 +1,6 @@
+# rule: CAP_UNDECLARED — the sensor family is used but never declared
+# expect: E_CAP_UNDECLARED
+needs: log
+
+action sample():
+    let t = sensor.temperature() otherwise 0  # BAD

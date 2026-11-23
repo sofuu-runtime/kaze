@@ -15,6 +15,7 @@ fn item(code: Vec<u32>) -> ItemCode {
         origin: String::new(),
         period_ms: 0.0,
         slots: 0,
+        recursion_bound: 0,
     }
 }
 
@@ -189,7 +190,7 @@ fn a_try_module_verifies_including_its_handler_edge() {
 
 #[test]
 fn the_module_format_is_locked() {
-    assert_eq!(isa::FORMAT_VERSION, 4);
+    assert_eq!(isa::FORMAT_VERSION, 5);
 }
 
 #[test]

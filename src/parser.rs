@@ -287,7 +287,12 @@ impl Parser {
                 "this script is empty: add an action, check, filter, when or every block",
             );
         }
-        Ok(Program { needs: self.needs.clone(), uses, root: String::new(), items })
+        let records = items
+            .iter()
+            .filter(|i| matches!(i.kind, ItemKind::Record(_)))
+            .map(|i| i.name.clone())
+            .collect();
+        Ok(Program { needs: self.needs.clone(), uses, root: String::new(), items, records })
     }
 
     fn item(&mut self) -> Result<Item, ParseError> {
@@ -315,21 +320,21 @@ impl Parser {
                 params: Vec::new(),
                 body,
                 line,
+                contracts: Contracts::default(),
                 origin: String::new(),
             });
         }
         if self.at_ident("every") {
             self.bump();
             let (num, unit) = self.number_with_unit()?;
-            let ms = match unit {
-                Unit::Sec => num * 1000.0,
-                _ => {
-                    return err(
-                        line,
-                        col,
-                        "every needs a time period, e.g. 'every 100ms' or 'every 2 seconds'",
-                    )
-                }
+            let ms = if unit.dim() == Dim::TIME {
+                num * 1000.0
+            } else {
+                return err(
+                    line,
+                    col,
+                    "every needs a time period, e.g. 'every 100ms' or 'every 2 seconds'",
+                );
             };
             self.expect_punct(':')?;
             self.hook_seq += 1;
@@ -343,6 +348,7 @@ impl Parser {
                 params: Vec::new(),
                 body,
                 line,
+                contracts: Contracts::default(),
                 origin: String::new(),
             });
         }
@@ -403,12 +409,13 @@ impl Parser {
                 params: field_names,
                 body: Vec::new(),
                 line,
+                contracts: Contracts::default(),
                 origin: String::new(),
             });
         }
 
         let kind = match self.peek().clone() {
-            Tok::Ident(w) if w == "action" => ItemKind::Action,
+            Tok::Ident(w) if w == "action" || w == "routine" || w == "func" => ItemKind::Action,
             Tok::Ident(w) if w == "check" => ItemKind::Check,
             Tok::Ident(w) if w == "filter" => ItemKind::Filter,
             other => {
@@ -416,7 +423,7 @@ impl Parser {
                     line,
                     col,
                     format!(
-                        "expected 'action', 'check', 'filter', 'when' or 'every' here, found {}",
+                        "expected 'action', 'routine', 'check', 'filter', 'when' or 'every' here,                          found {}",
                         describe(&other)
                     ),
                 )
@@ -426,6 +433,7 @@ impl Parser {
         let name = self.expect_ident()?;
         self.expect_punct('(')?;
         let mut params: Vec<String> = Vec::new();
+        let mut contracts = Contracts::default();
         if !self.eat_punct(')') {
             loop {
                 let p = self.expect_ident()?;
@@ -433,7 +441,26 @@ impl Parser {
                     let (l, c) = self.here();
                     return err(l, c, format!("parameter '{}' is repeated", p));
                 }
+                let ty = if self.eat_punct(':') {
+                    Some(self.type_ref()?)
+                } else {
+                    None
+                };
+                let default = if self.eat_punct('=') { Some(self.expr()?) } else { None };
+                if default.is_some() && ty.is_none() {
+                    let (l, c) = self.here();
+                    return err(
+                        l,
+                        c,
+                        format!(
+                            "give '{}' a type before its default, e.g. '{}: number = 5'",
+                            p, p
+                        ),
+                    );
+                }
                 params.push(p);
+                contracts.param_types.push(ty);
+                contracts.param_defaults.push(default);
                 if self.eat_punct(',') {
                     continue;
                 }
@@ -441,17 +468,24 @@ impl Parser {
                 break;
             }
         }
+        // Optional result type: `-> bool`.
+        if matches!(self.peek(), Tok::Punct('-')) && matches!(self.peek_at(1), Tok::Punct('>')) {
+            self.bump();
+            self.bump();
+            contracts.result = Some(self.type_ref()?);
+        }
         self.expect_punct(':')?;
         self.push_scope();
         for p in &params {
             self.bind(p);
         }
-        let body = self.block()?;
+        let body = self.contract_block(&mut contracts)?;
         self.pop_scope();
         if body.is_empty() {
             return err(line, col, format!("'{}' has an empty body", name));
         }
-        Ok(Item { name, kind, params, body, line, origin: String::new() })
+        let _ = &kind;
+        Ok(Item { name, kind, params, body, line, contracts, origin: String::new() })
     }
 
     fn block(&mut self) -> Result<Vec<Stmt>, ParseError> {
@@ -578,9 +612,28 @@ impl Parser {
         if self.at_ident("while") {
             self.bump();
             let cond = self.expr()?;
+            let bound = if self.at_ident("bounded") {
+                self.bump();
+                let (l, c) = self.here();
+                match self.peek().clone() {
+                    Tok::Num(n) if n >= 1.0 && n.fract() == 0.0 && n <= u32::MAX as f64 => {
+                        self.bump();
+                        Some(n as u32)
+                    }
+                    _ => {
+                        return err(
+                            l,
+                            c,
+                            "'bounded' needs a whole number of iterations from 1 up, e.g.                              'while n < 10 bounded 1000:'",
+                        )
+                    }
+                }
+            } else {
+                None
+            };
             self.expect_punct(':')?;
             let body = self.block()?;
-            return Ok(Stmt::While { cond, body, line });
+            return Ok(Stmt::While { cond, body, line, bound });
         }
         if self.at_ident("try") {
             self.bump();
@@ -608,6 +661,11 @@ impl Parser {
             let otherwise = self.block()?;
             self.pop_scope();
             return Ok(Stmt::Try { body, otherwise, error_name, line });
+        }
+        if self.at_ident("guard") {
+            self.bump();
+            let cond = self.expr()?;
+            return Ok(Stmt::Guard(cond, line));
         }
         if self.at_ident("return") {
             // `return to launch` is the drone verb; `return` alone ends the action.
@@ -796,8 +854,226 @@ impl Parser {
     }
 
     // ── expressions ──────────────────────────────────────────────────
+    // ── signature types and contract clauses (Phase 4) ───────────────
+    /// `int`, `number`, `text`, `bool`, `percent`, `length`, `time`,
+    /// `angle`, or `untrusted<...>`.
+    fn type_ref(&mut self) -> Result<TypeRef, ParseError> {
+        let (line, col) = self.here();
+        if self.at_ident("untrusted") {
+            self.bump();
+            let inner = if matches!(self.peek(), Tok::Punct('<')) {
+                self.bump();
+                let t = self.type_ref()?;
+                if !matches!(self.peek(), Tok::Punct('>')) {
+                    let (l, c) = self.here();
+                    return err(l, c, "expected '>' to close 'untrusted<'");
+                }
+                self.bump();
+                Box::new(t)
+            } else {
+                Box::new(TypeRef::Number)
+            };
+            return Ok(TypeRef::Untrusted(inner));
+        }
+        let word = self.expect_ident()?;
+        match TypeRef::parse(&word) {
+            Some(t) => Ok(t),
+            None => err(
+                line,
+                col,
+                format!(
+                    "'{}' is not a type Kaze knows; use int, number, text, bool, percent, length, \
+                     time, angle, or untrusted<...>",
+                    word
+                ),
+            ),
+        }
+    }
+
+    /// The body of a routine: contract clauses first (in any order, at the top),
+    /// then statements. `requires`, `ensures`, `recursion bounded` and a routine
+    /// level `needs:` are declarations, not statements, so they never reach the
+    /// bytecode compiler.
+    fn contract_block(&mut self, contracts: &mut Contracts) -> Result<Vec<Stmt>, ParseError> {
+        self.block_depth += 1;
+        if self.block_depth > MAX_BLOCK_DEPTH {
+            self.block_depth -= 1;
+            let (l, c) = self.here();
+            return err(l, c, format!("this script nests more than {} blocks deep", MAX_BLOCK_DEPTH));
+        }
+        let out = self.contract_block_inner(contracts);
+        self.block_depth -= 1;
+        out
+    }
+
+    fn contract_block_inner(&mut self, contracts: &mut Contracts) -> Result<Vec<Stmt>, ParseError> {
+        if !matches!(self.peek(), Tok::Newline) {
+            let (l, c) = self.here();
+            return err(l, c, "put the block on the next line, indented by four spaces");
+        }
+        self.bump();
+        if !matches!(self.peek(), Tok::Indent) {
+            let (l, c) = self.here();
+            return err(l, c, "this block needs one indented line at least");
+        }
+        self.bump();
+        self.push_scope();
+        let mut out: Vec<Stmt> = Vec::new();
+        let mut seen_body = false;
+        loop {
+            match self.peek() {
+                Tok::Dedent => {
+                    self.bump();
+                    break;
+                }
+                Tok::Eof => {
+                    let (l, c) = self.here();
+                    self.pop_scope();
+                    return err(l, c, "this block is never closed");
+                }
+                Tok::Newline => {
+                    self.bump();
+                    continue;
+                }
+                _ => {}
+            }
+            let (line, col) = self.here();
+            if self.at_ident("requires") || self.at_ident("ensures") {
+                if seen_body {
+                    return err(
+                        line,
+                        col,
+                        "put 'requires' and 'ensures' above the first statement; a contract that \
+                         appears after the code cannot describe it",
+                    );
+                }
+                let is_requires = self.at_ident("requires");
+                self.bump();
+                self.collect_clause(contracts, is_requires, line)?;
+                self.end_line()?;
+                continue;
+            }
+            if self.at_ident("recursion") && matches!(self.peek_at(1), Tok::Ident(w) if w == "bounded") {
+                if seen_body {
+                    return err(line, col, "put 'recursion bounded' above the first statement");
+                }
+                self.bump();
+                self.bump();
+                let (l, c) = self.here();
+                match self.peek().clone() {
+                    Tok::Num(n) if n >= 1.0 && n.fract() == 0.0 && n <= 256.0 => {
+                        self.bump();
+                        contracts.recursion_bound = Some(n as u32);
+                    }
+                    _ => {
+                        return err(
+                            l,
+                            c,
+                            "'recursion bounded' needs a whole number of frames from 1 to 256",
+                        )
+                    }
+                }
+                self.end_line()?;
+                continue;
+            }
+            if self.at_ident("needs") {
+                if seen_body {
+                    return err(line, col, "put the routine's 'needs:' line above the first statement");
+                }
+                self.bump();
+                self.expect_punct(':')?;
+                loop {
+                    let family = self.expect_ident()?;
+                    let mut name = family;
+                    if self.eat_punct('.') {
+                        let op = self.expect_ident()?;
+                        name = format!("{}.{}", name, op);
+                        if self.eat_punct('(') {
+                            let mut depth = 1;
+                            while depth > 0 {
+                                match self.bump() {
+                                    Tok::Punct('(') => depth += 1,
+                                    Tok::Punct(')') => depth -= 1,
+                                    Tok::Eof => {
+                                        let (l, c) = self.here();
+                                        return err(l, c, "unclosed '(' in a needs: entry");
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    if contracts.routine_needs.contains(&name) {
+                        let (l, c) = self.here();
+                        return err(l, c, format!("'{}' is declared twice in this needs: line", name));
+                    }
+                    contracts.routine_needs.push(name);
+                    if !self.eat_punct(',') {
+                        break;
+                    }
+                }
+                self.end_line()?;
+                continue;
+            }
+            seen_body = true;
+            let stmt = self.stmt()?;
+            out.push(stmt);
+            if matches!(self.peek(), Tok::Newline) {
+                self.bump();
+            }
+            if matches!(self.peek(), Tok::Dedent) {
+                self.bump();
+                break;
+            }
+        }
+        self.pop_scope();
+        Ok(out)
+    }
+
+    fn collect_clause(
+        &mut self,
+        contracts: &mut Contracts,
+        is_requires: bool,
+        line: u32,
+    ) -> Result<(), ParseError> {
+        let expr = self.expr()?;
+        let clause = Clause { expr, line };
+        if is_requires {
+            contracts.requires.push(clause);
+        } else {
+            contracts.ensures.push(clause);
+        }
+        Ok(())
+    }
+
+    fn end_line(&mut self) -> Result<(), ParseError> {
+        match self.peek() {
+            Tok::Newline | Tok::Dedent | Tok::Eof => Ok(()),
+            other => {
+                let (l, c) = self.here();
+                err(l, c, format!("expected the line to end here, found {}", describe(other)))
+            }
+        }
+    }
+
+    /// The loosest level: `<fallible> otherwise <fallback>`.
+    ///
+    /// Phase 2 makes this the only way to write a division, a modulo or a
+    /// dynamic index the checker cannot prove safe. `otherwise` followed by a
+    /// colon is the else-block keyword and is never eaten here.
     fn expr(&mut self) -> Result<Expr, ParseError> {
-        self.or_expr()
+        let (line, _) = self.here();
+        let value = self.or_expr()?;
+        if self.at_ident("otherwise") && !matches!(self.peek_at(1), Tok::Punct(':')) {
+            self.bump();
+            let fallback = self.expr()?;
+            return Ok(Expr::Fallback {
+                inner: Box::new(value),
+                fallback: Box::new(fallback),
+                line,
+            });
+        }
+        Ok(value)
     }
 
     fn or_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1019,7 +1295,7 @@ impl Parser {
                     self.bump();
                     self.expect_word("for")?;
                     let (num, unit) = self.number_with_unit()?;
-                    if unit != Unit::Sec {
+                    if unit.dim() != Dim::TIME {
                         return err(
                             line,
                             col,
@@ -1250,7 +1526,11 @@ impl Parser {
     }
 
     /// Consume a unit suffix if one is written.
+    ///
+    /// Composite units (`m/s`, `km/h`, `m/s2`) are several tokens; they only
+    /// join in unit position, immediately after a numeric literal.
     fn take_unit(&mut self) -> Result<Option<(&'static str, Unit)>, ParseError> {
+        let (line, col) = self.here();
         let word = match self.peek().clone() {
             Tok::Ident(w) => w,
             Tok::Punct('%') => {
@@ -1259,36 +1539,110 @@ impl Parser {
             }
             _ => return Ok(None),
         };
-        let unit = match word.as_str() {
-            "meters" | "meter" | "m" => {
-                // `m/s` is two tokens; only in unit position do they join.
-                if matches!(self.peek_at(1), Tok::Punct('/')) && matches!(self.peek_at(2), Tok::Ident(s) if s == "s") {
-                    self.bump();
-                    self.bump();
-                    self.bump();
-                    return Ok(Some(("m/s", Unit::Mps)));
+
+        // Speed and acceleration: <length>/<time> and <length>/<time>2.
+        let base: Option<(&'static str, Unit)> = match word.as_str() {
+            "m" | "meter" | "meters" => Some(("m", Unit::Meter)),
+            "km" | "kilometer" | "kilometers" => Some(("km", Unit::Km)),
+            "cm" | "centimeter" | "centimeters" => Some(("cm", Unit::Cm)),
+            "mm" | "millimeter" | "millimeters" => Some(("mm", Unit::Mm)),
+            _ => None,
+        };
+        if let Some((base_spelling, base_unit)) = base {
+            if matches!(self.peek_at(1), Tok::Punct('/')) {
+                // Acceleration arrives as one token: "m/s2" is Ident(m) '/' Ident(s2).
+                if matches!(self.peek_at(2), Tok::Ident(t) if t == "s2") {
+                    if base_unit == Unit::Meter {
+                        self.bump();
+                        self.bump();
+                        self.bump();
+                        return Ok(Some(("m/s2", Unit::Mps2)));
+                    }
+                    let (l, c) = self.here();
+                    return err(
+                        l,
+                        c,
+                        format!("'{}/s2' is not a unit Kaze knows; acceleration is written 'm/s2'", base_spelling),
+                    );
                 }
-                self.bump();
-                ("meters", Unit::Meter)
+                let per_time: Option<(&'static str, Unit)> = match self.peek_at(2).clone() {
+                    Tok::Ident(t) if t == "s" || t == "sec" || t == "second" || t == "seconds" => {
+                        Some(("s", Unit::Sec))
+                    }
+                    Tok::Ident(t) if t == "h" || t == "hour" || t == "hours" => Some(("h", Unit::Hour)),
+                    _ => None,
+                };
+                if let Some((_per_spelling, per)) = per_time {
+                    // Acceleration: <length>/<time>2.
+                    if matches!(self.peek_at(3), Tok::Ident(t) if t == "2") {
+                        if base_unit == Unit::Meter && per == Unit::Sec {
+                            self.bump();
+                            self.bump();
+                            self.bump();
+                            self.bump();
+                            return Ok(Some(("m/s2", Unit::Mps2)));
+                        }
+                        let (l, c) = self.here();
+                        return err(
+                            l,
+                            c,
+                            format!(
+                                "'{}/{}2' is not a unit Kaze knows; acceleration is written 'm/s2'",
+                                base_spelling, "s"
+                            ),
+                        );
+                    }
+                    let composite = match (base_unit, per) {
+                        (Unit::Meter, Unit::Sec) => Some(("m/s", Unit::Mps)),
+                        (Unit::Km, Unit::Hour) => Some(("km/h", Unit::Kmh)),
+                        _ => None,
+                    };
+                    match composite {
+                        Some(c) => {
+                            self.bump();
+                            self.bump();
+                            self.bump();
+                            return Ok(Some(c));
+                        }
+                        None => {
+                            let (l, c) = self.here();
+                            return err(
+                                l,
+                                c,
+                                format!(
+                                    "'{}/{}' is not a unit Kaze knows; speed is written 'm/s' or                                      'km/h'",
+                                    base_spelling,
+                                    if per == Unit::Hour { "h" } else { "s" }
+                                ),
+                            );
+                        }
+                    }
+                }
             }
-            "degrees" | "degree" | "deg" => {
-                self.bump();
-                ("degrees", Unit::Deg)
-            }
-            "seconds" | "second" | "sec" | "s" => {
-                self.bump();
-                ("seconds", Unit::Sec)
-            }
-            "ms" | "milliseconds" | "millisecond" => {
-                self.bump();
-                ("ms", Unit::Sec)
-            }
-            "percent" => {
-                self.bump();
-                ("%", Unit::Pct)
-            }
+            self.bump();
+            return Ok(Some((base_spelling, base_unit)));
+        }
+
+        let unit = match word.as_str() {
+            "degrees" | "degree" | "deg" => ("degrees", Unit::Deg),
+            "radians" | "radian" | "rad" => ("rad", Unit::Rad),
+            "seconds" | "second" | "sec" | "s" => ("seconds", Unit::Sec),
+            "milliseconds" | "millisecond" | "ms" => ("ms", Unit::Ms),
+            "hours" | "hour" | "h" => ("hours", Unit::Hour),
+            "minutes" | "minute" | "min" => ("minutes", Unit::Minute),
+            "kg" | "kilogram" | "kilograms" => ("kg", Unit::Kg),
+            "gram" | "grams" | "g" => ("gram", Unit::Gram),
+            "Celsius" | "celsius" | "C" => ("Celsius", Unit::Celsius),
+            "Kelvin" | "kelvin" | "K" => ("Kelvin", Unit::Kelvin),
+            "Pascal" | "pascal" | "Pa" => ("Pascal", Unit::Pascal),
+            "mbar" | "millibar" | "millibars" => ("mbar", Unit::Mbar),
+            "hPa" | "hpa" | "hectopascal" | "hectopascals" => ("hPa", Unit::Hpa),
+            "ampere" | "amperes" | "amp" | "A" => ("ampere", Unit::Ampere),
+            "percent" => ("%", Unit::Pct),
             _ => return Ok(None),
         };
+        let _ = (line, col);
+        self.bump();
         Ok(Some(unit))
     }
 
@@ -1312,15 +1666,16 @@ fn line_col(p: &Parser) -> (u32, u32) {
     p.here()
 }
 
-/// `500 ms` is half a second: time units normalize to seconds, lengths to
-/// meters, angles to degrees, and percent stays a whole number.
+/// Normalise a literal into its dimension's base unit: `500 ms` is 0.5
+/// seconds, `1 km` is 1000 meters, `20 Celsius` is 293.15 kelvin, and percent
+/// stays a whole number (`20%` is 20).
+///
+/// This is the whole of "zero-cost unit lowering": after this function there is
+/// nothing left to convert, so no emitted instruction ever knows about units.
 fn normalize_unit(n: f64, unit: Option<(&'static str, Unit)>) -> (f64, Unit) {
     match unit {
         None => (n, Unit::None),
-        Some((label, u)) => match (label, u) {
-            ("ms", Unit::Sec) => (n / 1000.0, Unit::Sec),
-            _ => (n, u),
-        },
+        Some((_label, u)) => (n * u.scale() + u.offset(), u),
     }
 }
 
@@ -1404,8 +1759,8 @@ mod tests {
     fn units_normalize_but_keep_their_identity() {
         let p = ok("needs: log\naction a():\n    let x = 500 ms\n    let y = 1.5 m/s\n    let z = 20%\n");
         let Stmt::Let(_, Expr::Num(v, u), _) = &p.items[0].body[0] else { panic!() };
-        assert_eq!(*v, 0.5);
-        assert_eq!(*u, Unit::Sec);
+        assert_eq!(*v, 0.5, "500 ms normalises to half a second");
+        assert_eq!(*u, Unit::Ms, "the spelling survives for the formatter");
         let Stmt::Let(_, Expr::Num(v, u), _) = &p.items[0].body[1] else { panic!() };
         assert_eq!(*v, 1.5);
         assert_eq!(*u, Unit::Mps);

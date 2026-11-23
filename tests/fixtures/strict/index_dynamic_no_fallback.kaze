@@ -1,0 +1,4 @@
+# rule: MISSING_FALLBACK — a list read at a dynamic position must carry a fallback
+# expect: E_KAZE_MISSING_FALLBACK
+action pick(items, i):
+    let chosen = items[i]  # BAD

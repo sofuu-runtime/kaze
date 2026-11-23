@@ -1,0 +1,4 @@
+# rule: BOUNDS — a constant out-of-bounds read in 'return' is refused too
+# expect: E_KAZE_BOUNDS
+action bad_pick():
+    return [4, 5, 6][3]  # BAD

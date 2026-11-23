@@ -1,0 +1,9 @@
+# expect: ok — a bounded while loop that accumulates runs to completion
+# value: 15
+action main():
+    let i = 1
+    let sum = 0
+    while i <= 5 bounded 100:
+        set sum = sum + i
+        set i = i + 1
+    return sum

@@ -247,8 +247,9 @@ pub fn parse_sexpr(src: &str) -> Result<SExpr, ParseError> {
         }
     }
 
-    if !stack.is_empty() {
-        let (_, open_line, open_col) = stack.last().unwrap();
+    // An unclosed list is a user error, not a programmer invariant: report the
+    // line the outermost unmatched '(' opened on, without an unwrap.
+    if let Some((_, open_line, open_col)) = stack.last() {
         return err(*open_line, *open_col, "unclosed '(' at end of input");
     }
 
@@ -322,7 +323,9 @@ pub fn parse_machine(src: &str) -> Result<Program, ParseError> {
                         };
                         prog.uses.push(Use { path, line: *l });
                     }
-                    "action" | "check" | "filter" | "when" | "every" => {
+                    // `record` was missing from this dispatch, so a machine file
+                    // containing one could be written but never read back.
+                    "action" | "check" | "filter" | "when" | "every" | "record" => {
                         let parsed_item = lower_item(tag, children, *l)?;
                         prog.items.push(parsed_item);
                     }
@@ -357,7 +360,9 @@ fn lower_item(tag: &str, children: &[SExpr], line: u32) -> Result<Item, ParseErr
                 "action" => ItemKind::Action,
                 "check" => ItemKind::Check,
                 "filter" => ItemKind::Filter,
-                _ => unreachable!(),
+                other => {
+                    return err(line, 1, format!("'{}' is not a routine kind", other));
+                }
             };
 
             let mut params = Vec::new();
@@ -397,6 +402,7 @@ fn lower_item(tag: &str, children: &[SExpr], line: u32) -> Result<Item, ParseErr
                 params,
                 body,
                 line,
+                contracts: Contracts::default(),
                 origin: String::new(),
             })
         }
@@ -459,6 +465,7 @@ fn lower_item(tag: &str, children: &[SExpr], line: u32) -> Result<Item, ParseErr
                 params: Vec::new(),
                 body: Vec::new(),
                 line,
+                contracts: Contracts::default(),
                 origin: String::new(),
             })
         }
@@ -492,6 +499,7 @@ fn lower_item(tag: &str, children: &[SExpr], line: u32) -> Result<Item, ParseErr
                 params: Vec::new(),
                 body,
                 line,
+                contracts: Contracts::default(),
                 origin: String::new(),
             })
         }
@@ -537,6 +545,7 @@ fn lower_item(tag: &str, children: &[SExpr], line: u32) -> Result<Item, ParseErr
                 params: Vec::new(),
                 body,
                 line,
+                contracts: Contracts::default(),
                 origin: String::new(),
             })
         }
@@ -641,6 +650,7 @@ fn lower_stmt(sexpr: &SExpr) -> Result<Stmt, ParseError> {
             }
             let cond = lower_expr(&elements[1])?;
             let mut body = Vec::new();
+            let mut bound: Option<u32> = None;
             for block in &elements[2..] {
                 match block {
                     SExpr::List(b, bl, bc) if !b.is_empty() => {
@@ -652,6 +662,21 @@ fn lower_stmt(sexpr: &SExpr) -> Result<Stmt, ParseError> {
                             for s in &b[1..] {
                                 body.push(lower_stmt(s)?);
                             }
+                        } else if btag == "bounded" {
+                            // Phase 2: the iteration ceiling travels with the loop.
+                            if b.len() != 2 {
+                                return err(*bl, *bc, "(bounded <n>) takes exactly one number");
+                            }
+                            let text = match &b[1] {
+                                SExpr::Atom(s, _, _) | SExpr::String(s, _, _) => s.clone(),
+                                other => {
+                                    return err(other.line(), other.col(), "bounded needs a number")
+                                }
+                            };
+                            bound = text.parse::<u32>().ok().filter(|n| *n >= 1);
+                            if bound.is_none() {
+                                return err(*bl, *bc, "(bounded <n>) needs a whole number from 1 up");
+                            }
                         } else {
                             return err(*bl, *bc, format!("unexpected block in while: '{}'", btag));
                         }
@@ -659,7 +684,7 @@ fn lower_stmt(sexpr: &SExpr) -> Result<Stmt, ParseError> {
                     _ => return err(block.line(), block.col(), "expected '(body ...)' in 'while'"),
                 }
             }
-            Ok(Stmt::While { cond, body, line })
+            Ok(Stmt::While { cond, body, line, bound })
         }
         "for-each" | "for_each" | "for" => {
             if elements.len() < 4 {
@@ -762,9 +787,26 @@ fn lower_stmt(sexpr: &SExpr) -> Result<Stmt, ParseError> {
 fn parse_unit(u: &str) -> Unit {
     match u {
         "meters" | "meter" | "m" => Unit::Meter,
+        "km" | "kilometers" | "kilometer" => Unit::Km,
+        "cm" | "centimeters" | "centimeter" => Unit::Cm,
+        "mm" | "millimeters" | "millimeter" => Unit::Mm,
         "m/s" | "mps" => Unit::Mps,
+        "km/h" | "kmh" => Unit::Kmh,
+        "m/s2" | "mps2" => Unit::Mps2,
         "degrees" | "degree" | "deg" => Unit::Deg,
-        "seconds" | "second" | "s" | "ms" => Unit::Sec,
+        "rad" | "radians" | "radian" => Unit::Rad,
+        "seconds" | "second" | "s" => Unit::Sec,
+        "ms" | "milliseconds" | "millisecond" => Unit::Ms,
+        "hours" | "hour" | "h" => Unit::Hour,
+        "minutes" | "minute" | "min" => Unit::Minute,
+        "kg" | "kilograms" | "kilogram" => Unit::Kg,
+        "gram" | "grams" | "g" => Unit::Gram,
+        "Celsius" | "celsius" => Unit::Celsius,
+        "Kelvin" | "kelvin" | "K" => Unit::Kelvin,
+        "Pascal" | "pascal" | "Pa" => Unit::Pascal,
+        "mbar" | "millibars" | "millibar" => Unit::Mbar,
+        "hPa" | "hpa" => Unit::Hpa,
+        "ampere" | "amperes" | "amp" | "A" => Unit::Ampere,
         "%" | "pct" | "percent" => Unit::Pct,
         _ => Unit::None,
     }
@@ -798,6 +840,22 @@ fn lower_expr(sexpr: &SExpr) -> Result<Expr, ParseError> {
             };
 
             match tag {
+                "otherwise" | "fallback" => {
+                    if elements.len() != 3 {
+                        return err(
+                            line,
+                            col,
+                            "(otherwise <fallible> <fallback>) takes exactly two expressions",
+                        );
+                    }
+                    let inner = lower_expr(&elements[1])?;
+                    let fallback = lower_expr(&elements[2])?;
+                    Ok(Expr::Fallback {
+                        inner: Box::new(inner),
+                        fallback: Box::new(fallback),
+                        line,
+                    })
+                }
                 "number" | "num" => {
                     if elements.len() < 2 || elements.len() > 3 {
                         return err(line, col, "(number \"<value>\" [\"<unit>\"]) takes 1 or 2 arguments");
@@ -1362,9 +1420,19 @@ fn emit_stmt_machine(stmt: &Stmt, out: &mut String, depth: usize) {
             }
             out.push_str(")\n");
         }
-        Stmt::While { cond, body, .. } => {
+        Stmt::Guard(cond, _) => {
+            out.push_str("(guard ");
+            emit_expr_machine(cond, out);
+            out.push(')');
+        }
+        Stmt::While { cond, body, bound, .. } => {
             out.push_str("(while ");
             emit_expr_machine(cond, out);
+            if let Some(n) = bound {
+                out.push_str(" (bounded ");
+                out.push_str(&n.to_string());
+                out.push(')');
+            }
             out.push('\n');
             push_indent(out, depth + 1);
             out.push_str("(body\n");
@@ -1421,7 +1489,7 @@ fn emit_expr_machine(expr: &Expr, out: &mut String) {
             push_num(out, *n);
             if *unit != Unit::None {
                 out.push_str("\" \"");
-                out.push_str(unit.label());
+                out.push_str(unit.written());
             }
             out.push_str("\")");
         }
@@ -1527,6 +1595,13 @@ fn emit_expr_machine(expr: &Expr, out: &mut String) {
             emit_expr_machine(base, out);
             out.push(' ');
             emit_expr_machine(idx, out);
+            out.push(')');
+        }
+        Expr::Fallback { inner, fallback, .. } => {
+            out.push_str("(otherwise ");
+            emit_expr_machine(inner, out);
+            out.push(' ');
+            emit_expr_machine(fallback, out);
             out.push(')');
         }
         Expr::List(items) => {
@@ -1666,7 +1741,7 @@ fn emit_item_human(item: &Item, out: &mut String) {
         ItemKind::Every(secs) => {
             out.push_str("every ");
             push_num(out, *secs);
-            out.push_str(" seconds:\n");
+            out.push_str(" ms:\n");
         }
     }
 
@@ -1723,16 +1798,26 @@ fn emit_stmt_human(stmt: &Stmt, out: &mut String, depth: usize) {
                 }
             }
         }
-        Stmt::While { cond, body, .. } => {
+        Stmt::Guard(cond, _) => {
+            out.push_str("guard ");
+            emit_expr_human(cond, out);
+        }
+        Stmt::While { cond, body, bound, .. } => {
             out.push_str("while ");
             emit_expr_human(cond, out);
+            if let Some(n) = bound {
+                out.push_str(" bounded ");
+                out.push_str(&n.to_string());
+            }
             out.push_str(":\n");
             for s in body {
                 emit_stmt_human(s, out, depth + 1);
             }
         }
         Stmt::ForEach { var, list, body, .. } => {
-            out.push_str("for ");
+            // The parser reads `for each <var> in <list>`; emitting `for <var> in`
+            // produced source it could not parse back.
+            out.push_str("for each ");
             out.push_str(var);
             out.push_str(" in ");
             emit_expr_human(list, out);
@@ -1761,17 +1846,57 @@ fn emit_stmt_human(stmt: &Stmt, out: &mut String, depth: usize) {
     }
 }
 
+/// Binding power of the operator a node asks the formatter to print. Mirrors
+/// the parser's precedence ladder: 1 or, 2 and, 3 not, 4 comparisons,
+/// 5 additive, 6 multiplicative, 7 anything atomic or unary.
+fn bin_prec_of(op: BinOp) -> u8 {
+    match op {
+        BinOp::Or => 1,
+        BinOp::And => 2,
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => 4,
+        BinOp::Add | BinOp::Sub => 5,
+        BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
+    }
+}
+
+fn bin_prec(expr: &Expr) -> u8 {
+    match expr {
+        Expr::Bin(op, _, _) => bin_prec_of(*op),
+        Expr::Not(_) => 3,
+        // `length of` binds looser than arithmetic in the parser, so a length used
+        // as an operand must be parenthesised: `length of x - 1` reads as
+        // `length of (x - 1)`, not `(length of x) - 1`.
+        Expr::Len(_) => 0,
+        _ => 7,
+    }
+}
+
+/// The value as written, from the parsed (base-unit) value. The parser folds every
+/// literal into its base unit -- kilometres into metres, Celsius into Kelvin -- so
+/// printing the stored number with the written unit would double the conversion on
+/// the next parse (`1.5 km` came back as `1500 km`). Invert it exactly.
+fn written_value(n: f64, unit: Unit) -> f64 {
+    if unit == Unit::None {
+        return n;
+    }
+    let scale = unit.scale();
+    if scale == 0.0 {
+        return n;
+    }
+    (n - unit.offset()) / scale
+}
+
 fn emit_expr_human(expr: &Expr, out: &mut String) {
     match expr {
         Expr::Num(n, unit) => {
-            push_num(out, *n);
+            push_num(out, written_value(*n, *unit));
             match unit {
                 Unit::None => {}
-                Unit::Meter => out.push_str(" meters"),
-                Unit::Mps => out.push_str(" m/s"),
-                Unit::Deg => out.push_str(" degrees"),
-                Unit::Sec => out.push_str(" seconds"),
                 Unit::Pct => out.push('%'),
+                other => {
+                    out.push(' ');
+                    out.push_str(other.written());
+                }
             }
         }
         Expr::Str(s) => {
@@ -1796,6 +1921,24 @@ fn emit_expr_human(expr: &Expr, out: &mut String) {
             }
             if recv == "policy" && op == "reject" && !args.is_empty() {
                 out.push_str("reject with ");
+                emit_expr_human(&args[0], out);
+                return;
+            }
+            // The log and alert families have their own human spelling, and the
+            // dotted form (`log.info("x")`) is *not* parseable: the parser reads
+            // `log <level>? <message>`. Emitting the dotted form made
+            // to-human produce source its own parser rejected.
+            if recv == "log" && !args.is_empty() {
+                out.push_str("log ");
+                if op != "info" {
+                    out.push_str(op);
+                    out.push(' ');
+                }
+                emit_expr_human(&args[0], out);
+                return;
+            }
+            if recv == "alert" && op == "send" && !args.is_empty() {
+                out.push_str("send alert ");
                 emit_expr_human(&args[0], out);
                 return;
             }
@@ -1841,28 +1984,63 @@ fn emit_expr_human(expr: &Expr, out: &mut String) {
             out.push_str(field);
         }
         Expr::Bin(op, left, right) => {
-            out.push('(');
+            // Only the parentheses the tree needs. Wrapping every binary node
+            // turns a chain like a + b + c + ... into one nested group per
+            // operator, and the parser then needs a frame per group: that is
+            // what pushed a 200-term chain past the recursion ceiling.
+            let needs_left = bin_prec(left) < bin_prec_of(*op);
+            let needs_right = bin_prec(right) <= bin_prec_of(*op);
+            if needs_left {
+                out.push('(');
+            }
             emit_expr_human(left, out);
+            if needs_left {
+                out.push(')');
+            }
             out.push(' ');
             out.push_str(op.symbol());
             out.push(' ');
+            if needs_right {
+                out.push('(');
+            }
             emit_expr_human(right, out);
-            out.push(')');
+            if needs_right {
+                out.push(')');
+            }
         }
         Expr::Not(inner) => {
-            out.push_str("not (");
+            out.push_str("not ");
+            let needs = bin_prec(inner) < 3;
+            if needs {
+                out.push('(');
+            }
             emit_expr_human(inner, out);
-            out.push(')');
+            if needs {
+                out.push(')');
+            }
         }
         Expr::Len(inner) => {
-            out.push_str("length of ");
+            // `length of x - 1` parses as `(length of x) - 1`, so the operand is
+            // always parenthesised.
+            out.push_str("length of (");
             emit_expr_human(inner, out);
+            out.push(')');
         }
         Expr::Index(base, idx) => {
             emit_expr_human(base, out);
             out.push('[');
             emit_expr_human(idx, out);
             out.push(']');
+        }
+        Expr::Fallback { inner, fallback, .. } => {
+            // Parenthesised always: unparenthesised, `a and b otherwise c` parses the
+            // fallback as covering the whole `and`, so a round trip through the
+            // human form silently changed the meaning of an inline fallback.
+            out.push('(');
+            emit_expr_human(inner, out);
+            out.push_str(" otherwise ");
+            emit_expr_human(fallback, out);
+            out.push(')');
         }
         Expr::List(items) => {
             out.push('[');
