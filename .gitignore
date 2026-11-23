@@ -1,6 +1,7 @@
 /target/
 /bin/
 *.kazebc
+*.vsix
 .DS_Store
 **/*.rs.bk
 

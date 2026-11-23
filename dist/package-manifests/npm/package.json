@@ -1,0 +1,25 @@
+{
+  "name": "kaze-lang",
+  "version": "1.0.0",
+  "description": "Kaze systems programming language toolchain and compiler wrapper",
+  "bin": {
+    "kaze": "./bin/kaze.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sofuu-runtime/kaze.git"
+  },
+  "keywords": [
+    "kaze",
+    "compiler",
+    "systems",
+    "robotics",
+    "programming-language"
+  ],
+  "author": "Sofuu Runtime",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/sofuu-runtime/kaze/issues"
+  },
+  "homepage": "https://github.com/sofuu-runtime/kaze#readme"
+}

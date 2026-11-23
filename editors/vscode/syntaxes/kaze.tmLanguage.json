@@ -32,7 +32,7 @@
       "name": "constant.numeric.kaze"
     },
     "units": {
-      "match": "\\b(?:m/s|meters?|degrees?|seconds?|milliseconds?|ms|percent|radians?)\\b|%",
+      "match": "\\b(?:m/s|meters?|degrees?|seconds?|milliseconds?|ms|percent|radians?|Celsius|Kelvin|mbar|hPa|volt|ampere|hz|deg|rad|m|s)\\b|%",
       "name": "storage.type.unit.kaze"
     },
     "headers": {
@@ -42,24 +42,32 @@
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(?:action|check|filter|when|every|try|otherwise|with|let|set|if|for|each|in|while|return|allow|reject|remember|pulse|turn|arm|takeoff|fly|land|hold|stop|drive|recall|memories|matching|log|send|alert|vector|distance|between|slant|bearing|of|from|length|sin|cos|atan2|sqrt|radians|degrees|and|or|not)\\b",
+          "match": "\\b(?:action|routine|check|filter|when|every|try|otherwise|with|let|set|if|else|for|each|in|while|bounded|return|allow|reject|remember|recall|memories|matching|log|send|alert|vector|distance|between|slant|bearing|of|from|length|sin|cos|atan2|sqrt|radians|degrees|and|or|not|requires|ensures|tensor|shape)\\b",
           "name": "keyword.control.kaze"
         },
         {
-          "match": "\\b(?:true|false|nothing)\\b",
+          "match": "\\b(?:true|false|nothing|null)\\b",
           "name": "constant.language.kaze"
+        },
+        {
+          "match": "\\b(?:u8|i32|f32|bool|void|text|num|tensor)\\b",
+          "name": "storage.type.primitive.kaze"
         }
       ]
     },
     "capabilities": {
       "patterns": [
         {
-          "match": "\\b(?:drone|rover|sensor|device|memory|policy|log|alert)\\b",
+          "match": "\\b(?:drone|rover|sensor|device|memory|policy|log|alert|fan|mister|lidar)\\b",
           "name": "support.class.capability.kaze"
         },
         {
-          "match": "\\b(?:battery|altitude|heading|speed|position|temperature|humidity|distance|armed|latitude|longitude|satellites)\\b",
+          "match": "\\b(?:battery|altitude|heading|speed|position|temperature|humidity|distance|armed|latitude|longitude|satellites|front_distance)\\b",
           "name": "variable.other.telemetry.kaze"
+        },
+        {
+          "match": "\\b(?:pulse|turn|turn_right|turn_left|arm|disarm|takeoff|fly|goto|land|hold|stop|drive|rtl|set_relay|analog_read)\\b",
+          "name": "support.function.capability.kaze"
         },
         {
           "match": "\\.([A-Za-z_][A-Za-z0-9_]*)",
