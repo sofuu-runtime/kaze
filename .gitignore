@@ -2,3 +2,8 @@
 *.kazebc
 .DS_Store
 **/*.rs.bk
+
+# Local-only documentation and release plans
+/RELEASE-1.0.0-PREP.md
+/kaze-map.md
+/docs/
