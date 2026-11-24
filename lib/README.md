@@ -66,6 +66,27 @@ Pure collection transformations can be dispatched across worker threads with gua
 
 The capability checker guarantees data-race freedom at compile time: any routine executed across worker threads must declare `needs: []`. Invoking impure routines or peripheral builtins inside parallel scopes triggers `E_KAZE_IMPURE_PARALLEL`. Each worker thread allocates from a private bump arena, which is adopted into the parent arena upon join in $O(1)$ time with zero lock contention and zero memory leaks under AddressSanitizer.
 
+### Hardware Buses, Actuators & Avionics Drivers (Phase 14)
+
+These modules provide production-grade, microsecond-precision hardware drivers and board support packages for bare-metal targets (STM32H7, RP2040) and host simulation. Access to peripheral registers is strictly gated at compile time behind `needs: regs`.
+
+| Module | Provides | Needs | Notes |
+| :--- | :--- | :--- | :--- |
+| `lib/regs.kaze` | `reg_new`, `reg_read8/16/32`, `reg_write8/16/32`, `reg_field_*` | `regs` | Type-safe MMIO register and bitfield abstraction |
+| `lib/pwm.kaze` | `pwm_plan`, `pwm_init`, `pwm_set_duty`, `pwm_set_pulse_ns` | `regs` | 400 Hz ESC timer planner and zero-allocation duty updates |
+| `lib/dshot.kaze` | `dshot_frame`, `dshot_pulses`, `dshot_telemetry_decode` | `regs` | 600 kHz DShot framing, GCR line timing, bidirectional telemetry |
+| `lib/systick.kaze` | `systick_clock_real/sim`, `systick_micros`, `systick_spin_us` | `regs` | 24-bit down-counter sub-microsecond real-time timebase |
+| `lib/spi.kaze` | `spi_init`, `spi_read_burst`, `spi_transfer8` | `regs` | Polled SPI master with bounded timeouts and zero-allocation streaming |
+| `lib/imu.kaze` | `imu_probe`, `imu_read_burst`, `imu_poll_run` | `regs` | 1–8 kHz 6-axis IMU burst polling with strict deadline checking |
+| `lib/i2c.kaze` | `i2c_init`, `i2c_read_reg_bytes`, `i2c_write_reg_byte` | `regs` | Polled I2C master with register-pointer transactions |
+| `lib/baro.kaze` | `baro_probe`, `baro_sample`, `baro_calc_pascals` | `regs` | 24-bit ratiometric barometric pressure/temperature sensor |
+| `lib/can.kaze` | `can_init`, `can_transmit_frame`, `can_receive_frame` | `regs` | bxCAN controller driver (11-bit standard and 29-bit extended frames) |
+| `lib/dronecan.kaze` | `dronecan_transfer_frames`, `dronecan_reassemble` | `[]` | DroneCAN (UAVCAN v0) message framing and CRC-16 reassembly |
+| `lib/uart.kaze` | `uart_init`, `uart_write_bytes`, `uart_dma_send` | `regs` | USART telemetry port with computed BRR and zero-CPU DMA streaming |
+| `lib/dma.kaze` | `dma_channel_new`, `dma_prepare_mem2periph`, `dma_start` | `regs` | DMA stream controller for high-throughput peripheral transfers |
+| `lib/bsp_rp2040.kaze` | `bsp_rp2040_init`, `bsp_rp2040_clock_init` | `regs` | Raspberry Pi RP2040 125 MHz clock tree and peripheral bring-up |
+| `lib/bsp_stm32h7.kaze` | `bsp_stm32h7_init`, `bsp_stm32h7_clock_init` | `regs` | STM32H7 Pixhawk 480 MHz clock tree, GPIOA, and bus bring-up |
+
 ## Compose a mission
 
 ```kaze

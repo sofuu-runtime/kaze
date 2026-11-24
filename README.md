@@ -61,6 +61,9 @@ action duty_check(duty: percent) -> bool:
 - **Native AI Tensors & Multicore GGUF Runtime**: Zero-copy mmap ingestion of GGUF and SafeTensors model weights, quantized matrix math (Q4_K, Q8_0), multicore row-partitioned parallel GEMM (`dist/kaze_tensor.c`), LLaMA forward pass achieving strict parity with `llama.cpp` (logit abs diff < 1e-4), reverse-mode autograd tape, and Apple Silicon Metal MSL GPU shaders.
 - **Pervasive Multicore Parallelism**: First-class `parallel for each`, `parallel_map`, and `parallel_filter` primitives powered by compile-time capability purity verification (`needs: []`). Dynamic work-stealing thread pool over worker-isolated bump arenas with $O(1)$ block chain adoption (`kaze_arena_adopt`), zero allocation contention, 0 memory leaks under AddressSanitizer, and up to $54.8\times$ multicore speedup.
 - **Deterministic Concurrency**: Single-threaded cooperative fibers, bounded tasks, and channel synchronization with sub-50ns context switching and zero data races.
+- **Production Hardware Buses & Bare-Metal Real-Time**: Memory-mapped register abstraction (`needs: regs`), 400 Hz PWM, 600 kHz DShot ESC driver, SysTick timebase, 1–8 kHz SPI IMU burst polling (0 overruns across 1,000,000 cycles), I2C barometer, bxCAN / DroneCAN (UAVCAN v0), UART DMA, and board support packages for STM32H7 (Pixhawk) and RP2040 (Raspberry Pi Pico) targeting bare-metal ARM Cortex-M with 20 ns PWM jitter.
+- **SITL Physics Simulator & Digital Twin**: Direct UDP MAVLink 2.0 bridge (`dist/kaze_sitl_client.c`, `dist/kaze_mavlink.*`), 3D guided quad aerodynamics, sensor simulation (GPS jitter, baro drift, magnetometer EMI, IMU vibration noise), wind gusts, updrafts, and automated headless mission regression validating zero flight violations and 100% emergency RTL on motor cutout and link loss.
+- **Formal Verification & SMT/Z3 Proofs**: Pure-Kaze verifier (`bin/kaze-verify`) extracting linear forms, loop-counter invariants, interval bounds, and contract obligations (`requires` $\Rightarrow$ `ensures`) into SMT-LIB2 and Horn formulas. Embedded Fourier-Motzkin prover and Z3 bridge certifying 17/17 stdlib modules (< 50ms/module) and driving proof-carrying builds that elide over 80% of runtime boundary checks.
 - **Developer Tooling**: Full Language Server Protocol (LSP) daemon, interactive REPL, step debugger with source-line mapping (`#line`) and line breakpoints, and instruction fuel profiler.
 
 ## Design
@@ -79,7 +82,10 @@ Kaze implementation; their supported features and artifacts may differ.
 
 - [Language reference and current support](docs/KAZE-1.0-REFERENCE.md)
 - [Standard library](lib/README.md)
-- [Libraries, tooling and parallelism report](docs/STDLIB-TOOLING-PARALLELISM-REPORT.md)
+- [Hardware buses and bare-metal real-time report](docs/PHASE-14-REPORT.md)
+- [SITL physics simulator and digital twin report](docs/PHASE-15-REPORT.md)
+- [Formal verification and SMT solver report](docs/PHASE-16-REPORT.md)
+- [Pervasive parallelism, performance and stdlib master plan](docs/PLAN-KAZE-PERVASIVE-PARALLELISM-PERFORMANCE-STDLIB.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Version alignment plan](docs/VERSION-ALIGNMENT.md)
 - [Examples](examples/)
