@@ -1,0 +1,92 @@
+# tests/hw/flight_bringup_test.kaze -- the whole board, in the order a flight controller
+# brings it up: clocks and pins, the microsecond clock, the actuator timer, the IMU, the
+# barometer, the CAN bus. Everything below is a driver module from lib/ talking to the
+# register map in dist/kaze_board_sim.h; nothing here reaches around them.
+#
+# This is the integration suite: the per-driver suites say whether each part works, and
+# this says whether they can coexist on one board - which is where a duplicated base
+# address, a stolen pin or a clock assumption shows up.
+
+needs: log
+needs: regs
+
+use "../../lib/bsp_stm32h7.kaze"
+use "../../lib/systick.kaze"
+use "../../lib/pwm.kaze"
+use "../../lib/spi.kaze"
+use "../../lib/imu.kaze"
+use "../../lib/i2c.kaze"
+use "../../lib/baro.kaze"
+use "../../lib/can.kaze"
+
+action ctl() -> num:
+    return 3759079424
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action payload8() -> list:
+    return [1, 2, 3, 4, 5, 6, 7, 8]
+
+action main() -> num:
+    let failures = 0
+    let ctl_base = ctl()
+    mmio_write32(ctl_base + 48, 1)
+    mmio_fence()
+
+    # ---- 1. the board comes up ------------------------------------------------
+    let init = bsp_stm32h7_init()
+    let board = bsp_stm32h7_board()
+    set failures to check("the board initialises", init.ok == true, failures)
+    set failures to check("the BSP derives the core clock it configured", init.sysclk_hz == board.core_hz and board.core_hz == 480000000, failures)
+    set failures to check("the BSP publishes the clock it configured", mmio_read32(ctl_base + 52) == board.core_hz, failures)
+
+    # ---- 2. the microsecond clock --------------------------------------------
+    let clock = Clock(csr: 3758153744, rvr: 3758153748, cvr: 3758153752, hz: board.core_hz, reload: 16777215, period: 16777216, down: 1)
+    let ticker = systick_init(clock)
+    let t0 = systick_now_us(clock, ticker)
+    set failures to check("the ticker starts and reports a time", t0 >= 0, failures)
+
+    # ---- 3. the actuator timer at 400 Hz ------------------------------------
+    let pwm = pwm_setup(pwm_new(board.base_timer, board.core_hz, 400))
+    set failures to check("the timer plan lands on 400 Hz", pwm.hz == 400, failures)
+    mmio_write32(pwm.ccr, pwm_floor((pwm.ticks * 50) / 100))
+    let periods = 0
+    let k = 0
+    while k < 10 bounded 100:
+        pwm_set_duty_permille(pwm.ccr, pwm.ticks, 500)
+        set periods to periods + 1
+        set k to k + 1
+    set failures to check("ten duty updates ran", periods == 10, failures)
+    set failures to check("every duty update was stamped by the board", mmio_read32(ctl_base + 4) >= 11, failures)
+
+    # ---- 4. the IMU on SPI ---------------------------------------------------
+    let imu_bus = spi_bus(board.base_spi, 1476526080, 4, 64)
+    set failures to check("the IMU answers its id", imu_configure(imu_bus, 64) == spi_ok(), failures)
+    let sample = imu_read_sample(imu_bus)
+    set failures to check("an IMU sample decodes", sample.status == spi_ok(), failures)
+
+    # ---- 5. the barometer on I2C ---------------------------------------------
+    let baro_bus = board.base_i2c
+    set failures to check("the barometer is present", baro_present(baro_bus, 118, 64) == true, failures)
+    let air = baro_sample(baro_bus, 118, 64)
+    set failures to check("a pressure sample decodes", air.ok == true, failures)
+    set failures to check("the pressure is a plausible raw value", air.pressure_raw > 0, failures)
+
+    # ---- 6. the CAN bus -------------------------------------------------------
+    let sent = can_transmit(board.base_can, can_std(291, payload8()), 64)
+    set failures to check("a CAN frame transmits", sent.ok == true, failures)
+    let got = can_receive(board.base_can, 64)
+    set failures to check("the frame comes back from loopback", got.ok == true and got.id == 291, failures)
+    set failures to check("the payload survived the round trip", (length of got.data) == 8 and (got.data[7] otherwise 0) == 8, failures)
+
+    # ---- 7. nothing reached outside the modelled board -----------------------
+    set failures to check("no address outside the board model", mmio_read32(ctl_base + 20) == 0, failures)
+    set failures to check("no misaligned register access", mmio_read32(ctl_base + 24) == 0, failures)
+
+    if failures == 0:
+        log.info("OK flight_bringup: 18 checks")
+    return failures

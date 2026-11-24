@@ -1,0 +1,273 @@
+# lib/dronecan.kaze -- DroneCAN (UAVCAN v0) message transfers on classic CAN.
+#
+# DroneCAN puts a 29-bit CAN id over classic 8-byte frames and streams a payload
+# through one or more of them. This module builds the frames for a message
+# transfer and reassembles them, and it owns no CRC of its own: the transfer
+# CRC is CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection), which is
+# exactly crc16_ccitt_false in lib/crc.kaze. The suite pins the composition
+# against values computed from a second, independent implementation.
+#
+# The message-frame CAN id is
+#
+#     bits 24..28  priority        0 (highest) .. 31 (lowest)
+#     bits  8..23  data type id    0 .. 65535
+#     bits  0..7   source node id  0 .. 127
+#
+# The last byte of every frame's data is the tail byte:
+#
+#     bit 7  start of transfer
+#     bit 6  end of transfer
+#     bit 5  toggle (alternates on every frame of a multi-frame transfer,
+#            starting at 0)
+#     bits 0..4  transfer id, 0..31
+#
+# A payload of seven bytes or fewer is one frame with both start and end set;
+# it carries no CRC, because the frame itself is self-delimiting. A payload of
+# eight bytes or more is a multi-frame transfer whose first frame starts with
+# the payload's CRC as two little-endian bytes, then up to five payload bytes;
+# every later frame carries up to seven payload bytes. The CRC is computed over
+# the payload only, never over the tail bytes, and the receiver compares it
+# before believing the payload. The largest transfer is 1023 bytes, which is
+# 147 frames.
+#
+# Not claimed: service (request/response) frames, anonymous transfers with a
+# discriminator, CAN FD, and the optional data-type signature that DroneCAN
+# appends to the CRC span when signatures are enabled. Only message transfers
+# are built and parsed.
+
+use "./crc.kaze"
+use "./can.kaze"
+
+record DroneCanTransfer:
+    ok: bool
+    can_id: number
+    priority: number
+    data_type_id: number
+    source_node_id: number
+    transfer_id: number
+    payload: list
+    error: text
+
+# ---- limits and priorities -------------------------------------------
+action dronecan_max_payload() -> num:
+    return 1023
+
+action dronecan_max_frames() -> num:
+    return 147
+
+action dronecan_single_frame_bytes() -> num:
+    return 7
+
+# Pure predicates for the two things that make a transfer unbuildable. They are
+# separate from dronecan_frames so a caller (and the suite) can ask without
+# allocating a payload-sized list.
+action dronecan_payload_ok(n) -> bool:
+    if n < 0 or n > dronecan_max_payload():
+        return false
+    return true
+
+action dronecan_can_id_ok(can_id) -> bool:
+    if can_id < 0 or can_id > 536870911:
+        return false
+    return true
+
+action dronecan_priority_highest() -> num:
+    return 0
+
+action dronecan_priority_high() -> num:
+    return 8
+
+action dronecan_priority_medium() -> num:
+    return 16
+
+action dronecan_priority_low() -> num:
+    return 24
+
+action dronecan_priority_lowest() -> num:
+    return 31
+
+# ---- CAN id fields ----------------------------------------------------
+# Each input is folded into its field width, so a caller cannot build an id
+# that overlaps the next field.
+action dronecan_can_id(priority, data_type_id, source_node_id) -> num:
+    return ((priority % 32) * 16777216) + ((data_type_id % 65536) * 256) + (source_node_id % 128)
+
+action dronecan_priority(can_id) -> num:
+    return (can_id >> 24) % 32
+
+action dronecan_data_type_id(can_id) -> num:
+    return (can_id >> 8) % 65536
+
+action dronecan_source_node_id(can_id) -> num:
+    return can_id % 128
+
+# ---- tail byte -------------------------------------------------------
+action dronecan_tail(start, end, toggle, transfer_id) -> num:
+    let tail = transfer_id % 32
+    if start == 1:
+        set tail to tail + 128
+    if end == 1:
+        set tail to tail + 64
+    if toggle == 1:
+        set tail to tail + 32
+    return tail
+
+action dronecan_tail_start(tail) -> num:
+    return (tail >> 7) % 2
+
+action dronecan_tail_end(tail) -> num:
+    return (tail >> 6) % 2
+
+action dronecan_tail_toggle(tail) -> num:
+    return (tail >> 5) % 2
+
+action dronecan_tail_transfer_id(tail) -> num:
+    return tail % 32
+
+# ---- a refused transfer ----------------------------------------------
+action dronecan_failed(can_id, error) -> DroneCanTransfer:
+    return DroneCanTransfer(ok: false, can_id: can_id, priority: 0, data_type_id: 0, source_node_id: 0, transfer_id: 0, payload: [], error: error)
+
+# ---- building frames -------------------------------------------------
+# One frame for a payload of at most seven bytes. The payload is copied, and
+# the tail is appended; can_ext validates the id width and the eight-byte DLC.
+action dronecan_single(can_id, transfer_id, payload) -> CanFrame:
+    if length of payload > dronecan_single_frame_bytes():
+        return can_failed("a single frame carries at most 7 payload bytes")
+    let data = payload + [dronecan_tail(1, 1, 0, transfer_id)]
+    return can_ext(can_id, data)
+
+# The frames of a transfer, in order. An empty list means the transfer could
+# not be built: the payload is over 1023 bytes or the id does not fit 29 bits.
+# The caller hands the list to can_transmit one frame at a time, or to
+# dronecan_send below.
+action dronecan_frames(can_id, transfer_id, payload) -> list:
+    let out = []
+    let n = length of payload
+    if dronecan_payload_ok(n) != true:
+        return out
+    if dronecan_can_id_ok(can_id) != true:
+        return out
+    if n <= dronecan_single_frame_bytes():
+        set out to out + [dronecan_single(can_id, transfer_id, payload)]
+        return out
+
+    let crc = crc16_ccitt_false(payload)
+    # First frame: two CRC bytes, then as much of the payload as fits, then the
+    # tail with start set and end clear - unless the whole payload fits here,
+    # which it cannot for n >= 8, so end is always clear on this frame.
+    let first = [crc % 256, (crc >> 8) % 256]
+    let taken = 0
+    while taken < 5 bounded 5:
+        set first to first + [(payload[taken] otherwise 0)]
+        set taken to taken + 1
+    set first to first + [dronecan_tail(1, 0, 0, transfer_id)]
+    set out to out + [can_ext(can_id, first)]
+
+    let index = taken
+    let toggle = 1
+    while index < n bounded 147:
+        let data = []
+        let k = 0
+        while k < 7 and index < n bounded 7:
+            set data to data + [(payload[index] otherwise 0)]
+            set index to index + 1
+            set k to k + 1
+        let end = 0
+        if index >= n:
+            set end to 1
+        set data to data + [dronecan_tail(0, end, toggle, transfer_id)]
+        set out to out + [can_ext(can_id, data)]
+        set toggle to 1 - toggle
+    return out
+
+# ---- sending ----------------------------------------------------------
+# Transmit every frame of a transfer in order and return the frame count, or 0
+# if any frame was refused or the mailbox did not complete. The model's
+# loopback keeps only the most recent frame, so a sender that wants to observe
+# each frame should call can_transmit itself; this helper is for the radio.
+action dronecan_send(base, frames, spins) -> num:
+    let count = length of frames
+    let i = 0
+    while i < count bounded 147:
+        let frame = frames[i] otherwise can_failed("frame " + i + " is missing")
+        let sent = can_transmit(base, frame, spins)
+        if sent.ok != true:
+            return 0
+        set i to i + 1
+    return count
+
+# Build and send one transfer. Returns the number of frames sent, or 0.
+action dronecan_transmit(base, priority, data_type_id, source_node_id, transfer_id, payload, spins) -> num:
+    let can_id = dronecan_can_id(priority, data_type_id, source_node_id)
+    let frames = dronecan_frames(can_id, transfer_id, payload)
+    return dronecan_send(base, frames, spins)
+
+# ---- reassembly -------------------------------------------------------
+# Rebuild one transfer from the frames that carried it, in order. Every frame
+# has to belong to the same 29-bit id, carry the same transfer id, and carry
+# the expected toggle; a multi-frame payload is only accepted when its CRC
+# agrees. A failure names the frame that broke the transfer.
+action dronecan_assemble(frames) -> DroneCanTransfer:
+    let count = length of frames
+    if count < 1:
+        return dronecan_failed(0, "no frames")
+    let first = frames[0] otherwise can_failed("no frames")
+    if first.ok != true:
+        return dronecan_failed(0, "first frame is invalid: " + first.error)
+    if first.extended != true:
+        return dronecan_failed(first.id, "DroneCAN frames are 29-bit; this one is not extended")
+    let first_len = length of first.data
+    if first_len < 1:
+        return dronecan_failed(first.id, "first frame has no tail byte")
+    let can_id = first.id
+    let tail = (first.data[first_len - 1] otherwise 0)
+    let transfer_id = dronecan_tail_transfer_id(tail)
+    let payload = []
+    if dronecan_tail_start(tail) != 1:
+        return dronecan_failed(can_id, "first frame does not start a transfer")
+
+    if dronecan_tail_end(tail) == 1:
+        let k = 0
+        while k < first_len - 1 bounded 8:
+            set payload to payload + [(first.data[k] otherwise 0)]
+            set k to k + 1
+        return DroneCanTransfer(ok: true, can_id: can_id, priority: dronecan_priority(can_id), data_type_id: dronecan_data_type_id(can_id), source_node_id: dronecan_source_node_id(can_id), transfer_id: transfer_id, payload: payload, error: "")
+
+    # Multi-frame: the first frame's data starts with the payload's CRC.
+    let crc_received = (first.data[0] otherwise 0) + ((first.data[1] otherwise 0) * 256)
+    let k = 2
+    while k < first_len - 1 bounded 8:
+        set payload to payload + [(first.data[k] otherwise 0)]
+        set k to k + 1
+    let index = 1
+    let expect_toggle = 1
+    let done = 0
+    while index < count and done == 0 bounded 147:
+        let frame = frames[index] otherwise can_failed("frame " + index + " is missing")
+        if frame.ok != true:
+            return dronecan_failed(can_id, "frame " + index + " is invalid: " + frame.error)
+        if frame.extended != true or frame.id != can_id:
+            return dronecan_failed(can_id, "frame " + index + " does not belong to this transfer")
+        let flen = length of frame.data
+        if flen < 1:
+            return dronecan_failed(can_id, "frame " + index + " has no tail byte")
+        let ftail = (frame.data[flen - 1] otherwise 0)
+        if dronecan_tail_transfer_id(ftail) != transfer_id:
+            return dronecan_failed(can_id, "frame " + index + " has a different transfer id")
+        if dronecan_tail_toggle(ftail) != expect_toggle:
+            return dronecan_failed(can_id, "frame " + index + " has the wrong toggle")
+        let j = 0
+        while j < flen - 1 bounded 8:
+            set payload to payload + [(frame.data[j] otherwise 0)]
+            set j to j + 1
+        if dronecan_tail_end(ftail) == 1:
+            set done to 1
+        set expect_toggle to 1 - expect_toggle
+        set index to index + 1
+    if done != 1:
+        return dronecan_failed(can_id, "the transfer did not end")
+    let crc = crc16_ccitt_false(payload)
+    if crc != crc_received:
+        return dronecan_failed(can_id, "crc mismatch: frame says " + crc_received + ", payload gives " + crc)
+    return DroneCanTransfer(ok: true, can_id: can_id, priority: dronecan_priority(can_id), data_type_id: dronecan_data_type_id(can_id), source_node_id: dronecan_source_node_id(can_id), transfer_id: transfer_id, payload: payload, error: "")

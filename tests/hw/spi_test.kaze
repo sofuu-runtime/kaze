@@ -1,0 +1,98 @@
+# tests/hw/spi_test.kaze -- the SPI master against the board's SPI1 model.
+#
+# The driver is only worth having if it is safe to call against a bus that does not answer:
+# every wait is bounded by the bus ceiling, so a write-only command or a device that stops
+# responding produces a status and a released select instead of a hang. The checks below
+# pin the configuration path, the select handling, a full-duplex byte, a register read, a
+# burst, and the three ways a transfer can go wrong.
+
+needs: log
+needs: regs
+use "../../lib/spi.kaze"
+
+# Register bases, as decimals because the language has no hex literals. Every one matches
+# dist/kaze_board_sim.h; the last two checks are that nothing was read from or written to an
+# address the board does not model and that no access was misaligned.
+action ctl() -> num:
+    return 3759079424
+
+action spi1() -> num:
+    return 1073819648
+
+action gpioa() -> num:
+    return 1476526080
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+    let ctl_base = ctl()
+    mmio_write32(ctl_base + 48, 1)
+    mmio_fence()
+
+    # SPI1 with the chip select on GPIOA pin 4 and a 64-poll ceiling on every wait.
+    let bus = spi_bus(spi1(), gpioa(), 4, 64)
+
+    # ---- configuration -------------------------------------------------
+    set failures to check("the configuration is accepted", spi_configure(bus, 3, 64) == spi_ok(), failures)
+    # Master (4) + enabled (64) + mode 3 (CPHA 1, CPOL 2) + BR 5 for a divider of 64.
+    set failures to check("CR1 reads back master, enabled, mode 3 and divider 64", spi_cr1(bus) == 111, failures)
+    let reconfigured = spi_configure(bus, 0, 2)
+    set failures to check("mode 0 with the fastest divider reprograms CR1", reconfigured == spi_ok() and spi_cr1(bus) == 68, failures)
+    let bad_mode = spi_configure(bus, 4, 2)
+    set failures to check("a mode outside 0..3 is refused and CR1 is left alone", bad_mode == spi_bad_setup() and spi_cr1(bus) == 68, failures)
+    set failures to check("a divider that is not a power of two is refused", spi_configure(bus, 0, 3) == spi_bad_setup(), failures)
+
+    # ---- chip select ---------------------------------------------------
+    let asserted = spi_select(bus)
+    set failures to check("the select is driven low", asserted == 1 and spi_cs_level(bus) == 0, failures)
+    let released = spi_release(bus)
+    set failures to check("the select is released high again", released == 1 and spi_cs_level(bus) == 1, failures)
+
+    # ---- one full-duplex byte ------------------------------------------
+    set failures to check("the transmitter reports itself ready", (spi_status(bus) & spi_txe()) != 0, failures)
+    let id = spi_transfer8(bus, 128 + 117)
+    set failures to check("a full-duplex byte reads WHO_AM_I", id.status == spi_ok() and id.value == 71, failures)
+    set failures to check("the exchange counts the status polls it needed", id.waits >= 2, failures)
+    set failures to check("a register read answers the same byte", spi_read_reg(bus, 117).value == 71, failures)
+
+    # ---- the bounded wait reports instead of hanging --------------------
+    set failures to check("a write-only byte is accepted", spi_write8(bus, 15).status == spi_ok(), failures)
+    set failures to check("a bounded RXNE wait reports a timeout when nothing arrives", spi_wait_rxne(bus, 4) == 0 - 1, failures)
+    let silent = spi_transfer8(bus, 15)
+    set failures to check("a transfer with no answer reports it and releases the select", silent.status == spi_timeout_rxne() and spi_cs_level(bus) == 1, failures)
+
+    # ---- a burst -------------------------------------------------------
+    let before = mmio_read32(ctl_base + 40)
+    let burst = spi_read_burst(bus, 26, 6)
+    let conversions = mmio_read32(ctl_base + 40) - before
+    set failures to check("a six-byte burst arrives in one select window", burst.status == spi_ok() and (length of burst.bytes) == 6, failures)
+    set failures to check("the burst counted one device conversion", conversions == 1, failures)
+    let next = spi_read_burst(bus, 26, 6)
+    let n0 = next.bytes[0] otherwise 0 - 1
+    let n1 = next.bytes[1] otherwise 0 - 1
+    let n2 = next.bytes[2] otherwise 0 - 1
+    let b0 = burst.bytes[0] otherwise 0
+    let b1 = burst.bytes[1] otherwise 0
+    let b2 = burst.bytes[2] otherwise 0
+    let fresh = n0 != b0 or n1 != b1 or n2 != b2
+    set failures to check("a second burst streams different bytes", next.status == spi_ok() and fresh, failures)
+    let empty = spi_read_burst(bus, 26, 0)
+    set failures to check("an empty burst asks for nothing and still succeeds", empty.status == spi_ok() and (length of empty.bytes) == 0, failures)
+
+    # ---- a short burst leaves the receive side ahead, draining clears it
+    let part = spi_read_burst(bus, 26, 3)
+    let drained = spi_drain(bus)
+    set failures to check("a partial burst leaves bytes behind and draining clears them", (length of part.bytes) == 3 and drained >= 1 and spi_read_reg(bus, 117).value == 71, failures)
+
+    # ---- nothing touched an address the board does not model ------------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl_base + 20) == 0, failures)
+    set failures to check("no access was misaligned", mmio_read32(ctl_base + 24) == 0, failures)
+
+    if failures == 0:
+        log.info("OK spi: 21 checks")
+    return failures

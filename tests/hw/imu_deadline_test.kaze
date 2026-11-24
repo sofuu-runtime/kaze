@@ -1,0 +1,69 @@
+# tests/hw/imu_deadline_test.kaze -- the SPI/IMU deadline gate.
+#
+# One polling cycle at 8 kHz is 125 us, which at 480 MHz is 60000 cycles. The gate runs one
+# million consecutive cycles back to back, times every one of them between two reads of the
+# board's cycle counter, and holds all of them to that number. Back to back rather than
+# paced: a deadline is about how long a cycle takes, not about the gap between cycles, and
+# the IMU suite covers pacing separately.
+#
+# It prints the line the gate script parses:
+#
+#     MEASURE worst_cycles=<n> mean_cycles=<n> overruns=<n> iterations=<n>
+#
+# and a verdict line, which is what scripts/phase14-timing.sh holds to 0 overruns and a
+# worst cycle under 60000.
+
+needs: log
+needs: regs
+use "../../lib/imu.kaze"
+
+# Register bases, as decimals because the language has no hex literals. Every one matches
+# dist/kaze_board_sim.h, and the last check is that nothing was read from or written to an
+# address the board does not model, which is what catches a typo here.
+action ctl() -> num:
+    return 3759079424
+
+action tim2() -> num:
+    return 1073741824
+
+action spi1() -> num:
+    return 1073819648
+
+action gpioa() -> num:
+    return 1476526080
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+    let ctl_base = ctl()
+    mmio_write32(ctl_base + 48, 1)
+    mmio_fence()
+
+    # The chip select is GPIOA pin 4, the poll ceiling is 64 status reads per wait.
+    let bus = spi_bus(spi1(), gpioa(), 4, 64)
+    set failures to check("the IMU answers WHO_AM_I before the run", imu_configure(bus, 64) == spi_ok(), failures)
+
+    # TIM2's CNT register (offset 36) counts model cycles since it was last written, and on
+    # the metal image that counter is the emulator's SysTick, so the numbers below are
+    # instruction counts rather than host nanoseconds.
+    let clock = tim2() + 36
+    let cycles = 1000000
+    let run = imu_poll_run(bus, clock, cycles, 0, imu_deadline_cycles())
+    let mean = imu_mean_cycles(run.total, run.iterations)
+    log.info("MEASURE worst_cycles=" + run.worst + " mean_cycles=" + mean + " overruns=" + run.overruns + " iterations=" + run.iterations)
+
+    set failures to check("the polling run finished cleanly", run.status == 0, failures)
+    set failures to check("the loop ran its stated cycles", run.iterations == cycles, failures)
+    set failures to check("every cycle met the 125 us deadline", run.overruns == 0, failures)
+    set failures to check("the worst cycle is under 60000 cycles", run.worst < imu_deadline_cycles(), failures)
+    set failures to check("no polling cycle failed at the bus", run.errors == 0, failures)
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl_base + 20) == 0, failures)
+
+    if failures == 0:
+        log.info("OK imu_deadline: 7 checks")
+    return failures

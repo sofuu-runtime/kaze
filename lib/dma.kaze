@@ -1,0 +1,336 @@
+# lib/dma.kaze -- a DMA stream controller for the board's DMA1 window.
+#
+# The peripheral is an STM32H7-style DMA block: a shared status register at the base and
+# one register group per stream. dist/kaze_board_sim.h fixes the window and this module
+# uses only the four offsets that model implements:
+#
+#     LISR   0x00   one completion bit per stream (bit n = stream n finished)
+#     S0CR   0x10   control: EN bit0, DIR bit4 (1 = memory -> peripheral),
+#                   size bits 10-11 (0 = 8 bit, 1 = 16 bit, 2 = 32 bit)
+#     S0NDTR 0x14   number of items to move
+#     S0PAR  0x18   peripheral address: it does not advance during the transfer
+#     S0M0AR 0x1C   memory address: it advances one item at a time
+#
+# Each stream group is 0x18 bytes: S1CR 0x28, S1NDTR 0x2C, S1PAR 0x30, S1M0AR 0x34.
+# The base arrives from the caller, so the same module serves a board that puts this
+# block somewhere else; only the offsets are fixed, and they belong to the register map
+# rather than to one board.
+#
+# What this module claims: a blocking transfer with a setup step that can be checked
+# before it starts, a bounded wait for completion, and a refusal to reprogram a channel
+# that is not free. Directions are memory-to-peripheral (a buffer streamed into a data
+# register, the UART telemetry path) and peripheral-to-memory (a data register sampled
+# into a buffer). Every wait has a poll ceiling carried in DmaChannel, so a wedged
+# transfer answers DMA_TIMEOUT instead of hanging. What it does not claim: interrupts,
+# circular or double-buffer mode, FIFO configuration, multi-stream priority arbitration,
+# or wall-clock timeouts (the deadline is counted in status polls, which is the only
+# portable unit here).
+#
+# Status codes, as numbers because a driver answers with values:
+#
+#     DMA_OK        0   programmed, started, or completed as asked
+#     DMA_TIMEOUT   1   the completion bit did not arrive inside the poll ceiling
+#     DMA_BUSY      2   the channel is enabled or claimed, so it was not reprogrammed
+#     DMA_BAD_ARGS  3   a stream index, count, width, address or direction is not valid
+#     DMA_ERROR     4   the error word in LISR is nonzero
+#
+# The status-register model is a done bitmap: it is sticky and has no clear register, and
+# it models no error flags. This module therefore reads the error word from LISR bits
+# 16..31, which the model leaves clear, and reports it as a number; a suite can pin the
+# clear state but cannot inject a modelled fault. On silicon the error flags live inside
+# each stream's low nibble, so a BSP that needs TEIF/DMEIF reporting is board work this
+# module does not claim. For the same reason a transfer completes inside the write that
+# enables it on this board, so an enabled channel is never observable at a register read;
+# the refusal below checks the enable bit and also the caller's software claim, and the
+# suite exercises both.
+
+needs: regs
+
+use "./regs.kaze"
+
+# One stream: its base, its index, the poll ceiling every wait uses, and a software
+# claim. in_use is how a non-blocking caller marks a stream it owns; configure refuses a
+# claimed stream even when the model has already cleared the hardware enable bit.
+record DmaChannel:
+    base: number
+    index: number
+    limit: number
+    in_use: number
+
+# ---- register offsets, all inside the DMA window ------------------------
+action dma_lisr_off() -> num:
+    return 0
+
+action dma_ch_cr_off() -> num:
+    return 16
+
+action dma_ch_ndtr_off() -> num:
+    return 20
+
+action dma_ch_par_off() -> num:
+    return 24
+
+action dma_ch_m0ar_off() -> num:
+    return 28
+
+action dma_ch_stride() -> num:
+    return 24
+
+# ---- CR fields ----------------------------------------------------------
+action dma_cr_en() -> num:
+    return 1
+
+action dma_cr_tcie() -> num:
+    return 2
+
+action dma_cr_htie() -> num:
+    return 4
+
+action dma_cr_teie() -> num:
+    return 8
+
+action dma_cr_dir() -> num:
+    return 16
+
+action dma_cr_circ() -> num:
+    return 256
+
+action dma_cr_pinc() -> num:
+    return 512
+
+action dma_cr_minc() -> num:
+    return 1024
+
+action dma_cr_size_8() -> num:
+    return 0
+
+action dma_cr_size_16() -> num:
+    return 1024
+
+action dma_cr_size_32() -> num:
+    return 2048
+
+# ---- status codes -------------------------------------------------------
+action dma_ok() -> num:
+    return 0
+
+action dma_timeout() -> num:
+    return 1
+
+action dma_busy() -> num:
+    return 2
+
+action dma_bad_args() -> num:
+    return 3
+
+action dma_error() -> num:
+    return 4
+
+action dma_status_text(status) -> text:
+    if status == 0:
+        return "ok"
+    if status == 1:
+        return "timeout"
+    if status == 2:
+        return "busy"
+    if status == 3:
+        return "bad_args"
+    if status == 4:
+        return "error"
+    return "unknown"
+
+# A channel value. The limit is clamped to at least one poll and to the loop fuel
+# ceiling, so a zero or enormous ceiling cannot skip a wait or run forever.
+action dma_channel(base, index, limit) -> DmaChannel:
+    let lim = limit
+    if lim < 1:
+        set lim to 1
+    if lim > 1000000:
+        set lim to 1000000
+    return DmaChannel(base: base, index: index, limit: lim, in_use: 0)
+
+# Software claim and release. They answer a new record; Kaze has no mutable globals, so
+# the holder threads the claimed channel through its own calls and the driver never
+# guesses who owns a stream.
+action dma_claim(ch: DmaChannel) -> DmaChannel:
+    return DmaChannel(base: ch.base, index: ch.index, limit: ch.limit, in_use: 1)
+
+action dma_release(ch: DmaChannel) -> DmaChannel:
+    return DmaChannel(base: ch.base, index: ch.index, limit: ch.limit, in_use: 0)
+
+# The stream's first register (CR), or 0 when the channel names a stream this block does
+# not model. Two streams are modelled: S0 and S1.
+action dma_block(ch: DmaChannel) -> num:
+    if ch.base < 1:
+        return 0
+    if ch.index < 0 or ch.index > 1:
+        return 0
+    return ch.base + dma_ch_cr_off() + ch.index * dma_ch_stride()
+
+# ---- channel registers --------------------------------------------------
+action dma_cr(ch: DmaChannel) -> num:
+    let block = dma_block(ch)
+    if block == 0:
+        return 0
+    return mmio_read32(block)
+
+action dma_ndtr(ch: DmaChannel) -> num:
+    let block = dma_block(ch)
+    if block == 0:
+        return 0
+    return mmio_read32(block + 4)
+
+action dma_par(ch: DmaChannel) -> num:
+    let block = dma_block(ch)
+    if block == 0:
+        return 0
+    return mmio_read32(block + 8)
+
+action dma_m0ar(ch: DmaChannel) -> num:
+    let block = dma_block(ch)
+    if block == 0:
+        return 0
+    return mmio_read32(block + 12)
+
+# 1 when the control register says the stream is enabled. On this board a transfer
+# completes inside the enable write, so this reads 0 once the write returns; on silicon
+# it stays 1 until the transfer finishes, which is why configure checks it first.
+action dma_enabled(ch: DmaChannel) -> bool:
+    return reg_bit(dma_cr(ch), 0) == 1
+
+# The width encoding of the CR size field, or -1 for a width the model cannot move.
+action dma_width_bits(width) -> num:
+    if width == 8:
+        return dma_cr_size_8()
+    if width == 16:
+        return dma_cr_size_16()
+    if width == 32:
+        return dma_cr_size_32()
+    return 0 - 1
+
+# The shadow bits of LISR above the two modelled streams, shifted down to a small
+# number so no 32-bit mask is needed: this model never sets them, and a real block's
+# error flags need board-specific decoding.
+action dma_error_word(lisr) -> num:
+    let low = (lisr % 65536) otherwise 0
+    return (lisr - low) / 65536
+
+# The LISR completion bit for one stream. Only the two modelled streams can answer true.
+action dma_channel_done(status, index) -> bool:
+    if index < 0 or index > 1:
+        return false
+    return reg_bit(status, index) == 1
+
+action dma_completed(ch: DmaChannel) -> bool:
+    let block = dma_block(ch)
+    if block == 0:
+        return false
+    return dma_channel_done(mmio_read32(ch.base + dma_lisr_off()), ch.index)
+
+# The error word clipped out of this block's LISR. Zero on the model; nonzero on a real
+# part whose stream reported a fault, at which point the caller should not trust the
+# transfer.
+action dma_errors(base) -> num:
+    if base < 1:
+        return 0
+    return dma_error_word(mmio_read32(base + dma_lisr_off()))
+
+action dma_has_error(base) -> bool:
+    return dma_errors(base) != 0
+
+# Program one stream without starting it: NDTR, PAR, M0AR, then CR with the direction
+# and width but EN clear. Written in that order because the count and addresses must be
+# in place before the transfer can start. A stream that is enabled or claimed is refused
+# before any register is touched, so a live transfer cannot be torn down by a second
+# caller. count is the number of items (bytes, half-words or words), 1..65535, the
+# hardware's own NDTR range.
+action dma_configure(ch: DmaChannel, periph, mem, count, width, to_periph) -> num:
+    let block = dma_block(ch)
+    if block == 0:
+        return dma_bad_args()
+    if count < 1 or count > 65535:
+        return dma_bad_args()
+    if periph < 1 or mem < 1:
+        return dma_bad_args()
+    let bits = dma_width_bits(width)
+    if bits < 0:
+        return dma_bad_args()
+    if to_periph != 0 and to_periph != 1:
+        return dma_bad_args()
+    if dma_enabled(ch):
+        return dma_busy()
+    if ch.in_use == 1:
+        return dma_busy()
+    let cr = bits
+    if to_periph == 1:
+        set cr to cr + dma_cr_dir()
+    mmio_write32(block + 4, count)
+    mmio_write32(block + 8, periph)
+    mmio_write32(block + 12, mem)
+    mmio_write32(block, cr)
+    mmio_fence()
+    return dma_ok()
+
+# Start a programmed stream by setting EN. The control register is read first: a stream
+# already running is busy, and a stream with no items programmed is a caller mistake,
+# not an empty transfer.
+action dma_start(ch: DmaChannel) -> num:
+    let block = dma_block(ch)
+    if block == 0:
+        return dma_bad_args()
+    let cr = mmio_read32(block)
+    if reg_bit(cr, 0) == 1:
+        return dma_busy()
+    if mmio_read32(block + 4) < 1:
+        return dma_bad_args()
+    mmio_write32(block, cr + dma_cr_en())
+    mmio_fence()
+    return dma_ok()
+
+# Clear EN. On the model a started transfer has already cleared it, so this is a no-op
+# after a completed run; on silicon it is how a stalled transfer is abandoned.
+action dma_stop(ch: DmaChannel) -> num:
+    let block = dma_block(ch)
+    if block == 0:
+        return dma_bad_args()
+    let cr = mmio_read32(block)
+    if reg_bit(cr, 0) == 1:
+        mmio_write32(block, cr - dma_cr_en())
+        mmio_fence()
+    return dma_ok()
+
+# Wait for this stream's completion bit, with the poll ceiling in the channel as the
+# deadline. The error word is checked on every poll, so a fault is reported as
+# DMA_ERROR rather than waiting out the ceiling. The model's done bit is sticky: once a
+# stream has completed it stays set, so this proves "a completion happened on this
+# stream", not "this exact transfer just finished"; the suite uses a fresh channel or a
+# board reset where that distinction matters.
+action dma_wait(ch: DmaChannel) -> num:
+    let block = dma_block(ch)
+    if block == 0:
+        return dma_bad_args()
+    let polls = 0
+    while polls < ch.limit bounded 1000000:
+        let lisr = mmio_read32(ch.base + dma_lisr_off())
+        if dma_error_word(lisr) != 0:
+            return dma_error()
+        if dma_channel_done(lisr, ch.index):
+            return dma_ok()
+        set polls to polls + 1
+    return dma_timeout()
+
+# The three calls a blocking transfer needs, in order, with the first failure returned.
+action dma_run(ch: DmaChannel, periph, mem, count, width, to_periph) -> num:
+    let configured = dma_configure(ch, periph, mem, count, width, to_periph)
+    if configured != dma_ok():
+        return configured
+    let started = dma_start(ch)
+    if started != dma_ok():
+        return started
+    return dma_wait(ch)
+
+action dma_mem_to_periph(ch: DmaChannel, periph, mem, count, width) -> num:
+    return dma_run(ch, periph, mem, count, width, 1)
+
+action dma_periph_to_mem(ch: DmaChannel, periph, mem, count, width) -> num:
+    return dma_run(ch, periph, mem, count, width, 0)

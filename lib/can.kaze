@@ -1,0 +1,277 @@
+# lib/can.kaze -- classic bxCAN frames over the STM32H7-style CAN controller.
+#
+# The board models one bxCAN controller (base 0x4000A400) in loopback: a frame
+# written into transmit mailbox 0 is copied into receive FIFO 0 and counted.
+# The registers this module uses are:
+#
+#   0x008  TSR    RQCP0 bit0 (mailbox 0 request completed), TXOK0 bit1
+#   0x00C  RF0R   FMP0 bits1:0 (frames pending), RFOM0 bit5 (release)
+#   0x180  TIR    STID bits31:21, EXID[17:0] bits20:3, IDE bit2, RTR bit1,
+#                 TXRQ bit0
+#   0x184  TDTR   DLC bits3:0
+#   0x188  TDLR   data bytes 0..3, byte0 in bits7:0
+#   0x18C  TDHR   data bytes 4..7, byte4 in bits7:0
+#   0x1B0..0x1BC  RIR/RDTR/RDLR/RDHR, the same layout for the received frame
+#
+# MCR, MSR, BTR and the acceptance filters are not touched: bit timing, the
+# loopback/silent mode select and the filter banks belong to the board support
+# package. The base address arrives as a parameter.
+#
+# An 11-bit frame puts the id in STID. A 29-bit frame puts EXID[28:18] in the
+# same bits as STID and EXID[17:0] in bits20:3, exactly as the reference manual
+# describes; the decoder rebuilds the id as high * 2^18 + low. TIR is written
+# with TXRQ set, which is what a real controller needs before a mailbox can be
+# transmitted. The model does not start on TXRQ - it completes the frame when
+# TSR bit0 is written and copies TIR to RIR verbatim - so the decoder treats
+# RIR bit0 as reserved and never reads it.
+#
+# Kaze numbers are doubles, and on a 32-bit target the runtime's bitwise
+# operators truncate through its integer type. A TIR for a 29-bit id, or a data
+# word with byte 3 above 0x7F, is larger than 2^31, so this module never ANDs
+# or left-shifts such a value: it extracts fields with >> and %, which convert
+# through the unsigned integer type, and it builds values by multiplying by
+# powers of two. That is what keeps the same code correct on host and on the
+# Cortex-M image.
+#
+# What this module does not claim: no remote (RTR) frames, no CAN FD, no error
+# counters or bus-off recovery, no interrupts, no acceptance filtering, and
+# only mailbox 0 / FIFO 0. A DLC above 8 is refused rather than truncated,
+# because a truncated frame looks like a valid short one.
+
+needs: regs
+
+record CanFrame:
+    ok: bool
+    extended: bool
+    id: number
+    dlc: number
+    data: list
+    error: text
+
+# ---- register offsets from the base the BSP passes --------------------
+action can_reg_tsr(base) -> num:
+    return base + 8
+
+action can_reg_rf0r(base) -> num:
+    return base + 12
+
+action can_reg_tir(base) -> num:
+    return base + 384
+
+action can_reg_tdtr(base) -> num:
+    return base + 388
+
+action can_reg_tdlr(base) -> num:
+    return base + 392
+
+action can_reg_tdhr(base) -> num:
+    return base + 396
+
+action can_reg_rir(base) -> num:
+    return base + 432
+
+action can_reg_rdtr(base) -> num:
+    return base + 436
+
+action can_reg_rdlr(base) -> num:
+    return base + 440
+
+action can_reg_rdhr(base) -> num:
+    return base + 444
+
+# ---- bit fields -------------------------------------------------------
+action can_bit_rqcp0() -> num:
+    return 1
+
+action can_bit_txok0() -> num:
+    return 2
+
+action can_bit_ide() -> num:
+    return 4
+
+action can_bit_rtr() -> num:
+    return 2
+
+action can_bit_txrq() -> num:
+    return 1
+
+action can_bit_rfom0() -> num:
+    return 32
+
+action can_std_mask() -> num:
+    return 2047
+
+action can_ext_mask() -> num:
+    return 536870911
+
+# One bit of a 32-bit register value. The right shift converts through the
+# unsigned runtime type, so a value past 2^31 is not the undefined conversion a
+# signed mask would be.
+action can_bit(word, n) -> num:
+    return (word >> n) % 2
+
+# One byte of a 32-bit register value, k = 0..3. The divisor is a literal, so
+# the checker does not need a divide-by-zero fallback, and "% 256" is the mask
+# without the signed truncation a "& 255" would do on a 32-bit target.
+action can_byte(word, k) -> num:
+    return (word >> (k * 8)) % 256
+
+# ---- frame construction ----------------------------------------------
+action can_failed(error) -> CanFrame:
+    return CanFrame(ok: false, extended: false, id: 0, dlc: 0, data: [], error: error)
+
+# A frame is validated when it is built, so no later stage has to guess whether
+# an id fits or a payload is too long. A refused frame has ok false and the
+# reason in error; the accept path keeps the caller's byte list.
+action can_frame(id, extended, data) -> CanFrame:
+    let dlc = length of data
+    if dlc > 8:
+        return can_failed("data length " + dlc + " exceeds the 8-byte DLC limit")
+    if extended == true:
+        if id < 0 or id > can_ext_mask():
+            return can_failed("extended id " + id + " does not fit 29 bits")
+    otherwise:
+        if id < 0 or id > can_std_mask():
+            return can_failed("standard id " + id + " does not fit 11 bits")
+    return CanFrame(ok: true, extended: extended, id: id, dlc: dlc, data: data, error: "")
+
+action can_std(id, data) -> CanFrame:
+    return can_frame(id, false, data)
+
+action can_ext(id, data) -> CanFrame:
+    return can_frame(id, true, data)
+
+# ---- encoding ---------------------------------------------------------
+# TIR for the frame. TXRQ is set for the transmit mailbox; a received copy
+# carries the same bit and the decoder ignores it.
+action can_tir_of(frame: CanFrame) -> num:
+    if frame.extended == true:
+        return (frame.id >> 18) * 2097152 + (frame.id % 262144) * 8 + can_bit_ide() + can_bit_txrq()
+    return (frame.id % 2048) * 2097152 + can_bit_txrq()
+
+action can_tdtr_of(frame: CanFrame) -> num:
+    return frame.dlc % 16
+
+# Four data bytes packed little-endian into one 32-bit word, starting at byte
+# "first". Bytes past the end of the payload read as zero, so a short frame's
+# unused lanes are defined rather than stale. The multiplier is built by
+# multiplication because 256^3 is above 2^24 but every product here is an exact
+# double.
+action can_data_word(data, first) -> num:
+    let word = 0
+    let mult = 1
+    let k = 0
+    while k < 4 bounded 4:
+        if first + k < length of data:
+            set word to word + (((data[first + k] otherwise 0) % 256) * mult)
+        set mult to mult * 256
+        set k to k + 1
+    return word
+
+# ---- decoding ---------------------------------------------------------
+# The inverse of the encoders. DLC codes 9..15 are legal bxCAN encodings for
+# "8 bytes", so they clamp to 8 instead of being rejected; a data frame never
+# carries more than that. A remote frame is refused: this module has no way to
+# express "no data, but the DLC is the requested length", so saying so is
+# better than returning a frame whose data list lies about its length.
+action can_decode(tir, tdtr, tdlr, tdhr) -> CanFrame:
+    let ide = can_bit(tir, 2)
+    let rtr = can_bit(tir, 1)
+    let dlc_code = tdtr % 16
+    let dlc = dlc_code
+    if dlc > 8:
+        set dlc to 8
+    if rtr == 1:
+        return can_failed("remote (RTR) frames are not decoded by this module")
+    let id = 0
+    if ide == 1:
+        set id to (((tir >> 21) % 2048) * 262144) + ((tir >> 3) % 262144)
+    otherwise:
+        set id to (tir >> 21) % 2048
+    let data = []
+    let k = 0
+    while k < dlc bounded 8:
+        let word = tdlr
+        if k >= 4:
+            set word to tdhr
+        set data to data + [can_byte(word, k % 4)]
+        set k to k + 1
+    return CanFrame(ok: true, extended: ide == 1, id: id, dlc: dlc, data: data, error: "")
+
+# ---- mailbox 0 transmit ----------------------------------------------
+# spins is the caller's patience with the completion flag. It is clamped so a
+# zero or enormous count cannot skip the poll or run past the loop ceiling.
+action can_spin_limit(spins) -> num:
+    let limit = spins
+    if limit < 1:
+        set limit to 1
+    if limit > 1024:
+        set limit to 1024
+    return limit
+
+action can_wait_bit(base, offset, bit, spins) -> num:
+    let limit = can_spin_limit(spins)
+    let i = 0
+    let seen = 0
+    while i < limit bounded 1024:
+        if can_bit(mmio_read32(base + offset), bit) == 1:
+            set seen to 1
+            set i to limit
+        otherwise:
+            set i to i + 1
+    mmio_fence()
+    return seen
+
+# Load mailbox 0, request transmission, wait for RQCP0, then require TXOK0.
+# A frame that was refused at construction is returned untouched, so a caller
+# cannot accidentally put an invalid id or a 9-byte DLC on the bus.
+action can_transmit(base, frame: CanFrame, spins) -> CanFrame:
+    if frame.ok != true:
+        return frame
+    mmio_write32(can_reg_tir(base), can_tir_of(frame))
+    mmio_write32(can_reg_tdtr(base), can_tdtr_of(frame))
+    mmio_write32(can_reg_tdlr(base), can_data_word(frame.data, 0))
+    mmio_write32(can_reg_tdhr(base), can_data_word(frame.data, 4))
+    mmio_fence()
+    mmio_write32(can_reg_tsr(base), can_bit_rqcp0())
+    mmio_fence()
+    if can_wait_bit(base, 8, 0, spins) == 0:
+        return can_failed("mailbox 0 did not complete within the bounded wait")
+    if can_bit(mmio_read32(can_reg_tsr(base)), 1) != 1:
+        return can_failed("mailbox 0 completed with TXOK0 clear")
+    return frame
+
+# ---- receive FIFO 0 ---------------------------------------------------
+action can_available(base) -> num:
+    return mmio_read32(can_reg_rf0r(base)) % 4
+
+action can_release(base) -> num:
+    mmio_write32(can_reg_rf0r(base), can_bit_rfom0())
+    mmio_fence()
+    return 0
+
+# Wait for FIFO 0 to hold a frame, bounded by the caller's patience. FMP0 is a
+# two-bit count rather than a flag, so this compares it instead of testing a
+# single bit.
+action can_wait_pending(base, spins) -> num:
+    let limit = can_spin_limit(spins)
+    let i = 0
+    let seen = 0
+    while i < limit bounded 1024:
+        if mmio_read32(can_reg_rf0r(base)) % 4 > 0:
+            set seen to 1
+            set i to limit
+        otherwise:
+            set i to i + 1
+    mmio_fence()
+    return seen
+
+# Copy the pending frame out, then release the output mailbox. An empty FIFO is
+# reported after the bounded wait, not guessed at: a zeroed frame would look
+# like a valid id-0 frame.
+action can_receive(base, spins) -> CanFrame:
+    if can_wait_pending(base, spins) == 0:
+        return can_failed("no frame became pending in receive FIFO 0 within the bounded wait")
+    let frame = can_decode(mmio_read32(can_reg_rir(base)), mmio_read32(can_reg_rdtr(base)), mmio_read32(can_reg_rdlr(base)), mmio_read32(can_reg_rdhr(base)))
+    can_release(base)
+    return frame

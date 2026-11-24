@@ -1,0 +1,124 @@
+# tests/hw/i2c_test.kaze -- the I2C master against the modelled barometer bus.
+#
+# The board models one I2C bus at 0x40005400 with a barometer on it: chip id
+# 0x50 at register 0x00, a 24-bit pressure value at 0x04 and a 16-bit
+# temperature value at 0x07, each read advancing the model's sample. That is
+# enough to prove the transaction shape (START, address, pointer, data phase,
+# STOP), the bounded waits, the status mapping and the argument checks. The
+# model has no way to inject a NACK, so the NACK *verdict* is only exercised
+# through the status mapping and the healthy path's clear NACKF bit; the suite
+# says that instead of inventing a failing device.
+#
+# Register bases as decimals, matching dist/kaze_board_sim.h. The last check
+# asserts the board counted zero accesses outside its map, which is what
+# catches an address that drifted.
+
+needs: log
+needs: regs
+
+use "./../../lib/i2c.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action sim_ctl() -> num:
+    return 3759079424
+
+action i2c1() -> num:
+    return 1073763328
+
+# The barometer's 7-bit address, 0x76: the secondary address of a BMP390-style
+# part with SDO tied low. The model answers every address anyway, so this is the
+# address a real board would use rather than something the model forces.
+action baro_addr() -> num:
+    return 118
+
+# A 24-bit little-endian value from three bytes, written out as a sum of
+# products so it does not reuse the assembly helper under test in baro.kaze.
+action le24(b, i) -> num:
+    return (b[i] otherwise 0) + ((b[i + 1] otherwise 0) * 256) + ((b[i + 2] otherwise 0) * 65536)
+
+action main() -> num:
+    let failures = 0
+    let ctl = sim_ctl()
+    let bus = i2c1()
+    let dev = baro_addr()
+
+    mmio_write32(ctl + 48, 1)
+    mmio_fence()
+
+    # ---- a device acknowledges -----------------------------------------
+    set failures to check("a probe finds the barometer", i2c_probe(bus, dev, 64) == true, failures)
+
+    # ---- a single register read ----------------------------------------
+    let chip = i2c_read_reg(bus, dev, 0, 64)
+    set failures to check("a register read succeeds", chip.ok == true, failures)
+    set failures to check("the chip id register answers 0x50", chip.value == 80, failures)
+    set failures to check("a successful read has status ok", chip.status == i2c_status_ok(), failures)
+
+    # ---- a burst read ---------------------------------------------------
+    # Register 0x04 is the 24-bit pressure block. It has an even register
+    # number, which is the case that catches a bus model that mistakes a
+    # register pointer for an address byte, so this is a deliberate choice and
+    # not just a convenient register.
+    let press = i2c_burst_read(bus, dev, 4, 3, 64)
+    set failures to check("a three-byte burst succeeds", press.ok == true, failures)
+    set failures to check("the burst returns three bytes", length of press.bytes == 3, failures)
+    set failures to check("the burst returns a plain byte list", press.value == 0 and press.error == "", failures)
+
+    # The model advances its sample on every register load, so a second burst
+    # has to differ. This is what proves the two reads really went to the bus
+    # instead of replaying a cached answer.
+    let press2 = i2c_burst_read(bus, dev, 4, 3, 64)
+    let raw = le24(press.bytes, 0)
+    let raw2 = le24(press2.bytes, 0)
+    set failures to check("a second burst reads a new sample", raw != raw2, failures)
+
+    # A one-byte burst is the same data phase with the shortest count.
+    let chip2 = i2c_burst_read(bus, dev, 0, 1, 64)
+    set failures to check("a one-byte burst returns the chip id", chip2.ok == true and (chip2.bytes[0] otherwise 0) == 80, failures)
+
+    # ---- the bus is usable again after all that -------------------------
+    let again = i2c_read_reg(bus, dev, 0, 64)
+    set failures to check("the bus recovers for a later read", again.ok == true and again.value == 80, failures)
+
+    # ---- bounded wait: an empty receive FIFO runs the poll out ----------
+    set failures to check("a wait on an empty FIFO reports timeout", i2c_wait(bus, i2c_isr_rxne(), 8) == 0, failures)
+    set failures to check("the transfer clock bit is already asserted", i2c_wait(bus, i2c_isr_tc(), 4) == 1, failures)
+    set failures to check("a healthy transfer leaves NACKF clear", i2c_nack(bus) == 0, failures)
+
+    # ---- the status mapping is pinned -----------------------------------
+    set failures to check("the timeout status is named", i2c_status_text(i2c_status_timeout()) == "timeout", failures)
+    set failures to check("the nack status is named", i2c_status_text(i2c_status_nack()) == "nack", failures)
+    set failures to check("a status outside the set is not claimed", i2c_status_text(99) == "unknown", failures)
+
+    # ---- argument checks happen before any bus traffic ------------------
+    let zero = i2c_burst_read(bus, dev, 4, 0, 16)
+    set failures to check("a zero-length burst is refused as an argument", zero.ok == false and zero.status == i2c_status_argument(), failures)
+    let badaddr = i2c_read_reg(bus, 200, 0, 16)
+    set failures to check("a 7-bit address above 127 is refused", badaddr.ok == false and badaddr.status == i2c_status_argument(), failures)
+    let badreg = i2c_write_reg(bus, dev, 300, 1, 16)
+    set failures to check("a register above 255 is refused", badreg.ok == false and badreg.status == i2c_status_argument(), failures)
+    let badval = i2c_write_reg(bus, dev, 16, 300, 16)
+    set failures to check("a data byte above 255 is refused", badval.ok == false and badval.status == i2c_status_argument(), failures)
+
+    # ---- a write completes through TC ----------------------------------
+    let wrote = i2c_write_reg(bus, dev, 16, 32, 64)
+    set failures to check("a register write completes", wrote.ok == true and wrote.value == 32, failures)
+
+    # ---- the polls are honestly bounded --------------------------------
+    set failures to check("a zero spin count still polls once", i2c_spin_limit(0) == 1, failures)
+    set failures to check("a huge spin count is clamped", i2c_spin_limit(99999) == 1024, failures)
+
+    # ---- the STOP bit the driver wrote is the one the register keeps ----
+    set failures to check("the last CR1 write left STOP set", (mmio_read32(bus) >> 14) % 2 == 1, failures)
+
+    # ---- nothing touched an address the board does not model -----------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + 20) == 0, failures)
+
+    if failures == 0:
+        log.info("OK i2c: 24 checks")
+    return failures

@@ -1,0 +1,127 @@
+# tests/hw/can_test.kaze -- classic bxCAN frames against the modelled controller.
+#
+# The board models one controller (base 0x4000A400) in loopback: a frame loaded
+# into transmit mailbox 0 and completed through TSR is copied into receive FIFO
+# 0. This suite pins three separate things:
+#
+#   1. frame validation - id widths and the 8-byte DLC limit,
+#   2. the wire encoding - TIR/TDTR/TDLR/TDHR values computed by hand for a
+#      standard and an extended frame, including a data word above 2^31, which
+#      is where a signed integer mask on a 32-bit target would break,
+#   3. the loopback round trip for standard, extended, short and empty frames,
+#      plus the empty-FIFO and refused-frame paths.
+#
+# Register base as a decimal, matching dist/kaze_board_sim.h. The last check
+# asserts the board counted zero accesses outside its map.
+
+needs: log
+needs: regs
+
+use "./../../lib/can.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action sim_ctl() -> num:
+    return 3759079424
+
+action can1() -> num:
+    return 1073783808
+
+# Content comparison for byte lists. "==" on lists is identity in Kaze, so a
+# round trip has to compare element by element.
+action same_bytes(a, b) -> bool:
+    if length of a != length of b:
+        return false
+    let k = 0
+    let ok = true
+    while k < length of a bounded 16:
+        if (a[k] otherwise 0) != (b[k] otherwise 0 - 1):
+            set ok to false
+        set k to k + 1
+    return ok
+
+action payload8() -> list:
+    return [18, 52, 86, 120, 154, 188, 222, 240]
+
+action main() -> num:
+    let failures = 0
+    let ctl = sim_ctl()
+    let bus = can1()
+
+    mmio_write32(ctl + 48, 1)
+    mmio_fence()
+
+    # ---- frame validation ----------------------------------------------
+    let std = can_std(291, payload8())
+    set failures to check("a standard frame is accepted", std.ok == true and std.dlc == 8, failures)
+    set failures to check("a standard id above 2047 is refused", can_std(2048, [1]).ok == false, failures)
+    let ext = can_ext(1752286, [1, 2, 3])
+    set failures to check("a 29-bit frame is accepted", ext.ok == true and ext.extended == true, failures)
+    set failures to check("an id above 29 bits is refused", can_ext(536870912, [1]).ok == false, failures)
+    let nine = can_std(1, [1, 2, 3, 4, 5, 6, 7, 8, 9])
+    set failures to check("a nine-byte payload is refused", nine.ok == false and nine.error != "", failures)
+
+    # ---- hand-computed encodings ---------------------------------------
+    # 0x123 << 21 | TXRQ  =  0x24600001
+    set failures to check("TIR for standard 0x123 is 0x24600001", can_tir_of(std) == 610271233, failures)
+    # EXID[28:18] = 6 in the STID bits, EXID[17:0] = 0x2BCDE at bit 3, IDE, TXRQ
+    set failures to check("TIR for extended 0x1ABCDE is 0xD5E6F5", can_tir_of(ext) == 14018293, failures)
+    set failures to check("TDTR carries the DLC", can_tdtr_of(std) == 8, failures)
+    # bytes 0x12 0x34 0x56 0x78 little-endian
+    set failures to check("TDLR packs bytes 0..3 little-endian", can_data_word(payload8(), 0) == 2018915346, failures)
+    # bytes 0x9A 0xBC 0xDE 0xF0 little-endian, which is above 2^31
+    set failures to check("TDHR packs bytes 4..7 little-endian", can_data_word(payload8(), 4) == 4041129114, failures)
+
+    # ---- decoding hand-built registers ---------------------------------
+    let decoded = can_decode(610271233, 8, 2018915346, 4041129114)
+    set failures to check("a standard frame decodes to its id", decoded.id == 291, failures)
+    set failures to check("a standard frame decodes as standard", decoded.extended == false and decoded.ok == true, failures)
+    set failures to check("a decoded frame keeps its DLC", decoded.dlc == 8, failures)
+    set failures to check("the decoded bytes are the hand-built words", same_bytes(decoded.data, payload8()), failures)
+    let decoded_ext = can_decode(14018293, 3, 2018915346, 0)
+    set failures to check("an extended frame rebuilds 0x1ABCDE", decoded_ext.id == 1752286 and decoded_ext.extended == true, failures)
+    set failures to check("DLC codes above 8 decode as eight bytes", can_decode(610271233, 12, 2018915346, 4041129114).dlc == 8, failures)
+    set failures to check("a remote frame is refused", can_decode(610271233 + 2, 8, 0, 0).ok == false, failures)
+    # 0xF0 at byte 3 of TDHR and 0x12 at byte 0 of TDLR; both words are above
+    # 2^31 / near it, which is the case a signed mask would get wrong on ARM.
+    set failures to check("bytes above 2^31 are extracted without a signed mask", can_byte(4041129114, 3) == 240 and can_byte(2018915346, 0) == 18, failures)
+
+    # ---- a standard frame over the loopback ----------------------------
+    let sent = can_transmit(bus, std, 64)
+    set failures to check("a standard frame transmits", sent.ok == true, failures)
+    set failures to check("the mailbox reports completion", can_bit(mmio_read32(bus + 8), 0) == 1, failures)
+    set failures to check("the mailbox reports success", can_bit(mmio_read32(bus + 8), 1) == 1, failures)
+    set failures to check("one frame is pending afterwards", can_available(bus) == 1, failures)
+    let rx = can_receive(bus, 64)
+    set failures to check("the loopback frame decodes to the id sent", rx.ok == true and rx.id == 291, failures)
+    set failures to check("the loopback frame is standard", rx.extended == false, failures)
+    set failures to check("the loopback frame carries all eight bytes", same_bytes(rx.data, payload8()), failures)
+    set failures to check("the FIFO is empty after release", can_available(bus) == 0, failures)
+    set failures to check("an empty FIFO reports no frame", can_receive(bus, 64).ok == false, failures)
+
+    # ---- an extended frame over the loopback ---------------------------
+    let sent_ext = can_transmit(bus, ext, 64)
+    set failures to check("an extended frame transmits", sent_ext.ok == true, failures)
+    let rx_ext = can_receive(bus, 64)
+    set failures to check("the loopback frame is extended and keeps its id", rx_ext.ok == true and rx_ext.extended == true and rx_ext.id == 1752286, failures)
+    set failures to check("a short frame keeps its DLC", rx_ext.dlc == 3 and same_bytes(rx_ext.data, [1, 2, 3]), failures)
+
+    # ---- an empty frame -------------------------------------------------
+    let zero = can_transmit(bus, can_std(7, []), 64)
+    let rx_zero = can_receive(bus, 64)
+    set failures to check("a zero-length frame round-trips", zero.ok == true and rx_zero.ok == true and rx_zero.dlc == 0 and length of rx_zero.data == 0, failures)
+
+    # ---- a refused frame never reaches a mailbox ------------------------
+    let refused = can_transmit(bus, can_std(2048, [1]), 64)
+    set failures to check("a refused frame is not transmitted", refused.ok == false and can_available(bus) == 0, failures)
+
+    # ---- nothing touched an address the board does not model -----------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + 20) == 0, failures)
+
+    if failures == 0:
+        log.info("OK can: 33 checks")
+    return failures

@@ -1,0 +1,125 @@
+# tests/hw/pwm_test.kaze -- the PWM actuator channel.
+#
+# The timer model is behavioural: a prescaler, an auto-reload and four compare registers,
+# and every write to a compare register is recorded as one actuator edge with the value
+# written and a cycle stamp. That is enough to pin what a driver has to get right: the
+# 16-bit plan is exact for the frequency it was asked for, the registers hold the plan
+# after setup, one duty update is exactly one compare write, the value written is the
+# duty the caller asked for, and the channel's status bit reports a period boundary so a
+# control loop can wait for one. The edge log is read through the test-only control block
+# at 0xE00F0000; the driver never looks at it.
+
+needs: log
+needs: regs
+
+use "./../../lib/pwm.kaze"
+use "./../../lib/regs.kaze"
+
+record Tally:
+    failures: number
+    checks: number
+
+action check(t: Tally, label, ok) -> Tally:
+    let n = t.checks + 1
+    if ok:
+        return Tally(failures: t.failures, checks: n)
+    log.info("FAIL " + label)
+    return Tally(failures: t.failures + 1, checks: n)
+
+# ---- the BSP -------------------------------------------------------------
+
+action sim_ctl() -> num:
+    return 3759079424
+action tim2() -> num:
+    return 1073741824
+
+action edge_count() -> num:
+    return mmio_read32(sim_ctl() + 4)
+
+action edge_value(k) -> num:
+    mmio_write32(sim_ctl() + 8, k)
+    return mmio_read32(sim_ctl() + 16)
+
+action edge_time(k) -> num:
+    mmio_write32(sim_ctl() + 8, k)
+    return mmio_read32(sim_ctl() + 12)
+
+action main() -> num:
+    let t = Tally(failures: 0, checks: 0)
+    mmio_write32(sim_ctl() + 48, 1)
+    mmio_fence()
+    let tim = tim2()
+    let ctl = sim_ctl()
+
+    # ---- the plan ------------------------------------------------------
+    let plan = pwm_plan(480000000, 400)
+    set t to check(t, "480 MHz / 400 Hz needs prescaler 19", plan.psc == 19)
+    set t to check(t, "and auto-reload 59999", plan.arr == 59999)
+    set t to check(t, "which is 60000 timer ticks", plan.ticks == 60000)
+    set t to check(t, "the plan is exactly 400 Hz", plan.hz == 400)
+    set t to check(t, "with no frequency error", plan.error == 0)
+    set t to check(t, "the period is 1,200,000 cycles", (plan.psc + 1) * (plan.arr + 1) == 1200000)
+
+    let slow = pwm_plan(72000000, 50)
+    set t to check(t, "72 MHz / 50 Hz is also exact", slow.hz == 50 and slow.error == 0)
+    set t to check(t, "72 MHz / 50 Hz uses prescaler 23", slow.psc == 23)
+    set t to check(t, "72 MHz / 50 Hz uses auto-reload 59999", slow.arr == 59999)
+
+    let odd = pwm_plan(480000000, 44100)
+    set t to check(t, "a frequency that does not divide is still planned", odd.ticks >= 10000)
+    set t to check(t, "and the plan keeps the error small", odd.error < 2)
+    let bad = pwm_plan(0, 0)
+    set t to check(t, "a zero clock is refused rather than divided by", bad.ticks == 0)
+
+    # ---- setup ---------------------------------------------------------
+    let pwm = pwm_new(tim, 480000000, 400)
+    set t to check(t, "the compare register is at the timer base plus 0x34", pwm.ccr == 1073741876)
+    set t to check(t, "the channel starts disabled", pwm.enabled == 0)
+    let edges_before = edge_count()
+    set pwm to pwm_setup(pwm)
+    set t to check(t, "setup enables the channel", pwm.enabled == 1)
+    set t to check(t, "the prescaler register holds the plan", mmio_read32(tim + 40) == 19)
+    set t to check(t, "the auto-reload register holds the plan", mmio_read32(tim + 44) == 59999)
+    set t to check(t, "the channel starts at half duty", mmio_read32(tim + 52) == 30000)
+    set t to check(t, "the channel output is enabled", reg_bit(mmio_read32(tim + 32), 0) == 1)
+    set t to check(t, "channel 1 is in PWM mode 1", reg_field_get(mmio_read32(tim + 24), 4, 3) == 6)
+    set t to check(t, "with the compare register preloaded", reg_field_get(mmio_read32(tim + 24), 3, 1) == 1)
+    set t to check(t, "the counter is running", reg_bit(mmio_read32(tim + 0), 0) == 1)
+    set t to check(t, "the update event was generated", mmio_read32(tim + 20) == 1)
+    set t to check(t, "setup wrote the compare register exactly once", edge_count() == edges_before + 1)
+
+    # ---- a duty update is one compare write ----------------------------
+    let edges = edge_count()
+    set t to check(t, "a quarter duty is a quarter of the ticks", pwm_set_duty(pwm, 250) == 15000)
+    set t to check(t, "and the compare register holds it", mmio_read32(tim + 52) == 15000)
+    set t to check(t, "one update is one actuator edge", edge_count() == edges + 1)
+    set t to check(t, "a full duty is one past the auto-reload", pwm_set_duty(pwm, 1000) == 60000)
+    set t to check(t, "a duty above full is clamped", pwm_set_duty(pwm, 2000) == 60000)
+    set t to check(t, "a zero duty is zero", pwm_set_duty(pwm, 0) == 0)
+    set t to check(t, "a negative duty is clamped to zero", pwm_set_duty(pwm, 0 - 500) == 0)
+    set t to check(t, "the last update really reached the register", mmio_read32(tim + 52) == 0)
+    let last = edge_count()
+    set t to check(t, "the logged edge carries the value written", edge_value(last - 1) == 0)
+    set t to check(t, "and a cycle stamp", edge_time(last - 1) > 0)
+
+    # ---- enable and disable --------------------------------------------
+    set pwm to pwm_disable(pwm)
+    set t to check(t, "disable clears the counter enable", reg_bit(mmio_read32(tim + 0), 0) == 0)
+    set t to check(t, "and says so in the record", pwm.enabled == 0)
+    set pwm to pwm_enable(pwm)
+    set t to check(t, "enable sets the counter enable", reg_bit(mmio_read32(tim + 0), 0) == 1)
+    set t to check(t, "and says so in the record", pwm.enabled == 1)
+
+    # ---- the period boundary is pollable -------------------------------
+    pwm_restart_count(pwm)
+    set t to check(t, "a period boundary is polled to true", pwm_wait_period(pwm, 200000) == 1)
+    set t to check(t, "the status register reports it", pwm_status(pwm) == 1)
+    set t to check(t, "the counter has passed the auto-reload", pwm_count(pwm) >= 59999)
+
+    # ---- nothing fell outside the modelled board -----------------------
+    set t to check(t, "no access fell outside the modelled board", mmio_read32(ctl + 20) == 0)
+    set t to check(t, "no access was misaligned", mmio_read32(ctl + 24) == 0)
+
+    if t.failures == 0:
+        log.info("OK pwm: " + ("" + t.checks) + " checks")
+    return t.failures

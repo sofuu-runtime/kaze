@@ -1,0 +1,338 @@
+# lib/spi.kaze -- a polled SPI master over the board's SPI1 window.
+#
+# The peripheral is an STM32H7-style SPI block: a control register, a status register and
+# one data register. dist/kaze_board_sim.h fixes the window and the offsets used here:
+#
+#     CR1 0x00   CPHA bit0, CPOL bit1, MSTR bit2, BR[2:0] bits 3-5, SPE bit6
+#     SR  0x08   bit0 RXNE (a received byte is waiting), bit1 TXE (the shifter is free)
+#     DR  0x0C   write to transmit, read to receive
+#
+# The base address arrives from the caller, so the same module serves any board that puts
+# this block somewhere else; only the offsets are fixed, and they belong to the register
+# map rather than to one board.
+#
+# What this module claims: a blocking master whose every wait is bounded by a poll
+# ceiling carried in SpiBus, so a missing or wedged peripheral produces a status and never
+# a hang. What it does not claim: interrupts, DMA, multi-master arbitration, or real
+# timing. On the virtual board a transfer costs model cycles, not silicon nanoseconds.
+#
+# Status codes, as numbers because a driver answers with values:
+#
+#     SPI_OK           0   the exchange finished
+#     SPI_TIMEOUT_TXE  1   the transmitter never drained inside the ceiling
+#     SPI_TIMEOUT_RXNE 2   no received byte arrived inside the ceiling
+#     SPI_BAD_SETUP    3   a mode or divider this module does not accept
+#
+# Two shapes, deliberately. The record-returning actions (spi_transfer8, spi_read_reg,
+# spi_read_burst) are for call sites that run once per decision and want the status, the
+# value and the poll count together. The number-only actions (spi_read_open,
+# spi_read_byte, spi_read_close) allocate nothing at all, because a device polled at
+# kilohertz cannot pay for an arena allocation per byte: every Kaze value returned by an
+# action is arena-backed, so a record per cycle would exhaust a metal image's arena long
+# before a million cycles pass.
+
+# The capability the register builtins need. Declared here because this module is the
+# layer that touches hardware; a program that imports it inherits the declaration when the
+# bundle merges headers.
+needs: regs
+
+# ---- register offsets, all inside the SPI window ------------------------
+action spi_cr1_off() -> num:
+    return 0
+
+action spi_sr_off() -> num:
+    return 8
+
+action spi_dr_off() -> num:
+    return 12
+
+# ---- CR1 fields ---------------------------------------------------------
+action spi_cpha() -> num:
+    return 1
+
+action spi_cpol() -> num:
+    return 2
+
+action spi_master() -> num:
+    return 4
+
+action spi_spe() -> num:
+    return 64
+
+# ---- SR fields ----------------------------------------------------------
+action spi_rxne() -> num:
+    return 1
+
+action spi_txe() -> num:
+    return 2
+
+# ---- GPIO offsets used to drive the chip select -------------------------
+action gpio_idr_off() -> num:
+    return 16
+
+action gpio_bsrr_off() -> num:
+    return 24
+
+# ---- status codes -------------------------------------------------------
+action spi_ok() -> num:
+    return 0
+
+action spi_timeout_txe() -> num:
+    return 1
+
+action spi_timeout_rxne() -> num:
+    return 2
+
+action spi_bad_setup() -> num:
+    return 3
+
+# One peripheral plus the select that gates it. cs_port is the GPIO port base, or 0 when
+# the select is wired to the peripheral's hardware NSS and software has nothing to drive.
+# limit is the poll ceiling every bounded wait on this bus uses.
+record SpiBus:
+    base: number
+    cs_port: number
+    cs_pin: number
+    limit: number
+
+# The answer to one byte exchange: what happened, the byte that came back, and how many
+# status polls the exchange needed.
+record SpiXfer:
+    status: number
+    value: number
+    waits: number
+
+# The answer to a register burst: what happened, the bytes in arrival order, and the poll
+# count.
+record SpiBurst:
+    status: number
+    bytes: list
+    waits: number
+
+# A poll ceiling of zero would make every wait report a timeout without reading the status
+# once, and one above a million would trip the wait loop's own fuel ceiling, so both ends are
+# clamped here and the ceiling a caller reads back is the ceiling the waits use.
+action spi_bus(base, cs_port, cs_pin, limit) -> SpiBus:
+    let lim = limit
+    if lim < 1:
+        set lim to 1
+    if lim > 1000000:
+        set lim to 1000000
+    return SpiBus(base: base, cs_port: cs_port, cs_pin: cs_pin, limit: lim)
+
+# 2 to the power of the pin, clamped to the sixteen pins a port here has. A left shift
+# would say this in one line, but the language has no shift operator, so it is a loop.
+action spi_pin_mask(pin) -> num:
+    let p = pin
+    if p < 0:
+        set p to 0
+    if p > 15:
+        set p to 15
+    let m = 1
+    let i = 0
+    while i < p bounded 16:
+        set m to m * 2
+        set i to i + 1
+    return m
+
+# Assert the select. BSRR bits 0-15 set an output pin and bits 16-31 clear one, so the
+# active-low select is asserted through the reset half of the register. Answers 1 when a
+# pin was driven and 0 when the bus has no software select.
+action spi_select(bus: SpiBus) -> num:
+    if bus.cs_port == 0:
+        return 0
+    mmio_write32(bus.cs_port + gpio_bsrr_off(), spi_pin_mask(bus.cs_pin) * 65536)
+    return 1
+
+action spi_release(bus: SpiBus) -> num:
+    if bus.cs_port == 0:
+        return 0
+    mmio_write32(bus.cs_port + gpio_bsrr_off(), spi_pin_mask(bus.cs_pin))
+    return 1
+
+# 1 when the select line reads high, which is the idle state of an active-low select.
+# IDR mirrors ODR on this board, so this also checks what the driver just wrote.
+action spi_cs_level(bus: SpiBus) -> num:
+    if bus.cs_port == 0:
+        return 1
+    let mask = spi_pin_mask(bus.cs_pin)
+    if (mmio_read32(bus.cs_port + gpio_idr_off()) & mask) == mask:
+        return 1
+    return 0
+
+action spi_status(bus: SpiBus) -> num:
+    return mmio_read32(bus.base + spi_sr_off())
+
+action spi_cr1(bus: SpiBus) -> num:
+    return mmio_read32(bus.base + spi_cr1_off())
+
+# CPHA from bit 0 of the mode and CPOL from the mode's half. SPI modes 0-3 are the four
+# clock phase/polarity pairs every device datasheet names; mode 3 is the usual IMU setting.
+action spi_mode_bits(mode) -> num:
+    let bits = mode & spi_cpha()
+    if mode >= 2:
+        set bits to bits + spi_cpol()
+    return bits
+
+# The BR field for a divider: 0 for 2, 1 for 4, and so on to 7 for 256. Answers -1 for
+# anything that is not a power of two in that range, which is what makes spi_configure
+# answer SPI_BAD_SETUP instead of programming a clock nobody asked for.
+action spi_br_bits(divider) -> num:
+    let d = divider
+    let f = 0
+    let found = 0 - 1
+    while f < 8 and found < 0 bounded 8:
+        if d == 2:
+            set found to f
+        otherwise:
+            set d to d / 2
+            set f to f + 1
+    return found
+
+# Master, enabled, one of the four modes, one of the eight dividers. The register is
+# written once and read back by the suites, which is the whole configuration story on this
+# board: there is no clock-enable or pin-mux model behind it.
+action spi_configure(bus: SpiBus, mode, divider) -> num:
+    if mode < 0 or mode > 3:
+        return spi_bad_setup()
+    let br = spi_br_bits(divider)
+    if br < 0:
+        return spi_bad_setup()
+    let bits = spi_master() + spi_spe() + spi_mode_bits(mode) + br * 8
+    mmio_write32(bus.base + spi_cr1_off(), bits)
+    mmio_fence()
+    return spi_ok()
+
+# How many status polls it took before TXE read 1, or -1 when the ceiling ran out. The
+# count is the evidence a scheduler wants: a wait that spends the whole ceiling is a
+# peripheral that is not there, not a slow one.
+action spi_wait_txe(bus: SpiBus, limit) -> num:
+    let polls = 0
+    while polls < limit bounded 1000000:
+        set polls to polls + 1
+        if (spi_status(bus) & spi_txe()) != 0:
+            return polls
+    return 0 - 1
+
+action spi_wait_rxne(bus: SpiBus, limit) -> num:
+    let polls = 0
+    while polls < limit bounded 1000000:
+        set polls to polls + 1
+        if (spi_status(bus) & spi_rxne()) != 0:
+            return polls
+    return 0 - 1
+
+# One full-duplex byte with the select driven around it: assert, wait for the shifter,
+# write, wait for the received byte, read it, release. A byte the device answers no data
+# for is not a hang: the RXNE wait gives up at the ceiling and reports SPI_TIMEOUT_RXNE
+# with the select already released.
+action spi_transfer8(bus: SpiBus, byte) -> SpiXfer:
+    spi_select(bus)
+    let tx = spi_wait_txe(bus, bus.limit)
+    if tx < 0:
+        spi_release(bus)
+        return SpiXfer(status: spi_timeout_txe(), value: 0, waits: 0 - 1)
+    mmio_write32(bus.base + spi_dr_off(), byte & 255)
+    let rx = spi_wait_rxne(bus, bus.limit)
+    if rx < 0:
+        spi_release(bus)
+        return SpiXfer(status: spi_timeout_rxne(), value: 0, waits: tx)
+    let got = mmio_read32(bus.base + spi_dr_off()) & 255
+    spi_release(bus)
+    return SpiXfer(status: spi_ok(), value: got, waits: tx + rx)
+
+# A byte out with no answer expected: a command whose read bit is clear starts no stream
+# on the device, so waiting for RXNE would only burn the ceiling.
+action spi_write8(bus: SpiBus, byte) -> SpiXfer:
+    spi_select(bus)
+    let tx = spi_wait_txe(bus, bus.limit)
+    if tx < 0:
+        spi_release(bus)
+        return SpiXfer(status: spi_timeout_txe(), value: 0, waits: 0 - 1)
+    mmio_write32(bus.base + spi_dr_off(), byte & 255)
+    spi_release(bus)
+    return SpiXfer(status: spi_ok(), value: 0, waits: tx)
+
+# Start a read stream. Bit 7 of the byte written to DR is the read command on this bus, so
+# the register number goes out with that bit set. Answers the TXE poll count, or -1 when
+# the transmitter never drained; the caller releases the select either way.
+action spi_read_open(bus: SpiBus, reg, limit) -> num:
+    spi_select(bus)
+    let tx = spi_wait_txe(bus, limit)
+    if tx < 0:
+        return 0 - 1
+    mmio_write32(bus.base + spi_dr_off(), (reg & 127) + 128)
+    return tx
+
+# The next byte of the open stream, 0..255, or -1 when none arrived inside the ceiling.
+# The dummy write is what a real master sends to clock a byte out; the board model keys
+# the received side on the read instead, so the driver does what silicon needs and the
+# model does what a model does.
+action spi_read_byte(bus: SpiBus, limit) -> num:
+    mmio_write32(bus.base + spi_dr_off(), 0)
+    let rx = spi_wait_rxne(bus, limit)
+    if rx < 0:
+        return 0 - 1
+    return mmio_read32(bus.base + spi_dr_off()) & 255
+
+action spi_read_close(bus: SpiBus) -> num:
+    return spi_release(bus)
+
+# Pop whatever the receive side is still holding. A burst shorter than the device's stream
+# leaves the next byte waiting in the receive buffer, and the board model behaves the same
+# way it would on silicon, so a caller that stops mid-stream drains before the next command
+# or reads the previous stream's tail as if it were fresh data. Answers how many bytes were
+# popped; the loop is bounded because a wedged bus would otherwise spin here forever.
+action spi_drain(bus: SpiBus) -> num:
+    let pops = 0
+    let done = 0
+    while done == 0 bounded 1024:
+        if (spi_status(bus) & spi_rxne()) == 0:
+            set done to 1
+        otherwise:
+            mmio_read32(bus.base + spi_dr_off())
+            set pops to pops + 1
+    return pops
+
+# One register read in the record shape. Count answers the polls the command write took;
+# a timeout reports -1 there because no poll count describes a wait that never succeeded.
+action spi_read_reg(bus: SpiBus, reg) -> SpiXfer:
+    let opened = spi_read_open(bus, reg, bus.limit)
+    if opened < 0:
+        spi_release(bus)
+        return SpiXfer(status: spi_timeout_txe(), value: 0, waits: 0 - 1)
+    let got = spi_read_byte(bus, bus.limit)
+    spi_release(bus)
+    if got < 0:
+        return SpiXfer(status: spi_timeout_rxne(), value: 0, waits: opened)
+    return SpiXfer(status: spi_ok(), value: got, waits: opened)
+
+# count bytes from reg in one select window: the device streams them as the master clocks
+# them, so every byte after the command is a read of DR. A short stream stops early with
+# SPI_TIMEOUT_RXNE and the bytes that did arrive, which is what a caller can act on.
+action spi_read_burst(bus: SpiBus, reg, count) -> SpiBurst:
+    let bytes = []
+    # A burst is at most 256 bytes, which is the receive loop's fuel ceiling as well.
+    let want = count
+    if want > 256:
+        set want to 256
+    if want <= 0:
+        return SpiBurst(status: spi_ok(), bytes: bytes, waits: 0)
+    let opened = spi_read_open(bus, reg, bus.limit)
+    if opened < 0:
+        spi_release(bus)
+        return SpiBurst(status: spi_timeout_txe(), bytes: bytes, waits: 0 - 1)
+    let status = spi_ok()
+    let waits = opened
+    let i = 0
+    while i < want bounded 256:
+        let got = spi_read_byte(bus, bus.limit)
+        if got < 0:
+            set status to spi_timeout_rxne()
+            set i to want
+        otherwise:
+            set bytes to bytes + [got]
+            set waits to waits + 1
+            set i to i + 1
+    spi_release(bus)
+    return SpiBurst(status: status, bytes: bytes, waits: waits)

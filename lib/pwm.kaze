@@ -1,0 +1,203 @@
+# lib/pwm.kaze -- a 400 Hz-class PWM actuator channel on an STM32-style timer.
+#
+# The peripheral is a general-purpose timer: a prescaler divides the core clock into a
+# timer tick, the auto-reload register sets the tick count per output period, and a
+# compare register decides where in that period the output flips. Channel 1 is used in
+# PWM mode 1 with the compare register preloaded, so a new duty takes effect at the next
+# period boundary instead of tearing the current one.
+#
+# The plan is arithmetic, not a constant: given the core clock and the wanted frequency,
+# pwm_plan picks the smallest prescaler whose tick count fits the 16-bit auto-reload and
+# then prefers, among the candidates it scans, the largest tick count that lands exactly
+# on the wanted frequency. At 480 MHz and 400 Hz that is prescaler 19 and auto-reload
+# 59999: 20 * 60000 = 1,200,000 cycles per period, so the plan is exact and the duty has
+# 60 timer ticks per permille. The auto-reload is held to 16 bits so the same plan is
+# valid on a part whose ARR is 16 bits, which is why the answer is not one prescaler-0
+# period of 1,200,000.
+#
+# The duty update is one compare-register write and nothing else - no read, no
+# read-modify-write, no allocation - because that path is the one a control loop runs
+# every period. tests/hw/pwm_jitter_test.kaze measures it on the emulated core and
+# scripts/phase14-static.sh counts its instructions in the image.
+#
+# What this module does not do: it does not configure the GPIO alternate function, dead
+# time, complementary outputs, break input or interrupts, and it cannot see the pin. The
+# board model records each compare-register write as one actuator edge with a cycle
+# stamp, and the suites read that log through the test-only control block; the driver
+# itself never touches the log.
+
+needs: regs
+
+use "./regs.kaze"
+
+record PwmPlan:
+    psc: number      # prescaler register value: timer tick = clock / (psc + 1)
+    arr: number      # auto-reload register value: period = (arr + 1) ticks
+    ticks: number    # arr + 1, kept because duty maths needs the modulus
+    hz: number       # the frequency the plan actually produces
+    error: number    # |hz - wanted|, 0 when the division is exact
+
+record Pwm:
+    base: number     # timer base address, supplied by the BSP
+    psc: number
+    arr: number
+    ticks: number
+    hz: number
+    clock: number    # core clock the plan was made for
+    ccr: number      # CCR1 address: the one register a duty update writes
+    enabled: number
+
+# ---- the timer's own register offsets --------------------------------------
+# These are bus-internal constants of the timer peripheral, not board addresses: the
+# base comes from the caller, the offsets are what makes it a timer.
+
+action pwm_off_cr1() -> num:
+    return 0
+action pwm_off_sr() -> num:
+    return 16
+action pwm_off_egr() -> num:
+    return 20
+action pwm_off_ccmr1() -> num:
+    return 24
+action pwm_off_ccer() -> num:
+    return 32
+action pwm_off_cnt() -> num:
+    return 36
+action pwm_off_psc() -> num:
+    return 40
+action pwm_off_arr() -> num:
+    return 44
+action pwm_off_ccr1() -> num:
+    return 52
+
+# ---- planning --------------------------------------------------------------
+
+action pwm_floor(x) -> num:
+    let r = (x % 1) otherwise 0
+    if x < 0:
+        if r != 0:
+            return x - r - 1
+    return x - r
+
+action pwm_abs(x) -> num:
+    if x < 0:
+        return 0 - x
+    return x
+
+action pwm_plan(clock_hz, freq_hz) -> PwmPlan:
+    if clock_hz <= 0 or freq_hz <= 0:
+        return PwmPlan(psc: 0, arr: 0, ticks: 0, hz: 0, error: 0)
+    let total = (clock_hz / freq_hz) otherwise 0
+    # Smallest prescaler divisor whose tick count fits a 16-bit auto-reload, then a
+    # bounded scan towards larger divisors: a larger divisor means fewer ticks, so the
+    # first exact hit in the scan is also the one with the most duty resolution.
+    let psc1 = pwm_floor(total / 65536) + 1
+    if psc1 < 1:
+        set psc1 to 1
+    if psc1 > 65536:
+        set psc1 to 65536
+    let ticks = pwm_floor((total / psc1) otherwise 0)
+    if ticks < 1:
+        set ticks to 1
+    if ticks > 65536:
+        set ticks to 65536
+    let best_psc1 = psc1
+    let best_ticks = ticks
+    let best_hz = (clock_hz / (psc1 * ticks)) otherwise 0
+    let best_err = pwm_abs(best_hz - freq_hz)
+    let stop = psc1 + 1024
+    if stop > 65536:
+        set stop to 65536
+    let cand = psc1
+    while cand <= stop bounded 2048:
+        let t = pwm_floor((total / cand) otherwise 0)
+        if t >= 1 and t <= 65536:
+            let hz = (clock_hz / (cand * t)) otherwise 0
+            let err = pwm_abs(hz - freq_hz)
+            if err < best_err or (err == best_err and t > best_ticks):
+                set best_psc1 to cand
+                set best_ticks to t
+                set best_hz to hz
+                set best_err to err
+        set cand to cand + 1
+    return PwmPlan(psc: best_psc1 - 1, arr: best_ticks - 1, ticks: best_ticks, hz: best_hz, error: best_err)
+
+action pwm_new(base, clock_hz, freq_hz) -> Pwm:
+    let plan = pwm_plan(clock_hz, freq_hz)
+    return Pwm(base: base, psc: plan.psc, arr: plan.arr, ticks: plan.ticks, hz: plan.hz, clock: clock_hz, ccr: base + pwm_off_ccr1(), enabled: 0)
+
+action pwm_with_enabled(p: Pwm, enabled) -> Pwm:
+    return Pwm(base: p.base, psc: p.psc, arr: p.arr, ticks: p.ticks, hz: p.hz, clock: p.clock, ccr: p.ccr, enabled: enabled)
+
+# ---- setup and control -----------------------------------------------------
+
+# Program the channel and start it at 50% duty, through the same update path the
+# control loop uses: setup cannot drift from a duty update, and the routine stays a real
+# function in the image instead of being inlined away, which is what
+# scripts/phase14-static.sh counts instructions in. CCMR1 bits 6:4 are OC1M = 110 (PWM
+# mode 1) and bit 3 is OC1PE (preload enable); CCER bit 0 enables the channel; EGR bit 0
+# latches the prescaler and auto-reload; CR1 bit 0 starts the counter. The 0x78 / 0x68
+# pair is the field mask and value for OC1M + OC1PE.
+action pwm_setup(p: Pwm) -> Pwm:
+    let base = p.base
+    reg_write(reg_new(base, pwm_off_psc(), 32), p.psc)
+    reg_write(reg_new(base, pwm_off_arr(), 32), p.arr)
+    pwm_set_duty(p, 500)
+    reg_read_modify_write(reg_new(base, pwm_off_ccmr1(), 32), 120, 104)
+    reg_read_modify_write(reg_new(base, pwm_off_ccer(), 32), 1, 1)
+    reg_write(reg_new(base, pwm_off_egr(), 32), 1)
+    reg_read_modify_write(reg_new(base, pwm_off_cr1(), 32), 1, 1)
+    mmio_fence()
+    return pwm_with_enabled(p, 1)
+
+action pwm_enable(p: Pwm) -> Pwm:
+    reg_read_modify_write(reg_new(p.base, pwm_off_cr1(), 32), 1, 1)
+    mmio_fence()
+    return pwm_with_enabled(p, 1)
+
+action pwm_disable(p: Pwm) -> Pwm:
+    reg_read_modify_write(reg_new(p.base, pwm_off_cr1(), 32), 1, 0)
+    mmio_fence()
+    return pwm_with_enabled(p, 0)
+
+# ---- duty ------------------------------------------------------------------
+
+# The actuator path: permille -> compare value -> one register write, with the two
+# numbers it needs passed in. Plain numbers on purpose: a record field read costs a
+# field walk, and a control loop that runs every period should cache the compare
+# address and the tick count once rather than pay for that walk per update. 1000
+# permille is one past ARR, which is the timer's own "always high"; 0 is always low.
+action pwm_set_duty_permille(ccr_addr, ticks, permille) -> num:
+    # The floor is done on the product so the compare value is a whole timer tick: the
+    # remainder by 1000 is one call, where a floor of the quotient would be another
+    # comparison and subtraction per update.
+    let product = permille * ticks
+    let ccr = 0
+    if product > 0:
+        set ccr to (product - ((product % 1000) otherwise 0)) / 1000
+    if ccr > ticks:
+        set ccr to ticks
+    mmio_write32(ccr_addr, ccr)
+    return ccr
+
+# The same update for a Pwm value, for setup and for callers that are not in a hot loop.
+action pwm_set_duty(p: Pwm, permille) -> num:
+    return pwm_set_duty_permille(p.ccr, p.ticks, permille)
+
+# ---- status ----------------------------------------------------------------
+
+action pwm_count(p: Pwm) -> num:
+    return mmio_read32(p.base + pwm_off_cnt())
+
+action pwm_restart_count(p: Pwm) -> num:
+    mmio_write32(p.base + pwm_off_cnt(), 0)
+    return 0
+
+action pwm_status(p: Pwm) -> num:
+    return mmio_read32(p.base + pwm_off_sr())
+
+# 1 when the counter has reached the auto-reload since the last count restart, 0 when
+# the poll ran out. The timer raises SR bit 0 on that comparison, which is the cheap way
+# for a caller to wait for one output period.
+action pwm_wait_period(p: Pwm, limit) -> num:
+    return reg_poll_bit(reg_new(p.base, pwm_off_sr(), 32), 0, limit)

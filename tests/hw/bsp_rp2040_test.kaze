@@ -1,0 +1,170 @@
+# tests/hw/bsp_rp2040_test.kaze -- the RP2040 board support package.
+#
+# What the suite proves:
+#   1. every base the BSP hands to a driver (SPI0, I2C0, TIMER, UART0, DMA,
+#      plus the XOSC/PLL_SYS/CLOCKS/PADS/IO_BANK0/SIO windows it touches) is a
+#      window the virtual board models: a scratch value written into each reads
+#      back;
+#   2. the clock plan is the documented XOSC/PLL_SYS plan, clock_init really
+#      writes XOSC, PLL_SYS and the CLOCKS muxes, polls STABLE and LOCK, and the
+#      125 MHz is decoded back from the FBDIV/PRIM registers;
+#   3. the pin plan writes the documented FUNCSEL values and pad enables;
+#   4. bsp_rp2040_board() reports base_can = 0 and the CAN transport is the
+#      SPI0-attached path, not an invented peripheral;
+#   5. bsp_rp2040_init runs the documented order, configures UART0 for 115200
+#      8N1 and moves three bytes through DMA channel 0 to UART0;
+#   6. no access fell outside the modelled map (SIM_CTL_UNKNOWN == 0).
+
+needs: log
+needs: regs
+
+use "./../../lib/bsp_rp2040.kaze"
+
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action two_bits(value, shift) -> num:
+    return (value >> shift) & 3
+
+action funcsel(value) -> num:
+    return value & 31
+
+
+action main() -> num:
+    let failures = 0
+    let ctl = rp2040_sim_ctl()
+    let io = rp2040_io_bank0()
+    let pads = rp2040_pads()
+    let sio = rp2040_sio()
+
+    mmio_write32(ctl + rp2040_ctl_reset(), 1)
+    mmio_fence()
+
+    # ---- 1. every base this BSP uses is a modelled window --------------
+    mmio_write32(rp2040_resets() + rp2040_resets_reset(), 12345)
+    set failures to check("RESETS window answers a scratch write", mmio_read32(rp2040_resets() + rp2040_resets_reset()) == 12345, failures)
+    mmio_write32(rp2040_clocks() + rp2040_clk_ref_ctrl(), 7)
+    set failures to check("CLOCKS window answers a scratch write", mmio_read32(rp2040_clocks() + rp2040_clk_ref_ctrl()) == 7, failures)
+    mmio_write32(io + rp2040_gpio_ctrl(rp2040_pin_pwm0()), 4660)
+    set failures to check("IO_BANK0 window answers a scratch write", mmio_read32(io + rp2040_gpio_ctrl(rp2040_pin_pwm0())) == 4660, failures)
+    mmio_write32(pads + rp2040_pad(rp2040_pin_pwm0()), 170)
+    set failures to check("PADS window answers a scratch write", mmio_read32(pads + rp2040_pad(rp2040_pin_pwm0())) == 170, failures)
+    mmio_write32(rp2040_spi0() + rp2040_spi_sspcr0(), 4660)
+    set failures to check("SPI0 window answers a scratch write", mmio_read32(rp2040_spi0() + rp2040_spi_sspcr0()) == 4660, failures)
+    mmio_write32(rp2040_i2c0() + rp2040_i2c_ic_con(), 4660)
+    set failures to check("I2C0 window answers a scratch write", mmio_read32(rp2040_i2c0() + rp2040_i2c_ic_con()) == 4660, failures)
+    mmio_write32(rp2040_pwm() + rp2040_pwm_ch_top(0), 1000)
+    set failures to check("PWM window answers a scratch write", mmio_read32(rp2040_pwm() + rp2040_pwm_ch_top(0)) == 1000, failures)
+    mmio_write32(rp2040_timer() + rp2040_timer_alarm0(), 5000)
+    set failures to check("TIMER window answers a scratch write", mmio_read32(rp2040_timer() + rp2040_timer_alarm0()) == 5000, failures)
+    mmio_write32(sio + rp2040_sio_gpio_out(), 65535)
+    set failures to check("SIO window answers a scratch write", mmio_read32(sio + rp2040_sio_gpio_out()) == 65535, failures)
+    mmio_write32(rp2040_xosc() + rp2040_xosc_ctrl(), 1234)
+    set failures to check("XOSC window answers a scratch write", mmio_read32(rp2040_xosc() + rp2040_xosc_ctrl()) == 1234, failures)
+    mmio_write32(rp2040_pll_sys() + rp2040_pll_fbdiv_int(), 99)
+    set failures to check("PLL_SYS window answers a scratch write", mmio_read32(rp2040_pll_sys() + rp2040_pll_fbdiv_int()) == 99, failures)
+    mmio_write32(rp2040_uart0() + rp2040_uart_ibrd(), 1234)
+    set failures to check("UART0 window answers a scratch write", mmio_read32(rp2040_uart0() + rp2040_uart_ibrd()) == 1234, failures)
+    mmio_write32(rp2040_dma() + rp2040_dma_ch0_trans_count(), 5)
+    set failures to check("DMA window answers a scratch write", mmio_read32(rp2040_dma() + rp2040_dma_ch0_trans_count()) == 5, failures)
+
+    # ---- 2. the documented clock plan ----------------------------------
+    let plan = bsp_rp2040_clock_plan()
+    set failures to check("clock plan: XOSC is 12 MHz", plan.xosc_hz == 12000000, failures)
+    set failures to check("clock plan: REFDIV is 1", plan.refdiv == 1, failures)
+    set failures to check("clock plan: FBDIV is 125", plan.fbdiv == 125, failures)
+    set failures to check("clock plan: VCO is 1500 MHz", plan.vco_hz == 1500000000, failures)
+    set failures to check("clock plan: POSTDIV1 is 6", plan.postdiv1 == 6, failures)
+    set failures to check("clock plan: POSTDIV2 is 2", plan.postdiv2 == 2, failures)
+    set failures to check("clock plan: CLK_SYS is 125 MHz", plan.sys_hz == 125000000, failures)
+    set failures to check("clock plan: CLK_PERI is 125 MHz", plan.peri_hz == 125000000, failures)
+    set failures to check("clock plan: XOSC CTRL enables the crystal", plan.xosc_ctrl_value == 16431776, failures)
+    set failures to check("clock plan: PLL_SYS PWR is 0", plan.pll_pwr_value == 0, failures)
+    set failures to check("clock plan: PLL_SYS FBDIV_INT is 125", plan.pll_fbdiv_value == 125, failures)
+    set failures to check("clock plan: PLL_SYS PRIM is 6 and 2", plan.pll_prim_value == 2490368, failures)
+
+    let core = bsp_rp2040_clock_init()
+    set failures to check("clock_init returns the resulting 125 MHz", core == 125000000, failures)
+    set failures to check("clock_init publishes 125 MHz to the board clock register", mmio_read32(ctl + rp2040_ctl_sysclk_hz()) == 125000000, failures)
+
+    let xosc = rp2040_xosc()
+    let pll = rp2040_pll_sys()
+    set failures to check("XOSC CTRL kept the documented enable value", mmio_read32(xosc + rp2040_xosc_ctrl()) == 16431776, failures)
+    set failures to check("XOSC STATUS reports STABLE", mmio_read32(xosc + rp2040_xosc_status()) >= 2147483648, failures)
+    set failures to check("PLL_SYS FBDIV_INT kept 125", mmio_read32(pll + rp2040_pll_fbdiv_int()) == 125, failures)
+    set failures to check("PLL_SYS PRIM kept POSTDIV1 6 and POSTDIV2 2", mmio_read32(pll + rp2040_pll_prim()) == 2490368, failures)
+    set failures to check("PLL_SYS is powered up", mmio_read32(pll + rp2040_pll_pwr()) == 0, failures)
+    set failures to check("PLL_SYS reports LOCK", mmio_read32(pll + rp2040_pll_cs()) >= 2147483648, failures)
+    set failures to check("CLK_REF_CTRL selects XOSC", mmio_read32(rp2040_clocks() + rp2040_clk_ref_ctrl()) == 2, failures)
+    set failures to check("CLK_SYS_CTRL is enabled from PLL_SYS", mmio_read32(rp2040_clocks() + rp2040_clk_sys_ctrl()) == 2048, failures)
+    let live = bsp_rp2040_clock_from_registers()
+    set failures to check("the frequency decodes back from the registers as 125 MHz", live.sys_hz == 125000000, failures)
+    set failures to check("the register decode gives a 1500 MHz VCO", live.vco_hz == 1500000000, failures)
+
+    # ---- 3. the board record -------------------------------------------
+    let board = bsp_rp2040_board()
+    set failures to check("board base_spi is SPI0", board.base_spi == rp2040_spi0(), failures)
+    set failures to check("board base_i2c is I2C0", board.base_i2c == rp2040_i2c0(), failures)
+    set failures to check("board base_can is 0: there is no RP2040 CAN controller", board.base_can == 0, failures)
+    set failures to check("board base_uart is UART0", board.base_uart == rp2040_uart0(), failures)
+    set failures to check("board base_dma is the RP2040 DMA block", board.base_dma == rp2040_dma(), failures)
+    set failures to check("board base_timer is the RP2040 timer", board.base_timer == rp2040_timer(), failures)
+    set failures to check("board core_hz is 125 MHz", board.core_hz == 125000000, failures)
+
+    # ---- 4. the SPI-attached CAN path, not an invented peripheral -------
+    let can = bsp_rp2040_can_path()
+    set failures to check("the RP2040 board reports no CAN controller", bsp_rp2040_has_can_controller() == false, failures)
+    set failures to check("the CAN transport is SPI", can.kind == "spi", failures)
+    set failures to check("the CAN transport rides SPI0", can.base == rp2040_spi0(), failures)
+    set failures to check("the CAN transport has chip select GPIO6", can.cs_gpio == 6, failures)
+    set failures to check("the CAN transport has interrupt GPIO7", can.int_gpio == 7, failures)
+
+    # ---- 5. the documented bring-up order ------------------------------
+    let st = bsp_rp2040_init()
+    set failures to check("init reports success", st.ok, failures)
+    set failures to check("init reports ten stages", (length of st.stages) == 10, failures)
+    set failures to check("init starts with resets", (st.stages[0] otherwise "?") == "resets", failures)
+    set failures to check("init ends with dma", (st.stages[9] otherwise "?") == "dma", failures)
+    set failures to check("init enables SPI0", mmio_read32(board.base_spi + rp2040_spi_sspcr1()) == 2, failures)
+    set failures to check("init addresses the barometer on I2C0", mmio_read32(board.base_i2c + rp2040_i2c_ic_tar()) == 118, failures)
+    set failures to check("init sets the PWM period to 1 kHz", mmio_read32(rp2040_pwm() + rp2040_pwm_ch_top(0)) == 12499, failures)
+    set failures to check("init enables both PWM channels", mmio_read32(rp2040_pwm() + rp2040_pwm_en()) == 3, failures)
+    set failures to check("init arms the hardware timer", mmio_read32(board.base_timer + rp2040_timer_alarm0()) > 0, failures)
+    set failures to check("init sets UART0 IBRD for 115200", mmio_read32(board.base_uart + rp2040_uart_ibrd()) == 67, failures)
+    set failures to check("init sets UART0 FBRD for 115200", mmio_read32(board.base_uart + rp2040_uart_fbrd()) == 52, failures)
+    set failures to check("init sets UART0 LCR_H to 8N1 with FIFOs", mmio_read32(board.base_uart + rp2040_uart_lcr_h()) == 112, failures)
+    set failures to check("init enables UART0 TX and RX", mmio_read32(board.base_uart + rp2040_uart_cr()) == 769, failures)
+    set failures to check("UART0 reports its transmitter not full", (mmio_read32(board.base_uart + rp2040_uart_fr()) & 32) == 0, failures)
+    set failures to check("init's DMA transfer completed", mmio_read32(board.base_dma + rp2040_dma_intr()) == 1, failures)
+    set failures to check("the UART received the three DMA bytes", mmio_read32(ctl + rp2040_ctl_uart_len()) == 3, failures)
+    mmio_write32(ctl + rp2040_ctl_uart_index(), 0)
+    set failures to check("DMA byte 0 is K", mmio_read32(ctl + rp2040_ctl_uart_byte()) == 75, failures)
+    mmio_write32(ctl + rp2040_ctl_uart_index(), 1)
+    set failures to check("DMA byte 1 is Z", mmio_read32(ctl + rp2040_ctl_uart_byte()) == 90, failures)
+    mmio_write32(ctl + rp2040_ctl_uart_index(), 2)
+    set failures to check("DMA byte 2 is !", mmio_read32(ctl + rp2040_ctl_uart_byte()) == 33, failures)
+
+    # ---- 6. reset release and the pin plan (written by init) ------------
+    set failures to check("RESET is released after bring-up", mmio_read32(rp2040_resets() + rp2040_resets_reset()) == 0, failures)
+    set failures to check("RESET_DONE reports every block up", mmio_read32(rp2040_resets() + rp2040_resets_reset_done()) == 4294967295, failures)
+    set failures to check("GPIO0 is PWM", funcsel(mmio_read32(io + rp2040_gpio_ctrl(rp2040_pin_pwm0()))) == 4, failures)
+    set failures to check("GPIO2 is SPI0 SCK", funcsel(mmio_read32(io + rp2040_gpio_ctrl(rp2040_pin_spi_sck()))) == 1, failures)
+    set failures to check("GPIO5 is SIO chip select", funcsel(mmio_read32(io + rp2040_gpio_ctrl(rp2040_pin_spi_cs()))) == 5, failures)
+    set failures to check("GPIO6 is SIO CAN-bridge chip select", funcsel(mmio_read32(io + rp2040_gpio_ctrl(rp2040_pin_can_cs()))) == 5, failures)
+    set failures to check("GPIO8 is I2C0 SDA", funcsel(mmio_read32(io + rp2040_gpio_ctrl(rp2040_pin_i2c_sda()))) == 3, failures)
+    set failures to check("GPIO12 is UART0 TX", funcsel(mmio_read32(io + rp2040_gpio_ctrl(rp2040_pin_uart_tx()))) == 2, failures)
+    set failures to check("GPIO12 pad has the input enabled", (mmio_read32(pads + rp2040_pad(rp2040_pin_uart_tx())) & 64) != 0, failures)
+    let oe = mmio_read32(sio + rp2040_sio_gpio_oe())
+    set failures to check("SIO drives the SPI chip select", ((oe >> 5) & 1) == 1, failures)
+    set failures to check("SIO drives the CAN-bridge chip select", ((oe >> 6) & 1) == 1, failures)
+
+    # ---- 7. nothing touched an address the board does not model --------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + rp2040_ctl_unknown()) == 0, failures)
+
+    if failures == 0:
+        log.info("OK bsp_rp2040: 80 checks")
+    return failures

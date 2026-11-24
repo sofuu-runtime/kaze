@@ -1,0 +1,281 @@
+# lib/imu.kaze -- the six-axis IMU on the SPI bus, and the polling deadline it must meet.
+#
+# The device behind SPI1 answers two things this module uses, from the register map:
+#
+#     register 0x75 (117)   WHO_AM_I, a constant 0x47 (71)
+#     register 0x1A (26)     six data bytes in one burst: three 16-bit words, low byte
+#                           first, one word per two consecutive addresses
+#
+# What this module claims: a chip-id probe, a burst read of the six data bytes with the
+# words converted to signed numbers, and a polling action that runs a stated number of
+# cycles at a stated rate between 1 kHz and 8 kHz, timing each cycle against a stated
+# deadline, counting overruns and keeping the worst cycle. What it does not claim: the
+# full register set of any one part, interrupt-driven sampling, or calibration. The burst
+# is read as three words named x, y and z; which axis each word is on a particular part is
+# that part's datasheet, not this map.
+#
+# The deadline. At 480 MHz one cycle is 2.083 ns, so 125 microseconds is 60000 cycles.
+# imu_deadline_cycles() answers that number and imu_poll_run takes it as a parameter, so a
+# caller on a slower clock states a different budget instead of inheriting one.
+#
+# Nothing in the polling loop allocates. Kaze values are arena-backed and a metal image has
+# 16 KB of it, so one record or list per cycle would run out of memory long before a
+# million cycles finish: the loop carries a handful of numbers and hands back one record at
+# the end.
+#
+# Status codes for imu_poll_run:
+#
+#     IMU_POLL_OK       0   every cycle ran and every bus exchange finished
+#     IMU_POLL_RATE     1   the stated rate is outside 1 kHz..8 kHz
+#     IMU_POLL_LENGTH   2   more cycles than imu_poll_max() allows in one run
+#     IMU_POLL_DEVICE   3   the device stopped answering; the run stopped there
+#
+# Status codes for the chip-id probe are the SPI codes 1 and 2 from spi.kaze when the bus
+# itself failed, and 3 for a device that answered an id that is not this one's. A wrong part
+# is a different problem from an empty bus, so it gets a different number.
+
+use "spi.kaze"
+
+needs: regs
+
+action imu_who_am_i_reg() -> num:
+    return 117
+
+action imu_burst_reg() -> num:
+    return 26
+
+action imu_burst_len() -> num:
+    return 6
+
+action imu_chip_id() -> num:
+    return 71
+
+# The three words of one burst are 16-bit signed counts, so 32768 is the sign boundary and
+# 65536 the span a word covers.
+action imu_sign_boundary() -> num:
+    return 32768
+
+action imu_word_span() -> num:
+    return 65536
+
+# ---- the clock and the deadline -----------------------------------------
+action imu_clock_hz() -> num:
+    return 480000000
+
+action imu_deadline_us() -> num:
+    return 125
+
+action imu_deadline_cycles() -> num:
+    return 60000
+
+action imu_min_hz() -> num:
+    return 1000
+
+action imu_max_hz() -> num:
+    return 8000
+
+# The largest run this module will take in one call. The free-running loop declares this as
+# its fuel ceiling, so a caller cannot ask for more cycles than the loop can honour.
+action imu_poll_max() -> num:
+    return 2000000
+
+# The polling cycles in one period at a stated rate, or 0 for a rate with no period.
+action imu_period_cycles(hz) -> num:
+    let rate = hz
+    if rate <= 0:
+        return 0
+    return imu_clock_hz() / rate otherwise 0
+
+# The mean work of a run in whole cycles: total divided by iterations with the fraction
+# dropped. A deadline is a whole number of cycles, so the mean is reported the same way
+# rather than as a long fraction that says nothing at microsecond scale.
+action imu_mean_cycles(total, iterations) -> num:
+    if iterations <= 0:
+        return 0
+    let mean = total / iterations otherwise 0
+    return mean - (mean % 1)
+
+# 1 when the rate is inside the 1 kHz..8 kHz band this module's loop is written for.
+action imu_rate_ok(hz) -> num:
+    if hz < imu_min_hz():
+        return 0
+    if hz > imu_max_hz():
+        return 0
+    return 1
+
+# A 16-bit two's-complement word from its low and high byte. The bytes come off the bus
+# lowest first, so the high byte sits at the higher address.
+action imu_signed16(lo, hi) -> num:
+    let raw = hi * 256 + lo
+    if raw >= imu_sign_boundary():
+        return raw - imu_word_span()
+    return raw
+
+record ImuId:
+    status: number
+    id: number
+
+record ImuSample:
+    status: number
+    x: number
+    y: number
+    z: number
+    raw: list
+    waits: number
+
+# The answer to one polling run. The overruns field counts cycles whose measured work
+# exceeded the deadline, worst is the slowest cycle seen, total is the sum of every cycle
+# (so the mean is total divided by iterations), errors counts bus exchanges that failed,
+# stalls counts paced waits that gave up at their spin ceiling, elapsed is the whole run
+# from first timestamp to last, and last is the last converted word, so a caller can see the
+# loop was alive and a compiler cannot drop the work as dead.
+record ImuPoll:
+    status: number
+    hz: number
+    iterations: number
+    overruns: number
+    worst: number
+    total: number
+    errors: number
+    stalls: number
+    elapsed: number
+    last: number
+
+# The id rule on its own: 0 when the answer is this device's id, 3 when it is somebody
+# else's. The probe uses it, and a suite can state the rule without a second part on the bus.
+action imu_expect_id(id) -> num:
+    if id == imu_chip_id():
+        return 0
+    return 3
+
+# The chip-id exchange. A wrong id is its own status, because a device that answers something
+# unexpected is a different problem from a bus with nothing on it.
+action imu_who_am_i(bus: SpiBus) -> ImuId:
+    let xfer = spi_read_reg(bus, imu_who_am_i_reg())
+    if xfer.status != spi_ok():
+        return ImuId(status: xfer.status, id: 0)
+    return ImuId(status: imu_expect_id(xfer.value), id: xfer.value)
+
+# 0 when the chip answered as expected, 1 or 2 for a bus that failed, 3 for a wrong id.
+action imu_probe(bus: SpiBus) -> num:
+    let ident = imu_who_am_i(bus)
+    return ident.status
+
+# The bus is put in mode 3, the clock pair IMUs usually want, at the caller's divider. The
+# answer is 0 only when the configuration took and the chip answered its id, so a caller has
+# one call to make before trusting a burst.
+action imu_configure(bus: SpiBus, divider) -> num:
+    let configured = spi_configure(bus, 3, divider)
+    if configured != spi_ok():
+        return configured
+    return imu_probe(bus)
+
+# One burst: six bytes at 0x1A, three signed words, and the bytes exactly as they arrived so
+# a caller can check the framing. A short or failed stream is reported with whatever bytes
+# did arrive; x, y and z are 0 in that case rather than a guess.
+action imu_read_sample(bus: SpiBus) -> ImuSample:
+    let burst = spi_read_burst(bus, imu_burst_reg(), imu_burst_len())
+    if burst.status != spi_ok():
+        return ImuSample(status: burst.status, x: 0, y: 0, z: 0, raw: burst.bytes, waits: burst.waits)
+    if (length of burst.bytes) < imu_burst_len():
+        return ImuSample(status: spi_timeout_rxne(), x: 0, y: 0, z: 0, raw: burst.bytes, waits: burst.waits)
+    let b0 = burst.bytes[0] otherwise 0
+    let b1 = burst.bytes[1] otherwise 0
+    let b2 = burst.bytes[2] otherwise 0
+    let b3 = burst.bytes[3] otherwise 0
+    let b4 = burst.bytes[4] otherwise 0
+    let b5 = burst.bytes[5] otherwise 0
+    return ImuSample(status: spi_ok(), x: imu_signed16(b0, b1), y: imu_signed16(b2, b3), z: imu_signed16(b4, b5), raw: burst.bytes, waits: burst.waits)
+
+# The polling action.
+#
+# clock_reg is the address of a free-running cycle counter the caller supplies: TIM2's CNT
+# register on the board map, or whatever clock the board has. The two reads of it sit inside
+# each measured window, because a real controller pays for its own timestamping and
+# pretending otherwise would report a number the hardware cannot achieve.
+#
+# period_cycles states the rate: 60000 cycles is 8 kHz and 480000 is 1 kHz at 480 MHz, and a
+# value outside that band is refused with status 1. Zero means free-running, which is what a
+# deadline gate wants: the gate measures how long a cycle takes, not how long it waits
+# between cycles. When pacing is on, each cycle waits out the rest of its period, and a wait
+# that hits its spin ceiling counts as a stall instead of spinning forever.
+action imu_poll_run(bus: SpiBus, clock_reg, iterations, period_cycles, deadline_cycles) -> ImuPoll:
+    let count = iterations
+    if count < 0:
+        set count to 0
+    let paced = 0
+    let hz = 0
+    if period_cycles > 0:
+        if period_cycles < imu_period_cycles(imu_max_hz()) or period_cycles > imu_period_cycles(imu_min_hz()):
+            return ImuPoll(status: 1, hz: 0, iterations: 0, overruns: 0, worst: 0, total: 0, errors: 0, stalls: 0, elapsed: 0, last: 0)
+        set paced to 1
+        set hz to imu_clock_hz() / period_cycles otherwise 0
+    if count > imu_poll_max():
+        return ImuPoll(status: 2, hz: hz, iterations: 0, overruns: 0, worst: 0, total: 0, errors: 0, stalls: 0, elapsed: 0, last: 0)
+    let status = 0
+    let overruns = 0
+    let errors = 0
+    let stalls = 0
+    let worst = 0
+    let total = 0
+    let last = 0
+    let n = 0
+    let started = mmio_read32(clock_reg)
+    while n < count bounded 2000000:
+        let t0 = mmio_read32(clock_reg)
+        # One polling cycle: command, six bytes, signed conversion. Nothing here builds a
+        # value, so the arena does not move however many cycles this runs.
+        let opened = spi_read_open(bus, imu_burst_reg(), bus.limit)
+        let b0 = 0
+        let b1 = 0
+        let b2 = 0
+        let b3 = 0
+        let b4 = 0
+        let b5 = 0
+        if opened < 0:
+            set status to 3
+            set errors to errors + 1
+        otherwise:
+            let got0 = spi_read_byte(bus, bus.limit)
+            let got1 = spi_read_byte(bus, bus.limit)
+            let got2 = spi_read_byte(bus, bus.limit)
+            let got3 = spi_read_byte(bus, bus.limit)
+            let got4 = spi_read_byte(bus, bus.limit)
+            let got5 = spi_read_byte(bus, bus.limit)
+            if got0 < 0 or got1 < 0 or got2 < 0 or got3 < 0 or got4 < 0 or got5 < 0:
+                set status to 3
+                set errors to errors + 1
+            otherwise:
+                set b0 to got0
+                set b1 to got1
+                set b2 to got2
+                set b3 to got3
+                set b4 to got4
+                set b5 to got5
+        spi_read_close(bus)
+        let x = imu_signed16(b0, b1)
+        let t1 = mmio_read32(clock_reg)
+        let work = t1 - t0
+        if work > deadline_cycles:
+            set overruns to overruns + 1
+        if work > worst:
+            set worst to work
+        set total to total + work
+        set last to x
+        set n to n + 1
+        if status == 3:
+            # The device stopped answering. Finishing the remaining cycles would only repeat
+            # the same failure, so the run ends here with the count it reached.
+            set n to count
+        otherwise:
+            if paced == 1:
+                let target = t0 + period_cycles
+                let spins = 0
+                let now = t1
+                while now < target and spins < 500000 bounded 500001:
+                    set now to mmio_read32(clock_reg)
+                    set spins to spins + 1
+                if now < target:
+                    set stalls to stalls + 1
+    let elapsed = mmio_read32(clock_reg) - started
+    return ImuPoll(status: status, hz: hz, iterations: n, overruns: overruns, worst: worst, total: total, errors: errors, stalls: stalls, elapsed: elapsed, last: last)

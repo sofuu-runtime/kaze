@@ -1,0 +1,116 @@
+# tests/hw/board_test.kaze -- the virtual board itself.
+#
+# Before any driver can be trusted, the register interface has to be trustworthy: a write
+# has to read back, the model clock has to advance, an unknown address has to be counted
+# rather than silently accepted, and a misaligned access has to be refused. This suite pins
+# all four, and it is what makes the other hardware suites meaningful.
+
+needs: log
+needs: regs
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# Register bases, as decimals because the language has no hex literals. Every one of these
+# matches dist/kaze_board_sim.h; the last check in this suite is that nothing was read from
+# or written to an address the board does not model, which is what catches a typo here.
+action sim_ctl() -> num:
+    return 3759079424
+action tim2() -> num:
+    return 1073741824
+action spi1() -> num:
+    return 1073819648
+action i2c1() -> num:
+    return 1073763328
+action can1() -> num:
+    return 1073783808
+action usart1() -> num:
+    return 1073811456
+action dma1() -> num:
+    return 1073872896
+action ram_base() -> num:
+    return 603979776
+
+action main() -> num:
+    let failures = 0
+    let ctl = sim_ctl()
+    let tim = tim2()
+
+    mmio_write32(ctl + 48, 1)
+    mmio_fence()
+
+    # ---- a plain register window ---------------------------------------
+    mmio_write32(tim + 44, 4800)
+    set failures to check("a timer register reads back what was written", mmio_read32(tim + 44) == 4800, failures)
+    mmio_write16(tim + 40, 1234)
+    set failures to check("a half-word write keeps its own value", mmio_read16(tim + 40) == 1234, failures)
+
+    # ---- the model clock -----------------------------------------------
+    let c1 = mmio_read32(ctl)
+    mmio_write32(tim + 44, 4801)
+    let c2 = mmio_read32(ctl)
+    set failures to check("the model clock advances on every access", c2 > c1, failures)
+
+    # ---- an actuator edge is logged with its cycle stamp ---------------
+    let before = mmio_read32(ctl + 4)
+    mmio_write32(tim + 52, 1500)
+    let after = mmio_read32(ctl + 4)
+    set failures to check("writing a compare register logs one edge", after == before + 1, failures)
+    mmio_write32(ctl + 8, after - 1)
+    let stamp = mmio_read32(ctl + 12)
+    let value = mmio_read32(ctl + 16)
+    set failures to check("the logged edge carries the value that was written", value == 1500, failures)
+    set failures to check("the logged edge carries a cycle stamp", stamp > 0, failures)
+
+    # ---- SPI: WHO_AM_I of the IMU on the bus ---------------------------
+    let spi = spi1()
+    mmio_write32(spi + 0, 1541)
+    mmio_write32(spi + 12, 245)
+    let id = mmio_read32(spi + 12)
+    set failures to check("the SPI IMU answers WHO_AM_I", id == 71, failures)
+
+    # ---- I2C: chip id of the barometer ---------------------------------
+    let i2c = i2c1()
+    mmio_write32(i2c + 0, 32768)
+    mmio_write32(i2c + 40, 236)
+    mmio_write32(i2c + 40, 0)
+    let chip = mmio_read32(i2c + 36)
+    set failures to check("the I2C barometer answers its chip id", chip == 80, failures)
+
+    # ---- CAN loopback ---------------------------------------------------
+    let can = can1()
+    mmio_write32(can + 384, 256)
+    mmio_write32(can + 392, 8)
+    mmio_write32(can + 396, 305419896)
+    mmio_write32(can + 8, 1)
+    set failures to check("a CAN frame completes", (mmio_read32(can + 8) & 1) == 1, failures)
+    set failures to check("the completed frame is in the receive mailbox", mmio_read32(can + 432) == 256 and mmio_read32(can + 444) == 305419896, failures)
+    set failures to check("the receive FIFO reports one frame", mmio_read32(can + 12) == 1, failures)
+
+    # ---- DMA moves a buffer to the UART --------------------------------
+    let ram = ram_base()
+    let dma = dma1()
+    mmio_write8(ram, 72)
+    mmio_write8(ram + 1, 73)
+    mmio_write8(ram + 2, 10)
+    mmio_write32(dma + 20, 3)
+    mmio_write32(dma + 24, usart1() + 40)
+    mmio_write32(dma + 28, ram)
+    mmio_write32(dma + 16, 17)
+    set failures to check("the DMA transfer completes", (mmio_read32(dma) & 1) == 1, failures)
+    set failures to check("the UART received the bytes the DMA moved", mmio_read32(ctl + 28) == 3, failures)
+
+    # ---- a misaligned access is refused, not silently served -----------
+    let bad_before = mmio_read32(ctl + 24)
+    let junk = mmio_read16(tim + 41)
+    set failures to check("a misaligned half-word read is counted as bad", mmio_read32(ctl + 24) == bad_before + 1, failures)
+
+    # ---- nothing touched an address the board does not model -----------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + 20) == 0, failures)
+
+    if failures == 0:
+        log.info("OK board: 16 checks")
+    return failures

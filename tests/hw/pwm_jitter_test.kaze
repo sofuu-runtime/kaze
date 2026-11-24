@@ -1,0 +1,131 @@
+# tests/hw/pwm_jitter_test.kaze -- the actuator update path, measured period by period.
+#
+# The gate: run the duty-update path 10,000 times and hold the spread of the interval
+# between compare-register writes under 200 ns at 480 MHz. Every write to a compare
+# register is stamped by the board, so the measurement needs no clock of its own: after
+# each update the test reads the stamp of the edge it just caused (write EDGE_INDEX, read
+# EDGE_TIME) and keeps min, max and sum as it goes. The state is three numbers and a few
+# flags on purpose - a list of 10,000 stamps would not fit the 16 KB arena the metal
+# image runs with, and allocating inside the measured loop would measure the allocator.
+#
+# What this number is: the software contribution to period jitter, in ticks of the
+# board's clock under QEMU -icount, scaled to nanoseconds at the target's stated 480 MHz.
+# It is the variation in how long the update path takes, not oscillator jitter and not
+# silicon timing; there is no board attached and QEMU has no crystal. The report says so.
+#
+# The printed line is the machine-readable verdict:
+#
+#   MEASURE jitter_ns=<n> periods=<n> mean_us=<n>
+#
+# and scripts/phase14-timing.sh re-checks jitter_ns against the 200 ns limit rather than
+# trusting the suite's own PASS. pwm_set_duty_permille is also the routine
+# scripts/phase14-static.sh counts instructions in, as a latency number in its own right,
+# so keep it the whole update path or that count stops meaning anything.
+
+needs: log
+needs: regs
+
+use "./../../lib/pwm.kaze"
+use "./../../lib/regs.kaze"
+
+record Tally:
+    failures: number
+    checks: number
+
+action check(t: Tally, label, ok) -> Tally:
+    let n = t.checks + 1
+    if ok:
+        return Tally(failures: t.failures, checks: n)
+    log.info("FAIL " + label)
+    return Tally(failures: t.failures + 1, checks: n)
+
+# ---- the BSP -------------------------------------------------------------
+
+action sim_ctl() -> num:
+    return 3759079424
+action tim2() -> num:
+    return 1073741824
+
+# A number of thousandths rendered as d.ddd, so mean_us is readable without a float
+# formatter: the runtime prints a whole double with full precision.
+action fixed3(x1000) -> text:
+    let whole = pwm_floor(x1000 / 1000)
+    let rest = x1000 - whole * 1000
+    let d1 = pwm_floor(rest / 100)
+    let r1 = rest - d1 * 100
+    let d2 = pwm_floor(r1 / 10)
+    let d3 = r1 - d2 * 10
+    return ("" + whole) + "." + character(48 + d1) + character(48 + d2) + character(48 + d3)
+
+action main() -> num:
+    let t = Tally(failures: 0, checks: 0)
+    let ctl = sim_ctl()
+    let tim = tim2()
+    let hz = 480000000
+    mmio_write32(ctl + 48, 1)
+    mmio_fence()
+
+    let pwm = pwm_new(tim, hz, 400)
+    set pwm to pwm_setup(pwm)
+    # A control loop caches the two numbers the update needs; reading them out of the
+    # record every period would measure a field walk, not the actuator path.
+    let ccr_addr = pwm.ccr
+    let ticks = pwm.ticks
+    # Prime the duty before the measured window, so the first measured interval is a
+    # steady-state update like every other one.
+    pwm_set_duty_permille(ccr_addr, ticks, 500)
+
+    # 10,001 compare writes make 10,000 intervals; the first stamp is only the origin,
+    # so no loop prologue is counted as a period.
+    let rounds = 10001
+    let base = mmio_read32(ctl + 4)
+    let prev = 0
+    let have = 0
+    let minp = 0
+    let maxp = 0
+    let sum = 0
+    let periods = 0
+    let monotonic = 1
+    let i = 0
+    while i < rounds bounded 20000:
+        pwm_set_duty_permille(ccr_addr, ticks, 500)
+        mmio_write32(ctl + 8, base + i)
+        let stamp = mmio_read32(ctl + 12)
+        if have == 1:
+            let d = stamp - prev
+            if d <= 0:
+                set monotonic to 0
+            if periods == 0:
+                set minp to d
+                set maxp to d
+            otherwise:
+                if d < minp:
+                    set minp to d
+                if d > maxp:
+                    set maxp to d
+            set sum to sum + d
+            set periods to periods + 1
+        set prev to stamp
+        set have to 1
+        set i to i + 1
+
+    # One cycle is 25/12 ns at 480 MHz; the mean is in microseconds with three places.
+    let spread = maxp - minp
+    let jitter_ns = pwm_floor((spread * 25) / 12)
+    let per_us = hz / 1000000
+    let mean_x1000 = pwm_floor(((sum * 1000) / (periods * per_us)) otherwise 0)
+    log.info("MEASURE jitter_ns=" + ("" + jitter_ns) + " periods=" + ("" + periods) + " mean_us=" + fixed3(mean_x1000))
+
+    set t to check(t, "the plan is the exact 400 Hz one", pwm.psc == 19 and pwm.arr == 59999)
+    set t to check(t, "10,000 actuator periods were measured", periods == 10000)
+    set t to check(t, "every period moved the clock forward", monotonic == 1)
+    set t to check(t, "the measured periods are not empty", sum > 0)
+    mmio_write32(ctl + 8, base + rounds - 1)
+    set t to check(t, "every compare write carried the duty it was given", mmio_read32(ctl + 16) == 30000)
+    set t to check(t, "period jitter is under 200 ns", jitter_ns < 200)
+    set t to check(t, "no access fell outside the modelled board", mmio_read32(ctl + 20) == 0)
+    set t to check(t, "no access was misaligned", mmio_read32(ctl + 24) == 0)
+
+    if t.failures == 0:
+        log.info("OK pwm_jitter: " + ("" + t.checks) + " checks")
+    return t.failures

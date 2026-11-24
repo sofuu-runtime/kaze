@@ -1,0 +1,98 @@
+# tests/hw/imu_test.kaze -- the IMU driver: chip id, burst, signed conversion, and the
+# polling loop's rate and deadline plumbing.
+#
+# The deadline gate (imu_deadline_test.kaze) runs a million cycles and prints the measured
+# numbers; this suite is the behaviour around it, so a failure here says which part of the
+# driver broke rather than only that the timing moved.
+
+needs: log
+needs: regs
+use "../../lib/imu.kaze"
+
+# Register bases, as decimals because the language has no hex literals. Every one matches
+# dist/kaze_board_sim.h; the last two checks are that nothing was read from or written to an
+# address the board does not model and that no access was misaligned.
+action ctl() -> num:
+    return 3759079424
+
+action tim2() -> num:
+    return 1073741824
+
+action spi1() -> num:
+    return 1073819648
+
+action gpioa() -> num:
+    return 1476526080
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+    let ctl_base = ctl()
+    mmio_write32(ctl_base + 48, 1)
+    mmio_fence()
+
+    let bus = spi_bus(spi1(), gpioa(), 4, 64)
+    set failures to check("the IMU is configured and answers its id", imu_configure(bus, 64) == spi_ok(), failures)
+
+    # ---- the chip id ---------------------------------------------------
+    let ident = imu_who_am_i(bus)
+    set failures to check("WHO_AM_I answers 0x47", ident.status == 0 and ident.id == 71, failures)
+    set failures to check("another device's id is reported as the wrong part", imu_expect_id(71) == 0 and imu_expect_id(70) == 3, failures)
+
+    # ---- one burst -----------------------------------------------------
+    let before = mmio_read32(ctl_base + 40)
+    let sample = imu_read_sample(bus)
+    let conversions = mmio_read32(ctl_base + 40) - before
+    set failures to check("a burst returns six bytes", sample.status == spi_ok() and (length of sample.raw) == 6, failures)
+    set failures to check("the burst counted one device conversion", conversions == 1, failures)
+    let r0 = sample.raw[0] otherwise 0
+    let r1 = sample.raw[1] otherwise 0
+    let r2 = sample.raw[2] otherwise 0
+    let r3 = sample.raw[3] otherwise 0
+    let r4 = sample.raw[4] otherwise 0
+    let r5 = sample.raw[5] otherwise 0
+    set failures to check("each word converts from the two bytes that arrived", sample.x == imu_signed16(r0, r1) and sample.y == imu_signed16(r2, r3) and sample.z == imu_signed16(r4, r5), failures)
+
+    # ---- signed conversion ---------------------------------------------
+    set failures to check("two's complement boundaries convert both ways", imu_signed16(0, 0) == 0 and imu_signed16(255, 255) == 0 - 1 and imu_signed16(0, 128) == 0 - 32768 and imu_signed16(255, 127) == 32767, failures)
+
+    # ---- the deadline and the rate band --------------------------------
+    set failures to check("125 us is 60000 cycles at 480 MHz", imu_deadline_cycles() == 60000 and imu_deadline_cycles() == imu_clock_hz() * imu_deadline_us() / 1000000, failures)
+    set failures to check("1 kHz and 8 kHz are the ends of the period band", imu_period_cycles(1000) == 480000 and imu_period_cycles(8000) == 60000, failures)
+    set failures to check("the band admits 1 kHz and 8 kHz and nothing outside", imu_rate_ok(1000) == 1 and imu_rate_ok(8000) == 1 and imu_rate_ok(999) == 0 and imu_rate_ok(8001) == 0, failures)
+
+    # ---- a paced run at 4 kHz ------------------------------------------
+    # TIM2's CNT register (offset 36) is the board's cycle counter: model cycles on the host,
+    # the emulator's instruction-accurate SysTick on the metal image.
+    let clock = tim2() + 36
+    let paced = imu_poll_run(bus, clock, 40, imu_period_cycles(4000), imu_deadline_cycles())
+    set failures to check("a paced run states its rate and runs its cycles", paced.status == 0 and paced.iterations == 40 and paced.hz == 4000, failures)
+    set failures to check("the paced run waits out its periods", paced.elapsed >= 40 * 120000, failures)
+    set failures to check("the paced run meets the 125 us deadline", paced.overruns == 0 and paced.worst < imu_deadline_cycles(), failures)
+    set failures to check("the paced run has no stalling wait and no bus error", paced.stalls == 0 and paced.errors == 0, failures)
+
+    # ---- a free-running run, which is what the gate uses ----------------
+    let free = imu_poll_run(bus, clock, 2000, 0, imu_deadline_cycles())
+    set failures to check("a free-running run goes back to back and meets the deadline", free.status == 0 and free.iterations == 2000 and free.overruns == 0 and free.elapsed < 2000 * imu_deadline_cycles(), failures)
+
+    # ---- the refusals --------------------------------------------------
+    let too_fast = imu_poll_run(bus, clock, 10, 24000, imu_deadline_cycles())
+    set failures to check("a rate above 8 kHz is refused before any cycle runs", too_fast.status == 1 and too_fast.iterations == 0, failures)
+    let too_long = imu_poll_run(bus, clock, imu_poll_max() + 1, 0, imu_deadline_cycles())
+    set failures to check("a run beyond the loop's ceiling is refused", too_long.status == 2 and too_long.iterations == 0, failures)
+
+    # ---- the mean ------------------------------------------------------
+    set failures to check("the mean is whole cycles and an empty run has none", imu_mean_cycles(1000, 4) == 250 and imu_mean_cycles(999, 4) == 249 and imu_mean_cycles(5, 0) == 0, failures)
+
+    # ---- nothing touched an address the board does not model ------------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl_base + 20) == 0, failures)
+    set failures to check("no access was misaligned", mmio_read32(ctl_base + 24) == 0, failures)
+
+    if failures == 0:
+        log.info("OK imu: 20 checks")
+    return failures

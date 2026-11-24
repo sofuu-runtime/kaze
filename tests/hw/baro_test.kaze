@@ -1,0 +1,105 @@
+# tests/hw/baro_test.kaze -- the barometer driver on the modelled I2C bus.
+#
+# Three things are pinned here, and the third is the one that matters most:
+#
+#   1. the device answers where the register map says it does (chip id 0x50),
+#   2. a sample assembles its three pressure bytes and two temperature bytes
+#      little-endian, with the temperature sign-extended,
+#   3. the documented integer conversion is exact, checked against values
+#      computed by hand from the 1/4096 hPa scale.
+#
+# The suite does not pin the model's sample generator. Consecutive samples must
+# differ, which proves the reads reached the bus; what the bytes actually are is
+# the model's business.
+#
+# The bus-backed checks depend on two behaviours of the modelled I2C device
+# that had to be added to dist/kaze_board_sim.c first: a START consumes exactly
+# one address byte, so an even register pointer such as 0x04 is not mistaken for
+# an address, and the device answers a pointer write by queueing its response so
+# that a driver polling RXNE before reading RXDR sees the byte. Without either,
+# the pure checks below would still pass but pressure could not be sampled from
+# the model at all.
+
+needs: log
+needs: regs
+
+use "./../../lib/baro.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action sim_ctl() -> num:
+    return 3759079424
+
+action i2c1() -> num:
+    return 1073763328
+
+action baro_addr() -> num:
+    return 118
+
+action le24(b, i) -> num:
+    return (b[i] otherwise 0) + ((b[i + 1] otherwise 0) * 256) + ((b[i + 2] otherwise 0) * 65536)
+
+action main() -> num:
+    let failures = 0
+    let ctl = sim_ctl()
+    let bus = i2c1()
+    let dev = baro_addr()
+
+    mmio_write32(ctl + 48, 1)
+    mmio_fence()
+
+    # ---- the pure conversion, pinned by hand ---------------------------
+    # 4150272 counts = 1013.25 hPa = 101325 Pa exactly.
+    set failures to check("4150272 counts convert to 101325 Pa", baro_pressure_pa(4150272) == 101325, failures)
+    set failures to check("the same sample is 1013 whole hPa", baro_pressure_hpa(4150272) == 1013, failures)
+    set failures to check("half an hPa is 50 Pa", baro_pressure_pa(2048) == 50, failures)
+    set failures to check("one hPa is 100 Pa", baro_pressure_pa(4096) == 100, failures)
+    set failures to check("zero counts is zero Pa", baro_pressure_pa(0) == 0, failures)
+    set failures to check("the all-ones register is 409599 Pa", baro_pressure_pa(16777215) == 409599, failures)
+    set failures to check("a negative input folds into 24 bits", baro_pressure_pa(0 - 1) == 409599, failures)
+
+    # ---- raw assembly, pinned by hand ----------------------------------
+    set failures to check("pressure is little-endian 24-bit", baro_pressure_raw([86, 52, 18]) == 1193046, failures)
+    set failures to check("a two-byte pressure is refused", baro_pressure_raw([86, 52]) == 0 - 1, failures)
+    set failures to check("temperature is little-endian 16-bit", baro_temperature_raw([202, 8]) == 2250, failures)
+    set failures to check("temperature sign-extends", baro_temperature_raw([24, 252]) == 0 - 1000, failures)
+    set failures to check("positive full scale is 32767", baro_temperature_raw([255, 127]) == 32767, failures)
+    set failures to check("negative full scale is -32768", baro_temperature_raw([0, 128]) == 0 - 32768, failures)
+    set failures to check("a one-byte temperature is refused", baro_temperature_raw([202]) == 0 - 99999, failures)
+    set failures to check("2250 centi-degrees is 22500 milli-degrees", baro_temperature_milli_c(2250) == 22500, failures)
+    set failures to check("a negative temperature keeps its sign", baro_temperature_milli_c(0 - 1000) == 0 - 10000, failures)
+
+    # ---- the device is where the map says ------------------------------
+    set failures to check("the chip id reads 0x50", baro_chip(bus, dev, 64) == 80, failures)
+    set failures to check("the probe says the device is present", baro_present(bus, dev, 64) == true, failures)
+    set failures to check("the chip id check accepts 0x50", baro_chip_ok(80) == true, failures)
+    set failures to check("the chip id check rejects another part", baro_chip_ok(81) == false, failures)
+
+    # ---- a whole sample ------------------------------------------------
+    let sample = baro_sample(bus, dev, 64)
+    set failures to check("a sample succeeds", sample.ok == true, failures)
+    set failures to check("the sample names the chip it probed", sample.chip == 80, failures)
+    set failures to check("the sample's pascal value matches its raw value", sample.pressure_pa == baro_pressure_pa(sample.pressure_raw), failures)
+    set failures to check("the sample's milli-Celsius matches its raw value", sample.temperature_milli_c == sample.temperature_raw * 10, failures)
+    set failures to check("the sample's raw pressure is 24-bit", sample.pressure_raw >= 0 and sample.pressure_raw <= 16777215, failures)
+    set failures to check("the sample's raw temperature fits 16 bits", sample.temperature_raw >= 0 - 32768 and sample.temperature_raw <= 32767, failures)
+
+    # The model advances its sample per register load, so a sample taken after
+    # a burst is a different sample.
+    let burst = i2c_burst_read(bus, dev, 4, 3, 64)
+    set failures to check("a pressure burst still answers three bytes", burst.ok == true and length of burst.bytes == 3, failures)
+    set failures to check("the assembled burst is what le24 says", baro_pressure_raw(burst.bytes) == le24(burst.bytes, 0), failures)
+
+    let second = baro_sample(bus, dev, 64)
+    set failures to check("a second sample is a new measurement", second.ok == true and second.pressure_raw != sample.pressure_raw, failures)
+
+    # ---- nothing touched an address the board does not model -----------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + 20) == 0, failures)
+
+    if failures == 0:
+        log.info("OK baro: 30 checks")
+    return failures

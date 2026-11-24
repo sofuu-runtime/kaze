@@ -1,0 +1,50 @@
+# tests/hw/bitwise_portability_test.kaze -- the bitwise operators must mean the same thing on
+# both targets.
+#
+# They did not. The runtime's integer type is 32 bits wide on a Cortex-M, and the emitters
+# truncated to it, so (4294967295 & 255) was 255 on the host and 0 on the board - which
+# would quietly break every hash and every CRC that masks to 32 bits. The operators now
+# widen to 64 bits, and this suite is what keeps them there: it runs on the host and on the
+# emulated core, and it is short on purpose so the metal image fits.
+
+needs: log
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+
+    set failures to check("a 32-bit mask clears the bits above it", (4294967295 & 255) == 255, failures)
+    set failures to check("a top-bit mask keeps the low byte", (2684354560 & 255) == 0 and (2684354560 >> 24) == 160, failures)
+    set failures to check("the high bit of a 32-bit word survives", (2147483648 & 2147483648) == 2147483648, failures)
+    set failures to check("or puts bits together", (4096 | 255) == 4351, failures)
+    set failures to check("xor flips them", (255 ^ 15) == 240, failures)
+    set failures to check("a left shift multiplies", (3 << 4) == 48 and (1 << 20) == 1048576, failures)
+    set failures to check("a right shift divides and is logical", (255 >> 4) == 15 and (2147483648 >> 31) == 1, failures)
+    set failures to check("a negative value masks as two's complement", (0 - 1 & 255) == 255, failures)
+    set failures to check(" complement is xor with all ones", (~5) == 0 - 6, failures)
+    set failures to check("a shift count is masked to 0..63", (1 << 64) == 1 and (1 << 0) == 1, failures)
+
+    # A 32-bit modular multiply cannot be written as (h * c) & 4294967295: the product is
+    # about 3.6e16, past the 2^53 a double holds exactly, so the low bits are lost. Split
+    # the constant into 16-bit halves and the whole thing stays exact.
+    let h = 2166136261
+    let i = 0
+    let chars = "hello"
+    while i < 5 bounded 64:
+        let byte = code(chars[i] otherwise "x")
+        let mixed = h ^ byte
+        let lo = mixed * (16777619 & 65535)
+        let hi = ((mixed * (16777619 >> 16)) & 65535) * 65536
+        set h to (lo + hi) & 4294967295
+        set i to i + 1
+    set failures to check("an FNV-1a round stays inside 32 bits", h >= 0 and h < 4294967296, failures)
+    set failures to check("the FNV-1a digest matches an independent implementation", h == 1335831723, failures)
+
+    if failures == 0:
+        log.info("OK bitwise_portability: 11 checks")
+    return failures

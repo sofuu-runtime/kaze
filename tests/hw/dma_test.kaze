@@ -1,0 +1,180 @@
+# tests/hw/dma_test.kaze -- the DMA stream controller.
+#
+# What the suite proves:
+#   1. the register map: LISR at 0, stream 0's CR/NDTR/PAR/M0AR at 0x10/0x14/0x18/0x1C,
+#      and the 0x18-byte stride to stream 1;
+#   2. setup writes the count, the fixed peripheral address and the advancing memory
+#      address, and leaves EN clear until start;
+#   3. a memory-to-peripheral stream moves exactly the bytes at the UART, at 8, 16 and
+#      32-bit widths, and peripheral-to-memory fills a buffer from a fixed source;
+#   4. two streams complete independently (LISR bit 0 and bit 1);
+#   5. the refusal path: a claimed (or hardware-enabled) stream is not reprogrammed,
+#      and invalid widths, counts, stream indexes and addresses write nothing;
+#   6. a wait with no completion times out at the channel's poll deadline instead of
+#      hanging, and the error word decodes: clear after a clean transfer, one for a bit
+#      at position 16, 0xFFFF for a word with every high bit set.
+#
+# One limitation is stated rather than papered over: the model completes a transfer
+# inside the write that sets EN, so a register read never shows the channel enabled and
+# the hardware half of the refusal cannot be observed. The suite pins the register
+# readback (EN clear after completion) and exercises the refusal through the software
+# claim the driver also enforces. The model's done bitmap is sticky - there is no clear
+# register - so a board reset before the timeout test gives a clean LISR, and the
+# per-stream checks use stream 0 and stream 1 in turn.
+
+needs: log
+needs: regs
+
+use "./../../lib/dma.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# ---- the BSP -------------------------------------------------------------
+action sim_ctl() -> num:
+    return 3759079424
+
+action dma1() -> num:
+    return 1073872896
+
+action usart1() -> num:
+    return 1073811456
+
+action ram_base() -> num:
+    return 603979776
+
+action uart_len(ctl) -> num:
+    return mmio_read32(ctl + 28)
+
+action uart_byte(ctl, k) -> num:
+    mmio_write32(ctl + 32, k)
+    return mmio_read32(ctl + 36)
+
+action main() -> num:
+    let failures = 0
+    mmio_write32(sim_ctl() + 48, 1)
+    mmio_fence()
+    let ctl = sim_ctl()
+    let dma = dma1()
+    let uart = usart1()
+    let ram = ram_base()
+
+    # ---- 1. the register map and the channel value ---------------------
+    set failures to check("LISR is at offset 0", dma_lisr_off() == 0, failures)
+    set failures to check("stream 0 CR is at 0x10", dma_ch_cr_off() == 16, failures)
+    set failures to check("stream 0 NDTR is at 0x14", dma_ch_ndtr_off() == 20, failures)
+    set failures to check("stream 0 PAR is at 0x18", dma_ch_par_off() == 24, failures)
+    set failures to check("stream 0 M0AR is at 0x1C", dma_ch_m0ar_off() == 28, failures)
+    set failures to check("stream 1 begins one 0x18-byte group later", dma_ch_stride() == 24, failures)
+
+    let ch0 = dma_channel(dma, 0, 32)
+    let ch1 = dma_channel(dma, 1, 32)
+    set failures to check("a channel keeps the stream index it was given", ch0.index == 0 and ch1.index == 1, failures)
+    set failures to check("a zero poll ceiling is clamped to one", dma_channel(dma, 0, 0).limit == 1, failures)
+    set failures to check("an enormous poll ceiling is clamped to the loop ceiling", dma_channel(dma, 0, 2000000).limit == 1000000, failures)
+    set failures to check("8-bit CR encoding is zero", dma_width_bits(8) == 0, failures)
+    set failures to check("16-bit CR encoding is 0x400", dma_width_bits(16) == 1024, failures)
+    set failures to check("32-bit CR encoding is 0x800", dma_width_bits(32) == 2048, failures)
+    set failures to check("a 24-bit width has no encoding", dma_width_bits(24) == 0 - 1, failures)
+
+    # ---- 2. setup programmes the channel without starting it -----------
+    mmio_write8(ram, 65)
+    mmio_write8(ram + 1, 66)
+    mmio_write8(ram + 2, 67)
+    let setup = dma_configure(ch0, uart + 40, ram, 3, 8, 1)
+    set failures to check("memory-to-peripheral setup is accepted", setup == dma_ok(), failures)
+    set failures to check("the count register holds the item count", dma_ndtr(ch0) == 3, failures)
+    set failures to check("the peripheral address register holds TDR", dma_par(ch0) == uart + 40, failures)
+    set failures to check("the memory address register holds the buffer", dma_m0ar(ch0) == ram, failures)
+    set failures to check("the control register has DIR but not EN", dma_cr(ch0) == dma_cr_dir(), failures)
+    set failures to check("the channel does not read as enabled", dma_enabled(ch0) == false, failures)
+
+    # ---- 3. a memory-to-peripheral transfer ----------------------------
+    set failures to check("start accepts a programmed channel", dma_start(ch0) == dma_ok(), failures)
+    set failures to check("the model clears EN when the transfer completes", dma_cr(ch0) == dma_cr_dir(), failures)
+    set failures to check("the UART received three bytes", uart_len(ctl) == 3, failures)
+    set failures to check("byte 0 is the first buffer byte", uart_byte(ctl, 0) == 65, failures)
+    set failures to check("byte 1 is the second buffer byte", uart_byte(ctl, 1) == 66, failures)
+    set failures to check("byte 2 is the third buffer byte", uart_byte(ctl, 2) == 67, failures)
+    set failures to check("stream 0's completion bit is set", dma_completed(ch0), failures)
+    set failures to check("stream 1's completion bit is still clear", dma_completed(ch1) == false, failures)
+    set failures to check("a bounded wait succeeds after completion", dma_wait(ch0) == dma_ok(), failures)
+    set failures to check("the error word is clear after a clean transfer", dma_errors(dma) == 0 and dma_has_error(dma) == false, failures)
+    # The error word is the high half of LISR. The model never raises a DMA fault, so
+    # the clear state is what a transfer can prove; these calls pin the decode itself,
+    # including the word with bit 31 set that a 32-bit mask would get wrong.
+    set failures to check("a clean status word has no error bits", dma_error_word(3) == 0, failures)
+    set failures to check("an error bit at 16 decodes as one", dma_error_word(65536) == 1, failures)
+    set failures to check("all error bits decode as 0xFFFF", dma_error_word(4294967295) == 65535, failures)
+
+    # ---- 4. a second stream completes independently --------------------
+    mmio_write8(ram + 8, 68)
+    mmio_write8(ram + 9, 69)
+    let second = dma_run(ch1, uart + 40, ram + 8, 2, 8, 1)
+    set failures to check("stream 1 runs a transfer to completion", second == dma_ok(), failures)
+    set failures to check("the UART now holds five bytes", uart_len(ctl) == 5, failures)
+    set failures to check("the fourth byte came from stream 1", uart_byte(ctl, 3) == 68, failures)
+    set failures to check("the fifth byte came from stream 1", uart_byte(ctl, 4) == 69, failures)
+    set failures to check("stream 1's completion bit is set too", dma_completed(ch1), failures)
+
+    # ---- 5. widths and directions --------------------------------------
+    mmio_write16(ram + 16, 4660)
+    mmio_write16(ram + 18, 22136)
+    set failures to check("a 16-bit transfer is accepted", dma_mem_to_periph(ch0, uart + 40, ram + 16, 2, 16) == dma_ok(), failures)
+    set failures to check("it moved two half-words", uart_len(ctl) == 7, failures)
+    set failures to check("the low byte of 0x1234 went out", uart_byte(ctl, 5) == 52, failures)
+    set failures to check("the low byte of 0x5678 went out", uart_byte(ctl, 6) == 120, failures)
+
+    # Peripheral-to-memory: the peripheral address stays fixed while the memory address
+    # advances, so a word at RAM+40 is copied twice into RAM+64 and RAM+68. The board
+    # has no receive peripheral to sample, and using the RAM window as the fixed source
+    # is the model's own shape for the direction rather than an invented register.
+    mmio_write32(ram + 40, 305419896)
+    set failures to check("a peripheral-to-memory transfer is accepted", dma_periph_to_mem(ch1, ram + 40, ram + 64, 2, 32) == dma_ok(), failures)
+    set failures to check("the first word was copied", mmio_read32(ram + 64) == 305419896, failures)
+    set failures to check("the second word came from the fixed source", mmio_read32(ram + 68) == 305419896, failures)
+
+    # ---- 6. refusal and argument checking ------------------------------
+    let fresh = dma_channel(dma, 0, 32)
+    set failures to check("re-programming a free channel is accepted", dma_configure(fresh, uart + 40, ram, 1, 8, 1) == dma_ok(), failures)
+    let held = dma_claim(fresh)
+    set failures to check("a claimed channel is refused, not reprogrammed", dma_configure(held, uart + 40, ram + 100, 9, 8, 1) == dma_busy(), failures)
+    set failures to check("the refused call left the count alone", dma_ndtr(fresh) == 1, failures)
+    set failures to check("the refused call left the memory address alone", dma_m0ar(fresh) == ram, failures)
+    set failures to check("releasing the claim makes the channel programmable again", dma_configure(dma_release(held), uart + 40, ram + 100, 9, 8, 1) == dma_ok(), failures)
+    set failures to check("and the count is the new one", dma_ndtr(fresh) == 9, failures)
+
+    set failures to check("a 24-bit width is refused before any write", dma_configure(fresh, uart + 40, ram, 1, 24, 1) == dma_bad_args(), failures)
+    set failures to check("a zero count is refused", dma_configure(fresh, uart + 40, ram, 0, 8, 1) == dma_bad_args(), failures)
+    set failures to check("a count above the 16-bit NDTR range is refused", dma_configure(fresh, uart + 40, ram, 65536, 8, 1) == dma_bad_args(), failures)
+    set failures to check("a direction other than 0 or 1 is refused", dma_configure(fresh, uart + 40, ram, 1, 8, 2) == dma_bad_args(), failures)
+    set failures to check("a zero peripheral address is refused", dma_configure(fresh, 0, ram, 1, 8, 1) == dma_bad_args(), failures)
+    let stray = DmaChannel(base: dma, index: 5, limit: 16, in_use: 0)
+    set failures to check("a stream this block does not model is refused", dma_configure(stray, uart + 40, ram, 1, 8, 1) == dma_bad_args(), failures)
+    set failures to check("a refused argument write changed nothing", dma_ndtr(fresh) == 9, failures)
+
+    set failures to check("status 0 is ok", dma_status_text(dma_ok()) == "ok", failures)
+    set failures to check("status 1 is timeout", dma_status_text(dma_timeout()) == "timeout", failures)
+    set failures to check("status 2 is busy", dma_status_text(dma_busy()) == "busy", failures)
+    set failures to check("status 3 is bad_args", dma_status_text(dma_bad_args()) == "bad_args", failures)
+    set failures to check("status 4 is error", dma_status_text(dma_error()) == "error", failures)
+
+    # ---- 7. a bounded wait that never completes ------------------------
+    # The reset clears the sticky done bitmap (and the UART log); the stream registers
+    # live in the model's own state and stay as they were, which is fine because this
+    # check only reads LISR.
+    mmio_write32(ctl + 48, 1)
+    mmio_fence()
+    set failures to check("a wait with no completion times out at the deadline", dma_wait(ch0) == dma_timeout(), failures)
+    set failures to check("the error word is still clear", dma_errors(dma) == 0, failures)
+
+    # ---- nothing fell outside the modelled board -----------------------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + 20) == 0, failures)
+    set failures to check("no access was misaligned", mmio_read32(ctl + 24) == 0, failures)
+
+    if failures == 0:
+        log.info("OK dma: 66 checks")
+    return failures

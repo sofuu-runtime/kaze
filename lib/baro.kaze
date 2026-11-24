@@ -1,0 +1,154 @@
+# lib/baro.kaze -- a barometric pressure/temperature sensor on the I2C bus.
+#
+# The board models one device on the I2C bus with this register map:
+#
+#   0x00       chip id, 0x50
+#   0x04..0x06 pressure, 24-bit unsigned, little-endian (low byte first)
+#   0x07..0x08 temperature, 16-bit signed, little-endian, hundredths of Celsius
+#
+# The pressure block is three bytes and the temperature block two. Reading a
+# register loads the device's next sample, so a sample is always the three
+# pressure bytes and the two temperature bytes that follow one probe; the suite
+# checks that consecutive samples differ rather than pinning the generator.
+#
+# THE CONVERSION, and why it is written in integers:
+#
+# The scale this module documents is one pressure count = 1/4096 hPa (0.0244 Pa),
+# the 24-bit ratiometric convention several barometers use and the one the
+# model's pressure block is pinned to. The number is a contract of this module,
+# not a datasheet quotation: a part with a different scale needs a different
+# conversion, and tests/hw/baro_test.kaze pins every value below by hand.
+# With 100 Pa in an hPa and 4096 counts in an hPa,
+#
+#       pascals = raw * 100 / 4096 = raw * 25 / 1024
+#
+# Kaze numbers are doubles, so "/" would produce a fraction; the module keeps
+# the documented integer conversion instead: the whole hPa are the top twelve
+# bits (raw >> 12) and the low twelve bits contribute the remaining pascals,
+# ((raw % 4096) * 100) >> 12. Both operations go through the runtime's integer
+# type (the right shift converts through the unsigned type, so a value past
+# 2^31 is not the trap a signed mask would be). The result is exact for every
+# 24-bit input, truncating at 1 Pa:
+#
+#   raw 0x0FD200 = 4150272  ->  1013 hPa + 1024/4096 hPa  ->  101325 Pa
+#   raw 0xFFFFFF = 16777215 ->  4095 hPa + 4095/4096 hPa  ->  409599 Pa
+#
+# Temperature is hundredths of a degree in two's complement; the assembly
+# sign-extends to a signed count, and milli-Celsius is that count times ten.
+#
+# What this module does not claim: no calibration coefficients (the model has
+# no calibration registers), no oversampling or IIR configuration, no FIFO, no
+# interrupt pin and no altitude conversion. It probes, samples and converts.
+
+use "./i2c.kaze"
+
+record BaroSample:
+    ok: bool
+    chip: number
+    pressure_raw: number
+    pressure_pa: number
+    temperature_raw: number
+    temperature_milli_c: number
+    error: text
+
+# ---- register map -----------------------------------------------------
+action baro_reg_chip_id() -> num:
+    return 0
+
+action baro_reg_pressure() -> num:
+    return 4
+
+action baro_reg_temperature() -> num:
+    return 7
+
+action baro_chip_id() -> num:
+    return 80
+
+action baro_pressure_bytes() -> num:
+    return 3
+
+action baro_temperature_bytes() -> num:
+    return 2
+
+# A refused sample carries no measured field: zeroing them is the only honest
+# option, because a caller must read ok before believing any number here.
+action baro_failed(chip, error) -> BaroSample:
+    return BaroSample(ok: false, chip: chip, pressure_raw: 0, pressure_pa: 0, temperature_raw: 0, temperature_milli_c: 0, error: error)
+
+# ---- raw assembly -----------------------------------------------------
+# 24 bits, low byte first. A short list is refused with -1 instead of being
+# padded: a two-byte "pressure" is a caller bug, not a small pressure.
+action baro_pressure_raw(bytes) -> num:
+    if length of bytes < 3:
+        return 0 - 1
+    return (bytes[0] otherwise 0) + ((bytes[1] otherwise 0) * 256) + ((bytes[2] otherwise 0) * 65536)
+
+# 16 bits, low byte first, sign-extended from two's complement. A short list is
+# refused with 0 - 99999, which cannot be a valid temperature.
+action baro_temperature_raw(bytes) -> num:
+    if length of bytes < 2:
+        return 0 - 99999
+    let raw = (bytes[0] otherwise 0) + ((bytes[1] otherwise 0) * 256)
+    if raw >= 32768:
+        return raw - 65536
+    return raw
+
+# ---- the documented integer conversion --------------------------------
+# Counts are 1/4096 hPa. The input is folded into the 24-bit range first, so a
+# caller that hands over -1 gets the value of the all-ones register rather than
+# a negative pressure.
+action baro_pressure_pa(raw) -> num:
+    let v = raw % 16777216
+    if v < 0:
+        set v to v + 16777216
+    let whole_hpa = v >> 12
+    let remainder = v % 4096
+    return (whole_hpa * 100) + ((remainder * 100) >> 12)
+
+# Whole hPa, truncated. Kept separate because a controller that only needs a
+# flight level should not carry the pascal remainder.
+action baro_pressure_hpa(raw) -> num:
+    let v = raw % 16777216
+    if v < 0:
+        set v to v + 16777216
+    return v >> 12
+
+# Signed hundredths of a degree in, milli-Celsius out.
+action baro_temperature_milli_c(raw) -> num:
+    return raw * 10
+
+# ---- device access ----------------------------------------------------
+action baro_chip_ok(chip) -> bool:
+    if chip == baro_chip_id():
+        return true
+    return false
+
+# The chip id, or -1 when the bus did not answer. A caller that only wants a
+# yes/no uses baro_present.
+action baro_chip(bus, addr7, spins) -> num:
+    let read = i2c_read_reg(bus, addr7, baro_reg_chip_id(), spins)
+    if read.ok != true:
+        return 0 - 1
+    return read.value
+
+action baro_present(bus, addr7, spins) -> bool:
+    return baro_chip_ok(baro_chip(bus, addr7, spins))
+
+# One probe, then one pressure burst and one temperature burst. The chip id is
+# checked before any measurement is believed, so a different device at the same
+# address is reported rather than converted.
+action baro_sample(bus, addr7, spins) -> BaroSample:
+    let chip = baro_chip(bus, addr7, spins)
+    if chip < 0:
+        return baro_failed(0, "chip id read failed")
+    if baro_chip_ok(chip) != true:
+        return baro_failed(chip, "chip id " + chip + " is not the expected " + baro_chip_id())
+    let p = i2c_burst_read(bus, addr7, baro_reg_pressure(), baro_pressure_bytes(), spins)
+    if p.ok != true:
+        return baro_failed(chip, "pressure burst failed: " + p.error)
+    let t = i2c_burst_read(bus, addr7, baro_reg_temperature(), baro_temperature_bytes(), spins)
+    if t.ok != true:
+        return baro_failed(chip, "temperature burst failed: " + t.error)
+    let praw = baro_pressure_raw(p.bytes)
+    let traw = baro_temperature_raw(t.bytes)
+    return BaroSample(ok: true, chip: chip, pressure_raw: praw, pressure_pa: baro_pressure_pa(praw), temperature_raw: traw, temperature_milli_c: baro_temperature_milli_c(traw), error: "")

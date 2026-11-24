@@ -1,0 +1,152 @@
+# tests/hw/regs_test.kaze -- the register layer itself.
+#
+# Every driver in this phase is built on lib/regs.kaze, so its conventions are pinned
+# here before anything trusts them: a descriptor's address arithmetic, the three access
+# widths, field extraction and insertion, read-modify-write, and a poll that always
+# answers. Two checks exist because of the target, not the host: the board model and the
+# Cortex-M image both run this file, and the target's integer type is 32 bits, so a word
+# whose top bit is set is the case where a naive mask-and-shift field helper would give
+# a different answer on the two boards. The helpers are written arithmetically so that
+# this suite passes on both.
+#
+# The BSP numbers are the ones dist/kaze_board_sim.h lists: TIM2 at 0x40000000, the RAM
+# window at 0x24000000 and the test-only control block at 0xE00F0000. The last check is
+# that no access reached an address no model claims, which is what catches a typo in
+# them.
+
+needs: log
+needs: regs
+
+use "./../../lib/regs.kaze"
+
+record Tally:
+    failures: number
+    checks: number
+
+action check(t: Tally, label, ok) -> Tally:
+    let n = t.checks + 1
+    if ok:
+        return Tally(failures: t.failures, checks: n)
+    log.info("FAIL " + label)
+    return Tally(failures: t.failures + 1, checks: n)
+
+# ---- the BSP -------------------------------------------------------------
+
+action sim_ctl() -> num:
+    return 3759079424
+action tim2() -> num:
+    return 1073741824
+action ram_base() -> num:
+    return 603979776
+
+action reset_board(t: Tally) -> Tally:
+    mmio_write32(sim_ctl() + 48, 1)
+    mmio_fence()
+    return t
+
+action main() -> num:
+    let t = Tally(failures: 0, checks: 0)
+    set t to reset_board(t)
+    let tim = tim2()
+    let ram = ram_base()
+    let ctl = sim_ctl()
+
+    # ---- descriptors ---------------------------------------------------
+    let arr = reg_new(tim, 44, 32)
+    set t to check(t, "a descriptor adds its offset to the base", reg_addr(arr) == 1073741868)
+    set t to check(t, "a descriptor keeps its width", reg_size(arr) == 32)
+    set t to check(t, "an 8-bit descriptor is one byte", reg_bytes(reg_new(tim, 40, 8)) == 1)
+    set t to check(t, "a 16-bit descriptor is two bytes", reg_bytes(reg_new(tim, 40, 16)) == 2)
+    set t to check(t, "a 32-bit descriptor is four bytes", reg_bytes(arr) == 4)
+    set t to check(t, "a 24-bit descriptor is unserved", reg_bytes(reg_new(tim, 40, 24)) == 0)
+
+    # ---- the three access widths ---------------------------------------
+    set t to check(t, "a 32-bit register write is visible to a read", reg_write(arr, 123456) == 123456)
+    set t to check(t, "the 32-bit register reads back", reg_read(arr) == 123456)
+    reg_write(reg_new(ram, 0, 32), 305419896)
+    set t to check(t, "a word written at one width reads as its low byte", reg_read(reg_new(ram, 0, 8)) == 120)
+    set t to check(t, "the next byte is the next byte of the word", reg_read(reg_new(ram, 1, 8)) == 86)
+    set t to check(t, "a half-word reads the middle of the word", reg_read(reg_new(ram, 2, 16)) == 4660)
+    reg_write(reg_new(ram, 4, 16), 43981)
+    set t to check(t, "a half-word write lands as two bytes", reg_read(reg_new(ram, 4, 8)) == 205)
+    set t to check(t, "and its second byte", reg_read(reg_new(ram, 5, 8)) == 171)
+    reg_write(reg_new(ram, 6, 8), 200)
+    reg_write(reg_new(ram, 7, 8), 1)
+    set t to check(t, "two byte writes compose into a half-word", reg_read(reg_new(ram, 6, 16)) == 456)
+
+    # An address no accessor serves is refused, not guessed at: nothing is written and
+    # the register keeps its old value.
+    reg_write(arr, 4660)
+    set t to check(t, "an unserved width reads as zero", reg_read(reg_new(tim, 44, 24)) == 0)
+    set t to check(t, "an unserved width writes nothing", reg_write(reg_new(tim, 44, 24), 999) == 0)
+    set t to check(t, "and the register still holds its value", reg_read(arr) == 4660)
+
+    # ---- masks and fields ----------------------------------------------
+    set t to check(t, "an 8-bit mask has eight ones", reg_mask(8) == 255)
+    set t to check(t, "a 16-bit mask has sixteen ones", reg_mask(16) == 65535)
+    set t to check(t, "a 32-bit mask is the whole word", reg_mask(32) == 4294967295)
+    set t to check(t, "a zero-width mask is empty", reg_mask(0) == 0)
+    set t to check(t, "a mask wider than a word is clamped", reg_mask(33) == 4294967295)
+    set t to check(t, "field bits are the mask in place", reg_field_bits(reg_field_at(4, 3)) == 112)
+    set t to check(t, "a byte field at bit 8", reg_field_get(123456789, 8, 8) == 205)
+    set t to check(t, "a byte field at bit 16", reg_field_get(123456789, 16, 8) == 91)
+    set t to check(t, "a byte field at bit 0", reg_field_get(123456789, 0, 8) == 21)
+    set t to check(t, "putting a field into an empty word", reg_field_put(0, 8, 8, 205) == 52480)
+    set t to check(t, "putting zero into a field clears only that field", reg_field_put(123456789, 8, 8, 0) == 123404309)
+    set t to check(t, "a field at the top of the word", reg_bit(2147483653, 31) == 1)
+    set t to check(t, "its neighbour is zero", reg_bit(2147483653, 30) == 0)
+    set t to check(t, "the bottom bit is set too", reg_bit(2147483653, 0) == 1)
+    set t to check(t, "writing bit 0 keeps bit 31", reg_field_put(2147483648, 0, 1, 1) == 2147483649)
+
+    # Field helpers against a real register: ARR is 0x1234.
+    reg_write(arr, 4660)
+    set t to check(t, "a 16-bit field of a real register", reg_field_read(reg_new(tim, 44, 32), 0, 16) == 4660)
+    set t to check(t, "bits 4..11 of the same word", reg_field_read(reg_new(tim, 44, 32), 4, 8) == 35)
+    set t to check(t, "the top nibble of the same word", reg_field_read(reg_new(tim, 44, 32), 12, 4) == 1)
+    reg_field_write(reg_new(tim, 44, 32), 0, 16, 12345)
+    set t to check(t, "a field write changes the register", reg_read(arr) == 12345)
+
+    # ---- read-modify-write ---------------------------------------------
+    let cr1 = reg_new(tim, 0, 32)
+    reg_write(cr1, 0)
+    set t to check(t, "read-modify-write sets a bit", reg_read_modify_write(cr1, 1, 1) == 1)
+    set t to check(t, "and the register holds it", reg_read(cr1) == 1)
+    set t to check(t, "it replaces a field and keeps the rest", reg_read_modify_write(cr1, 3, 2) == 2)
+    set t to check(t, "it clears a bit", reg_read_modify_write(cr1, 2, 0) == 0)
+    set t to check(t, "set_bits adds one", reg_set_bits(cr1, 6) == 6)
+    set t to check(t, "clear_bits removes one", reg_clear_bits(cr1, 2) == 4)
+    # The word above 2^31 is the target-specific one: bit 31 has to survive a clear of
+    # bit 0. A mask-and-shift implementation loses it on a 32-bit integer target.
+    reg_write(arr, 2147483653)
+    set t to check(t, "read-modify-write keeps the top bit", reg_read_modify_write(arr, 1, 0) == 2147483652)
+    set t to check(t, "and the register holds the top bit", reg_read(arr) == 2147483652)
+    set t to check(t, "read-modify-write sets it back", reg_read_modify_write(arr, 1, 1) == 2147483653)
+
+    # ---- polling -------------------------------------------------------
+    reg_write(arr, 1000000)
+    mmio_write32(tim + 36, 0)
+    let sr = reg_new(tim, 16, 32)
+    set t to check(t, "a poll with no matching bit times out", reg_poll_until(sr, 1, 1, 5) == 0)
+    set t to check(t, "a poll with a zero limit returns at once", reg_poll_until(sr, 1, 1, 0) == 0)
+    set t to check(t, "a poll of a bit that never sets times out", reg_poll_bit(sr, 1, 3) == 0)
+    reg_write(arr, 40)
+    mmio_write32(tim + 36, 0)
+    set t to check(t, "a registered condition is polled to true", reg_poll_until(sr, 1, 1, 1000) == 1)
+    set t to check(t, "the single-bit poll agrees", reg_poll_bit(sr, 0, 1000) == 1)
+    set t to check(t, "a fence is available as an action", reg_sync() == 1)
+
+    # ---- addresses above 2^31 ------------------------------------------
+    # 0xE00F0038 is the clock-report register. If the host-to-target conversion lost
+    # the high bits, this would hit the wrong register - or an unmodelled address.
+    let syclk = reg_new(ctl, 52, 32)
+    set t to check(t, "an address above 2^31 round-trips", reg_addr(syclk) == 3759079476)
+    set t to check(t, "a register above 2^31 accepts a write", reg_write(syclk, 480000000) == 480000000)
+    set t to check(t, "and reads back through the same descriptor", reg_read(syclk) == 480000000)
+
+    # ---- nothing fell outside the modelled board -----------------------
+    set t to check(t, "no access fell outside the modelled board", mmio_read32(ctl + 20) == 0)
+    set t to check(t, "no access was misaligned", mmio_read32(ctl + 24) == 0)
+
+    if t.failures == 0:
+        log.info("OK regs: " + ("" + t.checks) + " checks")
+    return t.failures

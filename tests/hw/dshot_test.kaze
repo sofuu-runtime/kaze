@@ -1,0 +1,144 @@
+# tests/hw/dshot_test.kaze -- the DShot600 frame, bit timing and telemetry decode.
+#
+# What the suite proves, and why each part matters:
+#   1. the 16-bit frame is throttle 11 bits, telemetry request 1 bit and the 4-bit CRC
+#      over those 12 payload bits, checked against the published 1000/telemetry example
+#      0x7D1B and against a deliberately corrupted frame;
+#   2. DShot600 timing is 600 kbit/s: T0H 625 ns, T1H 1250 ns, a 5/3 us bit period and a
+#      16-bit frame of 26.67 us, and every pulse duration adds back up to one bit;
+#   3. the pulse list and the DMA-readable bitstream are the same timing expressed as
+#      durations (32 16-bit words), never a bit-banged pin;
+#   4. telemetry decodes in both documented modes: eRPM (3-bit exponent and 9-bit
+#      period, with 0x0FFF meaning "no reading") and extended (type nibble plus data
+#      byte), with CRC validity reported rather than assumed.
+#
+# The board model is reset first, and the last two checks assert that no access fell
+# outside the modelled map and that none was misaligned. The bitstream lives in the
+# 4 KiB RAM window, which is modelled, so writing it is an ordinary MMIO write.
+
+needs: log
+needs: regs
+
+use "./../../lib/dshot.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# ---- the BSP -------------------------------------------------------------
+action sim_ctl() -> num:
+    return 3759079424
+
+action ram_base() -> num:
+    return 603979776
+
+action main() -> num:
+    let failures = 0
+    mmio_write32(sim_ctl() + 48, 1)
+    mmio_fence()
+    let ctl = sim_ctl()
+    let ram = ram_base()
+
+    # ---- 1. the frame --------------------------------------------------
+    set failures to check("an idle frame is all zeroes", dshot_frame(0, 0) == 0, failures)
+    set failures to check("throttle 1000 with telemetry is the published 0x7D1B", dshot_frame(1000, 1) == 32027, failures)
+    set failures to check("the payload is throttle in the top 11 bits and the request bit last", dshot_payload(1000, 1) == 2001, failures)
+    set failures to check("the CRC of that payload is 0xB", dshot_crc4(2001) == 11, failures)
+    let f = dshot_frame(1000, 1)
+    set failures to check("the throttle decodes back out of the frame", dshot_frame_throttle(f) == 1000, failures)
+    set failures to check("the telemetry request decodes back", dshot_frame_telemetry(f), failures)
+    set failures to check("without a request the bit is clear", dshot_frame_telemetry(dshot_frame(1000, 0)) == false, failures)
+    set failures to check("the frame CRC checks out", dshot_frame_crc_ok(f), failures)
+    set failures to check("a corrupted CRC is rejected", dshot_frame_crc_ok(f + 1) == false, failures)
+    set failures to check("a corrupted payload is rejected", dshot_frame_crc_ok(f - 32) == false, failures)
+    set failures to check("throttle is masked to 11 bits", dshot_frame_throttle(dshot_frame(2047, 1)) == 2047, failures)
+
+    # ---- 2. the timing -------------------------------------------------
+    let timing = dshot_timing()
+    set failures to check("DShot600 is 600 kbit/s", timing.bit_rate == 600000, failures)
+    set failures to check("one bit period is 5/3 us", timing.period_ns == dshot_period_ns(), failures)
+    set failures to check("T0H is 625 ns", timing.t0h_ns == 625, failures)
+    set failures to check("T1H is 1250 ns", timing.t1h_ns == 1250, failures)
+    set failures to check("T0L completes the bit period", timing.t0l_ns == dshot_period_ns() - 625, failures)
+    set failures to check("T1L completes the bit period", timing.t1l_ns == dshot_period_ns() - 1250, failures)
+    set failures to check("a 16-bit frame is 26.67 us", timing.frame_ns == dshot_period_ns() * 16, failures)
+    set failures to check("a 0 bit is high for 625 ns", dshot_bit_ns(0) == 625, failures)
+    set failures to check("a 1 bit is high for 1250 ns", dshot_bit_ns(1) == 1250, failures)
+
+    # ---- 3. durations, not bit-banging ---------------------------------
+    let bits = dshot_bits(f)
+    set failures to check("a frame is sixteen bits", (length of bits) == 16, failures)
+    set failures to check("the first bit is the frame's top bit", (bits[0] otherwise 0) == 0, failures)
+    set failures to check("the second bit is one", (bits[1] otherwise 0) == 1, failures)
+    set failures to check("the last bit is one", (bits[15] otherwise 0) == 1, failures)
+
+    let pulses = dshot_pulses(f)
+    set failures to check("the pulse train has two durations per bit", (length of pulses) == 32, failures)
+    set failures to check("the first 0 bit is high for 625 ns", (pulses[0] otherwise 0) == 625, failures)
+    set failures to check("and low for the rest of the bit period", (pulses[1] otherwise 0) == dshot_period_ns() - 625, failures)
+    set failures to check("the second bit is high for 1250 ns", (pulses[2] otherwise 0) == 1250, failures)
+    set failures to check("and low for the rest", (pulses[3] otherwise 0) == dshot_period_ns() - 1250, failures)
+
+    let words = dshot_bitstream(f, ram)
+    set failures to check("the bitstream is 32 timer words", words == 32, failures)
+    set failures to check("the first word is the whole-nanosecond 0-bit high time", mmio_read16(ram) == 625, failures)
+    set failures to check("the second word is the rounded low time", mmio_read16(ram + 2) == 1042, failures)
+    set failures to check("the last word is the last bit's low time", mmio_read16(ram + 62) == 417, failures)
+
+    # An all-ones frame has every bit high for 1250 ns. It is also the telemetry "no
+    # reading" word, so it is worth having in the stream exactly.
+    let ones = dshot_frame(2047, 1)
+    set failures to check("a full-throttle telemetry frame is all ones", ones == 65535, failures)
+    let ones_words = dshot_bitstream(ones, ram + 128)
+    set failures to check("its bitstream is also 32 words", ones_words == 32, failures)
+    set failures to check("every bit's high time is 1250 ns", mmio_read16(ram + 128) == 1250, failures)
+    set failures to check("and every bit's low time is rounded to 417 ns", mmio_read16(ram + 130) == 417, failures)
+
+    # ---- 4. telemetry --------------------------------------------------
+    let erpm_frame = dshot_telemetry_encode(200)
+    set failures to check("telemetry encoding appends the same 4-bit CRC", erpm_frame == 3204, failures)
+    let e = dshot_telemetry_decode_erpm(erpm_frame)
+    set failures to check("an eRPM frame decodes in eRPM mode", e.mode == 0, failures)
+    set failures to check("with a valid CRC", e.crc_ok, failures)
+    set failures to check("the nine-bit period is 200", e.period == 200, failures)
+    set failures to check("the three-bit exponent is zero", e.exponent == 0, failures)
+    set failures to check("the integer conversion gives 3000", e.erpm_x100 == 3000, failures)
+    set failures to check("an eRPM frame has kind zero", e.kind == 0, failures)
+    set failures to check("and names itself erpm", dshot_telemetry_kind_name(e.kind) == "erpm", failures)
+
+    let none = dshot_telemetry_decode_erpm(dshot_telemetry_encode(4095))
+    set failures to check("0x0FFF is the published no-reading value", none.period == 0, failures)
+    set failures to check("and reports no eRPM", none.erpm_x100 == 0, failures)
+    set failures to check("while its CRC is still valid", none.crc_ok, failures)
+
+    let temp = dshot_telemetry_decode_extended(dshot_telemetry_encode((1 * 256) + 42))
+    set failures to check("a temperature frame decodes in extended mode", temp.mode == 1, failures)
+    set failures to check("type 1 is temperature", temp.kind == 1 and dshot_telemetry_kind_name(temp.kind) == "temperature", failures)
+    set failures to check("its data byte is 42 degrees", temp.data_byte == 42, failures)
+    set failures to check("and the physical reading is 42 C", dshot_telemetry_reading(temp) == 42, failures)
+
+    let volt = dshot_telemetry_decode_extended(dshot_telemetry_encode((2 * 256) + 100))
+    set failures to check("type 2 is voltage", volt.kind == 2 and dshot_telemetry_kind_name(volt.kind) == "voltage", failures)
+    set failures to check("100 counts is 25 V", dshot_telemetry_reading(volt) == 25, failures)
+
+    let curr = dshot_telemetry_decode_extended(dshot_telemetry_encode((3 * 256) + 12))
+    set failures to check("type 3 is current", curr.kind == 3 and dshot_telemetry_kind_name(curr.kind) == "current", failures)
+    set failures to check("12 counts is 12 A", dshot_telemetry_reading(curr) == 12, failures)
+
+    let status = dshot_telemetry_decode_extended(dshot_telemetry_encode((7 * 256) + 5))
+    set failures to check("type 7 is the ESC status frame", status.kind == 7 and dshot_telemetry_kind_name(status.kind) == "status", failures)
+
+    let by_mode = dshot_telemetry_decode(erpm_frame, 0)
+    set failures to check("the mode-taking decoder agrees with the eRPM wrapper", by_mode.period == e.period and by_mode.erpm_x100 == e.erpm_x100, failures)
+    set failures to check("an invalid telemetry CRC is reported, not hidden", dshot_telemetry_decode_extended(erpm_frame + 1).crc_ok == false, failures)
+    set failures to check("an eRPM frame has no extended reading", dshot_telemetry_reading(e) == 0, failures)
+
+    # ---- nothing fell outside the modelled board -----------------------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + 20) == 0, failures)
+    set failures to check("no access was misaligned", mmio_read32(ctl + 24) == 0, failures)
+
+    if failures == 0:
+        log.info("OK dshot: 62 checks")
+    return failures

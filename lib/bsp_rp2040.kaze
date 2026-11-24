@@ -1,0 +1,971 @@
+# lib/bsp_rp2040.kaze -- board support for the RP2040-style virtual board.
+#
+# The RP2040 half of the virtual board models a different, smaller set of blocks.
+# Every address below matches dist/kaze_board_sim.h exactly, and the suite next to
+# this file writes and reads a scratch register in every window this BSP claims.
+#
+#   RESETS     0x4000C000   RESET 0x00 WDSEL 0x04 RESET_DONE 0x08
+#   CLOCKS     0x40008000   CLK_REF_CTRL 0x30 CLK_SYS_CTRL 0x3C
+#   IO_BANK0   0x40014000   GPIO0_CTRL 0x04 + n*0x08
+#   PADS       0x4001C000   GPIO0 0x04 + n*0x04
+#   SPI0       0x4003C000   SSPCR0 0x00 SSPCR1 0x04 SSPDR 0x08 SSPSR 0x0C
+#   I2C0       0x40044000   IC_CON 0x00 IC_TAR 0x04 IC_DATA_CMD 0x10
+#                           IC_RAW_INTR_STAT 0x34 IC_STATUS 0x70
+#   PWM        0x40050000   CHn_CSR 0x00+n*0x14, DIV +4, CTR +8, CC +12, TOP +16
+#                           EN 0xF0 INTR 0xF4
+#   TIMER      0x40054000   TIMEHR 0x08 TIMELR 0x0C ALARM0 0x10 TIMERAWL 0x28
+#   SIO        0xD0000000   GPIO_IN 0x004 GPIO_OUT 0x010 GPIO_OUT_SET 0x014
+#                           GPIO_OUT_CLR 0x018 GPIO_OE 0x020
+#
+# Clock tree: 12 MHz XOSC -> PLL_SYS (REFDIV 1, FBDIV 125 -> 1500 MHz VCO,
+# POSTDIV1 6, POSTDIV2 2) -> 125 MHz CLK_SYS, CLK_PERI following at 125 MHz. The
+# virtual board models XOSC (CTRL/STATUS), PLL_SYS (CS/PWR/FBDIV_INT/PRIM) and
+# the CLOCKS mux registers, so bsp_rp2040_clock_init() starts the crystal, waits
+# for STABLE, powers the PLL, waits for LOCK, writes the muxes, decodes the
+# dividers it reads back, publishes the resulting 125 MHz to SIM_CTL_SYSCLK_HZ
+# and returns it as a number.
+#
+# There is no CAN controller on RP2040. bsp_rp2040_board() reports base_can = 0
+# and bsp_rp2040_can_path() answers with the SPI-attached transport a CAN
+# controller would use (SPI0 with a chip-select and an interrupt pin). No
+# register in this module pretends an RP2040 CAN peripheral exists.
+#
+# UART0 (0x40034000) and DMA (0x50000000) are modelled, so the bring-up
+# configures UART0 for 115200 8N1 and uses DMA channel 0 to move a three-byte
+# greeting from the RAM window to the UART data register. That is the same
+# telemetry path a driver uses; the suite checks the bytes the UART stored.
+#
+# Bring-up order (bsp_rp2040_init returns it as an ordered stage list):
+#   resets -> clocks -> gpio_pins -> timer -> pwm -> spi -> i2c ->
+#   can_spi_bridge -> uart -> dma
+
+needs: regs
+
+
+# ---- register bases ----------------------------------------------------
+
+action rp2040_sim_ctl() -> num:
+    return 3759079424
+
+action rp2040_resets() -> num:
+    return 1073790976
+
+action rp2040_clocks() -> num:
+    return 1073774592
+
+action rp2040_io_bank0() -> num:
+    return 1073823744
+
+action rp2040_pads() -> num:
+    return 1073856512
+
+action rp2040_spi0() -> num:
+    return 1073987584
+
+action rp2040_i2c0() -> num:
+    return 1074020352
+
+action rp2040_pwm() -> num:
+    return 1074069504
+
+action rp2040_timer() -> num:
+    return 1074085888
+
+action rp2040_sio() -> num:
+    return 3489660928
+
+# Clock-source and telemetry blocks the clock and bring-up sequences refer to.
+# XOSC and PLL_SYS are also the two windows a real port writes for the clock
+# tree; UART0 and DMA carry the telemetry path.
+action rp2040_xosc() -> num:
+    return 1073889280
+
+action rp2040_pll_sys() -> num:
+    return 1073905664
+
+action rp2040_uart0() -> num:
+    return 1073954816
+
+action rp2040_dma() -> num:
+    return 1342177280
+
+# The shared 4 KiB RAM window (SIM_RAM_BASE) the DMA models move bytes through.
+action rp2040_ram() -> num:
+    return 603979776
+
+
+# ---- SIM_CTL offsets ---------------------------------------------------
+
+action rp2040_ctl_unknown() -> num:
+    return 20
+
+action rp2040_ctl_reset() -> num:
+    return 48
+
+action rp2040_ctl_sysclk_hz() -> num:
+    return 52
+
+action rp2040_ctl_uart_len() -> num:
+    return 28
+
+action rp2040_ctl_uart_index() -> num:
+    return 32
+
+action rp2040_ctl_uart_byte() -> num:
+    return 36
+
+
+# ---- RESETS offsets and bits -------------------------------------------
+
+action rp2040_resets_reset() -> num:
+    return 0
+
+action rp2040_resets_wdsel() -> num:
+    return 4
+
+action rp2040_resets_reset_done() -> num:
+    return 8
+
+action rp2040_reset_dma() -> num:
+    return 4
+
+action rp2040_reset_i2c0() -> num:
+    return 8
+
+action rp2040_reset_io_bank0() -> num:
+    return 32
+
+action rp2040_reset_pads_bank0() -> num:
+    return 128
+
+action rp2040_reset_pll_sys() -> num:
+    return 2048
+
+action rp2040_reset_pwm() -> num:
+    return 8192
+
+action rp2040_reset_spi0() -> num:
+    return 32768
+
+action rp2040_reset_timer() -> num:
+    return 1048576
+
+action rp2040_reset_uart0() -> num:
+    return 2097152
+
+# The blocks this BSP brings up. PLL_SYS must be released before the clock
+# switch; the peripherals are released with it here, then RESET is written 0 so
+# every bit runs.
+action rp2040_reset_bringup_mask() -> num:
+    return 3188908
+
+
+# ---- CLOCKS offsets and fields -----------------------------------------
+
+action rp2040_clk_ref_ctrl() -> num:
+    return 48
+
+action rp2040_clk_sys_ctrl() -> num:
+    return 60
+
+action rp2040_clk_ref_src_rosc() -> num:
+    return 0
+
+action rp2040_clk_ref_src_aux() -> num:
+    return 1
+
+action rp2040_clk_ref_src_xosc() -> num:
+    return 2
+
+action rp2040_clk_sys_src_aux() -> num:
+    return 0
+
+action rp2040_clk_sys_src_ref() -> num:
+    return 1
+
+action rp2040_clk_sys_auxsrc_pll_sys() -> num:
+    return 0
+
+action rp2040_clk_sys_auxsrc_pll_usb() -> num:
+    return 1
+
+action rp2040_clk_sys_auxsrc_rosc() -> num:
+    return 2
+
+action rp2040_clk_sys_auxsrc_xosc() -> num:
+    return 3
+
+# ENABLE is bit 11; a clock control register with it set is running.
+action rp2040_clk_ctrl_enable() -> num:
+    return 2048
+
+
+# ---- XOSC offsets and fields -------------------------------------------
+# CTRL enables the crystal (0xFAB in bits 23:12) with the reset startup delay
+# (0xAA0); STATUS bit 31 says the oscillator is stable.
+
+action rp2040_xosc_ctrl() -> num:
+    return 0
+
+action rp2040_xosc_status() -> num:
+    return 4
+
+action rp2040_xosc_ctrl_value() -> num:
+    return 16431776
+
+action rp2040_xosc_status_stable() -> num:
+    return 2147483648
+
+
+# ---- PLL_SYS offsets and fields ----------------------------------------
+# CS bit 31 is LOCK; PWR bit 0 powers the PLL down while set; FBDIV_INT is the
+# feedback divider; PRIM carries POSTDIV1 in bits 19:16 and POSTDIV2 in 23:20.
+
+action rp2040_pll_cs() -> num:
+    return 0
+
+action rp2040_pll_pwr() -> num:
+    return 4
+
+action rp2040_pll_fbdiv_int() -> num:
+    return 8
+
+action rp2040_pll_prim() -> num:
+    return 12
+
+action rp2040_pll_pwr_pd() -> num:
+    return 1
+
+action rp2040_pll_cs_lock() -> num:
+    return 2147483648
+
+action rp2040_pll_prim_postdiv1_shift() -> num:
+    return 16
+
+action rp2040_pll_prim_postdiv2_shift() -> num:
+    return 20
+
+action rp2040_pll_prim_value() -> num:
+    return 2490368
+
+
+# ---- UART0 offsets and fields ------------------------------------------
+# 115200 8N1 at a 125 MHz peripheral clock: IBRD = 125e6/(16*115200) = 67 and
+# FBRD = round(0.816*64) = 52. LCR_H enables the FIFOs and an 8-bit word; CR
+# enables the UART, the transmitter and the receiver.
+
+action rp2040_uart_dr() -> num:
+    return 0
+
+action rp2040_uart_fr() -> num:
+    return 24
+
+action rp2040_uart_ibrd() -> num:
+    return 36
+
+action rp2040_uart_fbrd() -> num:
+    return 40
+
+action rp2040_uart_lcr_h() -> num:
+    return 44
+
+action rp2040_uart_cr() -> num:
+    return 48
+
+action rp2040_uart_fr_txff() -> num:
+    return 32
+
+action rp2040_uart_lcr_h_wlen_8bit() -> num:
+    return 96
+
+action rp2040_uart_lcr_h_fen() -> num:
+    return 16
+
+action rp2040_uart_cr_uart_en() -> num:
+    return 1
+
+action rp2040_uart_cr_txe() -> num:
+    return 256
+
+action rp2040_uart_cr_rxe() -> num:
+    return 512
+
+action rp2040_uart_ibrd_115200() -> num:
+    return 67
+
+action rp2040_uart_fbrd_115200() -> num:
+    return 52
+
+action rp2040_uart_lcr_h_8n1() -> num:
+    return 112
+
+action rp2040_uart_cr_enabled() -> num:
+    return 769
+
+
+# ---- DMA offsets and fields --------------------------------------------
+# CH0_CTRL_TRIG bit 0 starts the transfer when written 1; INCR_READ (bit 4)
+# advances the source, INCR_WRITE (bit 5) the destination. INTR bit 0 is the
+# completion flag.
+
+action rp2040_dma_ch0_read_addr() -> num:
+    return 0
+
+action rp2040_dma_ch0_write_addr() -> num:
+    return 4
+
+action rp2040_dma_ch0_trans_count() -> num:
+    return 8
+
+action rp2040_dma_ch0_ctrl_trig() -> num:
+    return 12
+
+action rp2040_dma_intr() -> num:
+    return 64
+
+action rp2040_dma_ctrl_en() -> num:
+    return 1
+
+action rp2040_dma_ctrl_incr_read() -> num:
+    return 16
+
+action rp2040_dma_ctrl_incr_write() -> num:
+    return 32
+
+action rp2040_dma_ctrl_size_8bit() -> num:
+    return 0
+
+action rp2040_dma_intr_done() -> num:
+    return 1
+
+
+# ---- IO_BANK0 offsets and FUNCSEL values -------------------------------
+
+action rp2040_gpio_ctrl0() -> num:
+    return 4
+
+action rp2040_gpio_ctrl_stride() -> num:
+    return 8
+
+action rp2040_gpio_ctrl(pin) -> num:
+    return 4 + pin * 8
+
+action rp2040_funcsel_mask() -> num:
+    return 31
+
+action rp2040_func_xip() -> num:
+    return 0
+
+action rp2040_func_spi() -> num:
+    return 1
+
+action rp2040_func_uart() -> num:
+    return 2
+
+action rp2040_func_i2c() -> num:
+    return 3
+
+action rp2040_func_pwm() -> num:
+    return 4
+
+action rp2040_func_sio() -> num:
+    return 5
+
+action rp2040_func_pio0() -> num:
+    return 6
+
+action rp2040_func_pio1() -> num:
+    return 7
+
+
+# ---- PADS offsets and fields -------------------------------------------
+
+action rp2040_pad_gpio0() -> num:
+    return 4
+
+action rp2040_pad_stride() -> num:
+    return 4
+
+action rp2040_pad(pin) -> num:
+    return 4 + pin * 4
+
+action rp2040_pad_slewfast() -> num:
+    return 1
+
+action rp2040_pad_schmitt() -> num:
+    return 2
+
+action rp2040_pad_pde() -> num:
+    return 4
+
+action rp2040_pad_pue() -> num:
+    return 8
+
+action rp2040_pad_drive_2ma() -> num:
+    return 0
+
+action rp2040_pad_drive_4ma() -> num:
+    return 16
+
+action rp2040_pad_drive_8ma() -> num:
+    return 32
+
+action rp2040_pad_drive_12ma() -> num:
+    return 48
+
+action rp2040_pad_ie() -> num:
+    return 64
+
+action rp2040_pad_od() -> num:
+    return 128
+
+action rp2040_pad_iso() -> num:
+    return 256
+
+# Input enabled, Schmitt trigger on, pull-up on, 4 mA drive: the pad setting the
+# plan below uses for every pin.
+action rp2040_pad_standard() -> num:
+    return 74
+
+
+# ---- SPI0 offsets and fields -------------------------------------------
+
+action rp2040_spi_sspcr0() -> num:
+    return 0
+
+action rp2040_spi_sspcr1() -> num:
+    return 4
+
+action rp2040_spi_sspdr() -> num:
+    return 8
+
+action rp2040_spi_sspsr() -> num:
+    return 12
+
+action rp2040_spi_cr0_dss_8bit() -> num:
+    return 7
+
+action rp2040_spi_cr0_frf_spi() -> num:
+    return 0
+
+action rp2040_spi_cr0_spo() -> num:
+    return 64
+
+action rp2040_spi_cr0_sph() -> num:
+    return 128
+
+action rp2040_spi_cr1_lbm() -> num:
+    return 1
+
+action rp2040_spi_cr1_sse() -> num:
+    return 2
+
+action rp2040_spi_sr_tnf() -> num:
+    return 2
+
+action rp2040_spi_sr_rne() -> num:
+    return 4
+
+action rp2040_spi_sr_bsy() -> num:
+    return 8
+
+
+# ---- I2C0 offsets and fields -------------------------------------------
+
+action rp2040_i2c_ic_con() -> num:
+    return 0
+
+action rp2040_i2c_ic_tar() -> num:
+    return 4
+
+action rp2040_i2c_ic_data_cmd() -> num:
+    return 16
+
+action rp2040_i2c_ic_raw_intr_stat() -> num:
+    return 52
+
+action rp2040_i2c_ic_status() -> num:
+    return 112
+
+action rp2040_i2c_con_master() -> num:
+    return 1
+
+action rp2040_i2c_con_speed_fast() -> num:
+    return 4
+
+action rp2040_i2c_con_restart_en() -> num:
+    return 32
+
+action rp2040_i2c_con_slave_disable() -> num:
+    return 64
+
+action rp2040_i2c_data_cmd_read() -> num:
+    return 256
+
+action rp2040_i2c_data_cmd_stop() -> num:
+    return 512
+
+action rp2040_i2c_status_activity() -> num:
+    return 1
+
+action rp2040_i2c_status_tfnf() -> num:
+    return 2
+
+action rp2040_i2c_status_tfe() -> num:
+    return 4
+
+action rp2040_i2c_status_rfne() -> num:
+    return 8
+
+
+# ---- PWM offsets and fields --------------------------------------------
+
+action rp2040_pwm_ch0_csr() -> num:
+    return 0
+
+action rp2040_pwm_ch_stride() -> num:
+    return 20
+
+action rp2040_pwm_ch_csr(n) -> num:
+    return n * 20
+
+action rp2040_pwm_ch_div(n) -> num:
+    return n * 20 + 4
+
+action rp2040_pwm_ch_ctr(n) -> num:
+    return n * 20 + 8
+
+action rp2040_pwm_ch_cc(n) -> num:
+    return n * 20 + 12
+
+action rp2040_pwm_ch_top(n) -> num:
+    return n * 20 + 16
+
+action rp2040_pwm_en() -> num:
+    return 240
+
+action rp2040_pwm_intr() -> num:
+    return 244
+
+action rp2040_pwm_csr_en() -> num:
+    return 1
+
+action rp2040_pwm_csr_ph_correct() -> num:
+    return 2
+
+action rp2040_pwm_csr_divmode_free() -> num:
+    return 0
+
+# DIV is 8.4 fixed point; 16 is divide-by-1.
+action rp2040_pwm_div_1() -> num:
+    return 16
+
+
+# ---- TIMER offsets -----------------------------------------------------
+
+action rp2040_timer_timehr() -> num:
+    return 8
+
+action rp2040_timer_timelr() -> num:
+    return 12
+
+action rp2040_timer_alarm0() -> num:
+    return 16
+
+action rp2040_timer_timerawl() -> num:
+    return 40
+
+
+# ---- SIO offsets -------------------------------------------------------
+
+action rp2040_sio_gpio_in() -> num:
+    return 4
+
+action rp2040_sio_gpio_out() -> num:
+    return 16
+
+action rp2040_sio_gpio_out_set() -> num:
+    return 20
+
+action rp2040_sio_gpio_out_clr() -> num:
+    return 24
+
+action rp2040_sio_gpio_oe() -> num:
+    return 32
+
+
+# ---- pin plan ----------------------------------------------------------
+# GPIO0/1 PWM (two actuator channels), GPIO2-4 SPI0, GPIO5 SPI0 chip select,
+# GPIO6/7 the SPI-attached CAN transport (chip select and interrupt), GPIO8/9
+# I2C0, GPIO12/13 UART0. All of these are legal RP2040 functions on those pins.
+
+action rp2040_pin_pwm0() -> num:
+    return 0
+
+action rp2040_pin_pwm1() -> num:
+    return 1
+
+action rp2040_pin_spi_sck() -> num:
+    return 2
+
+action rp2040_pin_spi_mosi() -> num:
+    return 3
+
+action rp2040_pin_spi_miso() -> num:
+    return 4
+
+action rp2040_pin_spi_cs() -> num:
+    return 5
+
+action rp2040_pin_can_cs() -> num:
+    return 6
+
+action rp2040_pin_can_int() -> num:
+    return 7
+
+action rp2040_pin_i2c_sda() -> num:
+    return 8
+
+action rp2040_pin_i2c_scl() -> num:
+    return 9
+
+action rp2040_pin_uart_tx() -> num:
+    return 12
+
+action rp2040_pin_uart_rx() -> num:
+    return 13
+
+
+# ---- arithmetic helpers ------------------------------------------------
+# Same reason as the STM32 BSP: no bitwise field placement, because the metal
+# runtime's integer is 32 bits. Powers of two and fmod keep both targets exact.
+
+action rp2040_pow2(n) -> num:
+    let v = 1
+    let i = 0
+    while i < n bounded 64:
+        set v to v * 2
+        set i to i + 1
+    return v
+
+action rp2040_field_replace(addr, unit, span, value) -> num:
+    let old = mmio_read32(addr)
+    let hi = old % span otherwise 0
+    let rem = hi % unit otherwise 0
+    let next = old - (hi - rem) + value * unit
+    mmio_write32(addr, next)
+    return mmio_read32(addr)
+
+action rp2040_pin_func(io, pin, func) -> num:
+    return rp2040_field_replace(io + rp2040_gpio_ctrl(pin), 1, 32, func)
+
+action rp2040_pin_pad(pads, pin, flags) -> num:
+    mmio_write32(pads + rp2040_pad(pin), flags)
+    return mmio_read32(pads + rp2040_pad(pin))
+
+action rp2040_pin_set_af(io, pads, pin, func) -> num:
+    rp2040_pin_pad(pads, pin, rp2040_pad_standard())
+    return rp2040_pin_func(io, pin, func)
+
+# A GPIO through SIO: OE bit set, output level driven, no pad surprises.
+action rp2040_pin_set_output(io, pads, pin, level) -> num:
+    let sio = rp2040_sio()
+    rp2040_pin_set_af(io, pads, pin, rp2040_func_sio())
+    let bit = rp2040_pow2(pin)
+    let oe = mmio_read32(sio + rp2040_sio_gpio_oe())
+    if (oe & bit) == 0:
+        mmio_write32(sio + rp2040_sio_gpio_oe(), oe + bit)
+    if level == 0:
+        mmio_write32(sio + rp2040_sio_gpio_out_clr(), bit)
+    otherwise:
+        mmio_write32(sio + rp2040_sio_gpio_out_set(), bit)
+    return 0
+
+action bsp_rp2040_pins_pwm(io, pads) -> num:
+    rp2040_pin_set_af(io, pads, rp2040_pin_pwm0(), rp2040_func_pwm())
+    rp2040_pin_set_af(io, pads, rp2040_pin_pwm1(), rp2040_func_pwm())
+    return 0
+
+action bsp_rp2040_pins_spi(io, pads) -> num:
+    rp2040_pin_set_af(io, pads, rp2040_pin_spi_sck(), rp2040_func_spi())
+    rp2040_pin_set_af(io, pads, rp2040_pin_spi_mosi(), rp2040_func_spi())
+    rp2040_pin_set_af(io, pads, rp2040_pin_spi_miso(), rp2040_func_spi())
+    rp2040_pin_set_output(io, pads, rp2040_pin_spi_cs(), 1)
+    return 0
+
+action bsp_rp2040_pins_i2c(io, pads) -> num:
+    rp2040_pin_set_af(io, pads, rp2040_pin_i2c_sda(), rp2040_func_i2c())
+    rp2040_pin_set_af(io, pads, rp2040_pin_i2c_scl(), rp2040_func_i2c())
+    return 0
+
+action bsp_rp2040_pins_uart(io, pads) -> num:
+    rp2040_pin_set_af(io, pads, rp2040_pin_uart_tx(), rp2040_func_uart())
+    rp2040_pin_set_af(io, pads, rp2040_pin_uart_rx(), rp2040_func_uart())
+    return 0
+
+# No CAN controller: the pins a CAN controller would need are the SPI chip
+# select and interrupt of the transport record below.
+action bsp_rp2040_pins_can_bridge(io, pads) -> num:
+    rp2040_pin_set_output(io, pads, rp2040_pin_can_cs(), 1)
+    rp2040_pin_set_af(io, pads, rp2040_pin_can_int(), rp2040_func_sio())
+    return 0
+
+action bsp_rp2040_pins_all(io, pads) -> num:
+    bsp_rp2040_pins_pwm(io, pads)
+    bsp_rp2040_pins_spi(io, pads)
+    bsp_rp2040_pins_i2c(io, pads)
+    bsp_rp2040_pins_uart(io, pads)
+    bsp_rp2040_pins_can_bridge(io, pads)
+    return 0
+
+
+# ---- clock tree --------------------------------------------------------
+# XOSC 12 MHz, REFDIV 1 -> 12 MHz reference, FBDIV 125 -> 1500 MHz VCO,
+# POSTDIV1 6 and POSTDIV2 2 -> 125 MHz CLK_SYS. CLK_PERI follows at 125 MHz.
+# The board models the crystal's CTRL/STATUS, the PLL's CS/PWR/FBDIV_INT/PRIM
+# and the two CLOCKS mux registers, so this is a real sequence: enable the
+# crystal, poll STABLE, power the PLL, poll LOCK, select XOSC for CLK_REF and
+# PLL_SYS for CLK_SYS. The frequency is decoded from the FBDIV and PRIM values
+# that came back, not returned from a constant.
+
+record Rp2040Clock:
+    xosc_hz: number
+    refdiv: number
+    fbdiv: number
+    vco_hz: number
+    postdiv1: number
+    postdiv2: number
+    sys_hz: number
+    peri_hz: number
+    xosc_ctrl_value: number
+    pll_pwr_value: number
+    pll_fbdiv_value: number
+    pll_prim_value: number
+
+action bsp_rp2040_clock_plan() -> Rp2040Clock:
+    return Rp2040Clock(xosc_hz: 12000000, refdiv: 1, fbdiv: 125, vco_hz: 1500000000, postdiv1: 6, postdiv2: 2, sys_hz: 125000000, peri_hz: 125000000, xosc_ctrl_value: 16431776, pll_pwr_value: 0, pll_fbdiv_value: 125, pll_prim_value: 2490368)
+
+action bsp_rp2040_sysclk_hz() -> num:
+    return 125000000
+
+action bsp_rp2040_peri_hz() -> num:
+    return 125000000
+
+# Wait for a high bit. The argument is the bit's value (2147483648 for bit 31),
+# not a mask, and it is compared as a number: the metal runtime's bitwise
+# operators truncate to a 32-bit signed integer, where 2^31 does not exist.
+action rp2040_wait_bit(addr, bit_value) -> num:
+    let ok = 0
+    let i = 0
+    while i < 1000 and ok == 0 bounded 1000:
+        let v = mmio_read32(addr)
+        if v >= bit_value:
+            set ok to 1
+        set i to i + 1
+    return ok
+
+# Decode the clock from the registers the board kept. PRIM holds the two
+# post-dividers raw (6 and 2), and FBDIV_INT is the feedback divider (125), so
+# the answer is 12 MHz * 125 / (6 * 2) = 125 MHz.
+action bsp_rp2040_clock_from_registers() -> Rp2040Clock:
+    let xosc = rp2040_xosc()
+    let pll = rp2040_pll_sys()
+    let xosc_ctrl = mmio_read32(xosc + rp2040_xosc_ctrl())
+    let fbdiv = mmio_read32(pll + rp2040_pll_fbdiv_int())
+    let prim = mmio_read32(pll + rp2040_pll_prim())
+    let pwr = mmio_read32(pll + rp2040_pll_pwr())
+    let postdiv1 = (prim >> 16) & 15
+    let postdiv2 = (prim >> 20) & 15
+    let xosc_hz = 12000000
+    let refdiv = 1
+    let vco = xosc_hz * fbdiv
+    let div = postdiv1 * postdiv2
+    let sys = vco / div otherwise 0
+    return Rp2040Clock(xosc_hz: xosc_hz, refdiv: refdiv, fbdiv: fbdiv, vco_hz: vco, postdiv1: postdiv1, postdiv2: postdiv2, sys_hz: sys, peri_hz: sys, xosc_ctrl_value: xosc_ctrl, pll_pwr_value: pwr, pll_fbdiv_value: fbdiv, pll_prim_value: prim)
+
+action bsp_rp2040_clock_init() -> num:
+    let plan = bsp_rp2040_clock_plan()
+    let xosc = rp2040_xosc()
+    let pll = rp2040_pll_sys()
+    let clk = rp2040_clocks()
+    let ctl = rp2040_sim_ctl()
+
+    # 1. crystal on, then wait for STABLE.
+    mmio_write32(xosc + rp2040_xosc_ctrl(), plan.xosc_ctrl_value)
+    let stable = rp2040_wait_bit(xosc + rp2040_xosc_status(), rp2040_xosc_status_stable())
+    if stable == 0:
+        return 0
+
+    # 2. PLL_SYS: power up, feedback divider, post-dividers, wait for LOCK.
+    mmio_write32(pll + rp2040_pll_pwr(), 0)
+    mmio_write32(pll + rp2040_pll_fbdiv_int(), plan.fbdiv)
+    mmio_write32(pll + rp2040_pll_prim(), plan.pll_prim_value)
+    let locked = rp2040_wait_bit(pll + rp2040_pll_cs(), rp2040_pll_cs_lock())
+    if locked == 0:
+        return 0
+
+    # 3. muxes: CLK_REF from XOSC, CLK_SYS from PLL_SYS.
+    mmio_write32(clk + rp2040_clk_ref_ctrl(), rp2040_clk_ref_src_xosc())
+    mmio_write32(clk + rp2040_clk_sys_ctrl(), rp2040_clk_ctrl_enable() + rp2040_clk_sys_auxsrc_pll_sys())
+    mmio_fence()
+
+    # 4. the frequency comes from the values read back.
+    let back = bsp_rp2040_clock_from_registers()
+    if back.sys_hz != plan.sys_hz:
+        return 0
+    mmio_write32(ctl + rp2040_ctl_sysclk_hz(), back.sys_hz)
+    mmio_fence()
+    let published = mmio_read32(ctl + rp2040_ctl_sysclk_hz())
+    if published != back.sys_hz:
+        return 0
+    return back.sys_hz
+
+
+# ---- the board record --------------------------------------------------
+
+record Rp2040Board:
+    base_spi: number
+    base_i2c: number
+    base_can: number
+    base_uart: number
+    base_dma: number
+    base_timer: number
+    core_hz: number
+
+# Derive the board clock from the XOSC/PLL registers when they hold the
+# documented plan, and fall back to the plan value before clock_init has run.
+action bsp_rp2040_core_hz() -> num:
+    let plan = bsp_rp2040_clock_plan()
+    let live = bsp_rp2040_clock_from_registers()
+    if live.sys_hz == plan.sys_hz:
+        return live.sys_hz
+    return plan.sys_hz
+
+action bsp_rp2040_board() -> Rp2040Board:
+    return Rp2040Board(base_spi: rp2040_spi0(), base_i2c: rp2040_i2c0(), base_can: 0, base_uart: rp2040_uart0(), base_dma: rp2040_dma(), base_timer: rp2040_timer(), core_hz: bsp_rp2040_core_hz())
+
+# There is no RP2040 CAN peripheral. A CAN controller is an SPI device on SPI0;
+# this record is the transport a CAN driver is handed instead of a base address
+# that does not exist.
+record Rp2040CanPath:
+    kind: text
+    base: number
+    cs_gpio: number
+    int_gpio: number
+
+action bsp_rp2040_has_can_controller() -> bool:
+    return false
+
+action bsp_rp2040_can_path() -> Rp2040CanPath:
+    return Rp2040CanPath(kind: "spi", base: rp2040_spi0(), cs_gpio: rp2040_pin_can_cs(), int_gpio: rp2040_pin_can_int())
+
+
+# ---- bring-up ----------------------------------------------------------
+
+record Rp2040Init:
+    ok: bool
+    stages: list
+    sysclk_hz: number
+
+action bsp_rp2040_init() -> Rp2040Init:
+    let board = bsp_rp2040_board()
+    let io = rp2040_io_bank0()
+    let pads = rp2040_pads()
+    let resets = rp2040_resets()
+    let ctl = rp2040_sim_ctl()
+
+    # 1. resets: hold the blocks this BSP uses, then release every bit and check
+    # RESET_DONE says they are up.
+    mmio_write32(resets + rp2040_resets_reset(), rp2040_reset_bringup_mask())
+    mmio_write32(resets + rp2040_resets_reset(), 0)
+    mmio_fence()
+    let resets_reset = mmio_read32(resets + rp2040_resets_reset())
+    let resets_done = mmio_read32(resets + rp2040_resets_reset_done())
+
+    # 2. clocks
+    let core = bsp_rp2040_clock_init()
+
+    # 3. GPIO functions and pads
+    let pins = bsp_rp2040_pins_all(io, pads)
+
+    # 4. hardware timer: 1 MHz free-running counter; arm ALARM0 1000 us ahead.
+    let timer = board.base_timer
+    let now = mmio_read32(timer + rp2040_timer_timerawl())
+    let alarm = now + 1000
+    mmio_write32(timer + rp2040_timer_alarm0(), alarm)
+    let alarm_back = mmio_read32(timer + rp2040_timer_alarm0())
+
+    # 5. PWM channels 0 and 1: 1 kHz from 125 MHz (TOP 12499), divider 1,
+    # free-running (not phase-correct), outputs enabled.
+    let pwm = rp2040_pwm()
+    mmio_write32(pwm + rp2040_pwm_ch_csr(0), 0)
+    mmio_write32(pwm + rp2040_pwm_ch_div(0), rp2040_pwm_div_1())
+    mmio_write32(pwm + rp2040_pwm_ch_top(0), 12499)
+    mmio_write32(pwm + rp2040_pwm_ch_csr(1), 0)
+    mmio_write32(pwm + rp2040_pwm_ch_div(1), rp2040_pwm_div_1())
+    mmio_write32(pwm + rp2040_pwm_ch_top(1), 12499)
+    mmio_write32(pwm + rp2040_pwm_en(), 3)
+    let pwm_top = mmio_read32(pwm + rp2040_pwm_ch_top(0))
+    let pwm_en = mmio_read32(pwm + rp2040_pwm_en())
+
+    # 6. SPI0: 8-bit, mode 0, master. SSE is set last.
+    let spi = board.base_spi
+    mmio_write32(spi + rp2040_spi_sspcr1(), 0)
+    mmio_write32(spi + rp2040_spi_sspcr0(), rp2040_spi_cr0_dss_8bit())
+    mmio_write32(spi + rp2040_spi_sspcr1(), rp2040_spi_cr1_sse())
+    let spi_cr1 = mmio_read32(spi + rp2040_spi_sspcr1())
+
+    # 7. I2C0: master, fast mode, restart enabled, slave disabled; barometer at
+    # 0x76.
+    let i2c = board.base_i2c
+    let i2c_con = rp2040_i2c_con_master() + rp2040_i2c_con_speed_fast() + rp2040_i2c_con_restart_en() + rp2040_i2c_con_slave_disable()
+    mmio_write32(i2c + rp2040_i2c_ic_con(), i2c_con)
+    mmio_write32(i2c + rp2040_i2c_ic_tar(), 118)
+    let i2c_tar = mmio_read32(i2c + rp2040_i2c_ic_tar())
+
+    # 8. CAN: there is no controller. The transport is SPI0 with the chip
+    # select and interrupt pins already configured above; record that, do not
+    # invent a peripheral.
+    let can_path = bsp_rp2040_can_path()
+
+    # 9. UART0: 115200 8N1 from the 125 MHz peripheral clock, FIFOs on.
+    let uart = board.base_uart
+    mmio_write32(uart + rp2040_uart_cr(), 0)
+    mmio_write32(uart + rp2040_uart_ibrd(), rp2040_uart_ibrd_115200())
+    mmio_write32(uart + rp2040_uart_fbrd(), rp2040_uart_fbrd_115200())
+    mmio_write32(uart + rp2040_uart_lcr_h(), rp2040_uart_lcr_h_8n1())
+    mmio_write32(uart + rp2040_uart_cr(), rp2040_uart_cr_enabled())
+    let uart_ibrd = mmio_read32(uart + rp2040_uart_ibrd())
+    let uart_fbrd = mmio_read32(uart + rp2040_uart_fbrd())
+    let uart_lcr = mmio_read32(uart + rp2040_uart_lcr_h())
+    let uart_cr = mmio_read32(uart + rp2040_uart_cr())
+
+    # 10. DMA channel 0: three bytes from the RAM window to UART0's data
+    # register. The memory pointer increments; the peripheral address does not,
+    # because every byte goes into the same FIFO data register.
+    let dma = board.base_dma
+    let ram = rp2040_ram()
+    mmio_write8(ram, 75)
+    mmio_write8(ram + 1, 90)
+    mmio_write8(ram + 2, 33)
+    mmio_write32(dma + rp2040_dma_ch0_read_addr(), ram)
+    mmio_write32(dma + rp2040_dma_ch0_write_addr(), uart + rp2040_uart_dr())
+    mmio_write32(dma + rp2040_dma_ch0_trans_count(), 3)
+    mmio_write32(dma + rp2040_dma_ch0_ctrl_trig(), rp2040_dma_ctrl_en() + rp2040_dma_ctrl_incr_read() + rp2040_dma_ctrl_size_8bit())
+    let dma_intr = mmio_read32(dma + rp2040_dma_intr())
+    let uart_len = mmio_read32(ctl + rp2040_ctl_uart_len())
+
+    mmio_fence()
+
+    let ok = resets_reset == 0 and resets_done == 4294967295
+    set ok to ok and core == 125000000 and pins == 0
+    set ok to ok and alarm_back == alarm
+    set ok to ok and pwm_top == 12499 and pwm_en == 3
+    set ok to ok and spi_cr1 == 2
+    set ok to ok and i2c_tar == 118 and i2c_con == 101
+    set ok to ok and can_path.kind == "spi" and can_path.base == board.base_spi
+    set ok to ok and uart_ibrd == 67 and uart_fbrd == 52
+    set ok to ok and uart_lcr == 112 and uart_cr == 769
+    set ok to ok and dma_intr == 1 and uart_len == 3
+    let stages = ["resets", "clocks", "gpio_pins", "timer", "pwm", "spi", "i2c", "can_spi_bridge", "uart", "dma"]
+    return Rp2040Init(ok: ok, stages: stages, sysclk_hz: core)

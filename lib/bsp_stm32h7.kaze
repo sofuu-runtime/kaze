@@ -1,0 +1,1205 @@
+# lib/bsp_stm32h7.kaze -- board support for the STM32H7-style virtual board.
+#
+# This module is the contract between a driver and the board: the register map, the
+# clock tree, the pin alternate functions, and one bring-up sequence. Every address
+# below matches dist/kaze_board_sim.h exactly; the suite next to this file asserts
+# that by reading and writing a scratch register in every window it claims, and by
+# checking that the board counted no access outside the modelled map.
+#
+# What the virtual board models (and therefore what this BSP may touch):
+#
+#   TIM2   0x40000000   CR1/DIER/SR/EGR/CCMR1/CCMR2/CCER/CNT/PSC/ARR/CCR1..4/BDTR
+#   I2C1   0x40005400   CR1/CR2/OAR1/TIMINGR/ISR/ICR/RXDR/TXDR
+#   CAN1   0x4000A400   MCR/MSR/TSR/RF0R plus the TIR/TDTR/TDLR/TDHR and
+#                       RIR/RDTR/RDLR/RDHR mailbox window
+#   USART1 0x40011000   CR1/BRR/ISR/RDR/TDR
+#   SPI1   0x40013000   CR1/CR2/SR/DR
+#   DMA1   0x40020000   LISR, stream 0 and stream 1 registers
+#   GPIOA  0x58020000   MODER/OTYPER/OSPEEDR/PUPDR/IDR/ODR/BSRR/AFRL/AFRH
+#   RCC    0x58024400   CR/CFGR/D1CFGR/D2CFGR/D3CFGR/PLLCKSELR/PLLCFGR/
+#                       PLL1DIVR/PLL1FRACR, with HSI and PLL1 ready bits
+#   RAM    0x24000000   4 KiB the DMA model can move bytes through
+#   SIM_CTL 0xE00F0000  the test-only control block
+#
+# The H7 also has an RCC block (0x58024400). The virtual board models its CR,
+# CFGR, D1CFGR, D2CFGR, D3CFGR, PLLCKSELR, PLLCFGR, PLL1DIVR and PLL1FRACR
+# registers, with HSION/HSIRDY always set and PLL1RDY following PLL1ON, so the
+# clock bring-up below really writes the PLL and prescaler plan and reads it back.
+# The plan is the real H743 plan: HSE 25 MHz, PLL1 DIVM 5, DIVN 192, DIVP 2 ->
+# 960 MHz VCO and 480 MHz SYSCLK, AHB /2 -> 240 MHz HCLK, APB1..APB4 /2 -> 120 MHz,
+# timer kernels 2 x PCLK -> 240 MHz. bsp_stm32h7_clock_init() writes those
+# registers, polls PLL1RDY, decodes the values it actually read back, publishes
+# the resulting SYSCLK to SIM_CTL_SYSCLK_HZ and returns it as a number.
+#
+# What this BSP does not claim:
+#   * no silicon: no board is attached, and the virtual peripherals are behavioural;
+#   * no interrupt controller, cache, MPU or power management;
+#   * no GPIO port other than GPIOA is modelled. A real board passes its own port
+#     base and pin numbers to the pin helpers; the default plan below uses the
+#     pins that are expressible on the modelled port.
+#
+# Bring-up order (bsp_stm32h7_init returns it as an ordered stage list):
+#   clocks -> gpio_pins -> timer -> spi -> i2c -> can -> uart -> dma
+
+needs: regs
+
+
+# ---- register bases ----------------------------------------------------
+# Decimal because the language has no hex literals. Each value is a base from
+# dist/kaze_board_sim.h.
+
+action stm32h7_sim_ctl() -> num:
+    return 3759079424
+
+action stm32h7_tim2() -> num:
+    return 1073741824
+
+action stm32h7_i2c1() -> num:
+    return 1073763328
+
+action stm32h7_can1() -> num:
+    return 1073783808
+
+action stm32h7_usart1() -> num:
+    return 1073811456
+
+action stm32h7_spi1() -> num:
+    return 1073819648
+
+action stm32h7_dma1() -> num:
+    return 1073872896
+
+action stm32h7_gpioa() -> num:
+    return 1476526080
+
+action stm32h7_ram() -> num:
+    return 603979776
+
+
+# ---- SIM_CTL offsets ---------------------------------------------------
+# The test-only control block. Only the offsets a BSP or a suite needs are named;
+# the remaining ones belong to the driver suites.
+
+action stm32h7_ctl_edge_count() -> num:
+    return 4
+
+action stm32h7_ctl_unknown() -> num:
+    return 20
+
+action stm32h7_ctl_bad_align() -> num:
+    return 24
+
+action stm32h7_ctl_uart_len() -> num:
+    return 28
+
+action stm32h7_ctl_uart_index() -> num:
+    return 32
+
+action stm32h7_ctl_uart_byte() -> num:
+    return 36
+
+action stm32h7_ctl_reset() -> num:
+    return 48
+
+action stm32h7_ctl_sysclk_hz() -> num:
+    return 52
+
+action stm32h7_ctl_systick_real() -> num:
+    return 56
+
+
+# ---- TIM2 offsets ------------------------------------------------------
+
+action stm32h7_tim_cr1() -> num:
+    return 0
+
+action stm32h7_tim_dier() -> num:
+    return 12
+
+action stm32h7_tim_sr() -> num:
+    return 16
+
+action stm32h7_tim_egr() -> num:
+    return 20
+
+action stm32h7_tim_ccmr1() -> num:
+    return 24
+
+action stm32h7_tim_ccmr2() -> num:
+    return 28
+
+action stm32h7_tim_ccer() -> num:
+    return 32
+
+action stm32h7_tim_cnt() -> num:
+    return 36
+
+action stm32h7_tim_psc() -> num:
+    return 40
+
+action stm32h7_tim_arr() -> num:
+    return 44
+
+action stm32h7_tim_ccr1() -> num:
+    return 52
+
+action stm32h7_tim_ccr2() -> num:
+    return 56
+
+action stm32h7_tim_ccr3() -> num:
+    return 60
+
+action stm32h7_tim_ccr4() -> num:
+    return 64
+
+action stm32h7_tim_bdtr() -> num:
+    return 68
+
+
+# ---- TIM2 bit fields ---------------------------------------------------
+
+action stm32h7_tim_cr1_cen() -> num:
+    return 1
+
+action stm32h7_tim_cr1_udis() -> num:
+    return 2
+
+action stm32h7_tim_cr1_urs() -> num:
+    return 4
+
+action stm32h7_tim_cr1_opm() -> num:
+    return 8
+
+action stm32h7_tim_cr1_dir() -> num:
+    return 16
+
+action stm32h7_tim_cr1_arpe() -> num:
+    return 128
+
+action stm32h7_tim_dier_uie() -> num:
+    return 1
+
+action stm32h7_tim_dier_cc1ie() -> num:
+    return 2
+
+action stm32h7_tim_sr_uif() -> num:
+    return 1
+
+action stm32h7_tim_sr_cc1if() -> num:
+    return 2
+
+action stm32h7_tim_egr_ug() -> num:
+    return 1
+
+action stm32h7_tim_egr_cc1g() -> num:
+    return 2
+
+# CC1S = 01 (input, IC1 mapped on TI1) in CCMR1 bits 1:0.
+action stm32h7_tim_ccmr1_cc1s_ti1() -> num:
+    return 1
+
+# OC1M = 110 (PWM mode 1) in CCMR1 bits 6:4, and OC1PE in bit 3.
+action stm32h7_tim_ccmr1_oc1m_pwm1() -> num:
+    return 96
+
+action stm32h7_tim_ccmr1_oc1pe() -> num:
+    return 8
+
+# OC3M = 110 in CCMR2 bits 6:4.
+action stm32h7_tim_ccmr2_oc3m_pwm1() -> num:
+    return 96
+
+action stm32h7_tim_ccer_cc1e() -> num:
+    return 1
+
+action stm32h7_tim_ccer_cc1p() -> num:
+    return 2
+
+action stm32h7_tim_ccer_cc2e() -> num:
+    return 16
+
+action stm32h7_tim_bdtr_moe() -> num:
+    return 32768
+
+
+# ---- I2C1 offsets ------------------------------------------------------
+
+action stm32h7_i2c_cr1() -> num:
+    return 0
+
+action stm32h7_i2c_cr2() -> num:
+    return 4
+
+action stm32h7_i2c_oar1() -> num:
+    return 8
+
+action stm32h7_i2c_timingr() -> num:
+    return 16
+
+action stm32h7_i2c_isr() -> num:
+    return 24
+
+action stm32h7_i2c_icr() -> num:
+    return 28
+
+action stm32h7_i2c_rxdr() -> num:
+    return 36
+
+action stm32h7_i2c_txdr() -> num:
+    return 40
+
+
+# ---- I2C1 bit fields ---------------------------------------------------
+
+action stm32h7_i2c_cr1_pe() -> num:
+    return 1
+
+action stm32h7_i2c_cr1_anfoff() -> num:
+    return 4096
+
+action stm32h7_i2c_cr2_rd_wrn() -> num:
+    return 1024
+
+action stm32h7_i2c_cr2_start() -> num:
+    return 8192
+
+action stm32h7_i2c_cr2_stop() -> num:
+    return 16384
+
+action stm32h7_i2c_cr2_reload() -> num:
+    return 16777216
+
+action stm32h7_i2c_cr2_autoend() -> num:
+    return 33554432
+
+action stm32h7_i2c_isr_txe() -> num:
+    return 1
+
+action stm32h7_i2c_isr_txis() -> num:
+    return 2
+
+action stm32h7_i2c_isr_rxne() -> num:
+    return 4
+
+action stm32h7_i2c_isr_nackf() -> num:
+    return 16
+
+action stm32h7_i2c_isr_stopf() -> num:
+    return 32
+
+action stm32h7_i2c_isr_tc() -> num:
+    return 64
+
+action stm32h7_i2c_isr_busy() -> num:
+    return 32768
+
+
+# ---- CAN1 offsets ------------------------------------------------------
+
+action stm32h7_can_mcr() -> num:
+    return 0
+
+action stm32h7_can_msr() -> num:
+    return 4
+
+action stm32h7_can_tsr() -> num:
+    return 8
+
+action stm32h7_can_rf0r() -> num:
+    return 12
+
+action stm32h7_can_tir() -> num:
+    return 384
+
+action stm32h7_can_tdtr() -> num:
+    return 388
+
+action stm32h7_can_tdlr() -> num:
+    return 392
+
+action stm32h7_can_tdhr() -> num:
+    return 396
+
+action stm32h7_can_rir() -> num:
+    return 432
+
+action stm32h7_can_rdtr() -> num:
+    return 436
+
+action stm32h7_can_rdlr() -> num:
+    return 440
+
+action stm32h7_can_rdhr() -> num:
+    return 444
+
+
+# ---- CAN1 bit fields ---------------------------------------------------
+
+action stm32h7_can_mcr_inrq() -> num:
+    return 1
+
+action stm32h7_can_mcr_txfp() -> num:
+    return 4
+
+action stm32h7_can_mcr_rflm() -> num:
+    return 8
+
+action stm32h7_can_mcr_nart() -> num:
+    return 16
+
+action stm32h7_can_mcr_abom() -> num:
+    return 64
+
+action stm32h7_can_msr_inak() -> num:
+    return 1
+
+action stm32h7_can_msr_slak() -> num:
+    return 2
+
+action stm32h7_can_tsr_rqcp0() -> num:
+    return 1
+
+action stm32h7_can_tsr_txok0() -> num:
+    return 2
+
+action stm32h7_can_rf0r_fmp0() -> num:
+    return 3
+
+action stm32h7_can_rf0r_full0() -> num:
+    return 8
+
+action stm32h7_can_rf0r_rfom0() -> num:
+    return 32
+
+action stm32h7_can_tir_txrq() -> num:
+    return 1
+
+action stm32h7_can_tir_rtr() -> num:
+    return 2
+
+action stm32h7_can_tir_ide() -> num:
+    return 4
+
+action stm32h7_can_tdtr_dlc() -> num:
+    return 15
+
+
+# ---- USART1 offsets ----------------------------------------------------
+
+action stm32h7_usart_cr1() -> num:
+    return 0
+
+action stm32h7_usart_brr() -> num:
+    return 12
+
+action stm32h7_usart_isr() -> num:
+    return 28
+
+action stm32h7_usart_rdr() -> num:
+    return 36
+
+action stm32h7_usart_tdr() -> num:
+    return 40
+
+
+# ---- USART1 bit fields -------------------------------------------------
+
+action stm32h7_usart_cr1_ue() -> num:
+    return 1
+
+action stm32h7_usart_cr1_re() -> num:
+    return 4
+
+action stm32h7_usart_cr1_te() -> num:
+    return 8
+
+action stm32h7_usart_cr1_rxneie() -> num:
+    return 32
+
+action stm32h7_usart_cr1_txeie() -> num:
+    return 128
+
+action stm32h7_usart_cr1_m() -> num:
+    return 268435456
+
+action stm32h7_usart_isr_rxne() -> num:
+    return 32
+
+action stm32h7_usart_isr_tc() -> num:
+    return 64
+
+action stm32h7_usart_isr_txe() -> num:
+    return 128
+
+
+# ---- SPI1 offsets ------------------------------------------------------
+
+action stm32h7_spi_cr1() -> num:
+    return 0
+
+action stm32h7_spi_cr2() -> num:
+    return 4
+
+action stm32h7_spi_sr() -> num:
+    return 8
+
+action stm32h7_spi_dr() -> num:
+    return 12
+
+
+# ---- SPI1 bit fields ---------------------------------------------------
+
+action stm32h7_spi_cr1_cpha() -> num:
+    return 1
+
+action stm32h7_spi_cr1_cpol() -> num:
+    return 2
+
+action stm32h7_spi_cr1_mstr() -> num:
+    return 4
+
+# BR = 101 in bits 5:3 selects fPCLK/64.
+action stm32h7_spi_cr1_br_div64() -> num:
+    return 40
+
+action stm32h7_spi_cr1_spe() -> num:
+    return 64
+
+action stm32h7_spi_cr1_lsbfirst() -> num:
+    return 128
+
+action stm32h7_spi_cr1_ssi() -> num:
+    return 256
+
+action stm32h7_spi_cr1_ssm() -> num:
+    return 512
+
+action stm32h7_spi_cr1_dff() -> num:
+    return 2048
+
+action stm32h7_spi_cr2_rxdmaen() -> num:
+    return 1
+
+action stm32h7_spi_cr2_txdmaen() -> num:
+    return 2
+
+action stm32h7_spi_cr2_ssoe() -> num:
+    return 4
+
+action stm32h7_spi_sr_rxne() -> num:
+    return 1
+
+action stm32h7_spi_sr_txe() -> num:
+    return 2
+
+action stm32h7_spi_sr_bsy() -> num:
+    return 8
+
+action stm32h7_spi_sr_ovr() -> num:
+    return 64
+
+
+# ---- DMA1 offsets ------------------------------------------------------
+
+action stm32h7_dma_lisr() -> num:
+    return 0
+
+action stm32h7_dma_s0cr() -> num:
+    return 16
+
+action stm32h7_dma_s0ndtr() -> num:
+    return 20
+
+action stm32h7_dma_s0par() -> num:
+    return 24
+
+action stm32h7_dma_s0m0ar() -> num:
+    return 28
+
+action stm32h7_dma_s0fcr() -> num:
+    return 32
+
+action stm32h7_dma_s1cr() -> num:
+    return 40
+
+
+# ---- DMA1 bit fields ---------------------------------------------------
+# The virtual board reads the transfer width from S0CR bits 11:10, the direction
+# from bit 4 (as board_test does) and always advances the memory pointer, which
+# is why the bring-up uses EN|DIR (17). PINC and MINC are the silicon bits and
+# are not needed on the model.
+
+action stm32h7_dma_s0cr_en() -> num:
+    return 1
+
+action stm32h7_dma_s0cr_tcie() -> num:
+    return 2
+
+action stm32h7_dma_s0cr_htie() -> num:
+    return 4
+
+action stm32h7_dma_s0cr_teie() -> num:
+    return 8
+
+action stm32h7_dma_s0cr_dir() -> num:
+    return 16
+
+action stm32h7_dma_s0cr_circ() -> num:
+    return 256
+
+action stm32h7_dma_s0cr_pinc() -> num:
+    return 512
+
+action stm32h7_dma_s0cr_minc() -> num:
+    return 1024
+
+
+# ---- GPIOA offsets -----------------------------------------------------
+
+action stm32h7_gpio_moder() -> num:
+    return 0
+
+action stm32h7_gpio_otyper() -> num:
+    return 4
+
+action stm32h7_gpio_ospeedr() -> num:
+    return 8
+
+action stm32h7_gpio_pupdr() -> num:
+    return 12
+
+action stm32h7_gpio_idr() -> num:
+    return 16
+
+action stm32h7_gpio_odr() -> num:
+    return 20
+
+action stm32h7_gpio_bsrr() -> num:
+    return 24
+
+action stm32h7_gpio_afrl() -> num:
+    return 32
+
+action stm32h7_gpio_afrh() -> num:
+    return 36
+
+
+# ---- GPIOA field values ------------------------------------------------
+
+action stm32h7_gpio_mode_input() -> num:
+    return 0
+
+action stm32h7_gpio_mode_output() -> num:
+    return 1
+
+action stm32h7_gpio_mode_af() -> num:
+    return 2
+
+action stm32h7_gpio_mode_analog() -> num:
+    return 3
+
+action stm32h7_gpio_otype_pushpull() -> num:
+    return 0
+
+action stm32h7_gpio_otype_opendrain() -> num:
+    return 1
+
+action stm32h7_gpio_speed_low() -> num:
+    return 0
+
+action stm32h7_gpio_speed_medium() -> num:
+    return 1
+
+action stm32h7_gpio_speed_high() -> num:
+    return 2
+
+action stm32h7_gpio_speed_veryhigh() -> num:
+    return 3
+
+action stm32h7_gpio_pull_none() -> num:
+    return 0
+
+action stm32h7_gpio_pull_up() -> num:
+    return 1
+
+action stm32h7_gpio_pull_down() -> num:
+    return 2
+
+
+# ---- pin plan ----------------------------------------------------------
+# The default plan places every peripheral on GPIOA, the one port the virtual
+# board models. The AF numbers are the H7 numbers for the signal. TIM2, SPI1,
+# USART1 and CAN1 are on their real H7 pins here. I2C1 is normally on PB6/PB7,
+# which the virtual board does not model; the plan below uses PA8/PA15 so the
+# whole plan is expressible on the modelled port, and a real board calls the
+# pin helpers with GPIOB and pins 6/7 instead.
+
+action stm32h7_pin_tim2_ch1() -> num:
+    return 0
+
+action stm32h7_pin_tim2_ch2() -> num:
+    return 1
+
+action stm32h7_pin_tim2_ch3() -> num:
+    return 2
+
+action stm32h7_pin_tim2_ch4() -> num:
+    return 3
+
+action stm32h7_pin_spi1_nss() -> num:
+    return 4
+
+action stm32h7_pin_spi1_sck() -> num:
+    return 5
+
+action stm32h7_pin_spi1_miso() -> num:
+    return 6
+
+action stm32h7_pin_spi1_mosi() -> num:
+    return 7
+
+action stm32h7_pin_i2c1_scl() -> num:
+    return 8
+
+action stm32h7_pin_usart1_tx() -> num:
+    return 9
+
+action stm32h7_pin_usart1_rx() -> num:
+    return 10
+
+action stm32h7_pin_can1_rx() -> num:
+    return 11
+
+action stm32h7_pin_can1_tx() -> num:
+    return 12
+
+action stm32h7_pin_i2c1_sda() -> num:
+    return 15
+
+action stm32h7_af_tim2() -> num:
+    return 1
+
+action stm32h7_af_i2c1() -> num:
+    return 4
+
+action stm32h7_af_spi1() -> num:
+    return 5
+
+action stm32h7_af_usart1() -> num:
+    return 7
+
+action stm32h7_af_can1() -> num:
+    return 9
+
+
+# ---- arithmetic helpers ------------------------------------------------
+# Kaze numbers are doubles and the metal runtime's integer is 32 bits wide, so
+# placing a field with bitwise operators would shift a 32-bit signed integer by
+# up to 60 in the AF registers. These helpers use powers of two and fmod instead:
+# every value stays exact in a double and the same code is correct on host and
+# on Cortex-M.
+
+action stm32h7_pow2(n) -> num:
+    let v = 1
+    let i = 0
+    while i < n bounded 64:
+        set v to v * 2
+        set i to i + 1
+    return v
+
+# Replace the field that starts at bit log2(unit), is span/unit bits wide and
+# currently holds cur, with value. A read-modify-write, so neighbouring fields
+# survive.
+action stm32h7_field_replace(addr, unit, span, value) -> num:
+    let old = mmio_read32(addr)
+    let hi = old % span otherwise 0
+    let rem = hi % unit otherwise 0
+    let next = old - (hi - rem) + value * unit
+    mmio_write32(addr, next)
+    return mmio_read32(addr)
+
+# A two-bit field per pin: MODER, OSPEEDR and PUPDR all have this shape.
+action stm32h7_pin_two_bit(gpio, pin, mode) -> num:
+    let unit = stm32h7_pow2(pin * 2)
+    return stm32h7_field_replace(gpio, unit, unit * 4, mode)
+
+# A four-bit alternate-function field: AFRL for pins 0..7, AFRH for 8..15.
+action stm32h7_pin_af(gpio, pin, af) -> num:
+    let reg = gpio + stm32h7_gpio_afrl()
+    let shift = pin * 4
+    if pin >= 8:
+        set reg to gpio + stm32h7_gpio_afrh()
+        set shift to (pin - 8) * 4
+    let unit = stm32h7_pow2(shift)
+    return stm32h7_field_replace(reg, unit, unit * 16, af)
+
+action stm32h7_pin_mode(gpio, pin, mode) -> num:
+    return stm32h7_pin_two_bit(gpio, pin, mode)
+
+action stm32h7_pin_otype(gpio, pin, kind) -> num:
+    let unit = stm32h7_pow2(pin)
+    return stm32h7_field_replace(gpio + stm32h7_gpio_otyper(), unit, unit * 2, kind)
+
+action stm32h7_pin_speed(gpio, pin, speed) -> num:
+    return stm32h7_pin_two_bit(gpio + stm32h7_gpio_ospeedr(), pin, speed)
+
+action stm32h7_pin_pull(gpio, pin, pull) -> num:
+    return stm32h7_pin_two_bit(gpio + stm32h7_gpio_pupdr(), pin, pull)
+
+# Alternate function first, then the mode that hands the pin to the peripheral,
+# so the pin is never driving the peripheral's signal while still a GPIO.
+action stm32h7_pin_set_af(gpio, pin, af) -> num:
+    stm32h7_pin_af(gpio, pin, af)
+    stm32h7_pin_otype(gpio, pin, stm32h7_gpio_otype_pushpull())
+    stm32h7_pin_speed(gpio, pin, stm32h7_gpio_speed_high())
+    stm32h7_pin_mode(gpio, pin, stm32h7_gpio_mode_af())
+    return 0
+
+# A plain push-pull output with a known level. BSRR is write-only on silicon:
+# bits 0..15 set, bits 16..31 clear, and the model implements exactly that.
+action stm32h7_pin_set_output(gpio, pin, level) -> num:
+    stm32h7_pin_otype(gpio, pin, stm32h7_gpio_otype_pushpull())
+    stm32h7_pin_speed(gpio, pin, stm32h7_gpio_speed_high())
+    stm32h7_pin_pull(gpio, pin, stm32h7_gpio_pull_none())
+    stm32h7_pin_mode(gpio, pin, stm32h7_gpio_mode_output())
+    let bit = stm32h7_pow2(pin)
+    if level == 0:
+        mmio_write32(gpio + stm32h7_gpio_bsrr(), bit * 65536)
+    otherwise:
+        mmio_write32(gpio + stm32h7_gpio_bsrr(), bit)
+    return 0
+
+action bsp_stm32h7_pins_timer(gpio) -> num:
+    stm32h7_pin_set_af(gpio, stm32h7_pin_tim2_ch1(), stm32h7_af_tim2())
+    stm32h7_pin_set_af(gpio, stm32h7_pin_tim2_ch2(), stm32h7_af_tim2())
+    stm32h7_pin_set_af(gpio, stm32h7_pin_tim2_ch3(), stm32h7_af_tim2())
+    stm32h7_pin_set_af(gpio, stm32h7_pin_tim2_ch4(), stm32h7_af_tim2())
+    return 0
+
+# PA4 is chip select: a GPIO output held high (inactive). SCK/MISO/MOSI are AF5.
+action bsp_stm32h7_pins_spi(gpio) -> num:
+    stm32h7_pin_set_output(gpio, stm32h7_pin_spi1_nss(), 1)
+    stm32h7_pin_set_af(gpio, stm32h7_pin_spi1_sck(), stm32h7_af_spi1())
+    stm32h7_pin_set_af(gpio, stm32h7_pin_spi1_miso(), stm32h7_af_spi1())
+    stm32h7_pin_set_af(gpio, stm32h7_pin_spi1_mosi(), stm32h7_af_spi1())
+    return 0
+
+action bsp_stm32h7_pins_i2c(gpio) -> num:
+    stm32h7_pin_af(gpio, stm32h7_pin_i2c1_scl(), stm32h7_af_i2c1())
+    stm32h7_pin_af(gpio, stm32h7_pin_i2c1_sda(), stm32h7_af_i2c1())
+    stm32h7_pin_otype(gpio, stm32h7_pin_i2c1_scl(), stm32h7_gpio_otype_opendrain())
+    stm32h7_pin_otype(gpio, stm32h7_pin_i2c1_sda(), stm32h7_gpio_otype_opendrain())
+    stm32h7_pin_pull(gpio, stm32h7_pin_i2c1_scl(), stm32h7_gpio_pull_up())
+    stm32h7_pin_pull(gpio, stm32h7_pin_i2c1_sda(), stm32h7_gpio_pull_up())
+    stm32h7_pin_mode(gpio, stm32h7_pin_i2c1_scl(), stm32h7_gpio_mode_af())
+    stm32h7_pin_mode(gpio, stm32h7_pin_i2c1_sda(), stm32h7_gpio_mode_af())
+    return 0
+
+action bsp_stm32h7_pins_can(gpio) -> num:
+    stm32h7_pin_set_af(gpio, stm32h7_pin_can1_rx(), stm32h7_af_can1())
+    stm32h7_pin_set_af(gpio, stm32h7_pin_can1_tx(), stm32h7_af_can1())
+    return 0
+
+action bsp_stm32h7_pins_uart(gpio) -> num:
+    stm32h7_pin_set_af(gpio, stm32h7_pin_usart1_tx(), stm32h7_af_usart1())
+    stm32h7_pin_set_af(gpio, stm32h7_pin_usart1_rx(), stm32h7_af_usart1())
+    return 0
+
+action bsp_stm32h7_pins_all(gpio) -> num:
+    bsp_stm32h7_pins_timer(gpio)
+    bsp_stm32h7_pins_spi(gpio)
+    bsp_stm32h7_pins_i2c(gpio)
+    bsp_stm32h7_pins_can(gpio)
+    bsp_stm32h7_pins_uart(gpio)
+    return 0
+
+
+# ---- clock tree --------------------------------------------------------
+# H743 peak plan, all from a 25 MHz HSE:
+#   PLL1: DIVM=5 -> 5 MHz reference, DIVN=192 -> 960 MHz VCO, DIVP=2 -> 480 MHz
+#   SYSCLK 480 MHz, AHB /2 -> HCLK 240 MHz, APB1..APB4 /2 -> 120 MHz
+#   timer kernels are 2 x PCLK when the APB prescaler is not 1 -> 240 MHz
+#
+# The virtual board models the RCC register window, so this is a real sequence:
+# PLLCKSELR, PLLCFGR and PLL1DIVR are written, PLL1ON is raised and PLL1RDY is
+# polled with a bound, then the three prescaler registers and CFGR are written.
+# clock_from_registers() decodes the values that came back and derives the
+# frequencies from them, so a register the board did not keep makes the suite
+# fail instead of returning a hardcoded clock.
+#
+# H743 register encodings (RM0433):
+#   PLLCKSELR  PLLSRC=2 (HSE) in bits 1:0, DIVM1=5 in bits 9:4      -> 82
+#   PLLCFGR    DIVP1EN (bit 16), PLL1RGE=2 (4-8 MHz, bits 3:2)      -> 65544
+#   PLL1DIVR   DIVN1=191 (bits 8:0, divider-1)
+#              DIVP1=1  (bits 15:9, divider-1)                      -> 703
+#   CR         PLL1ON bit 24, PLL1RDY bit 25
+#   D1CFGR     HPRE=8 (/2) -> 8
+#   D2CFGR     PPRE1=4 (/2, bits 6:4), PPRE2=4 (/2, bits 10:8)     -> 1088
+#   D3CFGR     PPRE=4 (/2, bits 6:4)                               -> 64
+#   CFGR       SW=3 (PLL1)                                          -> 3
+
+record Stm32h7Clock:
+    hse_hz: number
+    pll1_ref_hz: number
+    pll1_divm: number
+    pll1_divn: number
+    pll1_divp: number
+    pll1_vco_hz: number
+    sysclk_hz: number
+    hclk_hz: number
+    apb1_hz: number
+    apb2_hz: number
+    apb3_hz: number
+    apb4_hz: number
+    timer_hz: number
+    ahb_prescaler: number
+    apb_prescaler: number
+    pllckselr_value: number
+    pllcfgr_value: number
+    pll1divr_value: number
+    d1cfgr_value: number
+    d2cfgr_value: number
+    d3cfgr_value: number
+    cfgr_value: number
+
+action bsp_stm32h7_clock_plan() -> Stm32h7Clock:
+    return Stm32h7Clock(hse_hz: 25000000, pll1_ref_hz: 5000000, pll1_divm: 5, pll1_divn: 192, pll1_divp: 2, pll1_vco_hz: 960000000, sysclk_hz: 480000000, hclk_hz: 240000000, apb1_hz: 120000000, apb2_hz: 120000000, apb3_hz: 120000000, apb4_hz: 120000000, timer_hz: 240000000, ahb_prescaler: 2, apb_prescaler: 2, pllckselr_value: 82, pllcfgr_value: 65544, pll1divr_value: 703, d1cfgr_value: 8, d2cfgr_value: 1088, d3cfgr_value: 64, cfgr_value: 3)
+
+action bsp_stm32h7_sysclk_hz() -> num:
+    return 480000000
+
+action bsp_stm32h7_hclk_hz() -> num:
+    return 240000000
+
+action bsp_stm32h7_apb1_hz() -> num:
+    return 120000000
+
+action bsp_stm32h7_apb2_hz() -> num:
+    return 120000000
+
+action bsp_stm32h7_timer_hz() -> num:
+    return 240000000
+
+
+# ---- RCC register map --------------------------------------------------
+
+action stm32h7_rcc_base() -> num:
+    return 1476543488
+
+action stm32h7_rcc_cr() -> num:
+    return 0
+
+action stm32h7_rcc_cfgr() -> num:
+    return 16
+
+action stm32h7_rcc_d1cfgr() -> num:
+    return 20
+
+action stm32h7_rcc_d2cfgr() -> num:
+    return 24
+
+action stm32h7_rcc_d3cfgr() -> num:
+    return 28
+
+action stm32h7_rcc_pllckselr() -> num:
+    return 40
+
+action stm32h7_rcc_pllcfgr() -> num:
+    return 48
+
+action stm32h7_rcc_pll1divr() -> num:
+    return 52
+
+action stm32h7_rcc_pll1fracr() -> num:
+    return 56
+
+action stm32h7_rcc_cr_hsion() -> num:
+    return 1
+
+action stm32h7_rcc_cr_hsirdy() -> num:
+    return 2
+
+action stm32h7_rcc_cr_pll1on() -> num:
+    return 16777216
+
+action stm32h7_rcc_cr_pll1rdy() -> num:
+    return 33554432
+
+action stm32h7_rcc_cfgr_sw_pll1() -> num:
+    return 3
+
+# SWS is the switch-status mirror in bits 5:3; the virtual board stores SW but
+# does not model the mirror, so the suite checks SW and not SWS.
+action stm32h7_rcc_cfgr_sws_pll1() -> num:
+    return 24
+
+action stm32h7_rcc_pllckselr_pllsrc_hse() -> num:
+    return 2
+
+action stm32h7_rcc_pllckselr_divm1_5() -> num:
+    return 80
+
+action stm32h7_rcc_pllcfgr_divp1en() -> num:
+    return 65536
+
+action stm32h7_rcc_pllcfgr_rge_4_8mhz() -> num:
+    return 8
+
+# HPRE = 1000 (/2) in D1CFGR bits 3:0.
+action stm32h7_rcc_hpre_div2() -> num:
+    return 8
+
+# PPRE = 100 (/2) in D2CFGR bits 6:4 and D3CFGR bits 6:4.
+action stm32h7_rcc_ppre_div2() -> num:
+    return 4
+
+# D2CFGR carries PPRE1 and PPRE2; D3CFGR carries the shared PPRE.
+action stm32h7_rcc_d2cfgr_ppre1_shift() -> num:
+    return 4
+
+action stm32h7_rcc_d2cfgr_ppre2_shift() -> num:
+    return 8
+
+action stm32h7_rcc_d3cfgr_ppre_shift() -> num:
+    return 4
+
+# A bounded ready poll: the model raises PLL1RDY with PLL1ON, silicon raises it
+# when the VCO is settled. The bound is what keeps a broken clock from hanging
+# the bring-up.
+action stm32h7_wait_bit(addr, mask) -> num:
+    let ok = 0
+    let i = 0
+    while i < 1000 and ok == 0 bounded 1000:
+        let v = mmio_read32(addr)
+        if (v & mask) != 0:
+            set ok to 1
+        set i to i + 1
+    return ok
+
+# Decode the prescaler fields back into a divider, so the derived frequencies
+# come from the registers rather than from the plan record.
+action stm32h7_ahb_div(d1cfgr) -> num:
+    let hpre = d1cfgr & 15
+    let div = 1
+    if hpre == 8:
+        set div to 2
+    if hpre == 9:
+        set div to 4
+    if hpre == 10:
+        set div to 8
+    if hpre == 11:
+        set div to 16
+    if hpre == 12:
+        set div to 64
+    if hpre == 13:
+        set div to 128
+    if hpre == 14:
+        set div to 256
+    if hpre == 15:
+        set div to 512
+    return div
+
+action stm32h7_apb_div(ppre) -> num:
+    let div = 1
+    if ppre == 4:
+        set div to 2
+    if ppre == 5:
+        set div to 4
+    if ppre == 6:
+        set div to 8
+    if ppre == 7:
+        set div to 16
+    return div
+
+# The frequency is a function of the register file, not of the constants above.
+action bsp_stm32h7_clock_from_registers() -> Stm32h7Clock:
+    let rcc = stm32h7_rcc_base()
+    let pllckselr = mmio_read32(rcc + stm32h7_rcc_pllckselr())
+    let pllcfgr = mmio_read32(rcc + stm32h7_rcc_pllcfgr())
+    let pll1divr = mmio_read32(rcc + stm32h7_rcc_pll1divr())
+    let d1 = mmio_read32(rcc + stm32h7_rcc_d1cfgr())
+    let d2 = mmio_read32(rcc + stm32h7_rcc_d2cfgr())
+    let d3 = mmio_read32(rcc + stm32h7_rcc_d3cfgr())
+    let cfgr = mmio_read32(rcc + stm32h7_rcc_cfgr())
+    let hse = 25000000
+    let divm = (pllckselr >> 4) & 63
+    let divn = (pll1divr & 511) + 1
+    let divp = ((pll1divr >> 9) & 127) + 1
+    let ref = hse / divm otherwise 0
+    let vco = ref * divn
+    let sys = vco / divp otherwise 0
+    let ahb_div = stm32h7_ahb_div(d1)
+    let hclk = sys / ahb_div otherwise 0
+    let ppre1 = (d2 >> 4) & 7
+    let ppre2 = (d2 >> 8) & 7
+    let ppre3 = (d3 >> 4) & 7
+    let apb1_div = stm32h7_apb_div(ppre1)
+    let apb2_div = stm32h7_apb_div(ppre2)
+    let apb3_div = stm32h7_apb_div(ppre3)
+    let apb1 = hclk / apb1_div otherwise 0
+    let apb2 = hclk / apb2_div otherwise 0
+    let apb3 = hclk / apb3_div otherwise 0
+    let timer_div = 1
+    if apb1_div > 1:
+        set timer_div to 2
+    let timer = apb1 * timer_div
+    return Stm32h7Clock(hse_hz: hse, pll1_ref_hz: ref, pll1_divm: divm, pll1_divn: divn, pll1_divp: divp, pll1_vco_hz: vco, sysclk_hz: sys, hclk_hz: hclk, apb1_hz: apb1, apb2_hz: apb2, apb3_hz: apb3, apb4_hz: apb3, timer_hz: timer, ahb_prescaler: ahb_div, apb_prescaler: apb1_div, pllckselr_value: pllckselr, pllcfgr_value: pllcfgr, pll1divr_value: pll1divr, d1cfgr_value: d1, d2cfgr_value: d2, d3cfgr_value: d3, cfgr_value: cfgr)
+
+action bsp_stm32h7_clock_init() -> num:
+    let plan = bsp_stm32h7_clock_plan()
+    let rcc = stm32h7_rcc_base()
+    let ctl = stm32h7_sim_ctl()
+
+    # PLL source and dividers first, then power the PLL and wait for ready.
+    mmio_write32(rcc + stm32h7_rcc_pllckselr(), plan.pllckselr_value)
+    mmio_write32(rcc + stm32h7_rcc_pllcfgr(), plan.pllcfgr_value)
+    mmio_write32(rcc + stm32h7_rcc_pll1divr(), plan.pll1divr_value)
+    mmio_write32(rcc + stm32h7_rcc_cr(), stm32h7_rcc_cr_pll1on())
+    let ready = stm32h7_wait_bit(rcc + stm32h7_rcc_cr(), stm32h7_rcc_cr_pll1rdy())
+    if ready == 0:
+        return 0
+
+    # Bus prescalers before the switch, then switch SYSCLK to PLL1.
+    mmio_write32(rcc + stm32h7_rcc_d1cfgr(), plan.d1cfgr_value)
+    mmio_write32(rcc + stm32h7_rcc_d2cfgr(), plan.d2cfgr_value)
+    mmio_write32(rcc + stm32h7_rcc_d3cfgr(), plan.d3cfgr_value)
+    mmio_write32(rcc + stm32h7_rcc_cfgr(), plan.cfgr_value)
+    mmio_fence()
+
+    # Derive the clocks from what was actually read back and compare the plan.
+    let back = bsp_stm32h7_clock_from_registers()
+    if back.sysclk_hz != plan.sysclk_hz:
+        return 0
+    if back.hclk_hz != plan.hclk_hz:
+        return 0
+    if back.apb1_hz != plan.apb1_hz:
+        return 0
+    if back.timer_hz != plan.timer_hz:
+        return 0
+
+    mmio_write32(ctl + stm32h7_ctl_sysclk_hz(), back.sysclk_hz)
+    mmio_fence()
+    let published = mmio_read32(ctl + stm32h7_ctl_sysclk_hz())
+    if published != back.sysclk_hz:
+        return 0
+    return back.sysclk_hz
+
+
+# ---- the board record --------------------------------------------------
+# The record a driver takes apart and passes to its own routines. core_hz is the
+# clock the drivers compute their dividers from.
+
+record Stm32h7Board:
+    base_spi: number
+    base_i2c: number
+    base_can: number
+    base_uart: number
+    base_dma: number
+    base_timer: number
+    core_hz: number
+
+# Derive the board clock from the RCC registers when they hold the documented
+# plan, and fall back to the plan value before clock_init has run.
+action bsp_stm32h7_core_hz() -> num:
+    let plan = bsp_stm32h7_clock_plan()
+    let live = bsp_stm32h7_clock_from_registers()
+    if live.sysclk_hz == plan.sysclk_hz:
+        return live.sysclk_hz
+    return plan.sysclk_hz
+
+action bsp_stm32h7_board() -> Stm32h7Board:
+    return Stm32h7Board(base_spi: stm32h7_spi1(), base_i2c: stm32h7_i2c1(), base_can: stm32h7_can1(), base_uart: stm32h7_usart1(), base_dma: stm32h7_dma1(), base_timer: stm32h7_tim2(), core_hz: bsp_stm32h7_core_hz())
+
+
+# ---- bring-up ----------------------------------------------------------
+
+record Stm32h7Init:
+    ok: bool
+    stages: list
+    sysclk_hz: number
+
+action bsp_stm32h7_init() -> Stm32h7Init:
+    let board = bsp_stm32h7_board()
+    let gpio = stm32h7_gpioa()
+    let ctl = stm32h7_sim_ctl()
+
+    # 1. clocks
+    let core = bsp_stm32h7_clock_init()
+
+    # 2. GPIO alternate functions and pads
+    let pins = bsp_stm32h7_pins_all(gpio)
+
+    # 3. timer: 1 MHz counter kernel (240 MHz / 240), 20 ms period, running.
+    let timer = board.base_timer
+    mmio_write32(timer + stm32h7_tim_cr1(), 0)
+    mmio_write32(timer + stm32h7_tim_psc(), 239)
+    mmio_write32(timer + stm32h7_tim_arr(), 19999)
+    mmio_write32(timer + stm32h7_tim_egr(), stm32h7_tim_egr_ug())
+    mmio_write32(timer + stm32h7_tim_cr1(), stm32h7_tim_cr1_cen())
+    let timer_psc = mmio_read32(timer + stm32h7_tim_psc())
+    let timer_arr = mmio_read32(timer + stm32h7_tim_arr())
+    let timer_cr1 = mmio_read32(timer + stm32h7_tim_cr1())
+
+    # 4. SPI1: master, software slave select, fPCLK/64, mode 0. SPE is set last.
+    let spi = board.base_spi
+    let spi_cfg = stm32h7_spi_cr1_mstr() + stm32h7_spi_cr1_ssm() + stm32h7_spi_cr1_ssi() + stm32h7_spi_cr1_br_div64()
+    mmio_write32(spi + stm32h7_spi_cr1(), spi_cfg)
+    mmio_write32(spi + stm32h7_spi_cr2(), 0)
+    mmio_write32(spi + stm32h7_spi_cr1(), spi_cfg + stm32h7_spi_cr1_spe())
+    let spi_cr1 = mmio_read32(spi + stm32h7_spi_cr1())
+
+    # 5. I2C1: 400 kHz at the 120 MHz APB1 kernel, then enable the peripheral.
+    let i2c = board.base_i2c
+    mmio_write32(i2c + stm32h7_i2c_cr1(), 0)
+    mmio_write32(i2c + stm32h7_i2c_timingr(), 4363669)
+    mmio_write32(i2c + stm32h7_i2c_cr1(), stm32h7_i2c_cr1_pe())
+    let i2c_timing = mmio_read32(i2c + stm32h7_i2c_timingr())
+    let i2c_cr1 = mmio_read32(i2c + stm32h7_i2c_cr1())
+
+    # 6. CAN1: enter and leave initialisation. The model has no init-ack
+    # handshake, so this is the register order only; on silicon the same writes
+    # would be followed by a bounded wait for MSR.INAK and MSR.SLAK.
+    let can = board.base_can
+    mmio_write32(can + stm32h7_can_mcr(), stm32h7_can_mcr_inrq())
+    let can_mcr_in = mmio_read32(can + stm32h7_can_mcr())
+    mmio_write32(can + stm32h7_can_mcr(), 0)
+    let can_mcr_out = mmio_read32(can + stm32h7_can_mcr())
+
+    # 7. USART1: 115200 8N1 from the 120 MHz APB2 kernel (BRR = 16667).
+    let uart = board.base_uart
+    mmio_write32(uart + stm32h7_usart_cr1(), 0)
+    mmio_write32(uart + stm32h7_usart_brr(), 16667)
+    mmio_write32(uart + stm32h7_usart_cr1(), stm32h7_usart_cr1_ue() + stm32h7_usart_cr1_te() + stm32h7_usart_cr1_re())
+    let uart_brr = mmio_read32(uart + stm32h7_usart_brr())
+    let uart_cr1 = mmio_read32(uart + stm32h7_usart_cr1())
+
+    # 8. DMA1 stream 0 moves a three-byte greeting from the RAM window to the
+    # USART1 data register. EN|DIR(memory->peripheral)|MINC: the peripheral
+    # address does not advance, the memory pointer does.
+    let dma = board.base_dma
+    let ram = stm32h7_ram()
+    mmio_write8(ram, 83)
+    mmio_write8(ram + 1, 84)
+    mmio_write8(ram + 2, 77)
+    mmio_write32(dma + stm32h7_dma_s0cr(), 0)
+    mmio_write32(dma + stm32h7_dma_s0par(), uart + stm32h7_usart_tdr())
+    mmio_write32(dma + stm32h7_dma_s0m0ar(), ram)
+    mmio_write32(dma + stm32h7_dma_s0ndtr(), 3)
+    mmio_write32(dma + stm32h7_dma_s0cr(), 17)
+    mmio_fence()
+    let dma_par = mmio_read32(dma + stm32h7_dma_s0par())
+    let dma_cr = mmio_read32(dma + stm32h7_dma_s0cr())
+    let dma_lisr = mmio_read32(dma + stm32h7_dma_lisr())
+    let uart_len = mmio_read32(ctl + stm32h7_ctl_uart_len())
+
+    let ok = core == 480000000 and pins == 0
+    set ok to ok and timer_psc == 239 and timer_arr == 19999 and timer_cr1 == 1
+    set ok to ok and spi_cr1 == 876
+    set ok to ok and i2c_timing == 4363669 and i2c_cr1 == 1
+    set ok to ok and can_mcr_in == 1 and can_mcr_out == 0
+    set ok to ok and uart_brr == 16667 and uart_cr1 == 13
+    set ok to ok and dma_par == uart + stm32h7_usart_tdr()
+    set ok to ok and dma_cr == 16 and (dma_lisr & 1) == 1
+    set ok to ok and uart_len == 3
+    let stages = ["clocks", "gpio_pins", "timer", "spi", "i2c", "can", "uart", "dma"]
+    return Stm32h7Init(ok: ok, stages: stages, sysclk_hz: core)

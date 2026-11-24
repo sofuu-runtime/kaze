@@ -19,12 +19,18 @@ record Table:
     count: number
 
 action map_hash(t: text) -> num:
-    # FNV-1a over the bytes, kept in 32 bits with the bitwise operators.
+    # FNV-1a over the bytes, in 32 bits. The multiply is split into 16-bit halves because
+    # h * 16777619 reaches about 3.6e16, past the 2^53 a double holds exactly: written the
+    # obvious way the low bits are lost to rounding, which is deterministic but is no longer
+    # FNV-1a. The split keeps every intermediate under 2^49 and the digest exact.
     let h = 2166136261
     let i = 0
     let n = length of t
     while i < n bounded 1000000:
-        set h to (((h ^ code(t[i])) * 16777619) & 4294967295)
+        let mixed = h ^ code(t[i] otherwise "?")
+        let lo = mixed * (16777619 & 65535)
+        let hi = ((mixed * (16777619 >> 16)) & 65535) * 65536
+        set h to (lo + hi) & 4294967295
         set i to i + 1
     return h
 

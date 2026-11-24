@@ -1,0 +1,162 @@
+# tests/hw/bsp_stm32h7_test.kaze -- the STM32H7 board support package.
+#
+# What the suite proves:
+#   1. every base the BSP hands to a driver is a window the virtual board models:
+#      a scratch value written into each one reads back;
+#   2. the clock plan is the documented H743 plan and clock_init publishes the
+#      resulting 480 MHz to the board's clock register, then reads it back;
+#   3. the pin plan writes the documented alternate functions, modes and pulls;
+#   4. bsp_stm32h7_init runs the documented order and leaves each block in the
+#      configured state;
+#   5. no access fell outside the modelled map (SIM_CTL_UNKNOWN == 0).
+
+needs: log
+needs: regs
+
+use "./../../lib/bsp_stm32h7.kaze"
+
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# Two-bit GPIO fields: MODER, OSPEEDR, PUPDR.
+action two_bits(value, shift) -> num:
+    return (value >> shift) & 3
+
+# Four-bit alternate-function fields in AFRL/AFRH.
+action nibble4(value, shift) -> num:
+    return (value >> shift) & 15
+
+
+action main() -> num:
+    let failures = 0
+    let ctl = stm32h7_sim_ctl()
+    let gpio = stm32h7_gpioa()
+
+    mmio_write32(ctl + stm32h7_ctl_reset(), 1)
+    mmio_fence()
+
+    # ---- 1. every base the board hands out is a modelled window ---------
+    mmio_write32(stm32h7_tim2() + stm32h7_tim_psc(), 1234)
+    set failures to check("TIM2 window answers a scratch write", mmio_read32(stm32h7_tim2() + stm32h7_tim_psc()) == 1234, failures)
+    mmio_write32(stm32h7_i2c1() + stm32h7_i2c_timingr(), 5678)
+    set failures to check("I2C1 window answers a scratch write", mmio_read32(stm32h7_i2c1() + stm32h7_i2c_timingr()) == 5678, failures)
+    mmio_write32(stm32h7_can1() + stm32h7_can_mcr(), 68)
+    set failures to check("CAN1 window answers a scratch write", mmio_read32(stm32h7_can1() + stm32h7_can_mcr()) == 68, failures)
+    mmio_write32(stm32h7_usart1() + stm32h7_usart_brr(), 9600)
+    set failures to check("USART1 window answers a scratch write", mmio_read32(stm32h7_usart1() + stm32h7_usart_brr()) == 9600, failures)
+    mmio_write32(stm32h7_spi1() + stm32h7_spi_cr1(), 1024)
+    set failures to check("SPI1 window answers a scratch write", mmio_read32(stm32h7_spi1() + stm32h7_spi_cr1()) == 1024, failures)
+    mmio_write32(stm32h7_dma1() + stm32h7_dma_s0ndtr(), 7)
+    set failures to check("DMA1 window answers a scratch write", mmio_read32(stm32h7_dma1() + stm32h7_dma_s0ndtr()) == 7, failures)
+    mmio_write32(gpio + stm32h7_gpio_otyper(), 65535)
+    set failures to check("GPIOA window answers a scratch write", mmio_read32(gpio + stm32h7_gpio_otyper()) == 65535, failures)
+    mmio_write8(stm32h7_ram(), 165)
+    set failures to check("RAM window answers a scratch byte", mmio_read8(stm32h7_ram()) == 165, failures)
+    mmio_write32(stm32h7_rcc_base() + stm32h7_rcc_pll1fracr(), 4660)
+    set failures to check("RCC window answers a scratch write", mmio_read32(stm32h7_rcc_base() + stm32h7_rcc_pll1fracr()) == 4660, failures)
+
+    # ---- 2. the documented clock tree ----------------------------------
+    let plan = bsp_stm32h7_clock_plan()
+    set failures to check("clock plan: HSE is 25 MHz", plan.hse_hz == 25000000, failures)
+    set failures to check("clock plan: PLL1 reference is 5 MHz", plan.pll1_ref_hz == 5000000, failures)
+    set failures to check("clock plan: PLL1 DIVM is 5", plan.pll1_divm == 5, failures)
+    set failures to check("clock plan: PLL1 DIVN is 192", plan.pll1_divn == 192, failures)
+    set failures to check("clock plan: PLL1 DIVP is 2", plan.pll1_divp == 2, failures)
+    set failures to check("clock plan: PLL1 VCO is 960 MHz", plan.pll1_vco_hz == 960000000, failures)
+    set failures to check("clock plan: SYSCLK is 480 MHz", plan.sysclk_hz == 480000000, failures)
+    set failures to check("clock plan: HCLK is 240 MHz", plan.hclk_hz == 240000000, failures)
+    set failures to check("clock plan: APB1 is 120 MHz", plan.apb1_hz == 120000000, failures)
+    set failures to check("clock plan: APB2 is 120 MHz", plan.apb2_hz == 120000000, failures)
+    set failures to check("clock plan: timer kernel is 240 MHz", plan.timer_hz == 240000000, failures)
+    set failures to check("clock plan: PLLCKSELR encoding is HSE and DIVM 5", plan.pllckselr_value == 82, failures)
+    set failures to check("clock plan: PLLCFGR encoding enables DIVP1 at 4-8 MHz VCO input", plan.pllcfgr_value == 65544, failures)
+    set failures to check("clock plan: PLL1DIVR encoding is DIVN 192 and DIVP 2", plan.pll1divr_value == 703, failures)
+    set failures to check("clock plan: D1CFGR HPRE is /2", plan.d1cfgr_value == 8, failures)
+    set failures to check("clock plan: D2CFGR PPRE1 and PPRE2 are /2", plan.d2cfgr_value == 1088, failures)
+    set failures to check("clock plan: D3CFGR PPRE is /2", plan.d3cfgr_value == 64, failures)
+    set failures to check("clock plan: CFGR selects PLL1", plan.cfgr_value == 3, failures)
+
+    let core = bsp_stm32h7_clock_init()
+    set failures to check("clock_init returns the resulting 480 MHz", core == 480000000, failures)
+    set failures to check("clock_init writes SYSCLK to the board clock register", mmio_read32(ctl + stm32h7_ctl_sysclk_hz()) == 480000000, failures)
+
+    let rcc = stm32h7_rcc_base()
+    set failures to check("RCC PLLCKSELR kept HSE and DIVM 5", mmio_read32(rcc + stm32h7_rcc_pllckselr()) == 82, failures)
+    set failures to check("RCC PLLCFGR kept DIVP1 enabled at 4-8 MHz", mmio_read32(rcc + stm32h7_rcc_pllcfgr()) == 65544, failures)
+    set failures to check("RCC PLL1DIVR kept DIVN 192 and DIVP 2", mmio_read32(rcc + stm32h7_rcc_pll1divr()) == 703, failures)
+    set failures to check("RCC D1CFGR kept HPRE /2", mmio_read32(rcc + stm32h7_rcc_d1cfgr()) == 8, failures)
+    set failures to check("RCC D2CFGR kept PPRE1 and PPRE2 /2", mmio_read32(rcc + stm32h7_rcc_d2cfgr()) == 1088, failures)
+    set failures to check("RCC D3CFGR kept PPRE /2", mmio_read32(rcc + stm32h7_rcc_d3cfgr()) == 64, failures)
+    set failures to check("RCC CFGR selects PLL1", mmio_read32(rcc + stm32h7_rcc_cfgr()) == 3, failures)
+    let cr = mmio_read32(rcc + stm32h7_rcc_cr())
+    set failures to check("RCC CR has PLL1 powered on", (cr & 16777216) != 0, failures)
+    set failures to check("RCC CR reports PLL1 ready", (cr & 33554432) != 0, failures)
+    let live = bsp_stm32h7_clock_from_registers()
+    set failures to check("the frequency decodes back from the registers as 480 MHz", live.sysclk_hz == 480000000, failures)
+    set failures to check("the register decode gives HCLK 240 MHz", live.hclk_hz == 240000000, failures)
+    set failures to check("the register decode gives APB1 120 MHz", live.apb1_hz == 120000000, failures)
+    set failures to check("the register decode gives a 240 MHz timer kernel", live.timer_hz == 240000000, failures)
+
+    # ---- 3. the board record ------------------------------------------
+    let board = bsp_stm32h7_board()
+    set failures to check("board base_spi is SPI1", board.base_spi == stm32h7_spi1(), failures)
+    set failures to check("board base_i2c is I2C1", board.base_i2c == stm32h7_i2c1(), failures)
+    set failures to check("board base_can is CAN1", board.base_can == stm32h7_can1(), failures)
+    set failures to check("board base_uart is USART1", board.base_uart == stm32h7_usart1(), failures)
+    set failures to check("board base_dma is DMA1", board.base_dma == stm32h7_dma1(), failures)
+    set failures to check("board base_timer is TIM2", board.base_timer == stm32h7_tim2(), failures)
+    set failures to check("board core_hz is 480 MHz", board.core_hz == 480000000, failures)
+
+    # ---- 4. the documented pin plan -----------------------------------
+    bsp_stm32h7_pins_all(gpio)
+    let moder = mmio_read32(gpio + stm32h7_gpio_moder())
+    let afrl = mmio_read32(gpio + stm32h7_gpio_afrl())
+    let afrh = mmio_read32(gpio + stm32h7_gpio_afrh())
+    let otyper = mmio_read32(gpio + stm32h7_gpio_otyper())
+    let pupdr = mmio_read32(gpio + stm32h7_gpio_pupdr())
+
+    let timer_pins_af = two_bits(moder, 0) == 2 and two_bits(moder, 2) == 2 and two_bits(moder, 4) == 2 and two_bits(moder, 6) == 2
+    set failures to check("TIM2 pins PA0..PA3 are alternate-function", timer_pins_af, failures)
+    set failures to check("SPI1 chip select PA4 is a GPIO output", two_bits(moder, 8) == 1, failures)
+    set failures to check("AFRL carries TIM2 AF1 and SPI1 AF5", afrl == 1431310609, failures)
+    set failures to check("AFRH carries I2C1 AF4, USART1 AF7 and CAN1 AF9", afrh == 1074370420, failures)
+    set failures to check("GPIO MODER matches the whole pin plan", moder == 2192222634, failures)
+    set failures to check("I2C1 pins are open-drain", ((otyper >> 8) & 1) == 1 and ((otyper >> 15) & 1) == 1, failures)
+    set failures to check("I2C1 pins have pull-ups", two_bits(pupdr, 16) == 1 and two_bits(pupdr, 30) == 1, failures)
+
+    # ---- 5. the documented bring-up order ------------------------------
+    let st = bsp_stm32h7_init()
+    set failures to check("init reports success", st.ok, failures)
+    set failures to check("init reports eight stages", (length of st.stages) == 8, failures)
+    set failures to check("init starts with clocks", (st.stages[0] otherwise "?") == "clocks", failures)
+    set failures to check("init ends with dma", (st.stages[7] otherwise "?") == "dma", failures)
+    set failures to check("init clocks timer to a 1 us kernel", mmio_read32(board.base_timer + stm32h7_tim_psc()) == 239, failures)
+    set failures to check("init sets a 20 ms timer period", mmio_read32(board.base_timer + stm32h7_tim_arr()) == 19999, failures)
+    set failures to check("init starts the timer", (mmio_read32(board.base_timer + stm32h7_tim_cr1()) & 1) == 1, failures)
+    set failures to check("init configures SPI1 as documented", mmio_read32(board.base_spi + stm32h7_spi_cr1()) == 876, failures)
+    set failures to check("init writes the 400 kHz I2C timing", mmio_read32(board.base_i2c + stm32h7_i2c_timingr()) == 4363669, failures)
+    set failures to check("init enables I2C1", mmio_read32(board.base_i2c + stm32h7_i2c_cr1()) == 1, failures)
+    set failures to check("init writes the 115200 BRR", mmio_read32(board.base_uart + stm32h7_usart_brr()) == 16667, failures)
+    set failures to check("init enables USART1 transmitter and receiver", mmio_read32(board.base_uart + stm32h7_usart_cr1()) == 13, failures)
+    set failures to check("init leaves CAN1 out of initialisation mode", mmio_read32(board.base_can + stm32h7_can_mcr()) == 0, failures)
+    set failures to check("init points DMA stream 0 at the UART TDR", mmio_read32(board.base_dma + stm32h7_dma_s0par()) == board.base_uart + stm32h7_usart_tdr(), failures)
+    set failures to check("init's DMA transfer completed", (mmio_read32(board.base_dma + stm32h7_dma_lisr()) & 1) == 1, failures)
+    set failures to check("init leaves DMA stream 0 disabled after the transfer", (mmio_read32(board.base_dma + stm32h7_dma_s0cr()) & 1) == 0, failures)
+    set failures to check("the UART received the three DMA bytes", mmio_read32(ctl + stm32h7_ctl_uart_len()) == 3, failures)
+    mmio_write32(ctl + stm32h7_ctl_uart_index(), 0)
+    set failures to check("DMA byte 0 is S", mmio_read32(ctl + stm32h7_ctl_uart_byte()) == 83, failures)
+    mmio_write32(ctl + stm32h7_ctl_uart_index(), 1)
+    set failures to check("DMA byte 1 is T", mmio_read32(ctl + stm32h7_ctl_uart_byte()) == 84, failures)
+    mmio_write32(ctl + stm32h7_ctl_uart_index(), 2)
+    set failures to check("DMA byte 2 is M", mmio_read32(ctl + stm32h7_ctl_uart_byte()) == 77, failures)
+
+    # ---- 6. nothing touched an address the board does not model --------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + stm32h7_ctl_unknown()) == 0, failures)
+
+    if failures == 0:
+        log.info("OK bsp_stm32h7: 77 checks")
+    return failures

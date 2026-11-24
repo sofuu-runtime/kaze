@@ -1,0 +1,128 @@
+# tests/hw/dronecan_test.kaze -- DroneCAN single- and multi-frame transfers.
+#
+# The wire format is pinned by byte sequences computed outside this repo (an
+# independent CRC-16/CCITT-FALSE implementation), not by re-running the code
+# under test: the CAN id for (priority 16, type 341, node 42), the two frames of
+# a ten-byte transfer, and the CRC 0x2C72 that they carry. The CRC itself comes
+# from lib/crc.kaze, so the pin proves the DroneCAN layer composes the existing
+# implementation rather than growing a second one.
+#
+# MEMORY, and why this suite is shaped the way it is: the metal image gives a
+# program 16 KB of arena and never reclaims it, while every frame here is a
+# record plus lists, and building a two-frame transfer costs about 5.5 KB by
+# itself. So the suite builds exactly one multi-frame vector and one single
+# frame and reuses them everywhere; an earlier draft that built five vectors
+# passed on the host and ran the metal image out of arena. One shared
+# "missing" record also replaces a per-index fallback, because Kaze evaluates an
+# otherwise fallback eagerly and each can_failed allocation was real bytes.
+#
+# The model's loopback keeps only the most recent frame, so the loopback check
+# sends the whole vector and reassembles the frame it kept together with the
+# first frame the builder returned - which is also the only way to prove the
+# reassembler accepts a frame that really crossed the bus.
+
+needs: log
+needs: regs
+
+use "./../../lib/crc.kaze"
+use "./../../lib/can.kaze"
+use "./../../lib/dronecan.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action sim_ctl() -> num:
+    return 3759079424
+
+action can1() -> num:
+    return 1073783808
+
+action same_bytes(a, b) -> bool:
+    if length of a != length of b:
+        return false
+    let k = 0
+    let ok = true
+    while k < length of a bounded 32:
+        if (a[k] otherwise 0) != (b[k] otherwise 0 - 1):
+            set ok to false
+        set k to k + 1
+    return ok
+
+# The ten-byte vector: priority 16 (medium), data type 341, source node 42,
+# transfer id 3, payload 1..10. Its CRC is 0x2C72 = 11378, so the first frame's
+# data begins 0x72 0x2C; the second frame's tail is 0x40 (end) | 0x20 (toggle 1)
+# | 3 = 0x63 = 99.
+action vector_payload() -> list:
+    return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+action main() -> num:
+    let failures = 0
+    let ctl = sim_ctl()
+    let bus = can1()
+    let missing = can_failed("frame is missing")
+
+    mmio_write32(ctl + 48, 1)
+    mmio_fence()
+
+    # ---- the CAN id layout ---------------------------------------------
+    let id10 = dronecan_can_id(16, 341, 42)
+    set failures to check("the message can id is 0x1001552A", id10 == 268522794, failures)
+    set failures to check("the priority decodes", dronecan_priority(id10) == 16, failures)
+    set failures to check("the data type id decodes", dronecan_data_type_id(id10) == 341, failures)
+    set failures to check("the source node id decodes", dronecan_source_node_id(id10) == 42, failures)
+    set failures to check("the widest id still fits 29 bits", dronecan_can_id(31, 65535, 127) == 536870783, failures)
+    set failures to check("each id field is folded to its width", dronecan_can_id(32, 65536, 128) == 0, failures)
+
+    # ---- the tail byte --------------------------------------------------
+    set failures to check("a single-frame tail is 0xC0 | tid", dronecan_tail(1, 1, 0, 3) == 195, failures)
+    set failures to check("a first multi-frame tail is 0x80 | tid", dronecan_tail(1, 0, 0, 3) == 131, failures)
+    set failures to check("a last multi-frame tail is 0x40 | toggle | tid", dronecan_tail(0, 1, 1, 3) == 99, failures)
+    set failures to check("the tail fields decode", dronecan_tail_start(195) == 1 and dronecan_tail_end(195) == 1 and dronecan_tail_toggle(99) == 1 and dronecan_tail_transfer_id(99) == 3, failures)
+
+    # ---- the CRC, pinned by hand ---------------------------------------
+    set failures to check("the transfer CRC over 1..10 is 0x2C72", crc16_ccitt_false(vector_payload()) == 11378, failures)
+    set failures to check("the transfer CRC over the eight-byte payload is 0x2B19", crc16_ccitt_false([16, 32, 48, 64, 80, 96, 112, 128]) == 11033, failures)
+
+    # ---- single-frame form ---------------------------------------------
+    let single = dronecan_frames(dronecan_can_id(24, 65535, 127), 1, [222, 173, 190, 239])
+    let s0 = single[0] otherwise missing
+    set failures to check("a four-byte payload is one frame with id 0x18FFFF7F", length of single == 1 and s0.id == 419430271 and s0.extended == true, failures)
+    set failures to check("the single frame is payload plus tail", same_bytes(s0.data, [222, 173, 190, 239, 193]), failures)
+
+    # ---- the hand-computed multi-frame vector --------------------------
+    let frames10 = dronecan_frames(id10, 3, vector_payload())
+    let f0 = frames10[0] otherwise missing
+    set failures to check("a ten-byte payload is two frames", length of frames10 == 2, failures)
+    set failures to check("the first frame is 0x72 0x2C then five payload bytes", same_bytes(f0.data, [114, 44, 1, 2, 3, 4, 5, 131]), failures)
+    let f1 = frames10[1] otherwise missing
+    set failures to check("the second frame is the rest plus its tail", same_bytes(f1.data, [6, 7, 8, 9, 10, 99]), failures)
+    set failures to check("both frames carry the same 29-bit id", f0.id == id10 and f1.id == id10 and f0.extended == true and f1.extended == true, failures)
+    set failures to check("the frames are full and short as expected", f0.dlc == 8 and f1.dlc == 6, failures)
+
+    # ---- it really travels the CAN driver ------------------------------
+    let sent = dronecan_send(bus, frames10, 64)
+    set failures to check("dronecan_send transmits both frames", sent == 2, failures)
+    let last = can_receive(bus, 64)
+    set failures to check("the frame left in the mailbox is the end frame", last.ok == true and dronecan_tail_end((last.data[length of last.data - 1] otherwise 0)) == 1, failures)
+    let back = dronecan_assemble([f0, last])
+    set failures to check("a frame that crossed the bus reassembles with its sibling", back.ok == true, failures)
+    set failures to check("the reassembled payload and header are the ones sent", same_bytes(back.payload, vector_payload()) and back.data_type_id == 341 and back.source_node_id == 42 and back.priority == 16 and back.transfer_id == 3, failures)
+
+    # ---- the receiver refuses what does not start a transfer -----------
+    set failures to check("a frame that does not start a transfer is rejected", dronecan_assemble([f1]).ok == false, failures)
+    set failures to check("a different payload has a different CRC", crc16_ccitt_false([1, 2, 3, 4, 5, 6, 7, 8, 9, 11]) != 11378, failures)
+
+    # ---- limits are pure predicates ------------------------------------
+    set failures to check("1023 payload bytes are allowed", dronecan_payload_ok(1023) == true, failures)
+    set failures to check("1024 payload bytes are refused", dronecan_payload_ok(1024) == false, failures)
+    set failures to check("an id above 29 bits is refused", dronecan_can_id_ok(536870912) == false, failures)
+
+    # ---- nothing touched an address the board does not model -----------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + 20) == 0, failures)
+
+    if failures == 0:
+        log.info("OK dronecan: 29 checks")
+    return failures

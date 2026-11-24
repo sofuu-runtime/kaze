@@ -1,0 +1,124 @@
+# tests/hw/systick_test.kaze -- the microsecond time base, on both kinds of clock.
+#
+# lib/systick.kaze runs against two different counters: the emulator's real SysTick, a
+# 24-bit down counter, and the host board model's free-running cycle register, which
+# counts up. The wrap arithmetic is shared, so it is tested twice: synthetically on both
+# boards with a counter that wraps every 20 counts, and for real by spinning the clock
+# the BSP selected and asserting the elapsed time. On the Cortex-M image the SysTick
+# registers are the emulator's own peripheral, so the hardware checks can be made there
+# and are skipped on the host where those addresses are not modelled.
+#
+# The BSP picks the clock from the board's SYSTICK_REAL flag: 1 means the emulator's
+# SysTick at 0xE000E010, 0 means the model clock at 0xE00F0000. That branch is the whole
+# of "the same driver, two boards".
+
+needs: log
+needs: regs
+
+use "./../../lib/systick.kaze"
+use "./../../lib/regs.kaze"
+
+record Tally:
+    failures: number
+    checks: number
+
+action check(t: Tally, label, ok) -> Tally:
+    let n = t.checks + 1
+    if ok:
+        return Tally(failures: t.failures, checks: n)
+    log.info("FAIL " + label)
+    return Tally(failures: t.failures + 1, checks: n)
+
+# ---- the BSP -------------------------------------------------------------
+
+action sim_ctl() -> num:
+    return 3759079424
+action syst_csr() -> num:
+    return 3758153744
+action syst_rvr() -> num:
+    return 3758153748
+action syst_cvr() -> num:
+    return 3758153752
+
+action bsp_clock() -> Clock:
+    let ctl = sim_ctl()
+    # SYSTICK_REAL is 0x38 in the control block: 1 on the metal image, 0 on the host.
+    if mmio_read32(ctl + 56) == 1:
+        return systick_clock(syst_csr(), syst_rvr(), syst_cvr(), 480000000, 1)
+    return systick_host_clock(ctl, 480000000)
+
+# A counter that wraps every 20 counts, for the arithmetic no register can show here.
+action tiny_clock() -> Clock:
+    return Clock(csr: 0, rvr: 0, cvr: 0, hz: 480000000, reload: 19, period: 20, down: 1)
+
+action main() -> num:
+    let t = Tally(failures: 0, checks: 0)
+    mmio_write32(sim_ctl() + 48, 1)
+    mmio_fence()
+
+    # ---- the 1 us reload is arithmetic ---------------------------------
+    set t to check(t, "one microsecond at 480 MHz is 479 reload", systick_reload_for(480000000) == 479)
+    set t to check(t, "one microsecond at 72 MHz is 71 reload", systick_reload_for(72000000) == 71)
+    set t to check(t, "one microsecond at 16 MHz is 15 reload", systick_reload_for(16000000) == 15)
+    set t to check(t, "a zero clock has no reload", systick_reload_for(0) == 0)
+    let c = bsp_clock()
+    set t to check(t, "the clock carries the stated core clock", c.hz == 480000000)
+    set t to check(t, "one microsecond is 480 cycles", systick_cycles_for_us(c, 1) == 480)
+    set t to check(t, "and two microseconds are 960", systick_cycles_for_us(c, 2) == 960)
+
+    # ---- wrap accounting, synthetic ------------------------------------
+    let tc = tiny_clock()
+    let s0 = Ticker(hi: 0, last: 0, cycles: 0, base: 0, valid: 0)
+    let s1 = systick_count(tc, s0, 4)
+    set t to check(t, "a 20-count counter starts where it was read", s1.cycles == 4)
+    let s2 = systick_count(tc, s1, 5)
+    set t to check(t, "a step forward is one count", s2.cycles == 5)
+    let s3 = systick_count(tc, s2, 19)
+    set t to check(t, "the last count before the wrap", s3.cycles == 19)
+    let s4 = systick_count(tc, s3, 0)
+    set t to check(t, "the wrap adds the whole period", s4.cycles == 20)
+    set t to check(t, "and is counted as one wrap", s4.hi == 1)
+    let s5 = systick_count(tc, s4, 1)
+    set t to check(t, "the count after the wrap continues", s5.cycles == 21)
+
+    # ---- now, elapsed, spin --------------------------------------------
+    let a = systick_init(c)
+    set t to check(t, "init leaves a valid ticker", a.valid == 1)
+    set t to check(t, "the origin sample is the base", a.base == a.cycles)
+    set t to check(t, "no time has passed at the origin", systick_now_us(c, a) == 0)
+    let b = systick_spin_us(c, a, 2)
+    let el = systick_elapsed_us(c, a, b)
+    set t to check(t, "a 2 us spin waits at least 2 us", el >= 2)
+    set t to check(t, "and does not wildly overshoot", el < 8)
+    set t to check(t, "now agrees with the elapsed time", systick_now_us(c, b) >= 2 and systick_now_us(c, b) < 8)
+    let fine = systick_fine_ns(c, b)
+    set t to check(t, "the fine part is inside a microsecond", fine >= 0 and fine < 1000)
+    let nsn = systick_now_ns(c, b)
+    set t to check(t, "the nanosecond clock is the microsecond clock", nsn >= (el * 1000) - 1000 and nsn <= (el * 1000) + 1000)
+    let d = systick_spin_us(c, b, 1)
+    set t to check(t, "a second spin moves one more microsecond", systick_elapsed_us(c, b, d) >= 1)
+    set t to check(t, "now only goes forward", systick_now_us(c, d) > systick_now_us(c, b))
+    let e = systick_spin_us(c, d, 0)
+    set t to check(t, "a zero-length spin does not move the clock", e.cycles == d.cycles)
+    let f = systick_spin_ns(c, e, 500)
+    set t to check(t, "a 500 ns spin waits at least 500 ns", systick_elapsed_ns(c, e, f) >= 500)
+    set t to check(t, "and does not wildly overshoot", systick_elapsed_ns(c, e, f) < 5000)
+
+    # ---- the real SysTick, where the board has one ---------------------
+    # These addresses are the emulator's peripheral, so they only mean anything on the
+    # metal image. The host model would count them as unmodelled accesses, which is
+    # exactly why the BSP does not hand them out there.
+    if c.down == 1:
+        set t to check(t, "the reload register holds one microsecond", mmio_read32(syst_rvr()) == 479)
+        let csr = mmio_read32(syst_csr())
+        set t to check(t, "the counter is enabled", reg_bit(csr, 0) == 1)
+        set t to check(t, "it counts core cycles, not an external reference", reg_bit(csr, 2) == 1)
+        set t to check(t, "no tick interrupt is enabled", reg_bit(csr, 1) == 0)
+
+    # ---- nothing fell outside the modelled board -----------------------
+    set t to check(t, "no access fell outside the modelled board", mmio_read32(sim_ctl() + 20) == 0)
+    set t to check(t, "no access was misaligned", mmio_read32(sim_ctl() + 24) == 0)
+
+    if t.failures == 0:
+        log.info("OK systick: " + ("" + t.checks) + " checks")
+    return t.failures

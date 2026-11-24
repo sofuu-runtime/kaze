@@ -1,0 +1,197 @@
+# lib/systick.kaze -- the 1 microsecond time base, from a stated core clock.
+#
+# SysTick is a 24-bit down counter driven by the core clock. Programming its reload to
+# hz / 1,000,000 - 1 makes one counter wrap exactly one microsecond, so the wrap count
+# is microseconds and the counter's own value is the sub-microsecond remainder. That is
+# the whole time base: no floating point accumulates error, because the only division is
+# cycles -> us at the point of use.
+#
+# The clock is a parameter, not a constant. A BSP builds a Clock from the registers it
+# owns - csr / rvr / cvr addresses, the core clock in Hz, and whether the counter counts
+# down (real SysTick) or free-runs upward (the host board model, whose clock register is
+# a plain free-running cycle count). The same driver source therefore runs on both
+# boards; tests/hw/systick_test.kaze picks the right Clock at run time from the board's
+# SYSTICK_REAL flag.
+#
+# State lives in a Ticker record that every call takes and returns, because Kaze has no
+# mutable globals. A wrap between two samples is detected by comparing the new count
+# with the old one, so a sample must happen at least once per counter period. The spin
+# helpers sample every iteration, which is what makes them safe; a caller that sleeps for
+# many periods between polls must not expect the wrap count to survive.
+#
+# What this module does not claim: it does not program the SysTick interrupt (CSR is
+# written with ENABLE | CLKSOURCE and no TICKINT, because the program owns no vector
+# table here), it does not use the CALIB register (on the emulated part TENMS reads 0
+# with NOREF set, and on real silicon CALIB is optional, so the stated clock is the
+# authority), and it makes no claim about oscillator drift - it counts core cycles.
+
+needs: regs
+
+record Clock:
+    csr: number      # control register address, 0 when the counter is free-running
+    rvr: number      # reload register address, 0 when the counter is free-running
+    cvr: number      # the counter register that is read
+    hz: number       # core clock in cycles per second, stated by the BSP
+    reload: number   # reload value for a down counter (period - 1)
+    period: number   # counter modulus in cycles
+    down: number     # 1 = counts down from reload, 0 = free-running up counter
+
+record Ticker:
+    hi: number       # completed wraps of the counter
+    last: number     # last counter value, already converted to an up count
+    cycles: number   # cumulative cycles since the counter was started
+    base: number     # cycles at the origin sample, so now = cycles - base
+    valid: number    # 1 once the ticker holds a sample
+
+# The reload that makes one wrap one microsecond at this clock, floored to whole
+# cycles: 480 MHz gives 479, 72 MHz gives 71.
+action systick_reload_for(hz) -> num:
+    if hz <= 0:
+        return 0
+    let micros = hz - ((hz % 1000000) otherwise 0)
+    set micros to micros / 1000000
+    if micros < 1:
+        return 0
+    return micros - 1
+
+# A down-counting SysTick. 'down' 1 selects it; the CSR/RVR addresses must be its own.
+action systick_clock(csr, rvr, cvr, hz, down) -> Clock:
+    let reload = 0
+    let period = 4294967296
+    if down == 1:
+        set reload to systick_reload_for(hz)
+        set period to reload + 1
+    return Clock(csr: csr, rvr: rvr, cvr: cvr, hz: hz, reload: reload, period: period, down: down)
+
+# A free-running up counter - the host board model's cycle register. No register is
+# written and no wrap arithmetic is needed beyond the 32-bit counter's own wrap.
+action systick_host_clock(cvr, hz) -> Clock:
+    return Clock(csr: 0, rvr: 0, cvr: cvr, hz: hz, reload: 0, period: 4294967296, down: 0)
+
+# ---- samples ---------------------------------------------------------------
+
+# The counter as an up count: a down counter is flipped against its reload, so both
+# kinds count upward and the wrap check is the same comparison.
+action systick_read(c: Clock) -> num:
+    let raw = mmio_read32(c.cvr)
+    let up = raw
+    if c.down == 1:
+        set up to c.reload - raw
+    if up < 0 or up >= c.period:
+        set up to c.period - 1
+    return up
+
+# Extend a sample with a new up-count. Pure: it touches no register, which is how the
+# wrap arithmetic is tested on the host with a synthetic counter.
+action systick_count(c: Clock, s: Ticker, raw) -> Ticker:
+    let up = raw
+    let hi = s.hi
+    if up < s.last:
+        set hi to hi + 1
+    return Ticker(hi: hi, last: up, cycles: hi * c.period + up, base: s.base, valid: 1)
+
+action systick_poll(c: Clock, s: Ticker) -> Ticker:
+    return systick_count(c, s, systick_read(c))
+
+# Program the tick and take the origin sample. On a free-running clock there is nothing
+# to program and the current count is the origin.
+action systick_init(c: Clock) -> Ticker:
+    if c.down == 1:
+        mmio_write32(c.rvr, c.reload)
+        mmio_write32(c.cvr, 0)
+        mmio_write32(c.csr, 5)
+    mmio_fence()
+    let s = Ticker(hi: 0, last: 0, cycles: 0, base: 0, valid: 0)
+    let first = systick_count(c, s, systick_read(c))
+    return Ticker(hi: first.hi, last: first.last, cycles: first.cycles, base: first.cycles, valid: 1)
+
+# ---- derived time ----------------------------------------------------------
+
+action systick_now_ns(c: Clock, s: Ticker) -> num:
+    return (((s.cycles - s.base) * 1000000000) / c.hz) otherwise 0
+
+action systick_now_us(c: Clock, s: Ticker) -> num:
+    return (((s.cycles - s.base) * 1000000) / c.hz) otherwise 0
+
+# The part of now below one microsecond, straight from the counter: the cycles since
+# the last whole microsecond, converted to nanoseconds. With a 1 us wrap this is the
+# live remainder inside the current tick, so it is always in [0, 1000).
+action systick_fine_ns(c: Clock, s: Ticker) -> num:
+    let per_us = c.hz / 1000000
+    let rest = ((s.cycles - s.base) % per_us) otherwise 0
+    return ((rest * 1000000000) / c.hz) otherwise 0
+
+action systick_elapsed_ns(c: Clock, a: Ticker, b: Ticker) -> num:
+    return (((b.cycles - a.cycles) * 1000000000) / c.hz) otherwise 0
+
+action systick_elapsed_us(c: Clock, a: Ticker, b: Ticker) -> num:
+    return (((b.cycles - a.cycles) * 1000000) / c.hz) otherwise 0
+
+action systick_cycles_for_us(c: Clock, us) -> num:
+    return (us * c.hz) / 1000000
+
+# ---- busy wait -------------------------------------------------------------
+
+# Wait until at least 'us' microseconds have passed since s. The loop keeps its state in
+# plain numbers and only builds the Ticker on exit: a record per iteration would exhaust
+# a 16 KB metal arena in a long wait. Neither the target nor the host issues more than a
+# few dozen cycles between samples, so no wrap is missed. The loop is bounded; a caller
+# that asks for more than the cap gets a short wait back and can see it from the
+# returned Ticker rather than hanging.
+action systick_spin_us(c: Clock, s: Ticker, us) -> Ticker:
+    let cvr = c.cvr
+    let reload = c.reload
+    let period = c.period
+    let down = c.down
+    let target = s.cycles + (us * c.hz) / 1000000
+    let last = s.last
+    let hi = s.hi
+    let cycles = s.cycles
+    let spins = 0
+    while cycles < target and spins < 1000000 bounded 1000000:
+        let raw = mmio_read32(cvr)
+        let up = raw
+        if down == 1:
+            set up to reload - raw
+        if up < 0 or up >= period:
+            set up to period - 1
+        if up < last:
+            # A wrap: the elapsed cycles cross the reload, so the delta is the tail of
+            # the old period plus the new count. Kept as a delta rather than a
+            # hi * period + up rebuild so the loop does no multiply on the target.
+            set hi to hi + 1
+            set cycles to cycles + (period - last) + up
+        otherwise:
+            set cycles to cycles + (up - last)
+        set last to up
+        set spins to spins + 1
+    return Ticker(hi: hi, last: last, cycles: cycles, base: s.base, valid: 1)
+
+action systick_spin_ns(c: Clock, s: Ticker, ns) -> Ticker:
+    let cvr = c.cvr
+    let reload = c.reload
+    let period = c.period
+    let down = c.down
+    let target = s.cycles + (ns * c.hz) / 1000000000
+    let last = s.last
+    let hi = s.hi
+    let cycles = s.cycles
+    let spins = 0
+    while cycles < target and spins < 1000000 bounded 1000000:
+        let raw = mmio_read32(cvr)
+        let up = raw
+        if down == 1:
+            set up to reload - raw
+        if up < 0 or up >= period:
+            set up to period - 1
+        if up < last:
+            # A wrap: the elapsed cycles cross the reload, so the delta is the tail of
+            # the old period plus the new count. Kept as a delta rather than a
+            # hi * period + up rebuild so the loop does no multiply on the target.
+            set hi to hi + 1
+            set cycles to cycles + (period - last) + up
+        otherwise:
+            set cycles to cycles + (up - last)
+        set last to up
+        set spins to spins + 1
+    return Ticker(hi: hi, last: last, cycles: cycles, base: s.base, valid: 1)

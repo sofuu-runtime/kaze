@@ -1,0 +1,255 @@
+# lib/uart.kaze -- a USART telemetry port: baud setup, bounded transmit, DMA send.
+#
+# The peripheral is an STM32H7-style USART block. dist/kaze_board_sim.h fixes the
+# window and this module uses the four registers the model implements:
+#
+#     CR1  0x00   UE bit0, RE bit2, TE bit3
+#     BRR  0x0C   USARTDIV in 12.4 fixed point (OVER8 = 0, 16x oversampling)
+#     ISR  0x1C   RXNE bit5, TC bit6, TXE bit7
+#     RDR  0x24   one received byte per read
+#     TDR  0x28   one byte per write
+#
+# The base and the peripheral clock arrive from the caller, so the same driver serves
+# any board that puts this block somewhere else. The baud divisor is computed, not
+# hardcoded: uart_brr answers round(clock_hz * 16 / baud), which is the BRR value for
+# 16x oversampling. At 120 MHz and 115200 baud that is 16667, the value a 12.4
+# USARTDIV of 1041.67 encodes. A divisor outside 16..65535 is refused, because a BRR
+# of zero is not a slower baud, it is an unconfigured port.
+#
+# The transmit path is bounded: uart_wait_txe polls ISR.TXE at most limit times and
+# answers -1 when the transmitter never drained, so a wedged port produces a status
+# instead of a hang. uart_write_bytes sends a list through that wait. uart_dma_send is
+# the zero-CPU form: it copies the bytes into the RAM window the DMA model can read and
+# starts a memory-to-peripheral transfer into TDR, so the CPU only sets it up and waits
+# for the completion bit. The DMA status codes are shared with lib/dma.kaze.
+#
+# What this module does not claim: interrupts, flow control, 9-bit words, parity,
+# inversion, or a receive ring. The modelled USART has no receive path at all (its ISR
+# never reports RXNE), so uart_read_byte is the polling primitive a real part needs but
+# the suite can only pin its idle answer; a board that needs RX DMA or an interrupt
+# ring owns that wiring. The electrical layer and the pin mux belong to the BSP.
+#
+# Status codes:
+#
+#     UART_OK         0   done
+#     UART_TIMEOUT    1   TXE never asserted inside the poll ceiling
+#     UART_BUSY       2   the DMA channel was not free
+#     UART_BAD_ARGS   3   a byte count, channel or buffer the driver cannot serve
+#     UART_ERROR      4   the DMA block reported a fault
+#     UART_BAD_SETUP  5   the clock or baud gives no usable divisor
+
+needs: regs
+
+use "./dma.kaze"
+use "./regs.kaze"
+
+record UartBus:
+    base: number
+    clock_hz: number
+    baud: number
+    brr: number
+    limit: number
+
+record UartReport:
+    status: number
+    sent: number
+
+# ---- register offsets, all inside the USART window ----------------------
+action uart_cr1_off() -> num:
+    return 0
+
+action uart_brr_off() -> num:
+    return 12
+
+action uart_isr_off() -> num:
+    return 28
+
+action uart_rdr_off() -> num:
+    return 36
+
+action uart_tdr_off() -> num:
+    return 40
+
+# ---- CR1 fields ---------------------------------------------------------
+action uart_cr1_ue() -> num:
+    return 1
+
+action uart_cr1_re() -> num:
+    return 4
+
+action uart_cr1_te() -> num:
+    return 8
+
+# ---- ISR fields ---------------------------------------------------------
+action uart_isr_rxne() -> num:
+    return 32
+
+action uart_isr_tc() -> num:
+    return 64
+
+action uart_isr_txe() -> num:
+    return 128
+
+# ---- status codes -------------------------------------------------------
+action uart_ok() -> num:
+    return 0
+
+action uart_timeout() -> num:
+    return 1
+
+action uart_busy() -> num:
+    return 2
+
+action uart_bad_args() -> num:
+    return 3
+
+action uart_error() -> num:
+    return 4
+
+action uart_bad_setup() -> num:
+    return 5
+
+action uart_status_text(status) -> text:
+    if status == 0:
+        return "ok"
+    if status == 1:
+        return "timeout"
+    if status == 2:
+        return "busy"
+    if status == 3:
+        return "bad_args"
+    if status == 4:
+        return "error"
+    if status == 5:
+        return "bad_setup"
+    return "unknown"
+
+# Floor with modulo and subtraction rather than a cast, so the same expression is exact
+# on the host and on the 32-bit target.
+action uart_floor(x) -> num:
+    let r = (x % 1) otherwise 0
+    if x < 0:
+        if r != 0:
+            return x - r - 1
+    return x - r
+
+# The BRR value for a clock and a baud rate, or 0 when no usable divisor exists. The
+# 16 factor is the 16x oversampling of OVER8 = 0; 9600 baud on a 120 MHz APB2 gives
+# 200000, above the 16-bit register, and is refused rather than wrapped.
+action uart_brr(clock_hz, baud) -> num:
+    if clock_hz <= 0:
+        return 0
+    if baud <= 0:
+        return 0
+    let scaled = ((clock_hz * 16) / baud) otherwise 0
+    let whole = uart_floor(scaled + 0.5)
+    if whole < 16:
+        return 0
+    if whole > 65535:
+        return 0
+    return whole
+
+# A configured port value. The poll ceiling is clamped the same way every other driver
+# in this phase clamps it, so a zero cannot skip the wait and a huge one cannot spin.
+action uart_bus(base, clock_hz, baud, limit) -> UartBus:
+    let lim = limit
+    if lim < 1:
+        set lim to 1
+    if lim > 1000000:
+        set lim to 1000000
+    return UartBus(base: base, clock_hz: clock_hz, baud: baud, brr: uart_brr(clock_hz, baud), limit: lim)
+
+# 8N1, transmitter and receiver enabled, no parity and no flow control: BRR first, then
+# CR1, which is the order a real part wants because the divisor must be stable before
+# the port is enabled. A port whose divisor could not be computed is refused before any
+# register is written.
+action uart_configure(bus: UartBus) -> num:
+    if bus.brr == 0:
+        return uart_bad_setup()
+    mmio_write32(bus.base + uart_brr_off(), bus.brr)
+    mmio_write32(bus.base + uart_cr1_off(), uart_cr1_ue() + uart_cr1_te() + uart_cr1_re())
+    mmio_fence()
+    return uart_ok()
+
+# ---- status -------------------------------------------------------------
+action uart_status(bus: UartBus) -> num:
+    return mmio_read32(bus.base + uart_isr_off())
+
+action uart_txe(bus: UartBus) -> bool:
+    return reg_bit(uart_status(bus), 7) == 1
+
+action uart_tc(bus: UartBus) -> bool:
+    return reg_bit(uart_status(bus), 6) == 1
+
+action uart_rxne(bus: UartBus) -> bool:
+    return reg_bit(uart_status(bus), 5) == 1
+
+# How many ISR polls it took before TXE read 1, or -1 when the ceiling ran out. The
+# count is evidence: a wait that spends the whole ceiling is a port that is not there,
+# not a slow one.
+action uart_wait_txe(bus: UartBus) -> num:
+    let polls = 0
+    while polls < bus.limit bounded 1000000:
+        set polls to polls + 1
+        if reg_bit(uart_status(bus), 7) == 1:
+            return polls
+    return 0 - 1
+
+# One byte out, after the bounded TXE wait. Out-of-range values are masked to eight
+# bits; the register holds one byte and the protocol above this layer does not.
+action uart_write_byte(bus: UartBus, byte) -> num:
+    if uart_wait_txe(bus) < 0:
+        return uart_timeout()
+    mmio_write32(bus.base + uart_tdr_off(), byte & 255)
+    mmio_fence()
+    return uart_ok()
+
+# A bounded list write. At most 256 bytes per call, which is both the loop fuel ceiling
+# and a sane unit for a telemetry frame; a longer list is truncated to that many bytes
+# and the report says how many went out. The first failing byte stops the write.
+action uart_write_bytes(bus: UartBus, bytes) -> UartReport:
+    let n = length of bytes
+    if n > 256:
+        set n to 256
+    let i = 0
+    let sent = 0
+    let status = uart_ok()
+    while i < n bounded 256:
+        let one = uart_write_byte(bus, bytes[i] otherwise 0)
+        if one != uart_ok():
+            set status to one
+            set i to n
+        otherwise:
+            set sent to sent + 1
+            set i to i + 1
+    return UartReport(status: status, sent: sent)
+
+# The byte waiting in RDR, or -1 when RXNE is clear. On the modelled port RXNE is never
+# set (there is no receive path to feed it), so this answers -1; on silicon it is the
+# polling receive primitive the interrupt handler or a read loop would build on.
+action uart_read_byte(bus: UartBus) -> num:
+    if reg_bit(uart_status(bus), 5) != 1:
+        return 0 - 1
+    return mmio_read32(bus.base + uart_rdr_off()) & 255
+
+# Copy a list into the RAM window and let a DMA stream feed it to TDR: the CPU programs
+# the transfer and waits for the completion bit, and every byte moves without a TDR
+# write from Kaze. n is capped at the 4 KiB RAM window; zero bytes is a caller mistake
+# rather than an empty transfer. The channel index is the caller's, because which
+# stream is free belongs to the board, and the DMA status is returned unchanged so
+# timeout, busy and error survive to the caller.
+action uart_dma_send(bus: UartBus, dma_base, channel, ram, bytes) -> UartReport:
+    let n = length of bytes
+    if n < 1:
+        return UartReport(status: uart_bad_args(), sent: 0)
+    if n > 4096:
+        set n to 4096
+    let i = 0
+    while i < n bounded 4096:
+        mmio_write8(ram + i, bytes[i] otherwise 0)
+        set i to i + 1
+    let ch = dma_channel(dma_base, channel, bus.limit)
+    let status = dma_mem_to_periph(ch, bus.base + uart_tdr_off(), ram, n, 8)
+    if status != dma_ok():
+        return UartReport(status: status, sent: 0)
+    return UartReport(status: uart_ok(), sent: n)

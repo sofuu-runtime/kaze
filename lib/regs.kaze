@@ -1,0 +1,233 @@
+# lib/regs.kaze -- register descriptors, bit fields and bounded polling.
+#
+# A Kaze program holds no pointers, so a peripheral is reachable only through the mmio
+# builtins behind `needs: regs`. This module is the thin layer between those builtins
+# and a driver. A Reg names one register by base address, byte offset and access width;
+# a Field names a run of bits inside a word. The base address always comes from the
+# caller (the BSP), so the same driver runs against the host board model and against a
+# real part without changing a line.
+#
+# One convention throughout: a register word is an unsigned 32-bit number, whatever
+# width was used to read it, and fields are read and written by division and modulo
+# rather than by shifting. That is deliberate. Kaze numbers are doubles whose bitwise
+# operators convert to the runtime integer type, and that type is 32 bits on a Cortex-M
+# image, where the conversion is not the identity above 2^31: measured on the emulated
+# target, `4294967295 & 255` is 0 rather than 255, and a shift of 32 is undefined
+# behaviour that faulted the core when tried. A mask-and-shift field helper is therefore
+# not the same expression on the host and on the target - which is the class of bug
+# `tests/hw/regs_test.kaze` pins with a word whose top bit is set. Division and modulo
+# over doubles are exact to 2^53, so the field helpers answer identically on both boards.
+#
+# What this module does not do: it does not know what the bits mean, it does not make
+# an access atomic, and it cannot tell whether an address is modelled by the board. An
+# address no model claims is counted by the board, and every suite here asserts that
+# count is zero, so a BSP typo fails loudly instead of reading zero.
+
+needs: regs
+
+record Reg:
+    base: number      # peripheral base address, supplied by the BSP
+    offset: number    # byte offset inside the peripheral window
+    width: number     # access width in bits: 8, 16 or 32
+
+record Field:
+    shift: number     # bit position of the field's least significant bit
+    width: number     # number of bits in the field
+
+# ---- descriptors -----------------------------------------------------------
+
+action reg_new(base, offset, width) -> Reg:
+    return Reg(base: base, offset: offset, width: width)
+
+action reg_field_at(shift, width) -> Field:
+    return Field(shift: shift, width: width)
+
+action reg_addr(r: Reg) -> num:
+    return r.base + r.offset
+
+action reg_size(r: Reg) -> num:
+    return r.width
+
+# The width as a byte count, or 0 for a width no accessor can serve.
+action reg_bytes(r: Reg) -> num:
+    if r.width == 8:
+        return 1
+    otherwise:
+        if r.width == 16:
+            return 2
+        otherwise:
+            if r.width == 32:
+                return 4
+    return 0
+
+# ---- powers of two, masks, fields -----------------------------------------
+
+# 2^n as an exact double, built by doubling. Written this way because a shift of 32 is
+# undefined behaviour on the 32-bit integer type the target build uses.
+action reg_pow2(n) -> num:
+    let p = 1
+    let i = 0
+    while i < n bounded 64:
+        set p to p * 2
+        set i to i + 1
+    return p
+
+# A register word in its normal form: an unsigned 32-bit number. Arithmetic on a word
+# can produce a negative number; it is wrapped once here instead of in every helper.
+action reg_uint(value) -> num:
+    if value < 0:
+        return value + 4294967296
+    if value >= 4294967296:
+        return (value % 4294967296) otherwise 0
+    return value
+
+# width one-bits, low end first: reg_mask(8) == 255, reg_mask(32) == 4294967295.
+action reg_mask(width) -> num:
+    if width <= 0:
+        return 0
+    if width > 32:
+        return 4294967295
+    return reg_pow2(width) - 1
+
+# Those bits in place: reg_field_bits(reg_field_at(4, 3)) == 112 (0x70).
+action reg_field_bits(f: Field) -> num:
+    return reg_mask(f.width) * reg_pow2(f.shift)
+
+# Bits [shift, shift + width) of value, as an unsigned number.
+action reg_field_get(value, shift, width) -> num:
+    if width <= 0 or shift < 0 or (shift + width) > 32:
+        return 0
+    let v = reg_uint(value)
+    let span = (v % reg_pow2(shift + width)) otherwise 0
+    return ((span - ((span % reg_pow2(shift)) otherwise 0)) / reg_pow2(shift)) otherwise 0
+
+# value with bits [shift, shift + width) replaced by the low width bits of field_value.
+# Everything outside the field is kept, including a set top bit, because the result is
+# assembled arithmetically rather than with a mask.
+action reg_field_put(value, shift, width, field_value) -> num:
+    if width <= 0 or shift < 0 or (shift + width) > 32:
+        return reg_uint(value)
+    let v = reg_uint(value)
+    let unit = reg_pow2(shift)
+    let above = v - ((v % reg_pow2(shift + width)) otherwise 0)
+    let below = (v % unit) otherwise 0
+    let m = reg_pow2(width)
+    let raw = (reg_uint(field_value) % m) otherwise 0
+    let f = raw - ((raw % 1) otherwise 0)
+    return above + f * unit + below
+
+action reg_bit(value, i) -> num:
+    return reg_field_get(value, i, 1)
+
+# ---- the register itself ---------------------------------------------------
+
+# 1 on success, 0 when the width is one no accessor serves (and then no access is
+# made, so a driver cannot silently hit the wrong window).
+action reg_read(r: Reg) -> num:
+    let a = r.base + r.offset
+    if r.width == 8:
+        return mmio_read8(a)
+    otherwise:
+        if r.width == 16:
+            return mmio_read16(a)
+        otherwise:
+            if r.width == 32:
+                return mmio_read32(a)
+    return 0
+
+# The value written, or 0 when nothing was written because the width is unserved.
+action reg_write(r: Reg, value) -> num:
+    let a = r.base + r.offset
+    if r.width == 8:
+        mmio_write8(a, value)
+        return value
+    otherwise:
+        if r.width == 16:
+            mmio_write16(a, value)
+            return value
+        otherwise:
+            if r.width == 32:
+                mmio_write32(a, value)
+                return value
+    return 0
+
+action reg_field_read(r: Reg, shift, width) -> num:
+    return reg_field_get(reg_read(r), shift, width)
+
+action reg_field_write(r: Reg, shift, width, field_value) -> num:
+    return reg_write(r, reg_field_put(reg_read(r), shift, width, field_value))
+
+action reg_field_value(r: Reg, f: Field) -> num:
+    return reg_field_read(r, f.shift, f.width)
+
+action reg_field_set(r: Reg, f: Field, field_value) -> num:
+    return reg_field_write(r, f.shift, f.width, field_value)
+
+# ---- read-modify-write -----------------------------------------------------
+
+# The classic (reg, clear, set) form: every bit named in clear_mask is replaced by the
+# matching bit of set_bits, every other bit keeps its current value. The word is
+# rebuilt one bit at a time arithmetically, so a set bit 31 survives on the target.
+action reg_read_modify_write(r: Reg, clear_mask, set_bits) -> num:
+    let cur = reg_uint(reg_read(r))
+    let out = 0
+    let p = 1
+    let i = 0
+    while i < 32 bounded 32:
+        let take = reg_bit(cur, i)
+        if reg_bit(clear_mask, i) == 1:
+            set take to reg_bit(set_bits, i)
+        set out to out + take * p
+        set p to p * 2
+        set i to i + 1
+    return reg_write(r, out)
+
+action reg_set_bits(r: Reg, mask) -> num:
+    return reg_read_modify_write(r, mask, mask)
+
+action reg_clear_bits(r: Reg, mask) -> num:
+    return reg_read_modify_write(r, mask, 0)
+
+# ---- bounded polling -------------------------------------------------------
+
+# 1 when every bit of mask in value equals the same bit of want, 0 otherwise.
+action reg_bits_match(value, mask, want) -> num:
+    let i = 0
+    let ok = 1
+    while i < 32 bounded 32:
+        if reg_bit(mask, i) == 1:
+            if reg_bit(value, i) != reg_bit(want, i):
+                set ok to 0
+        set i to i + 1
+    return ok
+
+# Poll a register until (value & mask) == want, at most 'limit' reads. Returns 1 when
+# the condition was met and 0 on timeout, so a caller always has an answer: there is no
+# unbounded wait in this module. The runtime cap is one million polls; a larger limit
+# is clamped to it.
+action reg_poll_until(r: Reg, mask, want, limit) -> num:
+    let polls = 0
+    let done = 0
+    while polls < limit and done == 0 bounded 1000000:
+        if reg_bits_match(reg_read(r), mask, want) == 1:
+            set done to 1
+        otherwise:
+            set polls to polls + 1
+    return done
+
+# The single-bit case, which is most status registers: cheaper than the mask walk.
+action reg_poll_bit(r: Reg, bit, limit) -> num:
+    let polls = 0
+    let done = 0
+    while polls < limit and done == 0 bounded 1000000:
+        if reg_bit(reg_read(r), bit) == 1:
+            set done to 1
+        otherwise:
+            set polls to polls + 1
+    return done
+
+# Order the accesses already issued before the next one. Returns 1 so it can sit in an
+# expression when a caller wants it to.
+action reg_sync() -> num:
+    mmio_fence()
+    return 1

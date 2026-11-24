@@ -1,0 +1,270 @@
+# lib/dshot.kaze -- DShot600 command frames, bit timing and telemetry decoding.
+#
+# DShot is the digital ESC protocol: a fixed-rate 16-bit frame instead of a PWM pulse
+# width, so there is nothing to calibrate. A command frame is
+#
+#     [ throttle: 11 bits ][ telemetry request: 1 bit ][ crc: 4 bits ]
+#
+# and the 4-bit CRC is computed over the 12 payload bits as
+# `(p ^ (p >> 4) ^ (p >> 8)) & 0x0F`. Throttle 0 disarms; 1..47 are digital commands
+# (beep, direction, LED, save settings); 48..2047 is the throttle range.
+#
+# DShot600 carries 600 kbit/s, so one bit lasts 5/3 us. A 0 bit is high for 625 ns, a
+# 1 bit for 1250 ns; the rest of the bit period is low:
+#
+#     T0H 625 ns   T1H 1250 ns   period 1666.67 ns   frame 26.67 us
+#
+# WHAT THIS MODULE DOES NOT DO: it never bit-bangs the wire. A 600 kbit/s signal is not
+# something a supervisor tick or a busy loop can produce, and nothing here claims it.
+# Timing is emitted as durations for a timer or a DMA engine: `dshot_pulses` answers
+# with the high/low nanosecond durations in transmission order, and `dshot_bitstream`
+# lays the same durations out as 16-bit words in the RAM window a DMA channel reads.
+# Loading those words into a timer's compare register (or a DMA transfer list) is the
+# BSP's job; the electrical layer (line inversion, driver enable, rail monitoring)
+# belongs to the board, too.
+#
+# Setting the telemetry bit asks the ESC to answer on the same wire after the frame.
+# The reply is a 16-bit word: twelve data bits followed by the same four-bit CRC, after
+# the 5B/4B GCR line code. This module does not decode the line code; it takes the
+# 16-bit word the line decoder produces. A frame is decoded in one of two modes,
+# because the 12-bit value means different things depending on what the ESC negotiated:
+#
+#     mode 0  eRPM          [ exponent: 3 bits ][ period: 9 bits ]
+#     mode 1  extended      [ type: 4 bits ][ data: 8 bits ]
+#
+# The mode is the caller's declaration, not a guess from the payload: a value such as
+# 0x2XX is a valid eRPM frame and a valid voltage frame, so a decoder that "detects"
+# the type from the word alone would misread one of them. `dshot_telemetry_decode`
+# takes the mode; the two wrappers name the common cases. The exponent-scaled period
+# feeds the published integer conversion 600000 / scaled-period, rounded once here.
+
+needs: regs
+
+record DShotTiming:
+    bit_rate: number
+    period_ns: number
+    t0h_ns: number
+    t0l_ns: number
+    t1h_ns: number
+    t1l_ns: number
+    frame_ns: number
+
+record DShotTelemetry:
+    crc_ok: bool
+    mode: number       # 0 = eRPM, 1 = extended, as the caller declared it
+    value: number      # the 12-bit data field
+    prefix: number     # the top nibble of value, as received
+    kind: number       # extended type 1..7; 0 on an eRPM frame
+    data_byte: number  # low eight bits of value
+    exponent: number   # eRPM bits 11..9
+    period: number     # eRPM bits 8..0, 0 when the frame says "no reading"
+    erpm_x100: number  # 600000 / (period << exponent), rounded; protocol unit
+
+# 600 kbit/s: one bit is 1/600000 s, which is 5/3 us. Kept as a division so the literal
+# stays readable and the value is the exact double nearest 1666.666... ns.
+action dshot_period_ns() -> num:
+    return 5000 / 3
+
+action dshot_t0h_ns() -> num:
+    return 625
+
+action dshot_t1h_ns() -> num:
+    return 1250
+
+# The high time of one bit value; every other value is treated as 0.
+action dshot_bit_ns(bit) -> num:
+    if bit == 1:
+        return 1250
+    return 625
+
+# The whole timing contract in one value, so a caller that programs a timer reads it
+# from one place instead of repeating the numbers.
+action dshot_timing() -> DShotTiming:
+    let period = dshot_period_ns()
+    return DShotTiming(
+        bit_rate: 600000,
+        period_ns: period,
+        t0h_ns: dshot_t0h_ns(),
+        t0l_ns: period - dshot_t0h_ns(),
+        t1h_ns: dshot_t1h_ns(),
+        t1l_ns: period - dshot_t1h_ns(),
+        frame_ns: period * 16
+    )
+
+# Floor of a number, written with modulo and subtraction rather than a cast so it means
+# the same thing on the host and on the 32-bit target. Used only where the protocol
+# says "integer division"; a whole-nanosecond duration is rounded in dshot_whole_ns.
+action dshot_floor(x) -> num:
+    let r = (x % 1) otherwise 0
+    if x < 0:
+        if r != 0:
+            return x - r - 1
+    return x - r
+
+# The 4-bit CRC of the 12-bit payload. Both engines mask, so an out-of-range value is
+# defined: the low 12 bits are the payload.
+action dshot_crc4(payload) -> num:
+    let p = payload & 4095
+    return (p ^ (p >> 4) ^ (p >> 8)) & 15
+
+# The 12-bit payload: 11 throttle bits, then the telemetry request bit.
+action dshot_payload(throttle, telemetry) -> num:
+    let t = throttle & 2047
+    let req = telemetry & 1
+    return (t << 1) | req
+
+# The 16-bit frame sent on the wire, most significant bit first.
+action dshot_frame(throttle, telemetry) -> num:
+    let payload = dshot_payload(throttle, telemetry)
+    return (payload << 4) | dshot_crc4(payload)
+
+# Read back the fields a frame carries. A frame that arrived from anywhere is just a
+# number, so these take it apart without trusting it; dshot_frame_crc_ok says whether
+# the CRC agreed.
+action dshot_frame_throttle(frame) -> num:
+    return (frame >> 5) & 2047
+
+action dshot_frame_telemetry(frame) -> bool:
+    return ((frame >> 4) & 1) == 1
+
+action dshot_frame_crc_ok(frame) -> bool:
+    let payload = (frame >> 4) & 4095
+    return (frame & 15) == dshot_crc4(payload)
+
+# The 16 bits of a frame, most significant first, as 0/1 values. Shifting is how the
+# protocol is sent; a DMA word list is dshot_pulses, not this.
+action dshot_bits(frame) -> list:
+    let out = []
+    let i = 15
+    while i >= 0 bounded 32:
+        set out to out + [(frame >> i) & 1]
+        set i to i - 1
+    return out
+
+# The pulse train a timer channel would play: high time then low time for each bit, in
+# transmission order, in nanoseconds. 32 numbers: even indexes are high times, odd
+# indexes the low time that completes the bit period. Nothing here touches a register.
+action dshot_pulses(frame) -> list:
+    let out = []
+    let period = dshot_period_ns()
+    let i = 15
+    while i >= 0 bounded 32:
+        let high = dshot_bit_ns((frame >> i) & 1)
+        set out to out + [high]
+        set out to out + [period - high]
+        set i to i - 1
+    return out
+
+# A whole nanosecond count, rounded to nearest and clamped to a 16-bit timer word. A
+# timer's compare register counts whole ticks; the protocol's durations are exact
+# fractions of a nanosecond, so the DMA-visible stream is rounded once, here. The
+# rounding is arithmetic (add a half, floor) rather than a cast so the host and the
+# 32-bit target agree.
+action dshot_whole_ns(ns) -> num:
+    let whole = dshot_floor(ns + 0.5)
+    if whole < 0:
+        return 0
+    if whole > 65535:
+        return 65535
+    return whole
+
+# Lay the pulse train out as 32 16-bit words in the DMA-readable RAM window and answer
+# the word count. The caller passes the RAM base from the BSP; the module hardcodes no
+# address, and the words are what a timer's request (or a DMA transfer list) consumes.
+action dshot_bitstream(frame, ram_addr) -> num:
+    let period = dshot_period_ns()
+    let i = 15
+    let n = 0
+    while i >= 0 bounded 32:
+        let high = dshot_bit_ns((frame >> i) & 1)
+        mmio_write16(ram_addr + n * 2, dshot_whole_ns(high))
+        mmio_write16(ram_addr + n * 2 + 2, dshot_whole_ns(period - high))
+        set n to n + 2
+        set i to i - 1
+    return n
+
+# The 16-bit telemetry word for a 12-bit data field, CRC appended exactly as the
+# command frame does it. A test or a simulator can build a reply with this.
+action dshot_telemetry_encode(value) -> num:
+    let v = value & 4095
+    return (v << 4) | dshot_crc4(v)
+
+# Decode the 16-bit reply the ESC sends back, in the mode the caller declares. CRC
+# validity is reported, never assumed: a caller that only trusts good frames checks
+# crc_ok first. In eRPM mode (0) the 12-bit value is the 3-bit exponent and 9-bit
+# period of the ESC's commutation interval; 0x0FFF is the published "no reading"
+# value. In extended mode (1) the top nibble is the frame type (1 temperature,
+# 2 voltage, 3 current, 4 debug1, 5 debug2, 6 stress, 7 status) and the low byte is
+# the measurement. The mode is explicit because the same 12-bit word is valid in both.
+action dshot_telemetry_decode(frame, mode) -> DShotTelemetry:
+    let value = (frame >> 4) & 4095
+    let prefix = value >> 8
+    let data_byte = value & 255
+    let exponent = (value >> 9) & 7
+    let period = value & 511
+    let kind = 0
+    let erpm = 0
+    if mode == 1:
+        set kind to prefix
+    otherwise:
+        # eRPM: 0x0FFF is the published "no reading" eRPM value.
+        if value == 4095:
+            set period to 0
+        if period > 0:
+            let scale = 1
+            let k = 0
+            while k < exponent bounded 8:
+                set scale to scale * 2
+                set k to k + 1
+            let scaled = period * scale
+            let q = (600000 + scaled / 2) / scaled otherwise 0
+            set erpm to dshot_floor(q)
+    return DShotTelemetry(
+        crc_ok: (frame & 15) == dshot_crc4(value),
+        mode: mode,
+        value: value,
+        prefix: prefix,
+        kind: kind,
+        data_byte: data_byte,
+        exponent: exponent,
+        period: period,
+        erpm_x100: erpm
+    )
+
+action dshot_telemetry_decode_erpm(frame) -> DShotTelemetry:
+    return dshot_telemetry_decode(frame, 0)
+
+action dshot_telemetry_decode_extended(frame) -> DShotTelemetry:
+    return dshot_telemetry_decode(frame, 1)
+
+# Names for the kind field, so a log line says "temperature" instead of 1.
+action dshot_telemetry_kind_name(kind) -> text:
+    if kind == 0:
+        return "erpm"
+    if kind == 1:
+        return "temperature"
+    if kind == 2:
+        return "voltage"
+    if kind == 3:
+        return "current"
+    if kind == 4:
+        return "debug1"
+    if kind == 5:
+        return "debug2"
+    if kind == 6:
+        return "stress"
+    if kind == 7:
+        return "status"
+    return "unknown"
+
+# The physical value of an extended frame, in the unit the specification gives it:
+# temperature in Celsius (1 deg per count), voltage in volts (0.25 V per count), current
+# in amperes (1 A per count). Anything else answers 0 rather than inventing a unit.
+action dshot_telemetry_reading(t: DShotTelemetry) -> num:
+    if t.kind == 1:
+        return t.data_byte
+    if t.kind == 2:
+        return t.data_byte * 0.25
+    if t.kind == 3:
+        return t.data_byte
+    return 0

@@ -1,0 +1,274 @@
+# lib/i2c.kaze -- an I2C master for the STM32H7-style I2C peripheral.
+#
+# The peripheral modelled by the Phase 14 board (base 0x40005400) exposes four
+# registers that matter to a polled master, and this module uses exactly those:
+#
+#   0x00  CR1    PE bit0, START bit13, STOP bit14
+#   0x18  ISR    TXIS bit1, RXNE bit2, NACKF bit4, TC bit6
+#   0x24  RXDR   one received byte per read
+#   0x28  TXDR   one byte per write
+#
+# CR2, OAR1 and TIMINGR are deliberately untouched: bus timing, the kernel
+# clock and the address comparators belong to the board support package, not to
+# a transfer driver. The register base therefore arrives as a parameter and no
+# address is hardcoded here.
+#
+# A read is the register-pointer transaction every I2C sensor speaks:
+#
+#   START -> address byte -> register byte -> data phase -> STOP
+#
+# The address is always sent in its 8-bit write form, addr7 * 2. That is the
+# shape the modelled bus accepts: it consumes exactly one even byte after a
+# START as the address, takes the next TXDR write as the register pointer, and
+# then serves the data phase from RXDR. This module follows that shape and says
+# so plainly: it does not issue a second START before reading, because the model
+# has no way to express one. On silicon, a register read normally ends the write
+# phase with a repeated START and the address in read form. That difference is
+# outside what this driver claims today; everything it does claim - the byte
+# order, the status codes, the bounded waits and the register map - is exercised
+# by tests/hw/i2c_test.kaze.
+#
+# Every wait is bounded. A transfer returns a status record instead of spinning
+# forever: a bus that never asserts TXIS, RXNE or TC ends in status timeout,
+# and a NACK on the address or the pointer ends in status nack. The model has
+# no way to inject a NACK (its ISR never sets NACKF), so the nack verdict is
+# only reachable against silicon; the suite pins the healthy path (NACKF clear)
+# and the status mapping, and says so rather than pretending to inject one.
+#
+# Data bytes and register addresses are masked to eight bits, addresses to
+# seven. A caller that passes an out-of-range address, register, count or data
+# byte gets status argument and no bus traffic.
+
+needs: regs
+
+record I2cResult:
+    ok: bool
+    status: number
+    value: number
+    bytes: list
+    error: text
+
+# ---- register offsets from the base the BSP passes --------------------
+action i2c_cr1(bus) -> num:
+    return bus
+
+action i2c_isr(bus) -> num:
+    return bus + 24
+
+action i2c_rxdr(bus) -> num:
+    return bus + 36
+
+action i2c_txdr(bus) -> num:
+    return bus + 40
+
+# ---- CR1 control bits -------------------------------------------------
+action i2c_cr1_pe() -> num:
+    return 1
+
+action i2c_cr1_start() -> num:
+    return 8192
+
+action i2c_cr1_stop() -> num:
+    return 16384
+
+# ---- ISR status bits --------------------------------------------------
+action i2c_isr_txis() -> num:
+    return 2
+
+action i2c_isr_rxne() -> num:
+    return 4
+
+action i2c_isr_nackf() -> num:
+    return 16
+
+action i2c_isr_tc() -> num:
+    return 64
+
+# ---- status codes -----------------------------------------------------
+action i2c_status_ok() -> num:
+    return 0
+
+action i2c_status_timeout() -> num:
+    return 1
+
+action i2c_status_nack() -> num:
+    return 2
+
+action i2c_status_argument() -> num:
+    return 3
+
+action i2c_status_text(status) -> text:
+    if status == i2c_status_ok():
+        return "ok"
+    if status == i2c_status_timeout():
+        return "timeout"
+    if status == i2c_status_nack():
+        return "nack"
+    if status == i2c_status_argument():
+        return "argument"
+    return "unknown"
+
+# ---- result records ---------------------------------------------------
+action i2c_result(ok, status, value, bytes, error) -> I2cResult:
+    return I2cResult(ok: ok, status: status, value: value, bytes: bytes, error: error)
+
+action i2c_ok(value) -> I2cResult:
+    return i2c_result(true, i2c_status_ok(), value, [], "")
+
+action i2c_ok_bytes(bytes) -> I2cResult:
+    return i2c_result(true, i2c_status_ok(), 0, bytes, "")
+
+action i2c_fail(status) -> I2cResult:
+    return i2c_result(false, status, 0, [], i2c_status_text(status))
+
+# ---- bounded polls ----------------------------------------------------
+# spins is the caller's patience. It is clamped to at least one poll and to
+# the loop ceiling, so a huge or zero count cannot turn into an unbounded loop
+# or a silently skipped wait.
+action i2c_spin_limit(spins) -> num:
+    let limit = spins
+    if limit < 1:
+        set limit to 1
+    if limit > 1024:
+        set limit to 1024
+    return limit
+
+# One when any ISR bit in mask is set within the bound, zero when the poll ran
+# out. The ISR read is the only thing this loop does, so the cost is one
+# register access per try.
+action i2c_wait(bus, mask, spins) -> num:
+    let limit = i2c_spin_limit(spins)
+    let i = 0
+    let seen = 0
+    while i < limit bounded 1024:
+        if (mmio_read32(i2c_isr(bus)) & mask) != 0:
+            set seen to 1
+            set i to limit
+        otherwise:
+            set i to i + 1
+    mmio_fence()
+    return seen
+
+# NACKF says the address or the register pointer went unacknowledged. Checked
+# between bytes, because the bit stays set until the next START clears it.
+action i2c_nack(bus) -> num:
+    if (mmio_read32(i2c_isr(bus)) & i2c_isr_nackf()) != 0:
+        return 1
+    return 0
+
+# ---- transaction primitives ------------------------------------------
+action i2c_stop(bus) -> num:
+    mmio_write32(i2c_cr1(bus), i2c_cr1_pe() | i2c_cr1_stop())
+    mmio_fence()
+    return i2c_status_ok()
+
+# START plus the address byte. Leaves the bus with the data phase open.
+action i2c_start(bus, addr7, spins) -> num:
+    if addr7 < 0 or addr7 > 127:
+        return i2c_status_argument()
+    mmio_write32(i2c_cr1(bus), i2c_cr1_pe() | i2c_cr1_start())
+    mmio_fence()
+    if i2c_wait(bus, i2c_isr_txis(), spins) == 0:
+        i2c_stop(bus)
+        return i2c_status_timeout()
+    mmio_write32(i2c_txdr(bus), (addr7 % 128) * 2)
+    mmio_fence()
+    if i2c_wait(bus, i2c_isr_txis(), spins) == 0:
+        i2c_stop(bus)
+        return i2c_status_timeout()
+    if i2c_nack(bus) == 1:
+        i2c_stop(bus)
+        return i2c_status_nack()
+    return i2c_status_ok()
+
+# The register pointer byte. A device that does not acknowledge its own
+# register address is reported as a nack, not as a timeout.
+action i2c_pointer(bus, reg, spins) -> num:
+    if reg < 0 or reg > 255:
+        return i2c_status_argument()
+    mmio_write32(i2c_txdr(bus), reg % 256)
+    mmio_fence()
+    if i2c_wait(bus, i2c_isr_txis(), spins) == 0:
+        return i2c_status_timeout()
+    if i2c_nack(bus) == 1:
+        return i2c_status_nack()
+    return i2c_status_ok()
+
+# One byte out of the data phase. The caller owns the STOP.
+action i2c_read_byte(bus, spins) -> I2cResult:
+    if i2c_wait(bus, i2c_isr_rxne(), spins) == 0:
+        return i2c_fail(i2c_status_timeout())
+    let byte = mmio_read32(i2c_rxdr(bus)) % 256
+    return i2c_ok(byte)
+
+# A probe is a START and a STOP around the address: the only thing it proves
+# is that the device acknowledged. On this model every address is answered by
+# the one barometer, so probe is about the bus sequence, not discovery.
+action i2c_probe(bus, addr7, spins) -> bool:
+    let started = i2c_start(bus, addr7, spins)
+    i2c_stop(bus)
+    if started == i2c_status_ok():
+        return true
+    return false
+
+# ---- the three transfers a sensor driver needs ------------------------
+action i2c_write_reg(bus, addr7, reg, value, spins) -> I2cResult:
+    if value < 0 or value > 255:
+        return i2c_fail(i2c_status_argument())
+    let started = i2c_start(bus, addr7, spins)
+    if started != i2c_status_ok():
+        return i2c_fail(started)
+    let pointed = i2c_pointer(bus, reg, spins)
+    if pointed != i2c_status_ok():
+        i2c_stop(bus)
+        return i2c_fail(pointed)
+    mmio_write32(i2c_txdr(bus), value % 256)
+    mmio_fence()
+    if i2c_wait(bus, i2c_isr_txis(), spins) == 0:
+        i2c_stop(bus)
+        return i2c_fail(i2c_status_timeout())
+    if i2c_wait(bus, i2c_isr_tc(), spins) == 0:
+        i2c_stop(bus)
+        return i2c_fail(i2c_status_timeout())
+    i2c_stop(bus)
+    return i2c_ok(value % 256)
+
+action i2c_read_reg(bus, addr7, reg, spins) -> I2cResult:
+    let started = i2c_start(bus, addr7, spins)
+    if started != i2c_status_ok():
+        return i2c_fail(started)
+    let pointed = i2c_pointer(bus, reg, spins)
+    if pointed != i2c_status_ok():
+        i2c_stop(bus)
+        return i2c_fail(pointed)
+    let byte = i2c_read_byte(bus, spins)
+    i2c_stop(bus)
+    if byte.ok != true:
+        return i2c_fail(byte.status)
+    return i2c_ok(byte.value)
+
+# Consecutive bytes from one register. The model answers a 24-bit register
+# with its three bytes from a single pointer load, so a count that matches the
+# register width is the only shape it can serve; a longer count walks past the
+# modelled register and is the caller's mistake.
+action i2c_burst_read(bus, addr7, reg, count, spins) -> I2cResult:
+    if count < 1 or count > 32:
+        return i2c_fail(i2c_status_argument())
+    let started = i2c_start(bus, addr7, spins)
+    if started != i2c_status_ok():
+        return i2c_fail(started)
+    let pointed = i2c_pointer(bus, reg, spins)
+    if pointed != i2c_status_ok():
+        i2c_stop(bus)
+        return i2c_fail(pointed)
+    let out = []
+    let k = 0
+    while k < count bounded 32:
+        let one = i2c_read_byte(bus, spins)
+        if one.ok != true:
+            i2c_stop(bus)
+            return i2c_fail(one.status)
+        set out to out + [one.value]
+        set k to k + 1
+    i2c_stop(bus)
+    return i2c_ok_bytes(out)

@@ -1,0 +1,148 @@
+# tests/hw/uart_test.kaze -- the USART telemetry port.
+#
+# What the suite proves:
+#   1. the baud divisor is computed from the peripheral clock, not hardcoded: 120 MHz at
+#      115200 baud gives the 12.4 fixed-point BRR 16667, 72 MHz gives 10000, and a clock,
+#      baud or divisor outside the register range is refused instead of programmed;
+#   2. setup writes BRR before CR1, and CR1 enables UE, TE and RE (0x0D);
+#   3. the transmit path waits for TXE with a bounded poll, masks bytes to eight bits,
+#      and the model received exactly the bytes it was given - asserted at the test-only
+#      control block: SIM_CTL_UART_LEN 0xE00F001C, SIM_CTL_UART_INDEX +0x20 and
+#      SIM_CTL_UART_BYTE +0x24;
+#   4. the DMA-backed send moves a buffer with no TDR write from Kaze, and the model's
+#      UART received those bytes too; the DMA completion bit says the stream finished;
+#   5. status codes survive from the DMA layer (bad channel, empty buffer) and a refused
+#      setup leaves the port as it was.
+#
+# The modelled USART has no receive path (its ISR never sets RXNE), so the receive
+# primitive is pinned at its idle answer rather than faked into a pass: that is stated
+# here because the suite would otherwise claim receive coverage it does not have.
+
+needs: log
+needs: regs
+
+use "./../../lib/uart.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# ---- the BSP -------------------------------------------------------------
+action sim_ctl() -> num:
+    return 3759079424
+
+action usart1() -> num:
+    return 1073811456
+
+action dma1() -> num:
+    return 1073872896
+
+action ram_base() -> num:
+    return 603979776
+
+action uart_len(ctl) -> num:
+    return mmio_read32(ctl + 28)
+
+action uart_byte(ctl, k) -> num:
+    mmio_write32(ctl + 32, k)
+    return mmio_read32(ctl + 36)
+
+action main() -> num:
+    let failures = 0
+    mmio_write32(sim_ctl() + 48, 1)
+    mmio_fence()
+    let ctl = sim_ctl()
+    let uart = usart1()
+    let dma = dma1()
+    let ram = ram_base()
+
+    # ---- 1. baud from the peripheral clock -----------------------------
+    set failures to check("120 MHz at 115200 baud is BRR 16667", uart_brr(120000000, 115200) == 16667, failures)
+    set failures to check("72 MHz at 115200 baud is BRR 10000", uart_brr(72000000, 115200) == 10000, failures)
+    set failures to check("a divisor above the 16-bit register is refused", uart_brr(120000000, 9600) == 0, failures)
+    set failures to check("a divisor below the minimum is refused", uart_brr(120000000, 200000000) == 0, failures)
+    set failures to check("a zero clock is refused rather than divided by", uart_brr(0, 115200) == 0, failures)
+    set failures to check("a zero baud is refused rather than divided by", uart_brr(120000000, 0) == 0, failures)
+
+    # ---- 2. the port value and setup -----------------------------------
+    let bus = uart_bus(uart, 120000000, 115200, 64)
+    set failures to check("the bus keeps the clock it plans for", bus.clock_hz == 120000000, failures)
+    set failures to check("the bus keeps the baud it plans for", bus.baud == 115200, failures)
+    set failures to check("the bus carries the computed divisor", bus.brr == 16667, failures)
+    set failures to check("a zero poll ceiling is clamped to one", uart_bus(uart, 120000000, 115200, 0).limit == 1, failures)
+    set failures to check("an enormous poll ceiling is clamped to the loop ceiling", uart_bus(uart, 120000000, 115200, 2000000).limit == 1000000, failures)
+
+    set failures to check("setup accepts a valid divisor", uart_configure(bus) == uart_ok(), failures)
+    set failures to check("the BRR register holds 16667", mmio_read32(uart + 12) == 16667, failures)
+    set failures to check("CR1 enables UE, TE and RE", mmio_read32(uart) == 13, failures)
+
+    # ---- 3. status and bounded transmit --------------------------------
+    set failures to check("ISR reports TXE and TC", uart_status(bus) == 192, failures)
+    set failures to check("the transmitter is ready", uart_txe(bus), failures)
+    set failures to check("the transmission-complete bit is set", uart_tc(bus), failures)
+    set failures to check("the receiver reports no byte", uart_rxne(bus) == false, failures)
+    set failures to check("the TXE wait succeeds on the first poll", uart_wait_txe(bus) == 1, failures)
+    set failures to check("the receive primitive answers -1 when RXNE is clear", uart_read_byte(bus) == 0 - 1, failures)
+
+    let hi = uart_write_bytes(bus, [72, 105, 10])
+    set failures to check("a three-byte transmit reports success", hi.status == uart_ok(), failures)
+    set failures to check("and says three bytes went out", hi.sent == 3, failures)
+    set failures to check("the model received three bytes", uart_len(ctl) == 3, failures)
+    set failures to check("byte 0 is H", uart_byte(ctl, 0) == 72, failures)
+    set failures to check("byte 1 is i", uart_byte(ctl, 1) == 105, failures)
+    set failures to check("byte 2 is the newline", uart_byte(ctl, 2) == 10, failures)
+
+    set failures to check("a byte wider than eight bits is accepted", uart_write_byte(bus, 511) == uart_ok(), failures)
+    set failures to check("and is masked to its low byte", uart_byte(ctl, 3) == 255, failures)
+    set failures to check("the model counted it", uart_len(ctl) == 4, failures)
+
+    let empty = uart_write_bytes(bus, [])
+    set failures to check("an empty list writes nothing and reports zero", empty.status == uart_ok() and empty.sent == 0, failures)
+    set failures to check("the model still holds four bytes", uart_len(ctl) == 4, failures)
+
+    # ---- 4. the DMA-backed send ---------------------------------------
+    let sent_dma = uart_dma_send(bus, dma, 1, ram, [68, 77, 65])
+    set failures to check("the DMA send reports success", sent_dma.status == uart_ok(), failures)
+    set failures to check("and reports three bytes", sent_dma.sent == 3, failures)
+    set failures to check("the UART received the DMA bytes", uart_len(ctl) == 7, failures)
+    set failures to check("DMA byte 0 is D", uart_byte(ctl, 4) == 68, failures)
+    set failures to check("DMA byte 1 is M", uart_byte(ctl, 5) == 77, failures)
+    set failures to check("DMA byte 2 is A", uart_byte(ctl, 6) == 65, failures)
+    set failures to check("the DMA stream's completion bit is set", (mmio_read32(dma) & 2) == 2, failures)
+
+    let long = uart_dma_send(bus, dma, 0, ram, [1, 2, 3, 4, 5, 6, 7, 8])
+    set failures to check("a longer DMA send reports eight bytes", long.status == uart_ok() and long.sent == 8, failures)
+    set failures to check("the model received them", uart_len(ctl) == 15, failures)
+    set failures to check("the first byte of the second buffer arrived", uart_byte(ctl, 7) == 1, failures)
+    set failures to check("the last byte of the second buffer arrived", uart_byte(ctl, 14) == 8, failures)
+    set failures to check("both DMA streams have completed", mmio_read32(dma) == 3, failures)
+
+    # ---- 5. refusals ---------------------------------------------------
+    let bad_bus = uart_bus(uart, 0, 115200, 16)
+    set failures to check("a port with no usable divisor is refused", uart_configure(bad_bus) == uart_bad_setup(), failures)
+    set failures to check("the refused setup left BRR alone", mmio_read32(uart + 12) == 16667, failures)
+    set failures to check("the refused setup left CR1 alone", mmio_read32(uart) == 13, failures)
+
+    let no_bytes = uart_dma_send(bus, dma, 0, ram, [])
+    set failures to check("an empty DMA buffer is refused, not started", no_bytes.status == uart_bad_args() and no_bytes.sent == 0, failures)
+    set failures to check("the UART received nothing more", uart_len(ctl) == 15, failures)
+
+    let bad_stream = uart_dma_send(bus, dma, 5, ram, [9])
+    set failures to check("a stream this block does not model is refused", bad_stream.status == uart_bad_args() and bad_stream.sent == 0, failures)
+    set failures to check("and no byte reached the UART", uart_len(ctl) == 15, failures)
+
+    set failures to check("status 0 is ok", uart_status_text(uart_ok()) == "ok", failures)
+    set failures to check("status 1 is timeout", uart_status_text(uart_timeout()) == "timeout", failures)
+    set failures to check("status 3 is bad_args", uart_status_text(uart_bad_args()) == "bad_args", failures)
+    set failures to check("status 5 is bad_setup", uart_status_text(uart_bad_setup()) == "bad_setup", failures)
+    set failures to check("an unknown status has a name", uart_status_text(99) == "unknown", failures)
+
+    # ---- nothing fell outside the modelled board -----------------------
+    set failures to check("no access fell outside the modelled board", mmio_read32(ctl + 20) == 0, failures)
+    set failures to check("no access was misaligned", mmio_read32(ctl + 24) == 0, failures)
+
+    if failures == 0:
+        log.info("OK uart: 57 checks")
+    return failures
