@@ -1,0 +1,12 @@
+action double_val(x):
+    return x * 2
+
+action main() -> num:
+    let nums = [10, 20, 30, 40]
+    let sum = 0
+    parallel for each x in nums:
+        let d = double_val(x)
+        set sum to sum + d
+    if sum != 200:
+        return 1
+    return 0

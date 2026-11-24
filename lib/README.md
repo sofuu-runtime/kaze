@@ -56,6 +56,16 @@ private/reserved IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
 granted. Structured response headers are accessible via `http_header_map`. An HTTP
 error status is data (`ok` is true, `status` is 404), not a transport failure.
 
+### Pervasive Multicore Parallelism
+
+Pure collection transformations can be dispatched across worker threads with guaranteed data-race freedom:
+
+- `parallel_map(collection, worker)`: transforms elements in parallel using pure routine `worker`.
+- `parallel_filter(collection, predicate)`: filters elements in parallel using pure predicate `predicate`.
+- `parallel for each <item> in <collection>:`: parallel loop syntax over collections.
+
+The capability checker guarantees data-race freedom at compile time: any routine executed across worker threads must declare `needs: []`. Invoking impure routines or peripheral builtins inside parallel scopes triggers `E_KAZE_IMPURE_PARALLEL`. Each worker thread allocates from a private bump arena, which is adopted into the parent arena upon join in $O(1)$ time with zero lock contention and zero memory leaks under AddressSanitizer.
+
 ## Compose a mission
 
 ```kaze

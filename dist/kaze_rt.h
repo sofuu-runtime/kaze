@@ -212,6 +212,16 @@ bool kaze_arena_init_heap(kaze_arena_t *arena, size_t capacity);
 
 /* Release every block in the chain and clear the header. */
 void kaze_arena_free(kaze_arena_t *arena);
+
+/* Adopt/transfer all memory blocks from src into dst in O(1). */
+void kaze_arena_adopt(kaze_arena_t *dst, kaze_arena_t *src);
+#else
+/* With KAZE_NO_HEAP there is no malloc, so the emitted program's arena comes from the board
+ * layer: it provides kaze_arena_init_heap over a static buffer, and kaze_arena_free is a
+ * no-op. Declaring them here keeps the generated C identical on host and board. */
+bool kaze_arena_init_heap(kaze_arena_t *arena, size_t capacity);
+void kaze_arena_free(kaze_arena_t *arena);
+void kaze_arena_adopt(kaze_arena_t *dst, kaze_arena_t *src);
 #endif
 
 /* Bump allocation from the current block, 8-byte aligned. When the request

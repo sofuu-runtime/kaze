@@ -321,6 +321,27 @@ void kaze_arena_free(kaze_arena_t *arena)
     }
     memset(arena, 0, sizeof *arena);
 }
+
+void kaze_arena_adopt(kaze_arena_t *dst, kaze_arena_t *src)
+{
+    if (dst == NULL || src == NULL || src->first == NULL) {
+        return;
+    }
+    if (dst->cur != NULL) {
+        dst->cur->next = src->first;
+        dst->cur = src->cur ? src->cur : src->first;
+    } else {
+        dst->first = src->first;
+        dst->cur = src->cur ? src->cur : src->first;
+    }
+    memset(src, 0, sizeof *src);
+}
+#else
+void kaze_arena_adopt(kaze_arena_t *dst, kaze_arena_t *src)
+{
+    (void)dst;
+    (void)src;
+}
 #endif /* KAZE_NO_HEAP */
 
 void *kmalloc(kaze_arena_t *arena, size_t size)

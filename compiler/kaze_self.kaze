@@ -158,6 +158,9 @@ action make_if(cond, then_block, other_block, l):
 action make_for_each(var, list_expr, body, l):
     return make_node("FOR_EACH", var, "", 0, [list_expr, body], l)
 
+action make_parallel_for(var, list_expr, body, l):
+    return make_node("PARALLEL_FOR", var, "", 0, [list_expr, body], l)
+
 action make_try(err_name, body, other_block, l):
     return make_node("TRY", err_name, "", 0, [body, other_block], l)
 
@@ -330,6 +333,10 @@ action family_of_word(w):
         return "tool"
     if w == "agent" or w == "model" or w == "llm":
         return "ai"
+    # 'regs' is its own family so the checker can see the declaration: a program that
+    # names it gains the mmio_* builtins and nothing else.
+    if w == "regs":
+        return "regs"
     if w == "lidar" or w == "camera" or w == "thermostat" or w == "probe":
         return "sensor"
     if w == "fan" or w == "mister" or w == "pump" or w == "relay" or w == "valve" or w == "motor" or w == "light":
@@ -1289,6 +1296,24 @@ action parse_stmt(tokens, pos):
             let b = parse_block(tokens, q2)
             return [make_for_each(var, le[0], b[0], l), b[1]]
 
+        # parallel for each name in list: block
+        if w == "parallel":
+            let q = p + 1
+            if is_word(tokens, q, "for"):
+                set q to q + 1
+                if is_word(tokens, q, "each"):
+                    set q to q + 1
+                let var = tok_text(tokens, q)
+                set q to q + 1
+                if is_word(tokens, q, "in"):
+                    set q to q + 1
+                let le = parse_expr(tokens, q)
+                let q2 = le[1]
+                if is_sym(tokens, q2, ":"):
+                    set q2 to q2 + 1
+                let b = parse_block(tokens, q2)
+                return [make_parallel_for(var, le[0], b[0], l), b[1]]
+
         # try: block otherwise with err: block
         if w == "try":
             let q = p + 1
@@ -2008,6 +2033,12 @@ action is_upper(word):
 # can answer "is this operation real" without a host.
 
 action cap_name_known(w):
+    # 'regs' is a requirement without verbs: a program declares it and gains the
+    # mmio_* builtins, which are the only way to reach a peripheral register. It has no
+    # .verb entries because a register access is not an operation on the world that a
+    # policy can meaningfully inspect one call at a time; the declaration is the gate.
+    if w == "regs":
+        return 1
     if w == "drone" or w == "rover" or w == "sensor" or w == "device" or w == "memory" or w == "policy" or w == "log" or w == "alert" or w == "ai" or w == "tool":
         return 1
     if w == "tools" or w == "agent" or w == "model" or w == "llm":
@@ -2043,7 +2074,20 @@ action cap_verbs() -> list:
 action op_known(family, op):
     return list_has(cap_verbs(), family + "." + op)
 
+# Register access: the builtins that touch hardware. They are pure names as far as
+# resolution goes, but a program may not call one without declaring 'needs: regs'.
+action mmio_builtin(name):
+    if name == "mmio_read8" or name == "mmio_read16" or name == "mmio_read32":
+        return 1
+    if name == "mmio_write8" or name == "mmio_write16" or name == "mmio_write32":
+        return 1
+    if name == "mmio_fence":
+        return 1
+    return 0
+
 action pure_builtin(name):
+    if mmio_builtin(name) == 1:
+        return 1
     if name == "code" or name == "character":
         return 1
     if name == "sin" or name == "cos" or name == "tan" or name == "sqrt" or name == "atan2":
@@ -2053,6 +2097,8 @@ action pure_builtin(name):
     if name == "vector" or name == "link_lost" or name == "length":
         return 1
     if name == "channel":
+        return 1
+    if name == "parallel_map" or name == "parallel_filter":
         return 1
     # Phase 3 of the libraries/tooling plan: an explicit, host-granted HTTP
     # fetch. The builtin is standalone-only; the embedded engine has its own
@@ -2341,6 +2387,9 @@ action check_expr_g(e: AstNode, names, facts, items, needs, open, diags, guard):
     if k == "IDENT":
         if name_allowed(e.name, names) == 1:
             return diags
+        let r = routine_named(items, e.name)
+        if r.kind != "NONE":
+            return diags
         set diags to diags + [diag("E_KAZE_UNKNOWN_NAME", e.line, "'" + e.name + "' is not a parameter, a let binding or a known value")]
         return diags
 
@@ -2527,6 +2576,33 @@ action check_call(e: AstNode, names, facts, items, needs, open, diags, guarded):
             set out to out + [diag("E_KAZE_UNKNOWN_NAME", e.line, "record '" + name + "' is not defined in this file")]
         return out
 
+    if mmio_builtin(name) == 1:
+        # Fail closed: a register access without the declaration is a compile error, not a
+        # runtime surprise on a board nobody provisioned.
+        if list_has(needs, "regs") == 0:
+            set out to out + [diag("E_KAZE_MISSING_CAPABILITY", e.line, "'" + name + "' touches hardware registers; declare 'needs: regs' at the top of the program")]
+        return out
+    if name == "parallel_map" or name == "parallel_filter":
+        let p_args = e.children
+        if (length of p_args) < 2:
+            set out to out + [diag("E_KAZE_CALL_ARGS", e.line, "'" + name + "' expects 2 arguments: collection and pure worker routine")]
+            return out
+        let fn_arg = child_at(e, 1)
+        let fn_name = ""
+        if fn_arg.kind == "STR":
+            set fn_name = fn_arg.val_str
+        if fn_arg.kind == "IDENT":
+            set fn_name = fn_arg.name
+        if fn_name != "":
+            let r = routine_named(items, fn_name)
+            if r.kind != "NONE":
+                let rn = routine_needs(r)
+                if (length of rn) > 0:
+                    set out to out + [diag("E_KAZE_IMPURE_PARALLEL", e.line, "'" + name + "' worker routine '" + fn_name + "' is impure; parallel operations require pure actions (needs: [])")]
+            otherwise:
+                if open == 0:
+                    set out to out + [diag("E_KAZE_UNKNOWN_NAME", e.line, "'" + fn_name + "' is not a routine in this file")]
+        return out
     if pure_builtin(name) == 1:
         return out
 
@@ -2580,6 +2656,20 @@ action check_stmt(s: AstNode, names, facts, items, needs, open, diags):
     if k == "FOR_EACH":
         let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
         set out to check_stmts(kids_of(child_at(s, 1)), names + [s.name], facts, items, needs, open, out)
+        return out
+    if k == "PARALLEL_FOR":
+        let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        set out to check_stmts(kids_of(child_at(s, 1)), names + [s.name], facts, items, needs, open, out)
+        let calls = calls_in_stmts(kids_of(child_at(s, 1)), [])
+        for each call_name in calls:
+            if mmio_builtin(call_name) == 1:
+                set out to out + [diag("E_KAZE_IMPURE_PARALLEL", s.line, "parallel loop body calls '" + call_name + "' which touches hardware; parallel operations require pure actions (needs: [])")]
+            otherwise:
+                let r = routine_named(items, call_name)
+                if r.kind != "NONE":
+                    let rn = routine_needs(r)
+                    if (length of rn) > 0:
+                        set out to out + [diag("E_KAZE_IMPURE_PARALLEL", s.line, "parallel loop body calls impure routine '" + call_name + "'; parallel operations require pure actions (needs: [])")]
         return out
     if k == "TRY":
         # `in_try` exempts capability reads (recoverable) and nothing else: a missing field'
@@ -2645,6 +2735,8 @@ action calls_in_stmt_blocks(s: AstNode, out):
     if s.kind == "WHILE":
         set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
     if s.kind == "FOR_EACH":
+        set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
+    if s.kind == "PARALLEL_FOR":
         set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
     if s.kind == "TRY":
         set acc to calls_in_stmts(kids_of(child_at(s, 0)), acc)
@@ -2790,7 +2882,7 @@ action reserved_diags(n: AstNode, out, depth) -> list:
     let acc = out
     if depth < 60:
         let nm = ""
-        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH":
+        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH" or n.kind == "PARALLEL_FOR":
             set nm to n.name
         if n.kind == "SPAWN":
             set nm to n.val_str
@@ -3611,7 +3703,7 @@ action tensor_stmt(s: AstNode, env: list, result_spec: list, items: list, binds:
         let r = infer_expr(child_at(s, 0), env, binds, items, diags)
         let b = tensor_stmts(kids_of(child_at(s, 1)), (r[0] otherwise ""), result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
         return [(b[0] otherwise ""), (b[1] otherwise ""), (b[2] otherwise "")]
-    if k == "FOR_EACH":
+    if k == "FOR_EACH" or k == "PARALLEL_FOR":
         let r = infer_expr(child_at(s, 0), env, binds, items, diags)
         let inner = env_set((r[0] otherwise ""), s.name, ["num"])
         let b = tensor_stmts(kids_of(child_at(s, 1)), inner, result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
@@ -5003,8 +5095,7 @@ action get_c_runtime_header():
     set h to h + "    c->cap = cap; c->head = 0; c->tail = 0; c->len = 0;\n"
     set h to h + "    v.kind = KZ_VAL_CHAN; v.as.ptr = (void*)c;\n"
     set h to h + "    return v;\n"
-    set h to h + "}\n"
-    set h to h + "\n"
+    set h to h + "}\n\n"
     set h to h + "KZ_MAYBE_UNUSED static bool kz_chan_send(KzValue ch, KzValue v) {\n"
     set h to h + "    kz_chan* c;\n"
     set h to h + "    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return false;\n"
@@ -5014,8 +5105,7 @@ action get_c_runtime_header():
     set h to h + "    c->tail = (c->tail + 1) % c->cap;\n"
     set h to h + "    c->len += 1;\n"
     set h to h + "    return true;\n"
-    set h to h + "}\n"
-    set h to h + "\n"
+    set h to h + "}\n\n"
     set h to h + "KZ_MAYBE_UNUSED static KzValue kz_chan_recv_or(KzValue ch, KzValue fallback) {\n"
     set h to h + "    kz_chan* c;\n"
     set h to h + "    KzValue v;\n"
@@ -5026,8 +5116,7 @@ action get_c_runtime_header():
     set h to h + "    c->head = (c->head + 1) % c->cap;\n"
     set h to h + "    c->len -= 1;\n"
     set h to h + "    return v;\n"
-    set h to h + "}\n"
-    set h to h + "\n"
+    set h to h + "}\n\n"
     set h to h + "KZ_MAYBE_UNUSED static KzValue kz_chan_len(KzValue ch) {\n"
     set h to h + "    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return kz_num(0);\n"
     set h to h + "    return kz_num((double)((kz_chan*)ch.as.ptr)->len);\n"
@@ -5110,26 +5199,31 @@ action get_c_runtime_header():
     set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST) return kz_list_concat(a, b);\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n"
-    set h to h + "/* Bitwise operators: Kaze numbers are doubles, so each operand is truncated to\n"
-    set h to h + " * the runtime integer type, and a shift count is masked to 0..63 so no shift is\n"
-    set h to h + " * undefined behaviour. Right shift is logical, which is what hashing and CRCs\n"
-    set h to h + " * want. */\n"
+    set h to h + "/* Bitwise operators. Kaze numbers are doubles and the portable integer range is\n"
+    set h to h + " * the 2^53 a double holds exactly, so the operands are widened to 64 bits here\n"
+    set h to h + " * rather than to kaze_int_t: on a 32-bit target that typedef is 32 bits, and\n"
+    set h to h + " * (4294967295 & 255) then came out 0 on a Cortex-M and 255 on the host. A 64-bit\n"
+    set h to h + " * intermediate makes the whole language agree across targets, keeps the mask in\n"
+    set h to h + " * every hash and CRC correct, and costs nothing on a 64-bit host. A shift count\n"
+    set h to h + " * is masked to 0..63 so no shift is undefined. Right shift is logical. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline long long kz_bits_i64(KzValue v) { return (long long)((v.kind == KZ_VAL_NUM) ? v.as.number : 0.0); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline unsigned long long kz_bits_u64(KzValue v) { return (unsigned long long)((v.kind == KZ_VAL_NUM) ? v.as.number : 0.0); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_band(KzValue a, KzValue b) {\n"
-    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) & (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "    return kz_num((kaze_float_t)(kz_bits_i64(a) & kz_bits_i64(b)));\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bor(KzValue a, KzValue b) {\n"
-    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) | (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "    return kz_num((kaze_float_t)(kz_bits_i64(a) | kz_bits_i64(b)));\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bxor(KzValue a, KzValue b) {\n"
-    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) ^ (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "    return kz_num((kaze_float_t)(kz_bits_i64(a) ^ kz_bits_i64(b)));\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_shl(KzValue a, KzValue b) {\n"
-    set h to h + "    kaze_int_t n = (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0) & 63;\n"
-    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) << n));\n"
+    set h to h + "    long long n = kz_bits_i64(b) & 63;\n"
+    set h to h + "    return kz_num((kaze_float_t)(kz_bits_i64(a) << n));\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_shr(KzValue a, KzValue b) {\n"
-    set h to h + "    kaze_int_t n = (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0) & 63;\n"
-    set h to h + "    return kz_num((kaze_float_t)((kaze_uint_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) >> n));\n"
+    set h to h + "    long long n = kz_bits_i64(b) & 63;\n"
+    set h to h + "    return kz_num((kaze_float_t)(kz_bits_u64(a) >> n));\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_sub(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_POINT) return kz_point(kz_num(a.as.point.x - b.as.point.x), kz_num(a.as.point.y - b.as.point.y), kz_num(a.as.point.z - b.as.point.z));\n"
@@ -5364,6 +5458,38 @@ action get_c_runtime_header():
     set h to h + "     * so the byte is copied into the arena before it escapes. */\n"
     set h to h + "    return kz_str(kz_str_concat_n(one, 1, \"\", 0));\n"
     set h to h + "}\n"
+    set h to h + "/* Memory-mapped register access. Kaze has no pointers, so a driver cannot reach a\n"
+    set h to h + " * peripheral by address at all; these are the whole surface, and the checker refuses\n"
+    set h to h + " * them unless the program declares 'needs: regs'. Every access goes through one board\n"
+    set h to h + " * hook, so the same driver code runs against silicon (a volatile access and a fence)\n"
+    set h to h + " * and against the virtual board the tests link (dist/kaze_board_sim.c). */\n"
+    set h to h + "uint32_t kaze_board_mmio(uint32_t addr, int width, int is_write, uint32_t value);\n"
+    set h to h + "/* An address is not an int. Converting a double above 2^31 to a signed int is\n"
+    set h to h + " * undefined, and a Cortex-M saturates it to INT32_MAX instead - so a register at\n"
+    set h to h + " * 0xE00F0000 silently became 0x7FFFFFFF on the target while working on the host.\n"
+    set h to h + " * The clamp plus an unsigned long long keeps every 32-bit address exact. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline uint32_t kz_addr_of(KzValue a) {\n"
+    set h to h + "    double d = kz_to_num(a);\n"
+    set h to h + "    if (!(d > 0.0)) d = 0.0;\n"
+    set h to h + "    if (d > 4294967295.0) d = 4294967295.0;\n"
+    set h to h + "    return (uint32_t)(unsigned long long)d;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mmio_read8(KzValue a) { return kz_num((kaze_float_t)(kaze_board_mmio(kz_addr_of(a), 1, 0, 0) & 0xffu)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mmio_read16(KzValue a) { return kz_num((kaze_float_t)(kaze_board_mmio(kz_addr_of(a), 2, 0, 0) & 0xffffu)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mmio_read32(KzValue a) { return kz_num((kaze_float_t)kaze_board_mmio(kz_addr_of(a), 4, 0, 0)); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mmio_write8(KzValue a, KzValue v) { kaze_board_mmio(kz_addr_of(a), 1, 1, (uint32_t)(unsigned long long)kz_to_num(v)); return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mmio_write16(KzValue a, KzValue v) { kaze_board_mmio(kz_addr_of(a), 2, 1, (uint32_t)(unsigned long long)kz_to_num(v)); return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mmio_write32(KzValue a, KzValue v) { kaze_board_mmio(kz_addr_of(a), 4, 1, (uint32_t)(unsigned long long)kz_to_num(v)); return v; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mmio_fence(void) {\n"
+    set h to h + "#if defined(__arm__) || defined(__thumb__) || defined(__aarch64__)\n"
+    set h to h + "    __asm__ volatile(\"dmb sy\" : : : \"memory\");   /* device ordering on the target */\n"
+    set h to h + "#elif defined(__riscv)\n"
+    set h to h + "    __asm__ volatile(\"fence iorw, iorw\" : : : \"memory\");\n"
+    set h to h + "#else\n"
+    set h to h + "    __asm__ volatile(\"\" : : : \"memory\");         /* compiler barrier on the host */\n"
+    set h to h + "#endif\n"
+    set h to h + "    return kz_nil();\n"
+    set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
@@ -5421,11 +5547,24 @@ action get_c_runtime_header():
     set h to h + "}\n"
     set h to h + "/* A bare telemetry field is a capability read. Returning nothing here would\n"
     set h to h + "   let `when battery < 20%` compare nothing against a percent. */\n"
+    set h to h + "/* A capability call needs a host. A build with -DKAZE_SITL_LINK carries one:\n"
+    set h to h + "   dist/kaze_sitl_client.c, which flies a simulated vehicle over MAVLink 2 and\n"
+    set h to h + "   only answers when KAZE_SITL names a vehicle. Without the define, or without\n"
+    set h to h + "   KAZE_SITL, every call still fails closed. */\n"
+    set h to h + "#if defined(KAZE_SITL_LINK)\n"
+    set h to h + "#include \"kaze_sitl_client.c\"\n"
+    set h to h + "#else\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline int kz_sitl_enabled(void) { return 0; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_sitl_call(const char* r, const char* o, int n, KzValue* a) { (void)r; (void)o; (void)n; (void)a; return kz_nil(); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_sitl_field(const char* f, const char* g) { (void)f; (void)g; return kz_nil(); }\n"
+    set h to h + "#endif\n\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_cap_get(const char* family, const char* field) {\n"
+    set h to h + "    if (kz_sitl_enabled() == 1) return kz_sitl_field(family, field);\n"
     set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", family, field);\n"
     set h to h + "    exit(70);\n"
     set h to h + "}\n\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_cap_call(const char* recv, const char* op, int n, KzValue* args) {\n"
+    set h to h + "    if (kz_sitl_enabled() == 1) return kz_sitl_call(recv, op, n, args);\n"
     set h to h + "    (void)n; (void)args;\n"
     set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", recv, op);\n"
     set h to h + "    exit(70);\n"
@@ -5659,12 +5798,44 @@ action emit_c_call(node: AstNode):
     # 3. Phase 13: a bounded channel, and a task handle join.
     if name == "channel":
         return "kz_chan_new(" + nth_arg(args, 0) + ")"
+    if name == "parallel_map":
+        let l_arg = nth_arg(args, 0)
+        let fn_arg = child_at(node, 1)
+        let fn_id = ""
+        if fn_arg.kind == "STR":
+            set fn_id = sanitize_c_id(fn_arg.val_str)
+        otherwise:
+            set fn_id = sanitize_c_id(fn_arg.name)
+        return "kz_parallel_map(" + l_arg + ", &kaze_fn_" + fn_id + ")"
+    if name == "parallel_filter":
+        let l_arg = nth_arg(args, 0)
+        let fn_arg = child_at(node, 1)
+        let fn_id = ""
+        if fn_arg.kind == "STR":
+            set fn_id = sanitize_c_id(fn_arg.val_str)
+        otherwise:
+            set fn_id = sanitize_c_id(fn_arg.name)
+        return "kz_parallel_filter(" + l_arg + ", &kaze_fn_" + fn_id + ")"
     if name == "http_fetch":
         return "kz_http_request(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ", " + nth_arg(args, 2) + ", " + nth_arg(args, 3) + ", " + nth_arg(args, 4) + ")"
 
     # 4. Pure builtins.
     if name == "link_lost":
         return "kz_bool(false)"
+    if name == "mmio_read8":
+        return "kz_mmio_read8(" + nth_arg(args, 0) + ")"
+    if name == "mmio_read16":
+        return "kz_mmio_read16(" + nth_arg(args, 0) + ")"
+    if name == "mmio_read32":
+        return "kz_mmio_read32(" + nth_arg(args, 0) + ")"
+    if name == "mmio_write8":
+        return "kz_mmio_write8(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ")"
+    if name == "mmio_write16":
+        return "kz_mmio_write16(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ")"
+    if name == "mmio_write32":
+        return "kz_mmio_write32(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ")"
+    if name == "mmio_fence":
+        return "kz_mmio_fence()"
     if name == "code":
         return "kz_code(" + nth_arg(args, 0) + ")"
     if name == "character":
@@ -5857,7 +6028,7 @@ action collect_bindings(n: AstNode, out, depth) -> list:
     let acc = out
     if depth < 60:
         let nm = ""
-        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH":
+        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH" or n.kind == "PARALLEL_FOR":
             set nm to n.name
         if n.kind == "SPAWN":
             set nm to n.val_str
@@ -5912,6 +6083,9 @@ action fx_spill(fx: EmitFx, ind) -> string:
 # ── statements ──────────────────────────────────────────────────────────
 
 action emit_c_stmt(stmt: AstNode, ind, fx: EmitFx):
+    # The wrapper and its inner walker call each other, so the call cycle needs its
+    # declared ceiling here as well as in emit_c_stmt_inner.
+    recursion bounded 200
     let body = emit_c_stmt_inner(stmt, ind, fx)
     if stmt.line > 0:
         return "#line " + stmt.line + "\n" + body
@@ -6017,7 +6191,7 @@ action emit_c_stmt_inner(stmt: AstNode, ind, fx: EmitFx):
         set out to out + ind + "}\n"
         return out
 
-    if k == "FOR_EACH":
+    if k == "FOR_EACH" or k == "PARALLEL_FOR":
         let list_e = child_at(stmt, 0)
         let body = child_at(stmt, 1)
         let out = ind + "{\n"
@@ -6469,7 +6643,7 @@ action has_name(names: list, w: string) -> num:
 action collect_declared(n: AstNode, acc: list) -> list:
     recursion bounded 256
     let out = acc
-    if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH" or n.kind == "PARAM":
+    if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH" or n.kind == "PARALLEL_FOR" or n.kind == "PARAM":
         if n.name != "" and has_name(acc, n.name) == 0:
             set out to out + [n.name]
     for each c in n.children:
@@ -6799,6 +6973,137 @@ action program_uses_http(items) -> num:
             return 1
     return 0
 
+action tree_has_parallel_call(n: AstNode) -> num:
+    recursion bounded 256
+    if n.kind == "PARALLEL_FOR":
+        return 1
+    if n.kind == "CALL":
+        if n.name == "parallel_map" or n.name == "parallel_filter":
+            return 1
+    for each c in n.children:
+        if tree_has_parallel_call(c) == 1:
+            return 1
+    return 0
+
+action program_uses_parallel(items) -> num:
+    recursion bounded 64
+    for each item in items:
+        if tree_has_parallel_call(item) == 1:
+            return 1
+    return 0
+
+action get_c_parallel_header() -> string:
+    let h = "/* --- Multicore Parallel Runtime --- */\n"
+    set h to h + "#if !defined(KAZE_NO_HEAP) && !defined(KAZE_BAREMETAL)\n"
+    set h to h + "#include <pthread.h>\n"
+    set h to h + "#define KAZE_HAVE_PTHREADS 1\n"
+    set h to h + "#else\n"
+    set h to h + "#define KAZE_HAVE_PTHREADS 0\n"
+    set h to h + "#endif\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static int kz_num_workers(void) {\n"
+    set h to h + "#if !KAZE_HAVE_PTHREADS\n"
+    set h to h + "    return 1;\n"
+    set h to h + "#else\n"
+    set h to h + "    const char* env = getenv(\"KAZE_PARALLEL_WORKERS\");\n"
+    set h to h + "    if (env && env[0]) {\n"
+    set h to h + "        int n = 0;\n"
+    set h to h + "        for (int i = 0; env[i] >= '0' && env[i] <= '9'; i++) n = n * 10 + (env[i] - '0');\n"
+    set h to h + "        if (n > 0 && n <= 64) return n;\n"
+    set h to h + "    }\n"
+    set h to h + "#if defined(_WIN32)\n"
+    set h to h + "    return 4;\n"
+    set h to h + "#else\n"
+    set h to h + "    long c = sysconf(_SC_NPROCESSORS_ONLN);\n"
+    set h to h + "    if (c < 1) c = 1;\n"
+    set h to h + "    if (c > 32) c = 32;\n"
+    set h to h + "    return (int)c;\n"
+    set h to h + "#endif\n"
+    set h to h + "#endif\n"
+    set h to h + "}\n\n"
+    set h to h + "#if KAZE_HAVE_PTHREADS\n"
+    set h to h + "typedef struct {\n"
+    set h to h + "    KzValue* items;\n"
+    set h to h + "    KzValue* results;\n"
+    set h to h + "    size_t start;\n"
+    set h to h + "    size_t end;\n"
+    set h to h + "    KzValue (*fn)(KzValue);\n"
+    set h to h + "    kaze_arena_t arena;\n"
+    set h to h + "} kz_worker_slice_t;\n\n"
+    set h to h + "static void* kz_parallel_worker_thread(void* arg) {\n"
+    set h to h + "    kz_worker_slice_t* s = (kz_worker_slice_t*)arg;\n"
+    set h to h + "    for (size_t i = s->start; i < s->end; i++) {\n"
+    set h to h + "        s->results[i] = s->fn(s->items[i]);\n"
+    set h to h + "    }\n"
+    set h to h + "    return NULL;\n"
+    set h to h + "}\n"
+    set h to h + "#endif\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_parallel_map(KzValue list, KzValue (*fn)(KzValue)) {\n"
+    set h to h + "    if (list.kind != KZ_VAL_LIST || list.as.list == NULL || list.as.list->len == 0) {\n"
+    set h to h + "        return kz_list_new(0);\n"
+    set h to h + "    }\n"
+    set h to h + "    size_t total = list.as.list->len;\n"
+    set h to h + "    KzValue res = kz_list_new(total);\n"
+    set h to h + "    if (res.kind != KZ_VAL_LIST || res.as.list == NULL) return kz_nil();\n"
+    set h to h + "    kz_list_reserve(res.as.list, total);\n"
+    set h to h + "    res.as.list->len = total;\n"
+    set h to h + "    int workers = kz_num_workers();\n"
+    set h to h + "#if KAZE_HAVE_PTHREADS\n"
+    set h to h + "    if (total >= 4 && workers > 1) {\n"
+    set h to h + "        if (workers > (int)total) workers = (int)total;\n"
+    set h to h + "        if (workers > 64) workers = 64;\n"
+    set h to h + "        pthread_t tids[64];\n"
+    set h to h + "        kz_worker_slice_t slices[64];\n"
+    set h to h + "        size_t per_thread = (total + (size_t)workers - 1) / (size_t)workers;\n"
+    set h to h + "        for (int t = 0; t < workers; t++) {\n"
+    set h to h + "            size_t i0 = (size_t)t * per_thread;\n"
+    set h to h + "            size_t i1 = i0 + per_thread;\n"
+    set h to h + "            if (i0 > total) i0 = total;\n"
+    set h to h + "            if (i1 > total) i1 = total;\n"
+    set h to h + "            slices[t].items = list.as.list->items;\n"
+    set h to h + "            slices[t].results = res.as.list->items;\n"
+    set h to h + "            slices[t].start = i0;\n"
+    set h to h + "            slices[t].end = i1;\n"
+    set h to h + "            slices[t].fn = fn;\n"
+    set h to h + "            kaze_arena_init_heap(&slices[t].arena, 4 * 1024 * 1024);\n"
+    set h to h + "            pthread_create(&tids[t], NULL, kz_parallel_worker_thread, &slices[t]);\n"
+    set h to h + "        }\n"
+    set h to h + "        for (int t = 0; t < workers; t++) {\n"
+    set h to h + "            pthread_join(tids[t], NULL);\n"
+    set h to h + "            kaze_arena_adopt(&kz_arena, &slices[t].arena);\n"
+    set h to h + "        }\n"
+    set h to h + "        return res;\n"
+    set h to h + "    }\n"
+    set h to h + "#endif\n"
+    set h to h + "    for (size_t i = 0; i < total; i++) {\n"
+    set h to h + "        res.as.list->items[i] = fn(list.as.list->items[i]);\n"
+    set h to h + "    }\n"
+    set h to h + "    return res;\n"
+    set h to h + "}\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_parallel_filter(KzValue list, KzValue (*pred)(KzValue)) {\n"
+    set h to h + "    if (list.kind != KZ_VAL_LIST || list.as.list == NULL || list.as.list->len == 0) {\n"
+    set h to h + "        return kz_list_new(0);\n"
+    set h to h + "    }\n"
+    set h to h + "    size_t total = list.as.list->len;\n"
+    set h to h + "    KzValue flags = kz_parallel_map(list, pred);\n"
+    set h to h + "    size_t matches = 0;\n"
+    set h to h + "    for (size_t i = 0; i < total; i++) {\n"
+    set h to h + "        if (kz_is_truthy(flags.as.list->items[i])) matches++;\n"
+    set h to h + "    }\n"
+    set h to h + "    KzValue res = kz_list_new(matches);\n"
+    set h to h + "    if (res.kind != KZ_VAL_LIST || res.as.list == NULL) return kz_nil();\n"
+    set h to h + "    kz_list_reserve(res.as.list, matches);\n"
+    set h to h + "    res.as.list->len = matches;\n"
+    set h to h + "    size_t dst = 0;\n"
+    set h to h + "    for (size_t i = 0; i < total; i++) {\n"
+    set h to h + "        if (kz_is_truthy(flags.as.list->items[i])) {\n"
+    set h to h + "            res.as.list->items[dst++] = list.as.list->items[i];\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    return res;\n"
+    set h to h + "}\n"
+    set h to h + "/* --- End Multicore Parallel Runtime --- */\n"
+    return h
+
 action tensor_unwrap(e: AstNode) -> string:
     recursion bounded 64
     return "kz_tensor_unwrap(" + emit_c_expr(e) + ")"
@@ -6950,6 +7255,8 @@ action emit_c_program(prog: AstNode):
     # after the prelude because it uses KzValue and the arena string helpers.
     if program_uses_http(items) == 1:
         set out to out + "\n#include \"kaze_http.h\"\n"
+    if program_uses_parallel(items) == 1:
+        set out to out + "\n" + get_c_parallel_header()
 
     # 1. Forward declarations.
     set out to out + "/* --- Forward Declarations --- */\n"

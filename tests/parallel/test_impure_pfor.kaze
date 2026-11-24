@@ -1,0 +1,11 @@
+needs: drone
+
+action send_cmd(x):
+    needs: drone
+    drone.arm()
+    return x
+
+action main():
+    let nums = [1, 2]
+    parallel for each x in nums:
+        send_cmd(x)

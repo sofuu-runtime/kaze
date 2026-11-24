@@ -639,6 +639,24 @@ action parse_stmt(tokens, pos):
             let b = parse_block(tokens, q2)
             return [make_for_each(var, le[0], b[0], l), b[1]]
 
+        # parallel for each name in list: block
+        if w == "parallel":
+            let q = p + 1
+            if is_word(tokens, q, "for"):
+                set q to q + 1
+                if is_word(tokens, q, "each"):
+                    set q to q + 1
+                let var = tok_text(tokens, q)
+                set q to q + 1
+                if is_word(tokens, q, "in"):
+                    set q to q + 1
+                let le = parse_expr(tokens, q)
+                let q2 = le[1]
+                if is_sym(tokens, q2, ":"):
+                    set q2 to q2 + 1
+                let b = parse_block(tokens, q2)
+                return [make_parallel_for(var, le[0], b[0], l), b[1]]
+
         # try: block otherwise with err: block
         if w == "try":
             let q = p + 1

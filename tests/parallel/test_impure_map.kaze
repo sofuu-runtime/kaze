@@ -1,0 +1,10 @@
+needs: log
+
+action impure_worker(x):
+    needs: log
+    log.info("processing item")
+    return x * 2
+
+action main():
+    let nums = [1, 2, 3]
+    let res = parallel_map(nums, impure_worker)

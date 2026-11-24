@@ -137,6 +137,9 @@ action make_if(cond, then_block, other_block, l):
 action make_for_each(var, list_expr, body, l):
     return make_node("FOR_EACH", var, "", 0, [list_expr, body], l)
 
+action make_parallel_for(var, list_expr, body, l):
+    return make_node("PARALLEL_FOR", var, "", 0, [list_expr, body], l)
+
 action make_try(err_name, body, other_block, l):
     return make_node("TRY", err_name, "", 0, [body, other_block], l)
 
@@ -309,6 +312,10 @@ action family_of_word(w):
         return "tool"
     if w == "agent" or w == "model" or w == "llm":
         return "ai"
+    # 'regs' is its own family so the checker can see the declaration: a program that
+    # names it gains the mmio_* builtins and nothing else.
+    if w == "regs":
+        return "regs"
     if w == "lidar" or w == "camera" or w == "thermostat" or w == "probe":
         return "sensor"
     if w == "fan" or w == "mister" or w == "pump" or w == "relay" or w == "valve" or w == "motor" or w == "light":

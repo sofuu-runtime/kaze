@@ -115,6 +115,12 @@ action is_upper(word):
 # can answer "is this operation real" without a host.
 
 action cap_name_known(w):
+    # 'regs' is a requirement without verbs: a program declares it and gains the
+    # mmio_* builtins, which are the only way to reach a peripheral register. It has no
+    # .verb entries because a register access is not an operation on the world that a
+    # policy can meaningfully inspect one call at a time; the declaration is the gate.
+    if w == "regs":
+        return 1
     if w == "drone" or w == "rover" or w == "sensor" or w == "device" or w == "memory" or w == "policy" or w == "log" or w == "alert" or w == "ai" or w == "tool":
         return 1
     if w == "tools" or w == "agent" or w == "model" or w == "llm":
@@ -150,7 +156,20 @@ action cap_verbs() -> list:
 action op_known(family, op):
     return list_has(cap_verbs(), family + "." + op)
 
+# Register access: the builtins that touch hardware. They are pure names as far as
+# resolution goes, but a program may not call one without declaring 'needs: regs'.
+action mmio_builtin(name):
+    if name == "mmio_read8" or name == "mmio_read16" or name == "mmio_read32":
+        return 1
+    if name == "mmio_write8" or name == "mmio_write16" or name == "mmio_write32":
+        return 1
+    if name == "mmio_fence":
+        return 1
+    return 0
+
 action pure_builtin(name):
+    if mmio_builtin(name) == 1:
+        return 1
     if name == "code" or name == "character":
         return 1
     if name == "sin" or name == "cos" or name == "tan" or name == "sqrt" or name == "atan2":
@@ -160,6 +179,8 @@ action pure_builtin(name):
     if name == "vector" or name == "link_lost" or name == "length":
         return 1
     if name == "channel":
+        return 1
+    if name == "parallel_map" or name == "parallel_filter":
         return 1
     # Phase 3 of the libraries/tooling plan: an explicit, host-granted HTTP
     # fetch. The builtin is standalone-only; the embedded engine has its own
@@ -448,6 +469,9 @@ action check_expr_g(e: AstNode, names, facts, items, needs, open, diags, guard):
     if k == "IDENT":
         if name_allowed(e.name, names) == 1:
             return diags
+        let r = routine_named(items, e.name)
+        if r.kind != "NONE":
+            return diags
         set diags to diags + [diag("E_KAZE_UNKNOWN_NAME", e.line, "'" + e.name + "' is not a parameter, a let binding or a known value")]
         return diags
 
@@ -634,6 +658,33 @@ action check_call(e: AstNode, names, facts, items, needs, open, diags, guarded):
             set out to out + [diag("E_KAZE_UNKNOWN_NAME", e.line, "record '" + name + "' is not defined in this file")]
         return out
 
+    if mmio_builtin(name) == 1:
+        # Fail closed: a register access without the declaration is a compile error, not a
+        # runtime surprise on a board nobody provisioned.
+        if list_has(needs, "regs") == 0:
+            set out to out + [diag("E_KAZE_MISSING_CAPABILITY", e.line, "'" + name + "' touches hardware registers; declare 'needs: regs' at the top of the program")]
+        return out
+    if name == "parallel_map" or name == "parallel_filter":
+        let p_args = e.children
+        if (length of p_args) < 2:
+            set out to out + [diag("E_KAZE_CALL_ARGS", e.line, "'" + name + "' expects 2 arguments: collection and pure worker routine")]
+            return out
+        let fn_arg = child_at(e, 1)
+        let fn_name = ""
+        if fn_arg.kind == "STR":
+            set fn_name = fn_arg.val_str
+        if fn_arg.kind == "IDENT":
+            set fn_name = fn_arg.name
+        if fn_name != "":
+            let r = routine_named(items, fn_name)
+            if r.kind != "NONE":
+                let rn = routine_needs(r)
+                if (length of rn) > 0:
+                    set out to out + [diag("E_KAZE_IMPURE_PARALLEL", e.line, "'" + name + "' worker routine '" + fn_name + "' is impure; parallel operations require pure actions (needs: [])")]
+            otherwise:
+                if open == 0:
+                    set out to out + [diag("E_KAZE_UNKNOWN_NAME", e.line, "'" + fn_name + "' is not a routine in this file")]
+        return out
     if pure_builtin(name) == 1:
         return out
 
@@ -687,6 +738,20 @@ action check_stmt(s: AstNode, names, facts, items, needs, open, diags):
     if k == "FOR_EACH":
         let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
         set out to check_stmts(kids_of(child_at(s, 1)), names + [s.name], facts, items, needs, open, out)
+        return out
+    if k == "PARALLEL_FOR":
+        let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        set out to check_stmts(kids_of(child_at(s, 1)), names + [s.name], facts, items, needs, open, out)
+        let calls = calls_in_stmts(kids_of(child_at(s, 1)), [])
+        for each call_name in calls:
+            if mmio_builtin(call_name) == 1:
+                set out to out + [diag("E_KAZE_IMPURE_PARALLEL", s.line, "parallel loop body calls '" + call_name + "' which touches hardware; parallel operations require pure actions (needs: [])")]
+            otherwise:
+                let r = routine_named(items, call_name)
+                if r.kind != "NONE":
+                    let rn = routine_needs(r)
+                    if (length of rn) > 0:
+                        set out to out + [diag("E_KAZE_IMPURE_PARALLEL", s.line, "parallel loop body calls impure routine '" + call_name + "'; parallel operations require pure actions (needs: [])")]
         return out
     if k == "TRY":
         # `in_try` exempts capability reads (recoverable) and nothing else: a missing field'
@@ -752,6 +817,8 @@ action calls_in_stmt_blocks(s: AstNode, out):
     if s.kind == "WHILE":
         set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
     if s.kind == "FOR_EACH":
+        set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
+    if s.kind == "PARALLEL_FOR":
         set acc to calls_in_stmts(kids_of(child_at(s, 1)), acc)
     if s.kind == "TRY":
         set acc to calls_in_stmts(kids_of(child_at(s, 0)), acc)
@@ -897,7 +964,7 @@ action reserved_diags(n: AstNode, out, depth) -> list:
     let acc = out
     if depth < 60:
         let nm = ""
-        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH":
+        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH" or n.kind == "PARALLEL_FOR":
             set nm to n.name
         if n.kind == "SPAWN":
             set nm to n.val_str
@@ -1718,7 +1785,7 @@ action tensor_stmt(s: AstNode, env: list, result_spec: list, items: list, binds:
         let r = infer_expr(child_at(s, 0), env, binds, items, diags)
         let b = tensor_stmts(kids_of(child_at(s, 1)), (r[0] otherwise ""), result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
         return [(b[0] otherwise ""), (b[1] otherwise ""), (b[2] otherwise "")]
-    if k == "FOR_EACH":
+    if k == "FOR_EACH" or k == "PARALLEL_FOR":
         let r = infer_expr(child_at(s, 0), env, binds, items, diags)
         let inner = env_set((r[0] otherwise ""), s.name, ["num"])
         let b = tensor_stmts(kids_of(child_at(s, 1)), inner, result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
