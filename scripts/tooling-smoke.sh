@@ -34,6 +34,12 @@ check 'debugger stops at a routine breakpoint' $?
 out=$(bash scripts/kaze-debug.sh examples/hello.kaze --break main --print total --batch 2>&1)
 printf '%s\n' "$out" | grep -q '(KzValue) total'
 check 'debugger prints a routine local' $?
+out=$(bash scripts/kaze-debug.sh examples/hello.kaze --break 13 --batch 2>&1)
+printf '%s\n' "$out" | grep -q 'hello.kaze:13'
+check 'debugger stops at a source-line breakpoint' $?
+out=$(bash scripts/kaze-debug.sh examples/hello.kaze --break examples/hello.kaze:13 --print total --batch 2>&1)
+printf '%s\n' "$out" | grep -q '(KzValue) total'
+check 'debugger stops at file:line breakpoint and prints local' $?
 
 # --- Profiler: a resolved routine with a non-zero count.
 out=$(bash scripts/kaze-profile.sh examples/hello.kaze --top 10 2>&1)
@@ -42,6 +48,6 @@ check 'profiler resolves a generated routine' $?
 printf '%s\n' "$out" | grep -qE '^[0-9]+[[:space:]]+[0-9.]+'
 check 'profiler reports a call row' $?
 
-if [ "$FAIL" -eq 0 ]; then say 'tooling-smoke: 8 of 8 checks passed'; exit 0; fi
+if [ "$FAIL" -eq 0 ]; then say 'tooling-smoke: 10 of 10 checks passed'; exit 0; fi
 say "tooling-smoke: $FAIL check(s) failed"
 exit 1

@@ -1109,6 +1109,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_collect_yield_lines(KzValue n, KzValue ou
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fx_restore(KzValue fx, KzValue ind);
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fx_spill(KzValue fx, KzValue ind);
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_stmt(KzValue stmt, KzValue ind, KzValue fx);
+KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_stmt_inner(KzValue stmt, KzValue ind, KzValue fx);
 KZ_MAYBE_UNUSED static KzValue kaze_fn_param_list(KzValue params_node);
 KZ_MAYBE_UNUSED static KzValue kaze_fn_find_named(KzValue items, KzValue name);
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_routine(KzValue item);
@@ -1448,16 +1449,19 @@ static inline KzValue kz_record_new_BcItem(size_t n, KzValue* v, const char** k)
 }
 
 /* --- Routines --- */
+#line 19
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_token(KzValue k, KzValue t, KzValue l, KzValue c, KzValue at) {
     (void)k;   /* a routine need not use every parameter */
     (void)t;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
     (void)c;   /* a routine need not use every parameter */
     (void)at;   /* a routine need not use every parameter */
+#line 20
     return kz_record_new_Token(5, (KzValue[]){ k, t, l, c, at }, (const char*[]){ "kind", "text", "line", "col", "at" });
     return kz_nil();
 }
 
+#line 50
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_node(KzValue k, KzValue n, KzValue vs, KzValue vn, KzValue ch, KzValue l) {
     (void)k;   /* a routine need not use every parameter */
     (void)n;   /* a routine need not use every parameter */
@@ -1465,296 +1469,377 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_make_node(KzValue k, KzValue n, KzValue v
     (void)vn;   /* a routine need not use every parameter */
     (void)ch;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 51
     return kz_record_new_AstNode(6, (KzValue[]){ k, n, vs, vn, ch, l }, (const char*[]){ "kind", "name", "val_str", "val_num", "children", "line" });
     return kz_nil();
 }
 
+#line 55
 KZ_MAYBE_UNUSED static KzValue kaze_fn_none_node(void) {
+#line 56
     return kz_record_new_AstNode(6, (KzValue[]){ kz_str("NONE"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), kz_num((kaze_float_t)0) }, (const char*[]){ "kind", "name", "val_str", "val_num", "children", "line" });
     return kz_nil();
 }
 
+#line 58
 KZ_MAYBE_UNUSED static KzValue kaze_fn_kids_of(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 59
     return kz_get_field(n, "children");
     return kz_nil();
 }
 
+#line 67
 KZ_MAYBE_UNUSED static KzValue kaze_fn_node_at(KzValue nodes, KzValue i) {
     (void)nodes;   /* a routine need not use every parameter */
     (void)i;   /* a routine need not use every parameter */
+#line 70
     if (kz_is_truthy(kz_and(kz_ge(i, kz_num((kaze_float_t)0)), kz_lt(i, kz_len(nodes))))) {
+#line 71
         return kz_index(nodes, i);
     }
+#line 72
     return kaze_fn_none_node();
     return kz_nil();
 }
 
+#line 74
 KZ_MAYBE_UNUSED static KzValue kaze_fn_child_at(KzValue n, KzValue i) {
     (void)n;   /* a routine need not use every parameter */
     (void)i;   /* a routine need not use every parameter */
+#line 75
     return kaze_fn_node_at(kz_get_field(n, "children"), i);
     return kz_nil();
 }
 
+#line 79
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_ident(KzValue name, KzValue l) {
     (void)name;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 80
     return kaze_fn_make_node(kz_str("IDENT"), name, kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 84
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_num(KzValue text, KzValue l) {
     (void)text;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 85
     return kaze_fn_make_node(kz_str("NUM"), kz_str(""), text, kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 87
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_str(KzValue s, KzValue l) {
     (void)s;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 88
     return kaze_fn_make_node(kz_str("STR"), kz_str(""), s, kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 90
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_bool(KzValue b, KzValue l) {
     (void)b;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 91
     KzValue vs = kz_str("false");
+#line 92
     if (kz_is_truthy(b)) {
+#line 93
         vs = kz_str("true");
     }
+#line 94
     return kaze_fn_make_node(kz_str("BOOL"), kz_str(""), vs, kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 96
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_bin(KzValue op, KzValue left, KzValue right, KzValue l) {
     (void)op;   /* a routine need not use every parameter */
     (void)left;   /* a routine need not use every parameter */
     (void)right;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 97
     return kaze_fn_make_node(kz_str("BIN"), op, kz_str(""), kz_num((kaze_float_t)0), kz_list_from(2, (KzValue[]){ left, right }), l);
     return kz_nil();
 }
 
+#line 99
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_call(KzValue target, KzValue args, KzValue l) {
     (void)target;   /* a routine need not use every parameter */
     (void)args;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 100
     return kaze_fn_make_node(kz_str("CALL"), target, kz_str(""), kz_num((kaze_float_t)0), args, l);
     return kz_nil();
 }
 
+#line 102
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_field(KzValue base, KzValue field, KzValue l) {
     (void)base;   /* a routine need not use every parameter */
     (void)field;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 103
     return kaze_fn_make_node(kz_str("FIELD"), field, kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ base }), l);
     return kz_nil();
 }
 
+#line 105
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_index(KzValue coll, KzValue idx, KzValue l) {
     (void)coll;   /* a routine need not use every parameter */
     (void)idx;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 106
     return kaze_fn_make_node(kz_str("INDEX"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(2, (KzValue[]){ coll, idx }), l);
     return kz_nil();
 }
 
+#line 108
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_len(KzValue inner, KzValue l) {
     (void)inner;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 109
     return kaze_fn_make_node(kz_str("LEN"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ inner }), l);
     return kz_nil();
 }
 
+#line 113
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_len_lit(KzValue n, KzValue l) {
     (void)n;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 114
     return kaze_fn_make_node(kz_str("LEN_LIT"), kz_str(""), kz_str(""), n, kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 116
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_list_expr(KzValue items, KzValue l) {
     (void)items;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 117
     return kaze_fn_make_node(kz_str("LIST"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), items, l);
     return kz_nil();
 }
 
+#line 120
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_fallback(KzValue inner, KzValue fb, KzValue l) {
     (void)inner;   /* a routine need not use every parameter */
     (void)fb;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 121
     return kaze_fn_make_node(kz_str("FALLBACK"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(2, (KzValue[]){ inner, fb }), l);
     return kz_nil();
 }
 
+#line 124
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_in_unit(KzValue unit, KzValue inner, KzValue l) {
     (void)unit;   /* a routine need not use every parameter */
     (void)inner;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 125
     return kaze_fn_make_node(kz_str("IN_UNIT"), unit, kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ inner }), l);
     return kz_nil();
 }
 
+#line 128
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_named_arg(KzValue field, KzValue value, KzValue l) {
     (void)field;   /* a routine need not use every parameter */
     (void)value;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 129
     return kaze_fn_make_node(kz_str("NAMED_ARG"), field, kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ value }), l);
     return kz_nil();
 }
 
+#line 133
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_unknown(KzValue l) {
     (void)l;   /* a routine need not use every parameter */
+#line 134
     return kaze_fn_make_node(kz_str("UNKNOWN"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 138
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_stmt(KzValue kind, KzValue name, KzValue children, KzValue l) {
     (void)kind;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
     (void)children;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 139
     return kaze_fn_make_node(kind, name, kz_str(""), kz_num((kaze_float_t)0), children, l);
     return kz_nil();
 }
 
+#line 141
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_block(KzValue label, KzValue stmts, KzValue l) {
     (void)label;   /* a routine need not use every parameter */
     (void)stmts;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 142
     return kaze_fn_make_node(kz_str("BLOCK"), label, kz_str(""), kz_num((kaze_float_t)0), stmts, l);
     return kz_nil();
 }
 
+#line 144
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_guard(KzValue cond, KzValue l) {
     (void)cond;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 145
     return kaze_fn_make_node(kz_str("GUARD"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ cond }), l);
     return kz_nil();
 }
 
+#line 149
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_bound(KzValue text, KzValue l) {
     (void)text;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 150
     return kaze_fn_make_node(kz_str("BOUND"), kz_str(""), text, kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 152
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_while(KzValue cond, KzValue body, KzValue bound, KzValue l) {
     (void)cond;   /* a routine need not use every parameter */
     (void)body;   /* a routine need not use every parameter */
     (void)bound;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 153
     return kaze_fn_make_node(kz_str("WHILE"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(3, (KzValue[]){ cond, body, bound }), l);
     return kz_nil();
 }
 
+#line 155
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_if(KzValue cond, KzValue then_block, KzValue other_block, KzValue l) {
     (void)cond;   /* a routine need not use every parameter */
     (void)then_block;   /* a routine need not use every parameter */
     (void)other_block;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 156
     return kaze_fn_make_node(kz_str("IF"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(3, (KzValue[]){ cond, then_block, other_block }), l);
     return kz_nil();
 }
 
+#line 158
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_for_each(KzValue var, KzValue list_expr, KzValue body, KzValue l) {
     (void)var;   /* a routine need not use every parameter */
     (void)list_expr;   /* a routine need not use every parameter */
     (void)body;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 159
     return kaze_fn_make_node(kz_str("FOR_EACH"), var, kz_str(""), kz_num((kaze_float_t)0), kz_list_from(2, (KzValue[]){ list_expr, body }), l);
     return kz_nil();
 }
 
+#line 161
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_try(KzValue err_name, KzValue body, KzValue other_block, KzValue l) {
     (void)err_name;   /* a routine need not use every parameter */
     (void)body;   /* a routine need not use every parameter */
     (void)other_block;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 162
     return kaze_fn_make_node(kz_str("TRY"), err_name, kz_str(""), kz_num((kaze_float_t)0), kz_list_from(2, (KzValue[]){ body, other_block }), l);
     return kz_nil();
 }
 
+#line 179
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_spawn(KzValue routine_name, KzValue args, KzValue task_name, KzValue l) {
     (void)routine_name;   /* a routine need not use every parameter */
     (void)args;   /* a routine need not use every parameter */
     (void)task_name;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 180
     return kaze_fn_make_node(kz_str("SPAWN"), routine_name, task_name, kz_num((kaze_float_t)0), args, l);
     return kz_nil();
 }
 
+#line 182
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_yield(KzValue l) {
     (void)l;   /* a routine need not use every parameter */
+#line 183
     return kaze_fn_make_node(kz_str("YIELD"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 185
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_join(KzValue task, KzValue l) {
     (void)task;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 186
     return kaze_fn_make_node(kz_str("JOIN"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ task }), l);
     return kz_nil();
 }
 
+#line 188
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_cancel(KzValue task, KzValue l) {
     (void)task;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 189
     return kaze_fn_make_node(kz_str("CANCEL"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ task }), l);
     return kz_nil();
 }
 
+#line 191
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_send(KzValue value, KzValue chan, KzValue l) {
     (void)value;   /* a routine need not use every parameter */
     (void)chan;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 192
     return kaze_fn_make_node(kz_str("SEND"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(2, (KzValue[]){ value, chan }), l);
     return kz_nil();
 }
 
+#line 194
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_receive(KzValue chan, KzValue l) {
     (void)chan;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 195
     return kaze_fn_make_node(kz_str("RECEIVE"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ chan }), l);
     return kz_nil();
 }
 
+#line 199
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_fuel(KzValue text, KzValue l) {
     (void)text;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 200
     return kaze_fn_make_node(kz_str("FUEL"), kz_str(""), text, kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 203
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_tasks_bound(KzValue text, KzValue l) {
     (void)text;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 204
     return kaze_fn_make_node(kz_str("TASKS_BOUND"), kz_str(""), text, kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 208
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_param(KzValue name, KzValue ty, KzValue defaults, KzValue l) {
     (void)name;   /* a routine need not use every parameter */
     (void)ty;   /* a routine need not use every parameter */
     (void)defaults;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 209
     return kaze_fn_make_node(kz_str("PARAM"), name, ty, kz_num((kaze_float_t)0), defaults, l);
     return kz_nil();
 }
 
+#line 211
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_field_def(KzValue name, KzValue ty, KzValue l) {
     (void)name;   /* a routine need not use every parameter */
     (void)ty;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 212
     return kaze_fn_make_node(kz_str("FIELD_DEF"), name, ty, kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 216
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_item(KzValue kind_word, KzValue name, KzValue params, KzValue contracts, KzValue result, KzValue body, KzValue l) {
     (void)kind_word;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
@@ -1763,333 +1848,495 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_make_item(KzValue kind_word, KzValue name
     (void)result;   /* a routine need not use every parameter */
     (void)body;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 217
     KzValue kind = kz_str("ACTION");
+#line 218
     if (kz_is_truthy(kz_eq(kind_word, kz_str("check")))) {
+#line 219
         kind = kz_str("CHECK");
     }
+#line 220
     if (kz_is_truthy(kz_eq(kind_word, kz_str("filter")))) {
+#line 221
         kind = kz_str("FILTER");
     }
+#line 222
     if (kz_is_truthy(kz_eq(kind_word, kz_str("fiber")))) {
+#line 223
         kind = kz_str("FIBER");
     }
+#line 224
     return kaze_fn_make_node(kind, name, result, kz_num((kaze_float_t)0), kz_list_from(3, (KzValue[]){ params, contracts, body }), l);
     return kz_nil();
 }
 
+#line 226
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_record_item(KzValue name, KzValue fields, KzValue l) {
     (void)name;   /* a routine need not use every parameter */
     (void)fields;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 227
     return kaze_fn_make_node(kz_str("RECORD"), name, kz_str(""), kz_num((kaze_float_t)0), fields, l);
     return kz_nil();
 }
 
+#line 229
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_contract(KzValue kind_word, KzValue expr, KzValue l) {
     (void)kind_word;   /* a routine need not use every parameter */
     (void)expr;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 230
     return kaze_fn_make_node(kz_str("CONTRACT"), kind_word, kz_str(""), kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ expr }), l);
     return kz_nil();
 }
 
+#line 232
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_recursion_bound(KzValue text, KzValue l) {
     (void)text;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 233
     return kaze_fn_make_node(kz_str("RECURSION_BOUND"), kz_str(""), text, kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 235
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_routine_need(KzValue name, KzValue l) {
     (void)name;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 236
     return kaze_fn_make_node(kz_str("ROUTINE_NEED"), name, kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), l);
     return kz_nil();
 }
 
+#line 238
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_when(KzValue cond, KzValue body, KzValue l) {
     (void)cond;   /* a routine need not use every parameter */
     (void)body;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 239
     return kaze_fn_make_node(kz_str("WHEN"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(2, (KzValue[]){ cond, body }), l);
     return kz_nil();
 }
 
+#line 241
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_every(KzValue duration, KzValue body, KzValue l) {
     (void)duration;   /* a routine need not use every parameter */
     (void)body;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
+#line 242
     return kaze_fn_make_node(kz_str("EVERY"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(2, (KzValue[]){ duration, body }), l);
     return kz_nil();
 }
 
+#line 244
 KZ_MAYBE_UNUSED static KzValue kaze_fn_make_program(KzValue uses, KzValue needs, KzValue items, KzValue config) {
     (void)uses;   /* a routine need not use every parameter */
     (void)needs;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
     (void)config;   /* a routine need not use every parameter */
+#line 245
     KzValue uses_node = kaze_fn_make_node(kz_str("USES"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), uses, kz_num((kaze_float_t)0));
+#line 246
     KzValue needs_node = kaze_fn_make_node(kz_str("NEEDS"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), needs, kz_num((kaze_float_t)0));
+#line 247
     KzValue items_node = kaze_fn_make_node(kz_str("ITEMS"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), items, kz_num((kaze_float_t)0));
+#line 248
     KzValue config_node = kaze_fn_make_node(kz_str("CONFIG"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), config, kz_num((kaze_float_t)0));
+#line 249
     return kaze_fn_make_node(kz_str("PROGRAM"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_list_from(4, (KzValue[]){ uses_node, needs_node, items_node, config_node }), kz_num((kaze_float_t)0));
     return kz_nil();
 }
 
+#line 251
 KZ_MAYBE_UNUSED static KzValue kaze_fn_program_uses(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 252
     return kaze_fn_child_at(prog, kz_num((kaze_float_t)0));
     return kz_nil();
 }
 
+#line 254
 KZ_MAYBE_UNUSED static KzValue kaze_fn_program_needs(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 255
     return kaze_fn_child_at(prog, kz_num((kaze_float_t)1));
     return kz_nil();
 }
 
+#line 257
 KZ_MAYBE_UNUSED static KzValue kaze_fn_program_items(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 258
     KzValue items_node = kaze_fn_child_at(prog, kz_num((kaze_float_t)2));
+#line 259
     return kz_get_field(items_node, "children");
     return kz_nil();
 }
 
+#line 263
 KZ_MAYBE_UNUSED static KzValue kaze_fn_program_config(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 264
     KzValue config_node = kaze_fn_child_at(prog, kz_num((kaze_float_t)3));
+#line 265
     return kz_get_field(config_node, "children");
     return kz_nil();
 }
 
+#line 267
 KZ_MAYBE_UNUSED static KzValue kaze_fn_config_tasks_bound(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 268
     KzValue out = kz_str("");
+#line 269
     {
         KzValue _iter_target = kaze_fn_program_config(prog);
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 270
                 if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("TASKS_BOUND")))) {
+#line 271
                     out = kz_get_field(c, "val_str");
                 }
             }
         }
     }
+#line 272
     return out;
     return kz_nil();
 }
 
+#line 278
 KZ_MAYBE_UNUSED static KzValue kaze_fn_unit_word(KzValue w) {
     (void)w;   /* a routine need not use every parameter */
+#line 279
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("m")), kz_eq(w, kz_str("meter"))), kz_eq(w, kz_str("meters"))))) {
+#line 280
         return kz_str("m");
     }
+#line 281
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("km")), kz_eq(w, kz_str("kilometer"))), kz_eq(w, kz_str("kilometers"))))) {
+#line 282
         return kz_str("km");
     }
+#line 283
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("cm")), kz_eq(w, kz_str("centimeter"))), kz_eq(w, kz_str("centimeters"))))) {
+#line 284
         return kz_str("cm");
     }
+#line 285
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("mm")), kz_eq(w, kz_str("millimeter"))), kz_eq(w, kz_str("millimeters"))))) {
+#line 286
         return kz_str("mm");
     }
+#line 287
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(w, kz_str("s")), kz_eq(w, kz_str("sec"))), kz_eq(w, kz_str("second"))), kz_eq(w, kz_str("seconds"))))) {
+#line 288
         return kz_str("seconds");
     }
+#line 289
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("ms")), kz_eq(w, kz_str("millisecond"))), kz_eq(w, kz_str("milliseconds"))))) {
+#line 290
         return kz_str("ms");
     }
+#line 291
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("h")), kz_eq(w, kz_str("hour"))), kz_eq(w, kz_str("hours"))))) {
+#line 292
         return kz_str("hours");
     }
+#line 293
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("min")), kz_eq(w, kz_str("minute"))), kz_eq(w, kz_str("minutes"))))) {
+#line 294
         return kz_str("minutes");
     }
+#line 295
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("kg")), kz_eq(w, kz_str("kilogram"))), kz_eq(w, kz_str("kilograms"))))) {
+#line 296
         return kz_str("kg");
     }
+#line 297
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("g")), kz_eq(w, kz_str("gram"))), kz_eq(w, kz_str("grams"))))) {
+#line 298
         return kz_str("gram");
     }
+#line 299
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("Celsius")), kz_eq(w, kz_str("celsius"))), kz_eq(w, kz_str("C"))))) {
+#line 300
         return kz_str("Celsius");
     }
+#line 301
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("Kelvin")), kz_eq(w, kz_str("kelvin"))), kz_eq(w, kz_str("K"))))) {
+#line 302
         return kz_str("Kelvin");
     }
+#line 303
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("Pascal")), kz_eq(w, kz_str("pascal"))), kz_eq(w, kz_str("Pa"))))) {
+#line 304
         return kz_str("Pascal");
     }
+#line 305
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("mbar")), kz_eq(w, kz_str("millibar"))), kz_eq(w, kz_str("millibars"))))) {
+#line 306
         return kz_str("mbar");
     }
+#line 307
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(w, kz_str("hPa")), kz_eq(w, kz_str("hpa"))), kz_eq(w, kz_str("hectopascal"))), kz_eq(w, kz_str("hectopascals"))))) {
+#line 308
         return kz_str("hPa");
     }
+#line 309
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(w, kz_str("ampere")), kz_eq(w, kz_str("amperes"))), kz_eq(w, kz_str("amp"))), kz_eq(w, kz_str("A"))))) {
+#line 310
         return kz_str("ampere");
     }
+#line 311
     if (kz_is_truthy(kz_eq(w, kz_str("percent")))) {
+#line 312
         return kz_str("%");
     }
+#line 313
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("degrees")), kz_eq(w, kz_str("degree"))), kz_eq(w, kz_str("deg"))))) {
+#line 314
         return kz_str("degrees");
     }
+#line 315
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("radians")), kz_eq(w, kz_str("radian"))), kz_eq(w, kz_str("rad"))))) {
+#line 316
         return kz_str("radians");
     }
+#line 317
     return kz_str("");
     return kz_nil();
 }
 
+#line 319
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_angle_unit(KzValue u) {
     (void)u;   /* a routine need not use every parameter */
+#line 320
     if (kz_is_truthy(kz_or(kz_eq(u, kz_str("degrees")), kz_eq(u, kz_str("radians"))))) {
+#line 321
         return kz_num((kaze_float_t)1);
     }
+#line 322
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 326
 KZ_MAYBE_UNUSED static KzValue kaze_fn_family_of_word(KzValue w) {
     (void)w;   /* a routine need not use every parameter */
+#line 327
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(w, kz_str("drone")), kz_eq(w, kz_str("rover"))), kz_eq(w, kz_str("sensor"))), kz_eq(w, kz_str("device"))), kz_eq(w, kz_str("memory"))), kz_eq(w, kz_str("policy"))), kz_eq(w, kz_str("log"))), kz_eq(w, kz_str("alert"))), kz_eq(w, kz_str("ai"))), kz_eq(w, kz_str("tool"))))) {
+#line 328
         return w;
     }
+#line 329
     if (kz_is_truthy(kz_eq(w, kz_str("tools")))) {
+#line 330
         return kz_str("tool");
     }
+#line 331
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("agent")), kz_eq(w, kz_str("model"))), kz_eq(w, kz_str("llm"))))) {
+#line 332
         return kz_str("ai");
     }
+#line 333
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(w, kz_str("lidar")), kz_eq(w, kz_str("camera"))), kz_eq(w, kz_str("thermostat"))), kz_eq(w, kz_str("probe"))))) {
+#line 334
         return kz_str("sensor");
     }
+#line 335
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(w, kz_str("fan")), kz_eq(w, kz_str("mister"))), kz_eq(w, kz_str("pump"))), kz_eq(w, kz_str("relay"))), kz_eq(w, kz_str("valve"))), kz_eq(w, kz_str("motor"))), kz_eq(w, kz_str("light"))))) {
+#line 336
         return kz_str("device");
     }
+#line 337
     return kz_str("device");
     return kz_nil();
 }
 
+#line 340
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_telemetry(KzValue w) {
     (void)w;   /* a routine need not use every parameter */
+#line 341
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(w, kz_str("battery")), kz_eq(w, kz_str("altitude"))), kz_eq(w, kz_str("heading"))), kz_eq(w, kz_str("speed"))), kz_eq(w, kz_str("position"))), kz_eq(w, kz_str("temperature"))), kz_eq(w, kz_str("humidity"))), kz_eq(w, kz_str("distance"))), kz_eq(w, kz_str("armed"))))) {
+#line 342
         return kz_num((kaze_float_t)1);
     }
+#line 343
     if (kz_is_truthy(kz_or(kz_or(kz_eq(w, kz_str("latitude")), kz_eq(w, kz_str("longitude"))), kz_eq(w, kz_str("satellites"))))) {
+#line 344
         return kz_num((kaze_float_t)1);
     }
+#line 345
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 347
 KZ_MAYBE_UNUSED static KzValue kaze_fn_digit_value(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 348
     if (kz_is_truthy(kz_eq(c, kz_str("0")))) {
+#line 349
         return kz_num((kaze_float_t)0);
     }
+#line 350
     if (kz_is_truthy(kz_eq(c, kz_str("1")))) {
+#line 351
         return kz_num((kaze_float_t)1);
     }
+#line 352
     if (kz_is_truthy(kz_eq(c, kz_str("2")))) {
+#line 353
         return kz_num((kaze_float_t)2);
     }
+#line 354
     if (kz_is_truthy(kz_eq(c, kz_str("3")))) {
+#line 355
         return kz_num((kaze_float_t)3);
     }
+#line 356
     if (kz_is_truthy(kz_eq(c, kz_str("4")))) {
+#line 357
         return kz_num((kaze_float_t)4);
     }
+#line 358
     if (kz_is_truthy(kz_eq(c, kz_str("5")))) {
+#line 359
         return kz_num((kaze_float_t)5);
     }
+#line 360
     if (kz_is_truthy(kz_eq(c, kz_str("6")))) {
+#line 361
         return kz_num((kaze_float_t)6);
     }
+#line 362
     if (kz_is_truthy(kz_eq(c, kz_str("7")))) {
+#line 363
         return kz_num((kaze_float_t)7);
     }
+#line 364
     if (kz_is_truthy(kz_eq(c, kz_str("8")))) {
+#line 365
         return kz_num((kaze_float_t)8);
     }
+#line 366
     if (kz_is_truthy(kz_eq(c, kz_str("9")))) {
+#line 367
         return kz_num((kaze_float_t)9);
     }
+#line 368
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 372
 KZ_MAYBE_UNUSED static KzValue kaze_fn_text_to_num(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 373
     KzValue len = kz_len(s);
+#line 374
     KzValue i = kz_num((kaze_float_t)0);
+#line 375
     KzValue whole = kz_num((kaze_float_t)0);
+#line 376
     KzValue frac = kz_num((kaze_float_t)0);
+#line 377
     KzValue scale = kz_num((kaze_float_t)1);
+#line 378
     KzValue seen_dot = kz_num((kaze_float_t)0);
+#line 379
     { long _kz_loop_l379 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l379 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l379 = _kz_loop_l379 + 1;
+#line 380
             KzValue c = kz_fb_index(s, i, kz_str("x"));
+#line 381
             if (kz_is_truthy(kz_eq(c, kz_str(".")))) {
+#line 382
                 seen_dot = kz_num((kaze_float_t)1);
             } else {
+#line 384
                 if (kz_is_truthy(kz_and(kz_ge(c, kz_str("0")), kz_le(c, kz_str("9"))))) {
+#line 385
                     KzValue d = kaze_fn_digit_value(c);
+#line 386
                     if (kz_is_truthy(kz_eq(seen_dot, kz_num((kaze_float_t)1)))) {
+#line 387
                         scale = kz_mul(scale, kz_num((kaze_float_t)10));
+#line 388
                         frac = kz_add(frac, kz_fb_div(d, scale, kz_num((kaze_float_t)0)));
                     } else {
+#line 390
                         whole = kz_add(kz_mul(whole, kz_num((kaze_float_t)10)), d);
                     }
                 }
             }
+#line 391
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 392
     return kz_add(whole, frac);
     return kz_nil();
 }
 
+#line 405
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_alpha(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 406
     if (kz_is_truthy(kz_or(kz_or(kz_and(kz_ge(c, kz_str("a")), kz_le(c, kz_str("z"))), kz_and(kz_ge(c, kz_str("A")), kz_le(c, kz_str("Z")))), kz_eq(c, kz_str("_"))))) {
+#line 407
         return kz_num((kaze_float_t)1);
     }
+#line 408
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 410
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_digit(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 411
     if (kz_is_truthy(kz_and(kz_ge(c, kz_str("0")), kz_le(c, kz_str("9"))))) {
+#line 412
         return kz_num((kaze_float_t)1);
     }
+#line 413
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 415
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_alphanumeric(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 416
     if (kz_is_truthy(kz_or(kz_eq(kaze_fn_is_alpha(c), kz_num((kaze_float_t)1)), kz_eq(kaze_fn_is_digit(c), kz_num((kaze_float_t)1))))) {
+#line 417
         return kz_num((kaze_float_t)1);
     }
+#line 418
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 427
 KZ_MAYBE_UNUSED static KzValue kaze_fn_push_tok(KzValue chunks, KzValue chunk, KzValue chunk_len, KzValue tok) {
     (void)chunks;   /* a routine need not use every parameter */
     (void)chunk;   /* a routine need not use every parameter */
     (void)chunk_len;   /* a routine need not use every parameter */
     (void)tok;   /* a routine need not use every parameter */
+#line 429
     KzValue next_chunk = kz_add(chunk, kz_list_from(1, (KzValue[]){ tok }));
+#line 430
     KzValue next_len = kz_add(chunk_len, kz_num((kaze_float_t)1));
+#line 431
     if (kz_is_truthy(kz_ge(next_len, kz_num((kaze_float_t)192)))) {
+#line 432
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kz_add(chunks, kz_list_from(1, (KzValue[]){ next_chunk })), kz_list_new(0), kz_num((kaze_float_t)0) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2097,6 +2344,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_push_tok(KzValue chunks, KzValue chunk, K
         }
         return _kz_ret;
     }
+#line 433
     KzValue _kz_ret = kz_list_from(3, (KzValue[]){ chunks, next_chunk, next_len });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2106,88 +2354,145 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_push_tok(KzValue chunks, KzValue chunk, K
     return kz_nil();
 }
 
+#line 435
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tokenize(KzValue src) {
     (void)src;   /* a routine need not use every parameter */
+#line 436
     KzValue chunks = kz_list_new(0);
+#line 437
     KzValue chunk = kz_list_new(0);
+#line 438
     KzValue chunk_len = kz_num((kaze_float_t)0);
+#line 439
     KzValue len = kz_len(src);
+#line 440
     KzValue i = kz_num((kaze_float_t)0);
+#line 441
     KzValue line = kz_num((kaze_float_t)1);
+#line 442
     KzValue col = kz_num((kaze_float_t)1);
+#line 443
     KzValue bracket_depth = kz_num((kaze_float_t)0);
+#line 445
     KzValue indent_stack = kz_list_from(1, (KzValue[]){ kz_num((kaze_float_t)0) });
+#line 447
     { long _kz_loop_l447 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l447 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l447 = _kz_loop_l447 + 1;
+#line 448
             KzValue c = kz_fb_index(src, i, kz_str(" "));
+#line 451
             if (kz_is_truthy(kz_or(kz_eq(c, kz_str(" ")), kz_eq(c, kz_str("\t"))))) {
+#line 452
                 i = kz_add(i, kz_num((kaze_float_t)1));
+#line 453
                 col = kz_add(col, kz_num((kaze_float_t)1));
             } else {
+#line 457
                 if (kz_is_truthy(kz_eq(c, kz_str("#")))) {
+#line 458
                     { long _kz_loop_l458 = 0;
                         while (kz_is_truthy(kz_and(kz_lt(i, len), kz_ne(kz_fb_index(src, i, kz_str(" ")), kz_str("\n"))))) {
                             if (_kz_loop_l458 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                             _kz_loop_l458 = _kz_loop_l458 + 1;
+#line 459
                             i = kz_add(i, kz_num((kaze_float_t)1));
                         }
                     }
                 } else {
+#line 464
                     if (kz_is_truthy(kz_eq(c, kz_str("\n")))) {
+#line 465
                         KzValue nl_tok = kaze_fn_make_token(kz_str("NEWLINE"), kz_str("\n"), line, col, i);
+#line 466
                         KzValue acc1 = kaze_fn_push_tok(chunks, chunk, chunk_len, nl_tok);
+#line 467
                         chunks = kz_fb_index(acc1, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 468
                         chunk = kz_fb_index(acc1, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 469
                         chunk_len = kz_fb_index(acc1, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
+#line 470
                         i = kz_add(i, kz_num((kaze_float_t)1));
+#line 471
                         line = kz_add(line, kz_num((kaze_float_t)1));
+#line 472
                         col = kz_num((kaze_float_t)1);
+#line 475
                         KzValue spaces = kz_num((kaze_float_t)0);
+#line 476
                         { long _kz_loop_l476 = 0;
                             while (kz_is_truthy(kz_and(kz_lt(i, len), kz_eq(kz_fb_index(src, i, kz_str("x")), kz_str(" "))))) {
                                 if (_kz_loop_l476 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                                 _kz_loop_l476 = _kz_loop_l476 + 1;
+#line 477
                                 spaces = kz_add(spaces, kz_num((kaze_float_t)1));
+#line 478
                                 i = kz_add(i, kz_num((kaze_float_t)1));
+#line 479
                                 col = kz_add(col, kz_num((kaze_float_t)1));
                             }
                         }
+#line 483
                         if (kz_is_truthy(kz_gt(bracket_depth, kz_num((kaze_float_t)0)))) {
+#line 488
                             spaces = kz_add(spaces, kz_num((kaze_float_t)0));
                         } else {
+#line 490
                             if (kz_is_truthy(kz_and(kz_and(kz_lt(i, len), kz_ne(kz_fb_index(src, i, kz_str("x")), kz_str("\n"))), kz_ne(kz_fb_index(src, i, kz_str("x")), kz_str("#"))))) {
+#line 491
                                 KzValue curr_ind = kz_fb_index(indent_stack, kz_sub(kz_len(indent_stack), kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0));
+#line 492
                                 if (kz_is_truthy(kz_gt(spaces, curr_ind))) {
+#line 493
                                     KzValue ind_tok = kaze_fn_make_token(kz_str("INDENT"), kz_str(""), line, col, i);
+#line 494
                                     KzValue acc2 = kaze_fn_push_tok(chunks, chunk, chunk_len, ind_tok);
+#line 495
                                     chunks = kz_fb_index(acc2, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 496
                                     chunk = kz_fb_index(acc2, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 497
                                     chunk_len = kz_fb_index(acc2, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
+#line 498
                                     indent_stack = kz_add(indent_stack, kz_list_from(1, (KzValue[]){ spaces }));
                                 } else {
+#line 500
                                     if (kz_is_truthy(kz_lt(spaces, curr_ind))) {
+#line 501
                                         { long _kz_loop_l501 = 0;
                                             while (kz_is_truthy(kz_and(kz_gt(kz_len(indent_stack), kz_num((kaze_float_t)1)), kz_gt(kz_fb_index(indent_stack, kz_sub(kz_len(indent_stack), kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0)), spaces)))) {
                                                 if (_kz_loop_l501 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                                                 _kz_loop_l501 = _kz_loop_l501 + 1;
+#line 502
                                                 KzValue ded_tok = kaze_fn_make_token(kz_str("DEDENT"), kz_str(""), line, col, i);
+#line 503
                                                 KzValue acc3 = kaze_fn_push_tok(chunks, chunk, chunk_len, ded_tok);
+#line 504
                                                 chunks = kz_fb_index(acc3, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 505
                                                 chunk = kz_fb_index(acc3, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 506
                                                 chunk_len = kz_fb_index(acc3, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
+#line 508
                                                 KzValue new_stack = kz_list_new(0);
+#line 509
                                                 KzValue stk_len = kz_sub(kz_len(indent_stack), kz_num((kaze_float_t)1));
+#line 510
                                                 KzValue si = kz_num((kaze_float_t)0);
+#line 511
                                                 { long _kz_loop_l511 = 0;
                                                     while (kz_is_truthy(kz_lt(si, stk_len))) {
                                                         if (_kz_loop_l511 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                                                         _kz_loop_l511 = _kz_loop_l511 + 1;
+#line 512
                                                         new_stack = kz_add(new_stack, kz_list_from(1, (KzValue[]){ kz_fb_index(indent_stack, si, kz_num((kaze_float_t)0)) }));
+#line 513
                                                         si = kz_add(si, kz_num((kaze_float_t)1));
                                                     }
                                                 }
+#line 514
                                                 indent_stack = new_stack;
                                             }
                                         }
@@ -2196,121 +2501,205 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_tokenize(KzValue src) {
                             }
                         }
                     } else {
+#line 518
                         if (kz_is_truthy(kz_eq(c, kz_str("\"")))) {
+#line 519
                             KzValue start_col = col;
+#line 520
                             KzValue start = i;
+#line 521
                             i = kz_add(i, kz_num((kaze_float_t)1));
+#line 522
                             col = kz_add(col, kz_num((kaze_float_t)1));
+#line 523
                             KzValue text = kz_str("");
+#line 524
                             { long _kz_loop_l524 = 0;
                                 while (kz_is_truthy(kz_and(kz_lt(i, len), kz_ne(kz_fb_index(src, i, kz_str("\"")), kz_str("\""))))) {
                                     if (_kz_loop_l524 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                                     _kz_loop_l524 = _kz_loop_l524 + 1;
+#line 525
                                     if (kz_is_truthy(kz_eq(kz_index(src, i), kz_str("\\")))) {
+#line 526
                                         i = kz_add(i, kz_num((kaze_float_t)1));
+#line 527
                                         col = kz_add(col, kz_num((kaze_float_t)1));
+#line 528
                                         if (kz_is_truthy(kz_lt(i, len))) {
+#line 529
                                             if (kz_is_truthy(kz_eq(kz_index(src, i), kz_str("n")))) {
+#line 530
                                                 text = kz_add(text, kz_str("\n"));
                                             } else {
+#line 532
                                                 if (kz_is_truthy(kz_eq(kz_index(src, i), kz_str("t")))) {
+#line 533
                                                     text = kz_add(text, kz_str("\t"));
                                                 } else {
+#line 535
                                                     text = kz_add(text, kz_fb_index(src, i, kz_str("")));
                                                 }
                                             }
                                         }
                                     } else {
+#line 537
                                         text = kz_add(text, kz_fb_index(src, i, kz_str("")));
                                     }
+#line 538
                                     i = kz_add(i, kz_num((kaze_float_t)1));
+#line 539
                                     col = kz_add(col, kz_num((kaze_float_t)1));
                                 }
                             }
+#line 545
                             KzValue closed = kz_num((kaze_float_t)0);
+#line 546
                             if (kz_is_truthy(kz_and(kz_lt(i, len), kz_eq(kz_fb_index(src, i, kz_str("x")), kz_str("\""))))) {
+#line 547
                                 closed = kz_num((kaze_float_t)1);
+#line 548
                                 i = kz_add(i, kz_num((kaze_float_t)1));
+#line 549
                                 col = kz_add(col, kz_num((kaze_float_t)1));
                             }
+#line 550
                             KzValue kind = kz_str("STR");
+#line 551
                             if (kz_is_truthy(kz_eq(closed, kz_num((kaze_float_t)0)))) {
+#line 552
                                 kind = kz_str("UNTERMINATED_STR");
                             }
+#line 553
                             KzValue tok = kaze_fn_make_token(kind, text, line, start_col, start);
+#line 554
                             KzValue acc4 = kaze_fn_push_tok(chunks, chunk, chunk_len, tok);
+#line 555
                             chunks = kz_fb_index(acc4, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 556
                             chunk = kz_fb_index(acc4, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 557
                             chunk_len = kz_fb_index(acc4, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
                         } else {
+#line 561
                             if (kz_is_truthy(kz_eq(kaze_fn_is_digit(c), kz_num((kaze_float_t)1)))) {
+#line 562
                                 KzValue start_col = col;
+#line 563
                                 KzValue start = i;
+#line 564
                                 KzValue text = kz_str("");
+#line 565
                                 { long _kz_loop_l565 = 0;
                                     while (kz_is_truthy(kz_and(kz_lt(i, len), kz_or(kz_eq(kaze_fn_is_digit(kz_fb_index(src, i, kz_str("x"))), kz_num((kaze_float_t)1)), kz_eq(kz_fb_index(src, i, kz_str("x")), kz_str(".")))))) {
                                         if (_kz_loop_l565 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                                         _kz_loop_l565 = _kz_loop_l565 + 1;
+#line 566
                                         text = kz_add(text, kz_fb_index(src, i, kz_str("")));
+#line 567
                                         i = kz_add(i, kz_num((kaze_float_t)1));
+#line 568
                                         col = kz_add(col, kz_num((kaze_float_t)1));
                                     }
                                 }
+#line 569
                                 KzValue tok = kaze_fn_make_token(kz_str("NUM"), text, line, start_col, start);
+#line 570
                                 KzValue acc5 = kaze_fn_push_tok(chunks, chunk, chunk_len, tok);
+#line 571
                                 chunks = kz_fb_index(acc5, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 572
                                 chunk = kz_fb_index(acc5, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 573
                                 chunk_len = kz_fb_index(acc5, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
                             } else {
+#line 577
                                 if (kz_is_truthy(kz_eq(kaze_fn_is_alpha(c), kz_num((kaze_float_t)1)))) {
+#line 578
                                     KzValue start_col = col;
+#line 579
                                     KzValue start = i;
+#line 580
                                     KzValue text = kz_str("");
+#line 581
                                     { long _kz_loop_l581 = 0;
                                         while (kz_is_truthy(kz_and(kz_lt(i, len), kz_eq(kaze_fn_is_alphanumeric(kz_fb_index(src, i, kz_str("x"))), kz_num((kaze_float_t)1))))) {
                                             if (_kz_loop_l581 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                                             _kz_loop_l581 = _kz_loop_l581 + 1;
+#line 582
                                             text = kz_add(text, kz_fb_index(src, i, kz_str("")));
+#line 583
                                             i = kz_add(i, kz_num((kaze_float_t)1));
+#line 584
                                             col = kz_add(col, kz_num((kaze_float_t)1));
                                         }
                                     }
+#line 585
                                     KzValue tok = kaze_fn_make_token(kz_str("IDENT"), text, line, start_col, start);
+#line 586
                                     KzValue acc6 = kaze_fn_push_tok(chunks, chunk, chunk_len, tok);
+#line 587
                                     chunks = kz_fb_index(acc6, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 588
                                     chunk = kz_fb_index(acc6, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 589
                                     chunk_len = kz_fb_index(acc6, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
                                 } else {
+#line 593
                                     KzValue is_two = kz_num((kaze_float_t)0);
+#line 594
                                     if (kz_is_truthy(kz_lt(kz_add(i, kz_num((kaze_float_t)1)), len))) {
+#line 595
                                         KzValue next_c = kz_fb_index(src, kz_add(i, kz_num((kaze_float_t)1)), kz_str(""));
+#line 596
                                         KzValue two_s = kz_add(c, next_c);
+#line 597
                                         if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(two_s, kz_str("==")), kz_eq(two_s, kz_str("!="))), kz_eq(two_s, kz_str("<="))), kz_eq(two_s, kz_str(">="))), kz_eq(two_s, kz_str("<<"))), kz_eq(two_s, kz_str(">>"))))) {
+#line 598
                                             KzValue tok = kaze_fn_make_token(kz_str("OP"), two_s, line, col, i);
+#line 599
                                             KzValue acc7 = kaze_fn_push_tok(chunks, chunk, chunk_len, tok);
+#line 600
                                             chunks = kz_fb_index(acc7, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 601
                                             chunk = kz_fb_index(acc7, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 602
                                             chunk_len = kz_fb_index(acc7, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
+#line 603
                                             i = kz_add(i, kz_num((kaze_float_t)2));
+#line 604
                                             col = kz_add(col, kz_num((kaze_float_t)2));
+#line 605
                                             is_two = kz_num((kaze_float_t)1);
                                         }
                                     }
+#line 608
                                     if (kz_is_truthy(kz_eq(is_two, kz_num((kaze_float_t)0)))) {
+#line 609
                                         if (kz_is_truthy(kz_or(kz_eq(c, kz_str("[")), kz_eq(c, kz_str("("))))) {
+#line 610
                                             bracket_depth = kz_add(bracket_depth, kz_num((kaze_float_t)1));
                                         }
+#line 611
                                         if (kz_is_truthy(kz_or(kz_eq(c, kz_str("]")), kz_eq(c, kz_str(")"))))) {
+#line 612
                                             if (kz_is_truthy(kz_gt(bracket_depth, kz_num((kaze_float_t)0)))) {
+#line 613
                                                 bracket_depth = kz_sub(bracket_depth, kz_num((kaze_float_t)1));
                                             }
                                         }
+#line 614
                                         KzValue tok = kaze_fn_make_token(kz_str("SYM"), c, line, col, i);
+#line 615
                                         KzValue acc8 = kaze_fn_push_tok(chunks, chunk, chunk_len, tok);
+#line 616
                                         chunks = kz_fb_index(acc8, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 617
                                         chunk = kz_fb_index(acc8, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 618
                                         chunk_len = kz_fb_index(acc8, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
+#line 619
                                         i = kz_add(i, kz_num((kaze_float_t)1));
+#line 620
                                         col = kz_add(col, kz_num((kaze_float_t)1));
                                     }
                                 }
@@ -2321,176 +2710,254 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_tokenize(KzValue src) {
             }
         }
     }
+#line 623
     { long _kz_loop_l623 = 0;
         while (kz_is_truthy(kz_gt(kz_len(indent_stack), kz_num((kaze_float_t)1)))) {
             if (_kz_loop_l623 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l623 = _kz_loop_l623 + 1;
+#line 624
             KzValue ded_tok = kaze_fn_make_token(kz_str("DEDENT"), kz_str(""), line, col, i);
+#line 625
             KzValue acc9 = kaze_fn_push_tok(chunks, chunk, chunk_len, ded_tok);
+#line 626
             chunks = kz_fb_index(acc9, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 627
             chunk = kz_fb_index(acc9, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 628
             chunk_len = kz_fb_index(acc9, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
+#line 629
             KzValue new_stack = kz_list_new(0);
+#line 630
             KzValue stk_len = kz_sub(kz_len(indent_stack), kz_num((kaze_float_t)1));
+#line 631
             KzValue si = kz_num((kaze_float_t)0);
+#line 632
             { long _kz_loop_l632 = 0;
                 while (kz_is_truthy(kz_lt(si, stk_len))) {
                     if (_kz_loop_l632 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                     _kz_loop_l632 = _kz_loop_l632 + 1;
+#line 633
                     new_stack = kz_add(new_stack, kz_list_from(1, (KzValue[]){ kz_fb_index(indent_stack, si, kz_num((kaze_float_t)0)) }));
+#line 634
                     si = kz_add(si, kz_num((kaze_float_t)1));
                 }
             }
+#line 635
             indent_stack = new_stack;
         }
     }
+#line 637
     KzValue eof_tok = kaze_fn_make_token(kz_str("EOF"), kz_str(""), line, col, i);
+#line 638
     KzValue acc10 = kaze_fn_push_tok(chunks, chunk, chunk_len, eof_tok);
+#line 639
     chunks = kz_fb_index(acc10, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 640
     chunk = kz_fb_index(acc10, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 641
     chunk_len = kz_fb_index(acc10, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
+#line 646
     KzValue flat = kz_list_new(0);
+#line 647
     {
         KzValue _iter_target = chunks;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue part = _iter_target.as.list->items[_i];
+#line 648
                 flat = kz_add_own(flat, part);
             }
         }
     }
+#line 649
     if (kz_is_truthy(kz_gt(kz_len(chunk), kz_num((kaze_float_t)0)))) {
+#line 650
         flat = kz_add_own(flat, chunk);
     }
+#line 651
     return flat;
     return kz_nil();
 }
 
+#line 680
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tok(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 681
     KzValue t = kz_fb_index(tokens, pos, kaze_fn_make_token(kz_str("EOF"), kz_str(""), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)));
+#line 682
     return t;
     return kz_nil();
 }
 
+#line 684
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tok_kind(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 685
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 686
     return kz_get_field(t, "kind");
     return kz_nil();
 }
 
+#line 688
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tok_text(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 689
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 690
     return kz_get_field(t, "text");
     return kz_nil();
 }
 
+#line 692
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tok_line(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 693
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 694
     return kz_get_field(t, "line");
     return kz_nil();
 }
 
+#line 696
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_sym(KzValue tokens, KzValue pos, KzValue text) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
     (void)text;   /* a routine need not use every parameter */
+#line 697
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 698
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_eq(kz_get_field(t, "text"), text)))) {
+#line 699
         return kz_num((kaze_float_t)1);
     }
+#line 700
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 702
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_word(KzValue tokens, KzValue pos, KzValue word) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
     (void)word;   /* a routine need not use every parameter */
+#line 703
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 704
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("IDENT")), kz_eq(kz_get_field(t, "text"), word)))) {
+#line 705
         return kz_num((kaze_float_t)1);
     }
+#line 706
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 708
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_kind(KzValue tokens, KzValue pos, KzValue kind) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
     (void)kind;   /* a routine need not use every parameter */
+#line 709
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 710
     if (kz_is_truthy(kz_eq(kz_get_field(t, "kind"), kind))) {
+#line 711
         return kz_num((kaze_float_t)1);
     }
+#line 712
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 714
 KZ_MAYBE_UNUSED static KzValue kaze_fn_at_end(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 715
     if (kz_is_truthy(kz_ge(pos, kz_len(tokens)))) {
+#line 716
         return kz_num((kaze_float_t)1);
     }
+#line 717
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 719
 KZ_MAYBE_UNUSED static KzValue kaze_fn_skip_nl(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 720
     KzValue p = pos;
+#line 721
     KzValue len = kz_len(tokens);
+#line 722
     { long _kz_loop_l722 = 0;
         while (kz_is_truthy(kz_and(kz_lt(p, len), kz_eq(kaze_fn_tok_kind(tokens, p), kz_str("NEWLINE"))))) {
             if (_kz_loop_l722 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l722 = _kz_loop_l722 + 1;
+#line 723
             p = kz_add(p, kz_num((kaze_float_t)1));
         }
     }
+#line 724
     return p;
     return kz_nil();
 }
 
+#line 728
 KZ_MAYBE_UNUSED static KzValue kaze_fn_skip_noise(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 729
     KzValue p = pos;
+#line 730
     KzValue len = kz_len(tokens);
+#line 731
     KzValue moving = kz_num((kaze_float_t)1);
+#line 732
     { long _kz_loop_l732 = 0;
         while (kz_is_truthy(kz_and(kz_eq(moving, kz_num((kaze_float_t)1)), kz_lt(p, len)))) {
             if (_kz_loop_l732 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l732 = _kz_loop_l732 + 1;
+#line 733
             KzValue k = kaze_fn_tok_kind(tokens, p);
+#line 734
             if (kz_is_truthy(kz_or(kz_or(kz_eq(k, kz_str("NEWLINE")), kz_eq(k, kz_str("INDENT"))), kz_eq(k, kz_str("DEDENT"))))) {
+#line 735
                 p = kz_add(p, kz_num((kaze_float_t)1));
             } else {
+#line 737
                 moving = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 738
     return p;
     return kz_nil();
 }
 
+#line 752
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_expr(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 755
     KzValue r = kaze_fn_parse_or(tokens, pos);
+#line 756
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 757
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 759
     if (kz_is_truthy(kz_and(kaze_fn_is_word(tokens, p, kz_str("otherwise")), kz_not(kaze_fn_is_sym(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str(":")))))) {
+#line 760
         KzValue f = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 761
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_fallback(node, kz_index(f, kz_num((kaze_float_t)0)), kaze_fn_tok_line(tokens, p)), kz_index(f, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2498,6 +2965,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_expr(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 762
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2507,26 +2975,38 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_expr(KzValue tokens, KzValue pos) {
     return kz_nil();
 }
 
+#line 764
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_or(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 767
     KzValue r = kaze_fn_parse_and(tokens, pos);
+#line 768
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 769
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 770
     KzValue done = kz_num((kaze_float_t)0);
+#line 771
     { long _kz_loop_l771 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l771 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l771 = _kz_loop_l771 + 1;
+#line 772
             if (kz_is_truthy(kaze_fn_is_word(tokens, p, kz_str("or")))) {
+#line 773
                 KzValue rr = kaze_fn_parse_and(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 774
                 node = kaze_fn_make_bin(kz_str("or"), node, kz_index(rr, kz_num((kaze_float_t)0)), kaze_fn_tok_line(tokens, p));
+#line 775
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 777
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 778
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2536,27 +3016,40 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_or(KzValue tokens, KzValue pos) {
     return kz_nil();
 }
 
+#line 785
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_bitor(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 788
     KzValue r = kaze_fn_parse_bitxor(tokens, pos);
+#line 789
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 790
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 791
     KzValue done = kz_num((kaze_float_t)0);
+#line 792
     { long _kz_loop_l792 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l792 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l792 = _kz_loop_l792 + 1;
+#line 793
             KzValue t = kaze_fn_tok(tokens, p);
+#line 794
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_eq(kz_get_field(t, "text"), kz_str("|"))))) {
+#line 795
                 KzValue rr = kaze_fn_parse_bitxor(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 796
                 node = kaze_fn_make_bin(kz_str("|"), node, kz_index(rr, kz_num((kaze_float_t)0)), kz_get_field(t, "line"));
+#line 797
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 799
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 800
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2566,27 +3059,40 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_bitor(KzValue tokens, KzValue pos) 
     return kz_nil();
 }
 
+#line 802
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_bitxor(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 805
     KzValue r = kaze_fn_parse_bitand(tokens, pos);
+#line 806
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 807
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 808
     KzValue done = kz_num((kaze_float_t)0);
+#line 809
     { long _kz_loop_l809 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l809 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l809 = _kz_loop_l809 + 1;
+#line 810
             KzValue t = kaze_fn_tok(tokens, p);
+#line 811
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_eq(kz_get_field(t, "text"), kz_str("^"))))) {
+#line 812
                 KzValue rr = kaze_fn_parse_bitand(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 813
                 node = kaze_fn_make_bin(kz_str("^"), node, kz_index(rr, kz_num((kaze_float_t)0)), kz_get_field(t, "line"));
+#line 814
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 816
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 817
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2596,27 +3102,40 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_bitxor(KzValue tokens, KzValue pos)
     return kz_nil();
 }
 
+#line 819
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_bitand(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 822
     KzValue r = kaze_fn_parse_relational(tokens, pos);
+#line 823
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 824
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 825
     KzValue done = kz_num((kaze_float_t)0);
+#line 826
     { long _kz_loop_l826 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l826 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l826 = _kz_loop_l826 + 1;
+#line 827
             KzValue t = kaze_fn_tok(tokens, p);
+#line 828
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_eq(kz_get_field(t, "text"), kz_str("&"))))) {
+#line 829
                 KzValue rr = kaze_fn_parse_relational(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 830
                 node = kaze_fn_make_bin(kz_str("&"), node, kz_index(rr, kz_num((kaze_float_t)0)), kz_get_field(t, "line"));
+#line 831
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 833
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 834
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2626,26 +3145,38 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_bitand(KzValue tokens, KzValue pos)
     return kz_nil();
 }
 
+#line 836
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_and(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 839
     KzValue r = kaze_fn_parse_bitor(tokens, pos);
+#line 840
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 841
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 842
     KzValue done = kz_num((kaze_float_t)0);
+#line 843
     { long _kz_loop_l843 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l843 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l843 = _kz_loop_l843 + 1;
+#line 844
             if (kz_is_truthy(kaze_fn_is_word(tokens, p, kz_str("and")))) {
+#line 845
                 KzValue rr = kaze_fn_parse_bitor(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 846
                 node = kaze_fn_make_bin(kz_str("and"), node, kz_index(rr, kz_num((kaze_float_t)0)), kaze_fn_tok_line(tokens, p));
+#line 847
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 849
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 850
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2655,34 +3186,52 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_and(KzValue tokens, KzValue pos) {
     return kz_nil();
 }
 
+#line 852
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_relational(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 855
     KzValue r = kaze_fn_parse_shift(tokens, pos);
+#line 856
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 857
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 858
     KzValue done = kz_num((kaze_float_t)0);
+#line 859
     { long _kz_loop_l859 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l859 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l859 = _kz_loop_l859 + 1;
+#line 860
             KzValue t = kaze_fn_tok(tokens, p);
+#line 861
             KzValue is_rel = kz_num((kaze_float_t)0);
+#line 862
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("OP")), kz_or(kz_or(kz_or(kz_eq(kz_get_field(t, "text"), kz_str("==")), kz_eq(kz_get_field(t, "text"), kz_str("!="))), kz_eq(kz_get_field(t, "text"), kz_str("<="))), kz_eq(kz_get_field(t, "text"), kz_str(">=")))))) {
+#line 863
                 is_rel = kz_num((kaze_float_t)1);
             }
+#line 864
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_or(kz_eq(kz_get_field(t, "text"), kz_str("<")), kz_eq(kz_get_field(t, "text"), kz_str(">")))))) {
+#line 865
                 is_rel = kz_num((kaze_float_t)1);
             }
+#line 866
             if (kz_is_truthy(kz_eq(is_rel, kz_num((kaze_float_t)1)))) {
+#line 867
                 KzValue rr = kaze_fn_parse_shift(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 868
                 node = kaze_fn_make_bin(kz_get_field(t, "text"), node, kz_index(rr, kz_num((kaze_float_t)0)), kz_get_field(t, "line"));
+#line 869
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 871
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 872
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2692,27 +3241,40 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_relational(KzValue tokens, KzValue 
     return kz_nil();
 }
 
+#line 874
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_shift(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 877
     KzValue r = kaze_fn_parse_additive(tokens, pos);
+#line 878
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 879
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 880
     KzValue done = kz_num((kaze_float_t)0);
+#line 881
     { long _kz_loop_l881 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l881 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l881 = _kz_loop_l881 + 1;
+#line 882
             KzValue t = kaze_fn_tok(tokens, p);
+#line 883
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("OP")), kz_or(kz_eq(kz_get_field(t, "text"), kz_str("<<")), kz_eq(kz_get_field(t, "text"), kz_str(">>")))))) {
+#line 884
                 KzValue rr = kaze_fn_parse_additive(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 885
                 node = kaze_fn_make_bin(kz_get_field(t, "text"), node, kz_index(rr, kz_num((kaze_float_t)0)), kz_get_field(t, "line"));
+#line 886
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 888
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 889
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2722,27 +3284,40 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_shift(KzValue tokens, KzValue pos) 
     return kz_nil();
 }
 
+#line 891
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_additive(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 894
     KzValue r = kaze_fn_parse_multiplicative(tokens, pos);
+#line 895
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 896
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 897
     KzValue done = kz_num((kaze_float_t)0);
+#line 898
     { long _kz_loop_l898 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l898 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l898 = _kz_loop_l898 + 1;
+#line 899
             KzValue t = kaze_fn_tok(tokens, p);
+#line 900
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_or(kz_eq(kz_get_field(t, "text"), kz_str("+")), kz_eq(kz_get_field(t, "text"), kz_str("-")))))) {
+#line 901
                 KzValue rr = kaze_fn_parse_multiplicative(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 902
                 node = kaze_fn_make_bin(kz_get_field(t, "text"), node, kz_index(rr, kz_num((kaze_float_t)0)), kz_get_field(t, "line"));
+#line 903
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 905
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 906
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2752,31 +3327,47 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_additive(KzValue tokens, KzValue po
     return kz_nil();
 }
 
+#line 908
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_multiplicative(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 911
     KzValue r = kaze_fn_parse_unary(tokens, pos);
+#line 912
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 913
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 914
     KzValue done = kz_num((kaze_float_t)0);
+#line 915
     { long _kz_loop_l915 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l915 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l915 = _kz_loop_l915 + 1;
+#line 916
             KzValue t = kaze_fn_tok(tokens, p);
+#line 917
             KzValue is_op = kz_num((kaze_float_t)0);
+#line 918
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_or(kz_or(kz_eq(kz_get_field(t, "text"), kz_str("*")), kz_eq(kz_get_field(t, "text"), kz_str("/"))), kz_eq(kz_get_field(t, "text"), kz_str("%")))))) {
+#line 919
                 is_op = kz_num((kaze_float_t)1);
             }
+#line 920
             if (kz_is_truthy(kz_eq(is_op, kz_num((kaze_float_t)1)))) {
+#line 921
                 KzValue rr = kaze_fn_parse_unary(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 922
                 node = kaze_fn_make_bin(kz_get_field(t, "text"), node, kz_index(rr, kz_num((kaze_float_t)0)), kz_get_field(t, "line"));
+#line 923
                 p = kz_index(rr, kz_num((kaze_float_t)1));
             } else {
+#line 925
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 926
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2786,12 +3377,17 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_multiplicative(KzValue tokens, KzVa
     return kz_nil();
 }
 
+#line 928
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_unary(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 931
     if (kz_is_truthy(kaze_fn_is_sym(tokens, pos, kz_str("~")))) {
+#line 933
         KzValue r = kaze_fn_parse_unary(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 934
         KzValue l = kaze_fn_tok_line(tokens, pos);
+#line 935
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_bin(kz_str("^"), kz_index(r, kz_num((kaze_float_t)0)), kaze_fn_make_num(kz_str("-1"), l), l), kz_index(r, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2799,8 +3395,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_unary(KzValue tokens, KzValue pos) 
         }
         return _kz_ret;
     }
+#line 936
     if (kz_is_truthy(kaze_fn_is_word(tokens, pos, kz_str("not")))) {
+#line 937
         KzValue r = kaze_fn_parse_unary(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 938
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_bin(kz_str("not"), kz_index(r, kz_num((kaze_float_t)0)), kaze_fn_make_num(kz_str("0"), kaze_fn_tok_line(tokens, pos)), kaze_fn_tok_line(tokens, pos)), kz_index(r, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2808,8 +3407,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_unary(KzValue tokens, KzValue pos) 
         }
         return _kz_ret;
     }
+#line 939
     if (kz_is_truthy(kaze_fn_is_sym(tokens, pos, kz_str("-")))) {
+#line 940
         KzValue r = kaze_fn_parse_unary(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 941
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_bin(kz_str("-"), kaze_fn_make_num(kz_str("0"), kaze_fn_tok_line(tokens, pos)), kz_index(r, kz_num((kaze_float_t)0)), kaze_fn_tok_line(tokens, pos)), kz_index(r, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2817,6 +3419,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_unary(KzValue tokens, KzValue pos) 
         }
         return _kz_ret;
     }
+#line 942
     KzValue _kz_ret = kaze_fn_parse_postfix(tokens, pos);
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2826,42 +3429,65 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_unary(KzValue tokens, KzValue pos) 
     return kz_nil();
 }
 
+#line 944
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_postfix(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 947
     KzValue r = kaze_fn_parse_primary(tokens, pos);
+#line 948
     KzValue node = kz_index(r, kz_num((kaze_float_t)0));
+#line 949
     KzValue p = kz_index(r, kz_num((kaze_float_t)1));
+#line 950
     KzValue done = kz_num((kaze_float_t)0);
+#line 951
     { long _kz_loop_l951 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l951 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l951 = _kz_loop_l951 + 1;
+#line 952
             if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(".")))) {
+#line 953
                 KzValue nt = kaze_fn_tok(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 954
                 node = kaze_fn_make_field(node, kz_get_field(nt, "text"), kz_get_field(nt, "line"));
+#line 955
                 p = kz_add(p, kz_num((kaze_float_t)2));
             } else {
+#line 957
                 if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str("[")))) {
+#line 958
                     KzValue ir = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 959
                     KzValue q = kaze_fn_skip_noise(tokens, kz_index(ir, kz_num((kaze_float_t)1)));
+#line 960
                     if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str("]")))) {
+#line 961
                         q = kz_add(q, kz_num((kaze_float_t)1));
                     }
+#line 962
                     node = kaze_fn_make_index(node, kz_index(ir, kz_num((kaze_float_t)0)), kaze_fn_tok_line(tokens, p));
+#line 963
                     p = q;
                 } else {
+#line 965
                     if (kz_is_truthy(kz_and(kaze_fn_is_word(tokens, p, kz_str("in")), kz_or(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("radians")), kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("degrees")))))) {
+#line 966
                         KzValue u = kaze_fn_tok_text(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 967
                         node = kaze_fn_make_in_unit(u, node, kaze_fn_tok_line(tokens, p));
+#line 968
                         p = kz_add(p, kz_num((kaze_float_t)2));
                     } else {
+#line 970
                         done = kz_num((kaze_float_t)1);
                     }
                 }
             }
         }
     }
+#line 971
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ node, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2871,11 +3497,15 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_postfix(KzValue tokens, KzValue pos
     return kz_nil();
 }
 
+#line 975
 KZ_MAYBE_UNUSED static KzValue kaze_fn_take_unit(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 977
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 978
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_eq(kz_get_field(t, "text"), kz_str("%"))))) {
+#line 979
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_str("%"), kz_add(pos, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2883,7 +3513,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_take_unit(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 980
     if (kz_is_truthy(kz_ne(kz_get_field(t, "kind"), kz_str("IDENT")))) {
+#line 981
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_str(""), pos });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2891,8 +3523,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_take_unit(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 982
     KzValue u = kaze_fn_unit_word(kz_get_field(t, "text"));
+#line 983
     if (kz_is_truthy(kz_eq(u, kz_str("")))) {
+#line 984
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_str(""), pos });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2900,9 +3535,13 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_take_unit(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 985
     if (kz_is_truthy(kaze_fn_is_sym(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("/")))) {
+#line 986
         KzValue per = kaze_fn_tok_text(tokens, kz_add(pos, kz_num((kaze_float_t)2)));
+#line 987
         if (kz_is_truthy(kz_eq(per, kz_str("s2")))) {
+#line 988
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_add(u, kz_str("/s2")), kz_add(pos, kz_num((kaze_float_t)3)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2910,8 +3549,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_take_unit(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 989
         KzValue pu = kaze_fn_unit_word(per);
+#line 990
         if (kz_is_truthy(kz_eq(pu, kz_str("seconds")))) {
+#line 991
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_add(u, kz_str("/s")), kz_add(pos, kz_num((kaze_float_t)3)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2919,7 +3561,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_take_unit(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 992
         if (kz_is_truthy(kz_eq(pu, kz_str("hours")))) {
+#line 993
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_add(u, kz_str("/h")), kz_add(pos, kz_num((kaze_float_t)3)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2928,6 +3572,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_take_unit(KzValue tokens, KzValue pos) {
             return _kz_ret;
         }
     }
+#line 994
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ u, kz_add(pos, kz_num((kaze_float_t)1)) });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2937,16 +3582,25 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_take_unit(KzValue tokens, KzValue pos) {
     return kz_nil();
 }
 
+#line 996
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 999
     KzValue p = kaze_fn_skip_nl(tokens, pos);
+#line 1000
     KzValue t = kaze_fn_tok(tokens, p);
+#line 1001
     KzValue k = kz_get_field(t, "kind");
+#line 1002
     KzValue w = kz_get_field(t, "text");
+#line 1003
     KzValue l = kz_get_field(t, "line");
+#line 1006
     if (kz_is_truthy(kz_eq(k, kz_str("NUM")))) {
+#line 1007
         KzValue u = kaze_fn_take_unit(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1008
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_node(kz_str("NUM"), kz_index(u, kz_num((kaze_float_t)0)), w, kz_num((kaze_float_t)0), kz_list_new(0), l), kz_index(u, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2954,7 +3608,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
         }
         return _kz_ret;
     }
+#line 1011
     if (kz_is_truthy(kz_eq(k, kz_str("STR")))) {
+#line 1012
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_str(w, l), kz_add(p, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2962,7 +3618,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
         }
         return _kz_ret;
     }
+#line 1015
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("SYM")), kz_eq(w, kz_str("["))))) {
+#line 1016
         KzValue _kz_ret = kaze_fn_parse_list_literal(tokens, p);
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2970,12 +3628,18 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
         }
         return _kz_ret;
     }
+#line 1019
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("SYM")), kz_eq(w, kz_str("("))))) {
+#line 1020
         KzValue r = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1021
         KzValue q = kaze_fn_skip_noise(tokens, kz_index(r, kz_num((kaze_float_t)1)));
+#line 1022
         if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str(")")))) {
+#line 1023
             q = kz_add(q, kz_num((kaze_float_t)1));
         }
+#line 1024
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)), q });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2983,9 +3647,13 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
         }
         return _kz_ret;
     }
+#line 1027
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("length"))))) {
+#line 1028
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("of")))) {
+#line 1029
             KzValue r = kaze_fn_parse_unary(tokens, kz_add(p, kz_num((kaze_float_t)2)));
+#line 1030
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_len(kz_index(r, kz_num((kaze_float_t)0)), l), kz_index(r, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -2994,11 +3662,17 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             return _kz_ret;
         }
     }
+#line 1033
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("distance"))))) {
+#line 1034
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("between")))) {
+#line 1035
             KzValue a = kaze_fn_parse_unary(tokens, kz_add(p, kz_num((kaze_float_t)2)));
+#line 1036
             if (kz_is_truthy(kaze_fn_is_word(tokens, kz_index(a, kz_num((kaze_float_t)1)), kz_str("and")))) {
+#line 1037
                 KzValue b = kaze_fn_parse_unary(tokens, kz_add(kz_index(a, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1)));
+#line 1038
                 KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("geo.distance"), kz_list_from(2, (KzValue[]){ kz_index(a, kz_num((kaze_float_t)0)), kz_index(b, kz_num((kaze_float_t)0)) }), l), kz_index(b, kz_num((kaze_float_t)1)) });
                 if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                     fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3006,6 +3680,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
                 }
                 return _kz_ret;
             }
+#line 1039
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("geo.distance"), kz_list_from(1, (KzValue[]){ kz_index(a, kz_num((kaze_float_t)0)) }), l), kz_index(a, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3014,11 +3689,17 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             return _kz_ret;
         }
     }
+#line 1040
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("slant"))))) {
+#line 1041
         if (kz_is_truthy(kz_and(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("distance")), kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)2)), kz_str("between"))))) {
+#line 1042
             KzValue a = kaze_fn_parse_unary(tokens, kz_add(p, kz_num((kaze_float_t)3)));
+#line 1043
             if (kz_is_truthy(kaze_fn_is_word(tokens, kz_index(a, kz_num((kaze_float_t)1)), kz_str("and")))) {
+#line 1044
                 KzValue b = kaze_fn_parse_unary(tokens, kz_add(kz_index(a, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1)));
+#line 1045
                 KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("geo.slant_distance"), kz_list_from(2, (KzValue[]){ kz_index(a, kz_num((kaze_float_t)0)), kz_index(b, kz_num((kaze_float_t)0)) }), l), kz_index(b, kz_num((kaze_float_t)1)) });
                 if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                     fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3026,6 +3707,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
                 }
                 return _kz_ret;
             }
+#line 1046
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("geo.slant_distance"), kz_list_from(1, (KzValue[]){ kz_index(a, kz_num((kaze_float_t)0)) }), l), kz_index(a, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3034,11 +3716,17 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             return _kz_ret;
         }
     }
+#line 1049
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("bearing"))))) {
+#line 1050
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("from")))) {
+#line 1051
             KzValue a = kaze_fn_parse_unary(tokens, kz_add(p, kz_num((kaze_float_t)2)));
+#line 1052
             if (kz_is_truthy(kaze_fn_is_word(tokens, kz_index(a, kz_num((kaze_float_t)1)), kz_str("to")))) {
+#line 1053
                 KzValue b = kaze_fn_parse_unary(tokens, kz_add(kz_index(a, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1)));
+#line 1054
                 KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("geo.bearing_from"), kz_list_from(2, (KzValue[]){ kz_index(a, kz_num((kaze_float_t)0)), kz_index(b, kz_num((kaze_float_t)0)) }), l), kz_index(b, kz_num((kaze_float_t)1)) });
                 if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                     fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3047,8 +3735,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
                 return _kz_ret;
             }
         }
+#line 1055
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("of")))) {
+#line 1056
             KzValue a = kaze_fn_parse_unary(tokens, kz_add(p, kz_num((kaze_float_t)2)));
+#line 1057
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("geo.bearing_of"), kz_list_from(1, (KzValue[]){ kz_index(a, kz_num((kaze_float_t)0)) }), l), kz_index(a, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3057,12 +3748,19 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             return _kz_ret;
         }
     }
+#line 1060
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("policy"))))) {
+#line 1061
         if (kz_is_truthy(kz_or(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("detects")), kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("detect"))))) {
+#line 1062
             KzValue noun = kaze_fn_make_str(kaze_fn_tok_text(tokens, kz_add(p, kz_num((kaze_float_t)2))), l);
+#line 1063
             KzValue q = kz_add(p, kz_num((kaze_float_t)3));
+#line 1064
             if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("in")))) {
+#line 1065
                 KzValue a = kaze_fn_parse_unary(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1066
                 KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("policy.detects"), kz_list_from(2, (KzValue[]){ noun, kz_index(a, kz_num((kaze_float_t)0)) }), l), kz_index(a, kz_num((kaze_float_t)1)) });
                 if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                     fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3070,6 +3768,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
                 }
                 return _kz_ret;
             }
+#line 1067
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("policy.detects"), kz_list_from(1, (KzValue[]){ noun }), l), q });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3078,15 +3777,24 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             return _kz_ret;
         }
     }
+#line 1070
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("link"))))) {
+#line 1071
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("lost")))) {
+#line 1072
             KzValue q = kz_add(p, kz_num((kaze_float_t)2));
+#line 1073
             KzValue args = kz_list_new(0);
+#line 1074
             if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("for")))) {
+#line 1075
                 KzValue a = kaze_fn_parse_unary(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1076
                 args = kz_list_from(1, (KzValue[]){ kz_index(a, kz_num((kaze_float_t)0)) });
+#line 1077
                 q = kz_index(a, kz_num((kaze_float_t)1));
             }
+#line 1078
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(kz_str("link_lost"), args, l), q });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3095,9 +3803,13 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             return _kz_ret;
         }
     }
+#line 1084
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("receive"))))) {
+#line 1085
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("from")))) {
+#line 1086
             KzValue a = kaze_fn_parse_or(tokens, kz_add(p, kz_num((kaze_float_t)2)));
+#line 1087
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_receive(kz_index(a, kz_num((kaze_float_t)0)), l), kz_index(a, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3106,8 +3818,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             return _kz_ret;
         }
     }
+#line 1088
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("join"))))) {
+#line 1089
         KzValue jr = kaze_fn_parse_or(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1090
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_join(kz_index(jr, kz_num((kaze_float_t)0)), l), kz_index(jr, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3115,8 +3830,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
         }
         return _kz_ret;
     }
+#line 1093
     if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 1094
         if (kz_is_truthy(kz_eq(w, kz_str("true")))) {
+#line 1095
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_bool(kz_num((kaze_float_t)1), l), kz_add(p, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3124,7 +3842,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             }
             return _kz_ret;
         }
+#line 1096
         if (kz_is_truthy(kz_eq(w, kz_str("false")))) {
+#line 1097
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_bool(kz_num((kaze_float_t)0), l), kz_add(p, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3132,9 +3852,13 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             }
             return _kz_ret;
         }
+#line 1099
         if (kz_is_truthy(kz_and(kz_and(kaze_fn_is_sym(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str(".")), kaze_fn_is_kind(tokens, kz_add(p, kz_num((kaze_float_t)2)), kz_str("IDENT"))), kaze_fn_is_sym(tokens, kz_add(p, kz_num((kaze_float_t)3)), kz_str("("))))) {
+#line 1100
             KzValue full = kz_add(kz_add(w, kz_str(".")), kaze_fn_tok_text(tokens, kz_add(p, kz_num((kaze_float_t)2))));
+#line 1101
             KzValue args = kaze_fn_parse_call_args(tokens, kz_add(p, kz_num((kaze_float_t)4)));
+#line 1102
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(full, kz_index(args, kz_num((kaze_float_t)0)), l), kz_index(args, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3142,8 +3866,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             }
             return _kz_ret;
         }
+#line 1103
         if (kz_is_truthy(kaze_fn_is_sym(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("(")))) {
+#line 1104
             KzValue args = kaze_fn_parse_call_args(tokens, kz_add(p, kz_num((kaze_float_t)2)));
+#line 1105
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_call(w, kz_index(args, kz_num((kaze_float_t)0)), l), kz_index(args, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3151,6 +3878,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
             }
             return _kz_ret;
         }
+#line 1106
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_ident(w, l), kz_add(p, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3158,6 +3886,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
         }
         return _kz_ret;
     }
+#line 1109
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_unknown(l), kz_add(p, kz_num((kaze_float_t)1)) });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3167,34 +3896,51 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_primary(KzValue tokens, KzValue pos
     return kz_nil();
 }
 
+#line 1111
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_list_literal(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1114
     KzValue items = kz_list_new(0);
+#line 1115
     KzValue p = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1116
     KzValue done = kz_num((kaze_float_t)0);
+#line 1117
     { long _kz_loop_l1117 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l1117 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1117 = _kz_loop_l1117 + 1;
+#line 1118
             p = kaze_fn_skip_noise(tokens, p);
+#line 1119
             if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str("]")))) {
+#line 1120
                 p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1121
                 done = kz_num((kaze_float_t)1);
             } else {
+#line 1123
                 if (kz_is_truthy(kz_eq(kaze_fn_at_end(tokens, p), kz_num((kaze_float_t)1)))) {
+#line 1124
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1126
                     KzValue r = kaze_fn_parse_expr(tokens, p);
+#line 1127
                     items = kz_add(items, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1128
                     p = kaze_fn_skip_noise(tokens, kz_index(r, kz_num((kaze_float_t)1)));
+#line 1129
                     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(",")))) {
+#line 1130
                         p = kz_add(p, kz_num((kaze_float_t)1));
                     }
                 }
             }
         }
     }
+#line 1131
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_list_expr(items, kaze_fn_tok_line(tokens, pos)), p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3204,42 +3950,65 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_list_literal(KzValue tokens, KzValu
     return kz_nil();
 }
 
+#line 1133
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_call_args(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1136
     KzValue args = kz_list_new(0);
+#line 1137
     KzValue p = pos;
+#line 1138
     KzValue done = kz_num((kaze_float_t)0);
+#line 1139
     { long _kz_loop_l1139 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l1139 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1139 = _kz_loop_l1139 + 1;
+#line 1140
             p = kaze_fn_skip_noise(tokens, p);
+#line 1141
             if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(")")))) {
+#line 1142
                 p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1143
                 done = kz_num((kaze_float_t)1);
             } else {
+#line 1145
                 if (kz_is_truthy(kz_or(kz_eq(kaze_fn_at_end(tokens, p), kz_num((kaze_float_t)1)), kaze_fn_is_kind(tokens, p, kz_str("EOF"))))) {
+#line 1146
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1148
                     if (kz_is_truthy(kz_and(kaze_fn_is_kind(tokens, p, kz_str("IDENT")), kaze_fn_is_sym(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str(":"))))) {
+#line 1149
                         KzValue fname = kaze_fn_tok_text(tokens, p);
+#line 1150
                         KzValue r = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)2)));
+#line 1151
                         args = kz_add(args, kz_list_from(1, (KzValue[]){ kaze_fn_make_named_arg(fname, kz_index(r, kz_num((kaze_float_t)0)), kaze_fn_tok_line(tokens, p)) }));
+#line 1152
                         p = kz_index(r, kz_num((kaze_float_t)1));
                     } else {
+#line 1154
                         KzValue r = kaze_fn_parse_expr(tokens, p);
+#line 1155
                         args = kz_add(args, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1156
                         p = kz_index(r, kz_num((kaze_float_t)1));
                     }
+#line 1157
                     p = kaze_fn_skip_noise(tokens, p);
+#line 1158
                     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(",")))) {
+#line 1159
                         p = kz_add(p, kz_num((kaze_float_t)1));
                     }
                 }
             }
         }
     }
+#line 1160
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ args, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3249,36 +4018,58 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_call_args(KzValue tokens, KzValue p
     return kz_nil();
 }
 
+#line 1164
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_block(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1167
     KzValue p = kaze_fn_skip_nl(tokens, pos);
+#line 1168
     KzValue stmts = kz_list_new(0);
+#line 1169
     KzValue l = kaze_fn_tok_line(tokens, p);
+#line 1170
     if (kz_is_truthy(kaze_fn_is_kind(tokens, p, kz_str("INDENT")))) {
+#line 1171
         p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1172
         KzValue done = kz_num((kaze_float_t)0);
+#line 1173
         { long _kz_loop_l1173 = 0;
             while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
                 if (_kz_loop_l1173 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l1173 = _kz_loop_l1173 + 1;
+#line 1174
                 p = kaze_fn_skip_nl(tokens, p);
+#line 1175
                 KzValue k = kaze_fn_tok_kind(tokens, p);
+#line 1176
                 if (kz_is_truthy(kz_eq(k, kz_str("DEDENT")))) {
+#line 1177
                     p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1178
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1180
                     if (kz_is_truthy(kz_eq(k, kz_str("EOF")))) {
+#line 1181
                         done = kz_num((kaze_float_t)1);
                     } else {
+#line 1183
                         if (kz_is_truthy(kz_eq(k, kz_str("INDENT")))) {
+#line 1184
                             p = kz_add(p, kz_num((kaze_float_t)1));
                         } else {
+#line 1186
                             KzValue r = kaze_fn_parse_stmt(tokens, p);
+#line 1187
                             stmts = kz_add(stmts, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1188
                             if (kz_is_truthy(kz_gt(kz_index(r, kz_num((kaze_float_t)1)), p))) {
+#line 1189
                                 p = kz_index(r, kz_num((kaze_float_t)1));
                             } else {
+#line 1191
                                 p = kz_add(p, kz_num((kaze_float_t)1));
                             }
                         }
@@ -3287,6 +4078,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_block(KzValue tokens, KzValue pos) 
             }
         }
     }
+#line 1192
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_block(kz_str("body"), stmts, l), p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3296,16 +4088,25 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_block(KzValue tokens, KzValue pos) 
     return kz_nil();
 }
 
+#line 1194
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1197
     KzValue p = kaze_fn_skip_nl(tokens, pos);
+#line 1198
     KzValue t = kaze_fn_tok(tokens, p);
+#line 1199
     KzValue w = kz_get_field(t, "text");
+#line 1200
     KzValue l = kz_get_field(t, "line");
+#line 1202
     if (kz_is_truthy(kz_eq(kz_get_field(t, "kind"), kz_str("IDENT")))) {
+#line 1204
         if (kz_is_truthy(kz_and(kz_and(kaze_fn_is_sym(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str(".")), kaze_fn_is_kind(tokens, kz_add(p, kz_num((kaze_float_t)2)), kz_str("IDENT"))), kaze_fn_is_sym(tokens, kz_add(p, kz_num((kaze_float_t)3)), kz_str("("))))) {
+#line 1205
             KzValue cr = kaze_fn_parse_expr(tokens, p);
+#line 1206
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_stmt(kz_str("EXPR"), kz_str(""), kz_list_from(1, (KzValue[]){ kz_index(cr, kz_num((kaze_float_t)0)) }), l), kz_index(cr, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3313,13 +4114,20 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1209
         if (kz_is_truthy(kz_eq(w, kz_str("let")))) {
+#line 1210
             KzValue nm = kaze_fn_tok_text(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1211
             KzValue q = kz_add(p, kz_num((kaze_float_t)2));
+#line 1212
             if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str("=")))) {
+#line 1213
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
+#line 1214
             KzValue r = kaze_fn_parse_expr(tokens, q);
+#line 1215
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_stmt(kz_str("LET"), nm, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3327,13 +4135,20 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1218
         if (kz_is_truthy(kz_eq(w, kz_str("set")))) {
+#line 1219
             KzValue nm = kaze_fn_tok_text(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1220
             KzValue q = kz_add(p, kz_num((kaze_float_t)2));
+#line 1221
             if (kz_is_truthy(kz_or(kaze_fn_is_word(tokens, q, kz_str("to")), kaze_fn_is_sym(tokens, q, kz_str("="))))) {
+#line 1222
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
+#line 1223
             KzValue r = kaze_fn_parse_expr(tokens, q);
+#line 1224
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_stmt(kz_str("SET"), nm, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3341,9 +4156,13 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1227
         if (kz_is_truthy(kz_eq(w, kz_str("return")))) {
+#line 1228
             KzValue nt = kaze_fn_tok(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1229
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(nt, "kind"), kz_str("IDENT")), kz_eq(kz_get_field(nt, "text"), kz_str("to"))))) {
+#line 1230
                 KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_stmt(kz_str("EXPR"), kz_str(""), kz_list_from(1, (KzValue[]){ kaze_fn_make_call(kz_str("drone.rtl"), kz_list_new(0), l) }), l), kz_add(p, kz_num((kaze_float_t)3)) });
                 if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                     fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3351,7 +4170,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
                 }
                 return _kz_ret;
             }
+#line 1231
             if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(nt, "kind"), kz_str("NEWLINE")), kz_eq(kz_get_field(nt, "kind"), kz_str("DEDENT"))), kz_eq(kz_get_field(nt, "kind"), kz_str("EOF"))), kz_eq(kz_get_field(nt, "kind"), kz_str("INDENT"))))) {
+#line 1232
                 KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_stmt(kz_str("RETURN"), kz_str(""), kz_list_new(0), l), kz_add(p, kz_num((kaze_float_t)1)) });
                 if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                     fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3359,7 +4180,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
                 }
                 return _kz_ret;
             }
+#line 1233
             KzValue r = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1234
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_stmt(kz_str("RETURN"), kz_str(""), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3367,8 +4190,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1237
         if (kz_is_truthy(kz_eq(w, kz_str("guard")))) {
+#line 1238
             KzValue r = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1239
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_guard(kz_index(r, kz_num((kaze_float_t)0)), l), kz_index(r, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3376,24 +4202,40 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1242
         if (kz_is_truthy(kz_eq(w, kz_str("if")))) {
+#line 1243
             KzValue c = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1244
             KzValue q = kz_index(c, kz_num((kaze_float_t)1));
+#line 1245
             if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str(":")))) {
+#line 1246
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
+#line 1247
             KzValue b = kaze_fn_parse_block(tokens, q);
+#line 1248
             KzValue q2 = kaze_fn_skip_nl(tokens, kz_index(b, kz_num((kaze_float_t)1)));
+#line 1249
             KzValue other = kaze_fn_make_block(kz_str("otherwise"), kz_list_new(0), l);
+#line 1250
             if (kz_is_truthy(kaze_fn_is_word(tokens, q2, kz_str("otherwise")))) {
+#line 1251
                 KzValue q3 = kz_add(q2, kz_num((kaze_float_t)1));
+#line 1252
                 if (kz_is_truthy(kaze_fn_is_sym(tokens, q3, kz_str(":")))) {
+#line 1253
                     q3 = kz_add(q3, kz_num((kaze_float_t)1));
                 }
+#line 1254
                 KzValue ob = kaze_fn_parse_block(tokens, q3);
+#line 1255
                 other = kz_index(ob, kz_num((kaze_float_t)0));
+#line 1256
                 q2 = kz_index(ob, kz_num((kaze_float_t)1));
             }
+#line 1257
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_if(kz_index(c, kz_num((kaze_float_t)0)), kz_index(b, kz_num((kaze_float_t)0)), other, l), q2 });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3401,23 +4243,37 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1260
         if (kz_is_truthy(kz_eq(w, kz_str("while")))) {
+#line 1261
             KzValue c = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1262
             KzValue q = kz_index(c, kz_num((kaze_float_t)1));
+#line 1263
             KzValue bound = kaze_fn_make_bound(kz_str(""), l);
+#line 1264
             if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("bounded")))) {
+#line 1265
                 KzValue bt = kaze_fn_tok(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1266
                 if (kz_is_truthy(kz_eq(kz_get_field(bt, "kind"), kz_str("NUM")))) {
+#line 1267
                     bound = kaze_fn_make_bound(kz_get_field(bt, "text"), kz_get_field(bt, "line"));
                 } else {
+#line 1269
                     bound = kaze_fn_make_bound(kz_str("?"), kz_get_field(bt, "line"));
                 }
+#line 1270
                 q = kz_add(q, kz_num((kaze_float_t)2));
             }
+#line 1271
             if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str(":")))) {
+#line 1272
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
+#line 1273
             KzValue b = kaze_fn_parse_block(tokens, q);
+#line 1274
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_while(kz_index(c, kz_num((kaze_float_t)0)), kz_index(b, kz_num((kaze_float_t)0)), bound, l), kz_index(b, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3425,22 +4281,36 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1277
         if (kz_is_truthy(kz_eq(w, kz_str("for")))) {
+#line 1278
             KzValue q = kz_add(p, kz_num((kaze_float_t)1));
+#line 1279
             if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("each")))) {
+#line 1280
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
+#line 1281
             KzValue var = kaze_fn_tok_text(tokens, q);
+#line 1282
             q = kz_add(q, kz_num((kaze_float_t)1));
+#line 1283
             if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("in")))) {
+#line 1284
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
+#line 1285
             KzValue le = kaze_fn_parse_expr(tokens, q);
+#line 1286
             KzValue q2 = kz_index(le, kz_num((kaze_float_t)1));
+#line 1287
             if (kz_is_truthy(kaze_fn_is_sym(tokens, q2, kz_str(":")))) {
+#line 1288
                 q2 = kz_add(q2, kz_num((kaze_float_t)1));
             }
+#line 1289
             KzValue b = kaze_fn_parse_block(tokens, q2);
+#line 1290
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_for_each(var, kz_index(le, kz_num((kaze_float_t)0)), kz_index(b, kz_num((kaze_float_t)0)), l), kz_index(b, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3448,28 +4318,47 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1293
         if (kz_is_truthy(kz_eq(w, kz_str("try")))) {
+#line 1294
             KzValue q = kz_add(p, kz_num((kaze_float_t)1));
+#line 1295
             if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str(":")))) {
+#line 1296
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
+#line 1297
             KzValue b = kaze_fn_parse_block(tokens, q);
+#line 1298
             KzValue q2 = kaze_fn_skip_nl(tokens, kz_index(b, kz_num((kaze_float_t)1)));
+#line 1299
             KzValue err = kz_str("");
+#line 1300
             KzValue other = kaze_fn_make_block(kz_str("otherwise"), kz_list_new(0), l);
+#line 1301
             if (kz_is_truthy(kaze_fn_is_word(tokens, q2, kz_str("otherwise")))) {
+#line 1302
                 KzValue q3 = kz_add(q2, kz_num((kaze_float_t)1));
+#line 1303
                 if (kz_is_truthy(kaze_fn_is_word(tokens, q3, kz_str("with")))) {
+#line 1304
                     err = kaze_fn_tok_text(tokens, kz_add(q3, kz_num((kaze_float_t)1)));
+#line 1305
                     q3 = kz_add(q3, kz_num((kaze_float_t)2));
                 }
+#line 1306
                 if (kz_is_truthy(kaze_fn_is_sym(tokens, q3, kz_str(":")))) {
+#line 1307
                     q3 = kz_add(q3, kz_num((kaze_float_t)1));
                 }
+#line 1308
                 KzValue ob = kaze_fn_parse_block(tokens, q3);
+#line 1309
                 other = kz_index(ob, kz_num((kaze_float_t)0));
+#line 1310
                 q2 = kz_index(ob, kz_num((kaze_float_t)1));
             }
+#line 1311
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_try(err, kz_index(b, kz_num((kaze_float_t)0)), other, l), q2 });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3477,21 +4366,35 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1314
         if (kz_is_truthy(kz_eq(w, kz_str("spawn")))) {
+#line 1315
             if (kz_is_truthy(kaze_fn_is_kind(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("IDENT")))) {
+#line 1316
                 KzValue target = kaze_fn_tok_text(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1317
                 KzValue q = kz_add(p, kz_num((kaze_float_t)2));
+#line 1318
                 KzValue args = kz_list_new(0);
+#line 1319
                 if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str("(")))) {
+#line 1320
                     KzValue ar = kaze_fn_parse_call_args(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1321
                     args = kz_index(ar, kz_num((kaze_float_t)0));
+#line 1322
                     q = kz_index(ar, kz_num((kaze_float_t)1));
                 }
+#line 1323
                 KzValue task = target;
+#line 1324
                 if (kz_is_truthy(kz_and(kaze_fn_is_word(tokens, q, kz_str("as")), kaze_fn_is_kind(tokens, kz_add(q, kz_num((kaze_float_t)1)), kz_str("IDENT"))))) {
+#line 1325
                     task = kaze_fn_tok_text(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1326
                     q = kz_add(q, kz_num((kaze_float_t)2));
                 }
+#line 1327
                 KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_spawn(target, args, task, l), q });
                 if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                     fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3499,6 +4402,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
                 }
                 return _kz_ret;
             }
+#line 1328
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_unknown(l), kz_add(p, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3506,7 +4410,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1331
         if (kz_is_truthy(kz_eq(w, kz_str("yield")))) {
+#line 1332
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_yield(l), kz_add(p, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3514,8 +4420,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1335
         if (kz_is_truthy(kz_eq(w, kz_str("join")))) {
+#line 1336
             KzValue r = kaze_fn_parse_or(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1337
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_join(kz_index(r, kz_num((kaze_float_t)0)), l), kz_index(r, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3523,8 +4432,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1338
         if (kz_is_truthy(kz_eq(w, kz_str("cancel")))) {
+#line 1339
             KzValue r = kaze_fn_parse_or(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1340
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_cancel(kz_index(r, kz_num((kaze_float_t)0)), l), kz_index(r, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3532,11 +4444,17 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1343
         if (kz_is_truthy(kz_eq(w, kz_str("send")))) {
+#line 1344
             if (kz_is_truthy(kz_eq(kaze_fn_is_word(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str("alert")), kz_num((kaze_float_t)0)))) {
+#line 1345
                 KzValue v = kaze_fn_parse_or(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1346
                 if (kz_is_truthy(kaze_fn_is_word(tokens, kz_index(v, kz_num((kaze_float_t)1)), kz_str("to")))) {
+#line 1347
                     KzValue c = kaze_fn_parse_or(tokens, kz_add(kz_index(v, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1)));
+#line 1348
                     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_send(kz_index(v, kz_num((kaze_float_t)0)), kz_index(c, kz_num((kaze_float_t)0)), l), kz_index(c, kz_num((kaze_float_t)1)) });
                     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3544,6 +4462,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
                     }
                     return _kz_ret;
                 }
+#line 1349
                 KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_unknown(l), kz_add(p, kz_num((kaze_float_t)1)) });
                 if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                     fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3552,8 +4471,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
                 return _kz_ret;
             }
         }
+#line 1353
         KzValue v = kaze_fn_parse_verb(tokens, p);
+#line 1354
         if (kz_is_truthy(kz_eq(kz_index(v, kz_num((kaze_float_t)2)), kz_num((kaze_float_t)1)))) {
+#line 1355
             KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_stmt(kz_str("EXPR"), kz_str(""), kz_list_from(1, (KzValue[]){ kz_index(v, kz_num((kaze_float_t)0)) }), l), kz_index(v, kz_num((kaze_float_t)1)) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3562,7 +4484,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
             return _kz_ret;
         }
     }
+#line 1358
     KzValue r = kaze_fn_parse_expr(tokens, p);
+#line 1359
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_stmt(kz_str("EXPR"), kz_str(""), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)) });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3572,13 +4496,19 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_stmt(KzValue tokens, KzValue pos) {
     return kz_nil();
 }
 
+#line 1362
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1365
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 1366
     KzValue w = kz_get_field(t, "text");
+#line 1367
     KzValue l = kz_get_field(t, "line");
+#line 1368
     if (kz_is_truthy(kz_ne(kz_get_field(t, "kind"), kz_str("IDENT")))) {
+#line 1369
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_none_node(), pos, kz_num((kaze_float_t)0) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3586,17 +4516,27 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1371
     if (kz_is_truthy(kz_eq(w, kz_str("log")))) {
+#line 1372
         KzValue q = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1373
         KzValue level = kz_str("info");
+#line 1374
         if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kaze_fn_is_word(tokens, q, kz_str("info")), kaze_fn_is_word(tokens, q, kz_str("warn"))), kaze_fn_is_word(tokens, q, kz_str("warning"))), kaze_fn_is_word(tokens, q, kz_str("error"))), kaze_fn_is_word(tokens, q, kz_str("debug"))))) {
+#line 1375
             level = kaze_fn_tok_text(tokens, q);
+#line 1376
             if (kz_is_truthy(kz_eq(level, kz_str("warning")))) {
+#line 1377
                 level = kz_str("warn");
             }
+#line 1378
             q = kz_add(q, kz_num((kaze_float_t)1));
         }
+#line 1379
         KzValue r = kaze_fn_parse_expr(tokens, q);
+#line 1380
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_add(kz_str("log."), level), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3604,8 +4544,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1382
     if (kz_is_truthy(kz_eq(w, kz_str("arm")))) {
+#line 1383
         KzValue noun = kaze_fn_tok_text(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1384
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_add(kaze_fn_family_of_word(noun), kz_str(".arm")), kz_list_new(0), l), kz_add(pos, kz_num((kaze_float_t)2)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3613,12 +4556,18 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1386
     if (kz_is_truthy(kz_eq(w, kz_str("takeoff")))) {
+#line 1387
         KzValue q = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1388
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("to")))) {
+#line 1389
             q = kz_add(q, kz_num((kaze_float_t)1));
         }
+#line 1390
         KzValue r = kaze_fn_parse_expr(tokens, q);
+#line 1391
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("drone.takeoff"), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3626,19 +4575,31 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1393
     if (kz_is_truthy(kz_eq(w, kz_str("fly")))) {
+#line 1394
         KzValue q = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1395
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("to")))) {
+#line 1396
             q = kz_add(q, kz_num((kaze_float_t)1));
         }
+#line 1397
         KzValue r = kaze_fn_parse_expr(tokens, q);
+#line 1398
         KzValue args = kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) });
+#line 1399
         KzValue q2 = kz_index(r, kz_num((kaze_float_t)1));
+#line 1400
         if (kz_is_truthy(kaze_fn_is_word(tokens, q2, kz_str("at")))) {
+#line 1401
             KzValue a = kaze_fn_parse_expr(tokens, kz_add(q2, kz_num((kaze_float_t)1)));
+#line 1402
             args = kz_add(args, kz_list_from(1, (KzValue[]){ kz_index(a, kz_num((kaze_float_t)0)) }));
+#line 1403
             q2 = kz_index(a, kz_num((kaze_float_t)1));
         }
+#line 1404
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("drone.goto"), args, l), q2, kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3646,9 +4607,13 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1406
     if (kz_is_truthy(kz_eq(w, kz_str("stop")))) {
+#line 1407
         KzValue noun = kaze_fn_tok_text(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1408
         if (kz_is_truthy(kz_or(kz_eq(noun, kz_str("drone")), kz_eq(noun, kz_str("rover"))))) {
+#line 1409
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_add(noun, kz_str(".stop")), kz_list_new(0), l), kz_add(pos, kz_num((kaze_float_t)2)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3656,6 +4621,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1410
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("rover.stop"), kz_list_new(0), l), kz_add(pos, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3663,8 +4629,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1412
     if (kz_is_truthy(kz_eq(w, kz_str("hold")))) {
+#line 1414
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("position")))) {
+#line 1415
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("drone.hold"), kz_list_new(0), l), kz_add(pos, kz_num((kaze_float_t)2)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3672,6 +4641,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1416
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("drone.hold"), kz_list_new(0), l), kz_add(pos, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3679,8 +4649,11 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1418
     if (kz_is_truthy(kz_eq(w, kz_str("land")))) {
+#line 1419
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("drone")))) {
+#line 1420
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("drone.land"), kz_list_new(0), l), kz_add(pos, kz_num((kaze_float_t)2)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3688,6 +4661,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1421
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("drone.land"), kz_list_new(0), l), kz_add(pos, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3695,13 +4669,20 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1423
     if (kz_is_truthy(kz_eq(w, kz_str("turn")))) {
+#line 1424
         if (kz_is_truthy(kz_or(kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("on")), kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("off"))))) {
+#line 1425
             KzValue on = kz_num((kaze_float_t)1);
+#line 1426
             if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("off")))) {
+#line 1427
                 on = kz_num((kaze_float_t)0);
             }
+#line 1428
             KzValue dev = kaze_fn_tok_text(tokens, kz_add(pos, kz_num((kaze_float_t)2)));
+#line 1429
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("device.set_relay"), kz_list_from(2, (KzValue[]){ kaze_fn_make_str(dev, l), kaze_fn_make_bool(on, l) }), l), kz_add(pos, kz_num((kaze_float_t)3)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3709,16 +4690,25 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1430
         if (kz_is_truthy(kz_or(kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("left")), kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("right"))))) {
+#line 1431
             KzValue op = kz_str("rover.turn_right");
+#line 1432
             if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("left")))) {
+#line 1433
                 op = kz_str("rover.turn_left");
             }
+#line 1434
             KzValue q = kz_add(pos, kz_num((kaze_float_t)2));
+#line 1435
             if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("by")))) {
+#line 1436
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
+#line 1437
             KzValue r = kaze_fn_parse_expr(tokens, q);
+#line 1438
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(op, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3727,19 +4717,30 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             return _kz_ret;
         }
     }
+#line 1440
     if (kz_is_truthy(kz_eq(w, kz_str("drive")))) {
+#line 1441
         KzValue op = kz_str("rover.forward");
+#line 1442
         KzValue q = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1443
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("forward")))) {
+#line 1444
             q = kz_add(q, kz_num((kaze_float_t)1));
         } else {
+#line 1446
             if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("backward")))) {
+#line 1447
                 op = kz_str("rover.backward");
+#line 1448
                 q = kz_add(q, kz_num((kaze_float_t)1));
             }
         }
+#line 1449
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("at")))) {
+#line 1450
             KzValue r = kaze_fn_parse_expr(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1451
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(op, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3747,6 +4748,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1452
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(op, kz_list_new(0), l), q, kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3754,11 +4756,17 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1454
     if (kz_is_truthy(kz_eq(w, kz_str("pulse")))) {
+#line 1455
         KzValue dev = kaze_fn_make_str(kaze_fn_tok_text(tokens, kz_add(pos, kz_num((kaze_float_t)1))), l);
+#line 1456
         KzValue q = kz_add(pos, kz_num((kaze_float_t)2));
+#line 1457
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("for")))) {
+#line 1458
             KzValue r = kaze_fn_parse_expr(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1459
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("device.pulse"), kz_list_from(2, (KzValue[]){ dev, kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3766,6 +4774,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1460
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("device.pulse"), kz_list_from(1, (KzValue[]){ dev }), l), q, kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3773,9 +4782,13 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1462
     if (kz_is_truthy(kz_eq(w, kz_str("send")))) {
+#line 1463
         if (kz_is_truthy(kaze_fn_is_word(tokens, kz_add(pos, kz_num((kaze_float_t)1)), kz_str("alert")))) {
+#line 1464
             KzValue r = kaze_fn_parse_expr(tokens, kz_add(pos, kz_num((kaze_float_t)2)));
+#line 1465
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("alert.send"), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3784,12 +4797,18 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             return _kz_ret;
         }
     }
+#line 1467
     if (kz_is_truthy(kz_eq(w, kz_str("reject")))) {
+#line 1468
         KzValue q = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1469
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("with")))) {
+#line 1470
             q = kz_add(q, kz_num((kaze_float_t)1));
         }
+#line 1471
         KzValue r = kaze_fn_parse_expr(tokens, q);
+#line 1472
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("policy.reject"), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3797,9 +4816,13 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1474
     if (kz_is_truthy(kz_eq(w, kz_str("allow")))) {
+#line 1475
         KzValue nt = kaze_fn_tok(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1476
         if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(nt, "kind"), kz_str("NEWLINE")), kz_eq(kz_get_field(nt, "kind"), kz_str("DEDENT"))), kz_eq(kz_get_field(nt, "kind"), kz_str("EOF"))), kz_eq(kz_get_field(nt, "kind"), kz_str("INDENT"))))) {
+#line 1477
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("policy.allow"), kz_list_new(0), l), kz_add(pos, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3807,7 +4830,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1478
         KzValue r = kaze_fn_parse_expr(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1479
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("policy.allow"), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3815,11 +4840,17 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1481
     if (kz_is_truthy(kz_eq(w, kz_str("remember")))) {
+#line 1482
         KzValue r = kaze_fn_parse_expr(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1483
         KzValue q = kz_index(r, kz_num((kaze_float_t)1));
+#line 1484
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("as")))) {
+#line 1485
             KzValue lab = kaze_fn_parse_expr(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1486
             KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("memory.save"), kz_list_from(2, (KzValue[]){ kz_index(lab, kz_num((kaze_float_t)0)), kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(lab, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
             if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3827,6 +4858,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
             }
             return _kz_ret;
         }
+#line 1487
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("memory.save"), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), q, kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3834,15 +4866,23 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1489
     if (kz_is_truthy(kz_eq(w, kz_str("recall")))) {
+#line 1490
         KzValue q = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1491
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("memories")))) {
+#line 1492
             q = kz_add(q, kz_num((kaze_float_t)1));
         }
+#line 1493
         if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("matching")))) {
+#line 1494
             q = kz_add(q, kz_num((kaze_float_t)1));
         }
+#line 1495
         KzValue r = kaze_fn_parse_expr(tokens, q);
+#line 1496
         KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_make_call(kz_str("memory.recall"), kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }), l), kz_index(r, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)1) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3850,6 +4890,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 1498
     KzValue _kz_ret = kz_list_from(3, (KzValue[]){ kaze_fn_none_node(), pos, kz_num((kaze_float_t)0) });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3859,69 +4900,116 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_verb(KzValue tokens, KzValue pos) {
     return kz_nil();
 }
 
+#line 1504
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_routine_body(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1507
     KzValue p = kaze_fn_skip_nl(tokens, pos);
+#line 1508
     KzValue contracts = kz_list_new(0);
+#line 1509
     KzValue stmts = kz_list_new(0);
+#line 1510
     KzValue l = kaze_fn_tok_line(tokens, p);
+#line 1511
     if (kz_is_truthy(kaze_fn_is_kind(tokens, p, kz_str("INDENT")))) {
+#line 1512
         p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1513
         KzValue seen = kz_num((kaze_float_t)0);
+#line 1514
         KzValue done = kz_num((kaze_float_t)0);
+#line 1515
         { long _kz_loop_l1515 = 0;
             while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
                 if (_kz_loop_l1515 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l1515 = _kz_loop_l1515 + 1;
+#line 1516
                 p = kaze_fn_skip_nl(tokens, p);
+#line 1517
                 KzValue k = kaze_fn_tok_kind(tokens, p);
+#line 1518
                 KzValue w = kaze_fn_tok_text(tokens, p);
+#line 1519
                 if (kz_is_truthy(kz_eq(k, kz_str("DEDENT")))) {
+#line 1520
                     p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1521
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1523
                     if (kz_is_truthy(kz_eq(k, kz_str("EOF")))) {
+#line 1524
                         done = kz_num((kaze_float_t)1);
                     } else {
+#line 1526
                         if (kz_is_truthy(kz_and(kz_and(kz_eq(seen, kz_num((kaze_float_t)0)), kz_eq(k, kz_str("IDENT"))), kz_or(kz_eq(w, kz_str("requires")), kz_eq(w, kz_str("ensures")))))) {
+#line 1527
                             KzValue r = kaze_fn_parse_expr(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1528
                             contracts = kz_add(contracts, kz_list_from(1, (KzValue[]){ kaze_fn_make_contract(w, kz_index(r, kz_num((kaze_float_t)0)), kaze_fn_tok_line(tokens, p)) }));
+#line 1529
                             p = kz_index(r, kz_num((kaze_float_t)1));
                         } else {
+#line 1531
                             if (kz_is_truthy(kz_and(kz_and(kz_eq(seen, kz_num((kaze_float_t)0)), kz_eq(k, kz_str("IDENT"))), kz_eq(w, kz_str("recursion"))))) {
+#line 1532
                                 KzValue q = kz_add(p, kz_num((kaze_float_t)1));
+#line 1533
                                 if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("bounded")))) {
+#line 1534
                                     q = kz_add(q, kz_num((kaze_float_t)1));
                                 }
+#line 1535
                                 KzValue bt = kaze_fn_tok(tokens, q);
+#line 1536
                                 if (kz_is_truthy(kz_eq(kz_get_field(bt, "kind"), kz_str("NUM")))) {
+#line 1537
                                     contracts = kz_add(contracts, kz_list_from(1, (KzValue[]){ kaze_fn_make_recursion_bound(kz_get_field(bt, "text"), kz_get_field(bt, "line")) }));
                                 } else {
+#line 1539
                                     contracts = kz_add(contracts, kz_list_from(1, (KzValue[]){ kaze_fn_make_recursion_bound(kz_str("?"), kz_get_field(bt, "line")) }));
                                 }
+#line 1540
                                 p = kz_add(q, kz_num((kaze_float_t)1));
                             } else {
+#line 1542
                                 if (kz_is_truthy(kz_and(kz_and(kz_eq(seen, kz_num((kaze_float_t)0)), kz_eq(k, kz_str("IDENT"))), kz_eq(w, kz_str("fuel"))))) {
+#line 1543
                                     KzValue ft = kaze_fn_tok(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1544
                                     if (kz_is_truthy(kz_eq(kz_get_field(ft, "kind"), kz_str("NUM")))) {
+#line 1545
                                         contracts = kz_add(contracts, kz_list_from(1, (KzValue[]){ kaze_fn_make_fuel(kz_get_field(ft, "text"), kz_get_field(ft, "line")) }));
+#line 1546
                                         p = kz_add(p, kz_num((kaze_float_t)2));
                                     } else {
+#line 1548
                                         p = kz_add(p, kz_num((kaze_float_t)1));
                                     }
                                 } else {
+#line 1550
                                     if (kz_is_truthy(kz_and(kz_and(kz_eq(seen, kz_num((kaze_float_t)0)), kz_eq(k, kz_str("IDENT"))), kz_eq(w, kz_str("needs"))))) {
+#line 1551
                                         KzValue nr = kaze_fn_parse_cap_list(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1552
                                         contracts = kz_add(contracts, kz_index(nr, kz_num((kaze_float_t)0)));
+#line 1553
                                         p = kz_index(nr, kz_num((kaze_float_t)1));
                                     } else {
+#line 1555
                                         seen = kz_num((kaze_float_t)1);
+#line 1556
                                         KzValue r = kaze_fn_parse_stmt(tokens, p);
+#line 1557
                                         stmts = kz_add(stmts, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1558
                                         if (kz_is_truthy(kz_gt(kz_index(r, kz_num((kaze_float_t)1)), p))) {
+#line 1559
                                             p = kz_index(r, kz_num((kaze_float_t)1));
                                         } else {
+#line 1561
                                             p = kz_add(p, kz_num((kaze_float_t)1));
                                         }
                                     }
@@ -3933,6 +5021,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_routine_body(KzValue tokens, KzValu
             }
         }
     }
+#line 1562
     KzValue _kz_ret = kz_list_from(3, (KzValue[]){ contracts, kaze_fn_make_block(kz_str("body"), stmts, l), p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)3)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3942,54 +5031,83 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_routine_body(KzValue tokens, KzValu
     return kz_nil();
 }
 
+#line 1565
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_cap_list(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1568
     KzValue p = pos;
+#line 1569
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(":")))) {
+#line 1570
         p = kz_add(p, kz_num((kaze_float_t)1));
     }
+#line 1571
     KzValue out = kz_list_new(0);
+#line 1572
     KzValue done = kz_num((kaze_float_t)0);
+#line 1573
     { long _kz_loop_l1573 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l1573 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1573 = _kz_loop_l1573 + 1;
+#line 1574
             KzValue t = kaze_fn_tok(tokens, p);
+#line 1575
             if (kz_is_truthy(kz_eq(kz_get_field(t, "kind"), kz_str("IDENT")))) {
+#line 1576
                 KzValue nm = kz_get_field(t, "text");
+#line 1577
                 p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1578
                 if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(".")))) {
+#line 1579
                     KzValue nxt = kaze_fn_tok_text(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1580
                     nm = kz_add(kz_add(nm, kz_str(".")), nxt);
+#line 1581
                     p = kz_add(p, kz_num((kaze_float_t)2));
+#line 1582
                     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str("(")))) {
+#line 1583
                         KzValue depth = kz_num((kaze_float_t)1);
+#line 1584
                         p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1585
                         { long _kz_loop_l1585 = 0;
                             while (kz_is_truthy(kz_and(kz_gt(depth, kz_num((kaze_float_t)0)), kz_eq(kaze_fn_at_end(tokens, p), kz_num((kaze_float_t)0))))) {
                                 if (_kz_loop_l1585 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                                 _kz_loop_l1585 = _kz_loop_l1585 + 1;
+#line 1586
                                 if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str("(")))) {
+#line 1587
                                     depth = kz_add(depth, kz_num((kaze_float_t)1));
                                 }
+#line 1588
                                 if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(")")))) {
+#line 1589
                                     depth = kz_sub(depth, kz_num((kaze_float_t)1));
                                 }
+#line 1590
                                 p = kz_add(p, kz_num((kaze_float_t)1));
                             }
                         }
                     }
                 }
+#line 1591
                 out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_make_routine_need(nm, kz_get_field(t, "line")) }));
+#line 1592
                 if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(",")))) {
+#line 1593
                     p = kz_add(p, kz_num((kaze_float_t)1));
                 }
             } else {
+#line 1595
                 done = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 1596
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ out, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -3999,38 +5117,61 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_cap_list(KzValue tokens, KzValue po
     return kz_nil();
 }
 
+#line 1606
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_type_arg(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1609
     KzValue p = pos;
+#line 1610
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str("[")))) {
+#line 1611
         KzValue out = kz_str("");
+#line 1612
         KzValue first = kz_num((kaze_float_t)1);
+#line 1613
         p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1614
         KzValue done = kz_num((kaze_float_t)0);
+#line 1615
         { long _kz_loop_l1615 = 0;
             while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
                 if (_kz_loop_l1615 >= 10000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l1615 = _kz_loop_l1615 + 1;
+#line 1616
                 if (kz_is_truthy(kz_eq(kaze_fn_at_end(tokens, p), kz_num((kaze_float_t)1)))) {
+#line 1617
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1619
                     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str("]")))) {
+#line 1620
                         p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1621
                         done = kz_num((kaze_float_t)1);
                     } else {
+#line 1623
                         KzValue t = kaze_fn_tok(tokens, p);
+#line 1624
                         if (kz_is_truthy(kz_or(kz_eq(kz_get_field(t, "kind"), kz_str("IDENT")), kz_eq(kz_get_field(t, "kind"), kz_str("NUM"))))) {
+#line 1625
                             if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 1626
                                 out = kz_add(out, kz_str(","));
                             }
+#line 1627
                             out = kz_add(out, kz_get_field(t, "text"));
+#line 1628
                             first = kz_num((kaze_float_t)0);
+#line 1629
                             p = kz_add(p, kz_num((kaze_float_t)1));
                         } else {
+#line 1631
                             if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(",")))) {
+#line 1632
                                 p = kz_add(p, kz_num((kaze_float_t)1));
                             } else {
+#line 1634
                                 done = kz_num((kaze_float_t)1);
                             }
                         }
@@ -4038,6 +5179,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_type_arg(KzValue tokens, KzValue po
                 }
             }
         }
+#line 1635
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_add(kz_add(kz_str("["), out), kz_str("]")), p });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4045,6 +5187,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_type_arg(KzValue tokens, KzValue po
         }
         return _kz_ret;
     }
+#line 1636
     KzValue _kz_ret = kaze_fn_parse_type_ref(tokens, p);
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4054,11 +5197,15 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_type_arg(KzValue tokens, KzValue po
     return kz_nil();
 }
 
+#line 1638
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_type_ref(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1641
     KzValue t = kaze_fn_tok(tokens, pos);
+#line 1642
     if (kz_is_truthy(kz_ne(kz_get_field(t, "kind"), kz_str("IDENT")))) {
+#line 1643
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_str(""), kz_add(pos, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4066,41 +5213,64 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_type_ref(KzValue tokens, KzValue po
         }
         return _kz_ret;
     }
+#line 1644
     KzValue name = kz_get_field(t, "text");
+#line 1645
     KzValue p = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1646
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str("<")))) {
+#line 1647
         KzValue inner = kz_str("");
+#line 1648
         KzValue first = kz_num((kaze_float_t)1);
+#line 1649
         p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1650
         KzValue done = kz_num((kaze_float_t)0);
+#line 1651
         { long _kz_loop_l1651 = 0;
             while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
                 if (_kz_loop_l1651 >= 10000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l1651 = _kz_loop_l1651 + 1;
+#line 1652
                 if (kz_is_truthy(kz_eq(kaze_fn_at_end(tokens, p), kz_num((kaze_float_t)1)))) {
+#line 1653
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1655
                     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(">")))) {
+#line 1656
                         p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1657
                         done = kz_num((kaze_float_t)1);
                     } else {
+#line 1659
                         KzValue r = kaze_fn_parse_type_arg(tokens, p);
+#line 1660
                         if (kz_is_truthy(kz_ne(kz_index(r, kz_num((kaze_float_t)0)), kz_str("")))) {
+#line 1661
                             if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 1662
                                 inner = kz_add(inner, kz_str(","));
                             }
+#line 1663
                             inner = kz_add(inner, kz_index(r, kz_num((kaze_float_t)0)));
+#line 1664
                             first = kz_num((kaze_float_t)0);
                         }
+#line 1665
                         if (kz_is_truthy(kz_gt(kz_index(r, kz_num((kaze_float_t)1)), p))) {
+#line 1666
                             p = kz_index(r, kz_num((kaze_float_t)1));
                         } else {
+#line 1668
                             done = kz_num((kaze_float_t)1);
                         }
                     }
                 }
             }
         }
+#line 1669
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kz_add(kz_add(kz_add(name, kz_str("<")), inner), kz_str(">")), p });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4108,6 +5278,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_type_ref(KzValue tokens, KzValue po
         }
         return _kz_ret;
     }
+#line 1670
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ name, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4117,52 +5288,83 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_type_ref(KzValue tokens, KzValue po
     return kz_nil();
 }
 
+#line 1672
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_params(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1675
     KzValue out = kz_list_new(0);
+#line 1676
     KzValue p = pos;
+#line 1677
     KzValue done = kz_num((kaze_float_t)0);
+#line 1678
     { long _kz_loop_l1678 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l1678 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1678 = _kz_loop_l1678 + 1;
+#line 1679
             p = kaze_fn_skip_noise(tokens, p);
+#line 1680
             if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(")")))) {
+#line 1681
                 p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1682
                 done = kz_num((kaze_float_t)1);
             } else {
+#line 1684
                 if (kz_is_truthy(kz_eq(kaze_fn_at_end(tokens, p), kz_num((kaze_float_t)1)))) {
+#line 1685
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1687
                     KzValue t = kaze_fn_tok(tokens, p);
+#line 1688
                     if (kz_is_truthy(kz_eq(kz_get_field(t, "kind"), kz_str("IDENT")))) {
+#line 1689
                         KzValue nm = kz_get_field(t, "text");
+#line 1690
                         KzValue ty = kz_str("");
+#line 1691
                         KzValue q = kz_add(p, kz_num((kaze_float_t)1));
+#line 1692
                         if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str(":")))) {
+#line 1693
                             KzValue tyref = kaze_fn_parse_type_ref(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1694
                             ty = kz_index(tyref, kz_num((kaze_float_t)0));
+#line 1695
                             q = kz_index(tyref, kz_num((kaze_float_t)1));
                         }
+#line 1696
                         KzValue defaults = kz_list_new(0);
+#line 1697
                         if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str("=")))) {
+#line 1698
                             KzValue r = kaze_fn_parse_expr(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1699
                             defaults = kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) });
+#line 1700
                             q = kz_index(r, kz_num((kaze_float_t)1));
                         }
+#line 1701
                         out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_make_param(nm, ty, defaults, kz_get_field(t, "line")) }));
+#line 1702
                         p = q;
                     } else {
+#line 1704
                         p = kz_add(p, kz_num((kaze_float_t)1));
                     }
+#line 1705
                     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(",")))) {
+#line 1706
                         p = kz_add(p, kz_num((kaze_float_t)1));
                     }
                 }
             }
         }
     }
+#line 1707
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ out, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4172,31 +5374,52 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_params(KzValue tokens, KzValue pos)
     return kz_nil();
 }
 
+#line 1709
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_routine(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1712
     KzValue kw = kaze_fn_tok_text(tokens, pos);
+#line 1713
     KzValue l = kaze_fn_tok_line(tokens, pos);
+#line 1714
     KzValue name = kaze_fn_tok_text(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1715
     KzValue p = kz_add(pos, kz_num((kaze_float_t)2));
+#line 1716
     KzValue params = kz_list_new(0);
+#line 1717
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str("(")))) {
+#line 1718
         KzValue pr = kaze_fn_parse_params(tokens, kz_add(p, kz_num((kaze_float_t)1)));
+#line 1719
         params = kz_index(pr, kz_num((kaze_float_t)0));
+#line 1720
         p = kz_index(pr, kz_num((kaze_float_t)1));
     }
+#line 1721
     KzValue result = kz_str("");
+#line 1722
     if (kz_is_truthy(kz_and(kaze_fn_is_sym(tokens, p, kz_str("-")), kaze_fn_is_sym(tokens, kz_add(p, kz_num((kaze_float_t)1)), kz_str(">"))))) {
+#line 1723
         KzValue rref = kaze_fn_parse_type_ref(tokens, kz_add(p, kz_num((kaze_float_t)2)));
+#line 1724
         result = kz_index(rref, kz_num((kaze_float_t)0));
+#line 1725
         p = kz_index(rref, kz_num((kaze_float_t)1));
     }
+#line 1726
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(":")))) {
+#line 1727
         p = kz_add(p, kz_num((kaze_float_t)1));
     }
+#line 1728
     KzValue br = kaze_fn_parse_routine_body(tokens, p);
+#line 1729
     KzValue params_node = kaze_fn_make_node(kz_str("PARAMS"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), params, l);
+#line 1730
     KzValue contracts_node = kaze_fn_make_node(kz_str("CONTRACTS"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_index(br, kz_num((kaze_float_t)0)), l);
+#line 1731
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_item(kw, name, params_node, contracts_node, result, kz_index(br, kz_num((kaze_float_t)1)), l), kz_index(br, kz_num((kaze_float_t)2)) });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4206,45 +5429,75 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_routine(KzValue tokens, KzValue pos
     return kz_nil();
 }
 
+#line 1733
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_record(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1736
     KzValue l = kaze_fn_tok_line(tokens, pos);
+#line 1737
     KzValue name = kaze_fn_tok_text(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1738
     KzValue p = kz_add(pos, kz_num((kaze_float_t)2));
+#line 1739
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(":")))) {
+#line 1740
         p = kz_add(p, kz_num((kaze_float_t)1));
     }
+#line 1741
     KzValue fields = kz_list_new(0);
+#line 1742
     p = kaze_fn_skip_nl(tokens, p);
+#line 1743
     if (kz_is_truthy(kaze_fn_is_kind(tokens, p, kz_str("INDENT")))) {
+#line 1744
         p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1745
         KzValue done = kz_num((kaze_float_t)0);
+#line 1746
         { long _kz_loop_l1746 = 0;
             while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
                 if (_kz_loop_l1746 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l1746 = _kz_loop_l1746 + 1;
+#line 1747
                 p = kaze_fn_skip_nl(tokens, p);
+#line 1748
                 KzValue k = kaze_fn_tok_kind(tokens, p);
+#line 1749
                 if (kz_is_truthy(kz_eq(k, kz_str("DEDENT")))) {
+#line 1750
                     p = kz_add(p, kz_num((kaze_float_t)1));
+#line 1751
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1753
                     if (kz_is_truthy(kz_eq(k, kz_str("EOF")))) {
+#line 1754
                         done = kz_num((kaze_float_t)1);
                     } else {
+#line 1756
                         if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 1757
                             KzValue fname = kaze_fn_tok_text(tokens, p);
+#line 1758
                             KzValue fty = kz_str("any");
+#line 1759
                             KzValue q = kz_add(p, kz_num((kaze_float_t)1));
+#line 1760
                             if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str(":")))) {
+#line 1761
                                 KzValue fref = kaze_fn_parse_type_ref(tokens, kz_add(q, kz_num((kaze_float_t)1)));
+#line 1762
                                 fty = kz_index(fref, kz_num((kaze_float_t)0));
+#line 1763
                                 q = kz_index(fref, kz_num((kaze_float_t)1));
                             }
+#line 1764
                             fields = kz_add(fields, kz_list_from(1, (KzValue[]){ kaze_fn_make_field_def(fname, fty, kaze_fn_tok_line(tokens, p)) }));
+#line 1765
                             p = q;
                         } else {
+#line 1767
                             p = kz_add(p, kz_num((kaze_float_t)1));
                         }
                     }
@@ -4252,6 +5505,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_record(KzValue tokens, KzValue pos)
             }
         }
     }
+#line 1768
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_record_item(name, fields, l), p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4261,16 +5515,24 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_record(KzValue tokens, KzValue pos)
     return kz_nil();
 }
 
+#line 1770
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_when(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1773
     KzValue l = kaze_fn_tok_line(tokens, pos);
+#line 1774
     KzValue c = kaze_fn_parse_expr(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1775
     KzValue p = kz_index(c, kz_num((kaze_float_t)1));
+#line 1776
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(":")))) {
+#line 1777
         p = kz_add(p, kz_num((kaze_float_t)1));
     }
+#line 1778
     KzValue b = kaze_fn_parse_block(tokens, p);
+#line 1779
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_when(kz_index(c, kz_num((kaze_float_t)0)), kz_index(b, kz_num((kaze_float_t)0)), l), kz_index(b, kz_num((kaze_float_t)1)) });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4280,16 +5542,24 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_when(KzValue tokens, KzValue pos) {
     return kz_nil();
 }
 
+#line 1781
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_every(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1784
     KzValue l = kaze_fn_tok_line(tokens, pos);
+#line 1785
     KzValue d = kaze_fn_parse_expr(tokens, kz_add(pos, kz_num((kaze_float_t)1)));
+#line 1786
     KzValue p = kz_index(d, kz_num((kaze_float_t)1));
+#line 1787
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(":")))) {
+#line 1788
         p = kz_add(p, kz_num((kaze_float_t)1));
     }
+#line 1789
     KzValue b = kaze_fn_parse_block(tokens, p);
+#line 1790
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_every(kz_index(d, kz_num((kaze_float_t)0)), kz_index(b, kz_num((kaze_float_t)0)), l), kz_index(b, kz_num((kaze_float_t)1)) });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4299,28 +5569,41 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_every(KzValue tokens, KzValue pos) 
     return kz_nil();
 }
 
+#line 1794
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_use_line(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1797
     KzValue l = kaze_fn_tok_line(tokens, pos);
+#line 1798
     KzValue path = kz_str("");
+#line 1799
     KzValue p = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1800
     KzValue moving = kz_num((kaze_float_t)1);
+#line 1801
     { long _kz_loop_l1801 = 0;
         while (kz_is_truthy(kz_eq(moving, kz_num((kaze_float_t)1)))) {
             if (_kz_loop_l1801 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1801 = _kz_loop_l1801 + 1;
+#line 1802
             KzValue t = kaze_fn_tok(tokens, p);
+#line 1803
             if (kz_is_truthy(kz_eq(kz_get_field(t, "kind"), kz_str("STR")))) {
+#line 1804
                 path = kz_get_field(t, "text");
             }
+#line 1805
             if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(t, "kind"), kz_str("NEWLINE")), kz_eq(kz_get_field(t, "kind"), kz_str("EOF"))), kz_eq(kz_get_field(t, "kind"), kz_str("DEDENT"))), kz_eq(kaze_fn_at_end(tokens, p), kz_num((kaze_float_t)1))))) {
+#line 1806
                 moving = kz_num((kaze_float_t)0);
             } else {
+#line 1808
                 p = kz_add(p, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 1809
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_node(kz_str("USE"), path, kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), l), p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4330,32 +5613,47 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_use_line(KzValue tokens, KzValue po
     return kz_nil();
 }
 
+#line 1811
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_needs(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 1814
     KzValue p = kz_add(pos, kz_num((kaze_float_t)1));
+#line 1815
     if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(":")))) {
+#line 1816
         p = kz_add(p, kz_num((kaze_float_t)1));
     }
+#line 1817
     KzValue out = kz_list_new(0);
+#line 1818
     KzValue done = kz_num((kaze_float_t)0);
+#line 1819
     { long _kz_loop_l1819 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l1819 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1819 = _kz_loop_l1819 + 1;
+#line 1820
             KzValue t = kaze_fn_tok(tokens, p);
+#line 1821
             if (kz_is_truthy(kz_eq(kz_get_field(t, "kind"), kz_str("IDENT")))) {
+#line 1822
                 out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_make_node(kz_str("NEED"), kz_get_field(t, "text"), kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), kz_get_field(t, "line")) }));
+#line 1823
                 p = kz_add(p, kz_num((kaze_float_t)1));
             } else {
+#line 1825
                 if (kz_is_truthy(kaze_fn_is_sym(tokens, p, kz_str(",")))) {
+#line 1826
                     p = kz_add(p, kz_num((kaze_float_t)1));
                 } else {
+#line 1828
                     done = kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 1829
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ out, p });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -4365,72 +5663,123 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_needs(KzValue tokens, KzValue pos) 
     return kz_nil();
 }
 
+#line 1831
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_program(KzValue tokens) {
     (void)tokens;   /* a routine need not use every parameter */
+#line 1833
     KzValue uses = kz_list_new(0);
+#line 1834
     KzValue needs = kz_list_new(0);
+#line 1835
     KzValue items = kz_list_new(0);
+#line 1836
     KzValue config = kz_list_new(0);
+#line 1837
     KzValue p = kz_num((kaze_float_t)0);
+#line 1838
     KzValue len = kz_len(tokens);
+#line 1839
     KzValue done = kz_num((kaze_float_t)0);
+#line 1840
     { long _kz_loop_l1840 = 0;
         while (kz_is_truthy(kz_and(kz_eq(done, kz_num((kaze_float_t)0)), kz_lt(p, len)))) {
             if (_kz_loop_l1840 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1840 = _kz_loop_l1840 + 1;
+#line 1841
             p = kaze_fn_skip_noise(tokens, p);
+#line 1842
             if (kz_is_truthy(kz_ge(p, len))) {
+#line 1843
                 done = kz_num((kaze_float_t)1);
             } else {
+#line 1845
                 KzValue t = kaze_fn_tok(tokens, p);
+#line 1846
                 KzValue k = kz_get_field(t, "kind");
+#line 1847
                 KzValue w = kz_get_field(t, "text");
+#line 1848
                 if (kz_is_truthy(kz_eq(k, kz_str("EOF")))) {
+#line 1849
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 1851
                     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("use"))))) {
+#line 1852
                         KzValue r = kaze_fn_parse_use_line(tokens, p);
+#line 1853
                         uses = kz_add_own(uses, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1854
                         p = kz_index(r, kz_num((kaze_float_t)1));
                     } else {
+#line 1856
                         if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("needs"))))) {
+#line 1857
                             KzValue r = kaze_fn_parse_needs(tokens, p);
+#line 1858
                             needs = kz_add_own(needs, kz_index(r, kz_num((kaze_float_t)0)));
+#line 1859
                             p = kz_index(r, kz_num((kaze_float_t)1));
                         } else {
+#line 1861
                             if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("record"))))) {
+#line 1862
                                 KzValue r = kaze_fn_parse_record(tokens, p);
+#line 1863
                                 items = kz_add_own(items, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1864
                                 p = kz_index(r, kz_num((kaze_float_t)1));
                             } else {
+#line 1866
                                 if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(w, kz_str("action")), kz_eq(w, kz_str("routine"))), kz_eq(w, kz_str("func"))), kz_eq(w, kz_str("check"))), kz_eq(w, kz_str("filter"))), kz_eq(w, kz_str("fiber")))))) {
+#line 1867
                                     KzValue r = kaze_fn_parse_routine(tokens, p);
+#line 1868
                                     items = kz_add_own(items, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1869
                                     p = kz_index(r, kz_num((kaze_float_t)1));
                                 } else {
+#line 1871
                                     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("when"))))) {
+#line 1872
                                         KzValue r = kaze_fn_parse_when(tokens, p);
+#line 1873
                                         items = kz_add_own(items, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1874
                                         p = kz_index(r, kz_num((kaze_float_t)1));
                                     } else {
+#line 1876
                                         if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("every"))))) {
+#line 1877
                                             KzValue r = kaze_fn_parse_every(tokens, p);
+#line 1878
                                             items = kz_add_own(items, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 1879
                                             p = kz_index(r, kz_num((kaze_float_t)1));
                                         } else {
+#line 1881
                                             if (kz_is_truthy(kz_and(kz_eq(k, kz_str("IDENT")), kz_eq(w, kz_str("tasks"))))) {
+#line 1882
                                                 KzValue q = kz_add(p, kz_num((kaze_float_t)1));
+#line 1883
                                                 if (kz_is_truthy(kaze_fn_is_word(tokens, q, kz_str("bounded")))) {
+#line 1884
                                                     q = kz_add(q, kz_num((kaze_float_t)1));
                                                 }
+#line 1885
                                                 KzValue bt = kaze_fn_tok(tokens, q);
+#line 1886
                                                 if (kz_is_truthy(kz_eq(kz_get_field(bt, "kind"), kz_str("NUM")))) {
+#line 1887
                                                     config = kz_add_own(config, kz_list_from(1, (KzValue[]){ kaze_fn_make_tasks_bound(kz_get_field(bt, "text"), kz_get_field(bt, "line")) }));
+#line 1888
                                                     p = kz_add(q, kz_num((kaze_float_t)1));
                                                 } else {
+#line 1890
                                                     p = kz_add(p, kz_num((kaze_float_t)1));
                                                 }
                                             } else {
+#line 1892
                                                 p = kz_add(p, kz_num((kaze_float_t)1));
                                             }
                                         }
@@ -4443,584 +5792,886 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_program(KzValue tokens) {
             }
         }
     }
+#line 1893
     return kaze_fn_make_program(uses, needs, items, config);
     return kz_nil();
 }
 
+#line 1928
 KZ_MAYBE_UNUSED static KzValue kaze_fn_diag(KzValue code, KzValue line, KzValue msg) {
     (void)code;   /* a routine need not use every parameter */
     (void)line;   /* a routine need not use every parameter */
     (void)msg;   /* a routine need not use every parameter */
+#line 1929
     return kz_record_new_Diagnostic(3, (KzValue[]){ code, line, msg }, (const char*[]){ "code", "line", "msg" });
     return kz_nil();
 }
 
+#line 1931
 KZ_MAYBE_UNUSED static KzValue kaze_fn_render_diag(KzValue d) {
     (void)d;   /* a routine need not use every parameter */
+#line 1932
     return kz_add(kz_add(kz_add(kz_add(kz_get_field(d, "code"), kz_str(" at line ")), kz_get_field(d, "line")), kz_str(": ")), kz_get_field(d, "msg"));
     return kz_nil();
 }
 
+#line 1936
 KZ_MAYBE_UNUSED static KzValue kaze_fn_list_has(KzValue items, KzValue want) {
     (void)items;   /* a routine need not use every parameter */
     (void)want;   /* a routine need not use every parameter */
+#line 1937
     KzValue i = kz_num((kaze_float_t)0);
+#line 1938
     KzValue len = kz_len(items);
+#line 1939
     KzValue found = kz_num((kaze_float_t)0);
+#line 1940
     { long _kz_loop_l1940 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, len), kz_eq(found, kz_num((kaze_float_t)0))))) {
             if (_kz_loop_l1940 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1940 = _kz_loop_l1940 + 1;
+#line 1941
             KzValue cur = kz_fb_index(items, i, kz_str(""));
+#line 1942
             if (kz_is_truthy(kz_eq(cur, want))) {
+#line 1943
                 found = kz_num((kaze_float_t)1);
             }
+#line 1944
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 1945
     return found;
     return kz_nil();
 }
 
+#line 1947
 KZ_MAYBE_UNUSED static KzValue kaze_fn_drop_last(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 1948
     KzValue out = kz_list_new(0);
+#line 1949
     KzValue len = kz_len(items);
+#line 1950
     KzValue i = kz_num((kaze_float_t)0);
+#line 1951
     { long _kz_loop_l1951 = 0;
         while (kz_is_truthy(kz_lt(i, kz_sub(len, kz_num((kaze_float_t)1))))) {
             if (_kz_loop_l1951 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1951 = _kz_loop_l1951 + 1;
+#line 1952
             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_fb_index(items, i, kz_str("")) }));
+#line 1953
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 1954
     return out;
     return kz_nil();
 }
 
+#line 1957
 KZ_MAYBE_UNUSED static KzValue kaze_fn_head_words(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 1958
     KzValue len = kz_len(name);
+#line 1959
     KzValue i = kz_num((kaze_float_t)0);
+#line 1960
     KzValue out = kz_str("");
+#line 1961
     KzValue done = kz_num((kaze_float_t)0);
+#line 1962
     { long _kz_loop_l1962 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, len), kz_eq(done, kz_num((kaze_float_t)0))))) {
             if (_kz_loop_l1962 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1962 = _kz_loop_l1962 + 1;
+#line 1963
             KzValue c = kz_fb_index(name, i, kz_str("x"));
+#line 1964
             if (kz_is_truthy(kz_eq(c, kz_str(".")))) {
+#line 1965
                 done = kz_num((kaze_float_t)1);
             } else {
+#line 1967
                 out = kz_add_own(out, c);
             }
+#line 1968
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 1969
     return out;
     return kz_nil();
 }
 
+#line 1972
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tail_words(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 1973
     KzValue len = kz_len(name);
+#line 1974
     KzValue i = kz_num((kaze_float_t)0);
+#line 1975
     KzValue out = kz_str("");
+#line 1976
     KzValue seen = kz_num((kaze_float_t)0);
+#line 1977
     { long _kz_loop_l1977 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l1977 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1977 = _kz_loop_l1977 + 1;
+#line 1978
             KzValue c = kz_fb_index(name, i, kz_str("x"));
+#line 1979
             if (kz_is_truthy(kz_eq(seen, kz_num((kaze_float_t)1)))) {
+#line 1980
                 out = kz_add_own(out, c);
             }
+#line 1981
             if (kz_is_truthy(kz_and(kz_eq(c, kz_str(".")), kz_eq(seen, kz_num((kaze_float_t)0))))) {
+#line 1982
                 seen = kz_num((kaze_float_t)1);
             }
+#line 1983
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 1984
     return out;
     return kz_nil();
 }
 
+#line 1986
 KZ_MAYBE_UNUSED static KzValue kaze_fn_has_dot(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 1987
     KzValue len = kz_len(name);
+#line 1988
     KzValue i = kz_num((kaze_float_t)0);
+#line 1989
     KzValue found = kz_num((kaze_float_t)0);
+#line 1990
     { long _kz_loop_l1990 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l1990 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l1990 = _kz_loop_l1990 + 1;
+#line 1991
             if (kz_is_truthy(kz_eq(kz_fb_index(name, i, kz_str("x")), kz_str(".")))) {
+#line 1992
                 found = kz_num((kaze_float_t)1);
             }
+#line 1993
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 1994
     return found;
     return kz_nil();
 }
 
+#line 1996
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_upper(KzValue word) {
     (void)word;   /* a routine need not use every parameter */
+#line 1997
     KzValue len = kz_len(word);
+#line 1998
     if (kz_is_truthy(kz_eq(len, kz_num((kaze_float_t)0)))) {
+#line 1999
         return kz_num((kaze_float_t)0);
     }
+#line 2000
     KzValue c = kz_fb_index(word, kz_num((kaze_float_t)0), kz_str("?"));
+#line 2001
     if (kz_is_truthy(kz_and(kz_ge(c, kz_str("A")), kz_le(c, kz_str("Z"))))) {
+#line 2002
         return kz_num((kaze_float_t)1);
     }
+#line 2003
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2010
 KZ_MAYBE_UNUSED static KzValue kaze_fn_cap_name_known(KzValue w) {
     (void)w;   /* a routine need not use every parameter */
+#line 2011
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(w, kz_str("drone")), kz_eq(w, kz_str("rover"))), kz_eq(w, kz_str("sensor"))), kz_eq(w, kz_str("device"))), kz_eq(w, kz_str("memory"))), kz_eq(w, kz_str("policy"))), kz_eq(w, kz_str("log"))), kz_eq(w, kz_str("alert"))), kz_eq(w, kz_str("ai"))), kz_eq(w, kz_str("tool"))))) {
+#line 2012
         return kz_num((kaze_float_t)1);
     }
+#line 2013
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(w, kz_str("tools")), kz_eq(w, kz_str("agent"))), kz_eq(w, kz_str("model"))), kz_eq(w, kz_str("llm"))))) {
+#line 2014
         return kz_num((kaze_float_t)1);
     }
+#line 2015
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(w, kz_str("lidar")), kz_eq(w, kz_str("camera"))), kz_eq(w, kz_str("thermostat"))), kz_eq(w, kz_str("probe"))))) {
+#line 2016
         return kz_num((kaze_float_t)1);
     }
+#line 2017
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(w, kz_str("fan")), kz_eq(w, kz_str("mister"))), kz_eq(w, kz_str("pump"))), kz_eq(w, kz_str("relay"))), kz_eq(w, kz_str("valve"))), kz_eq(w, kz_str("motor"))), kz_eq(w, kz_str("light"))))) {
+#line 2018
         return kz_num((kaze_float_t)1);
     }
+#line 2019
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2026
 KZ_MAYBE_UNUSED static KzValue kaze_fn_cap_verbs(void) {
+#line 2027
     return kz_list_from(40, (KzValue[]){ kz_str("drone.arm"), kz_str("drone.land"), kz_str("drone.rtl"), kz_str("drone.hold"), kz_str("drone.stop"), kz_str("drone.takeoff"), kz_str("drone.goto"), kz_str("drone.telemetry"), kz_str("rover.forward"), kz_str("rover.backward"), kz_str("rover.turn_left"), kz_str("rover.turn_right"), kz_str("rover.stop"), kz_str("rover.telemetry"), kz_str("sensor.temperature"), kz_str("sensor.humidity"), kz_str("sensor.distance"), kz_str("sensor.front_distance"), kz_str("sensor.read"), kz_str("sensor.telemetry"), kz_str("device.set_relay"), kz_str("device.pulse"), kz_str("device.read_gpio"), kz_str("device.set_duty"), kz_str("memory.save"), kz_str("memory.recall"), kz_str("policy.detects"), kz_str("policy.detect"), kz_str("policy.allow"), kz_str("policy.reject"), kz_str("log.info"), kz_str("log.warn"), kz_str("log.error"), kz_str("log.debug"), kz_str("alert.send"), kz_str("ai.prompt"), kz_str("ai.complete"), kz_str("ai.classify"), kz_str("tool.call"), kz_str("tool.run") });
     return kz_nil();
 }
 
+#line 2043
 KZ_MAYBE_UNUSED static KzValue kaze_fn_op_known(KzValue family, KzValue op) {
     (void)family;   /* a routine need not use every parameter */
     (void)op;   /* a routine need not use every parameter */
+#line 2044
     return kaze_fn_list_has(kaze_fn_cap_verbs(), kz_add(kz_add(family, kz_str(".")), op));
     return kz_nil();
 }
 
+#line 2046
 KZ_MAYBE_UNUSED static KzValue kaze_fn_pure_builtin(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 2047
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("code")), kz_eq(name, kz_str("character"))))) {
+#line 2048
         return kz_num((kaze_float_t)1);
     }
+#line 2049
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_eq(name, kz_str("sin")), kz_eq(name, kz_str("cos"))), kz_eq(name, kz_str("tan"))), kz_eq(name, kz_str("sqrt"))), kz_eq(name, kz_str("atan2"))))) {
+#line 2050
         return kz_num((kaze_float_t)1);
     }
+#line 2051
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(name, kz_str("abs")), kz_eq(name, kz_str("min"))), kz_eq(name, kz_str("max"))), kz_eq(name, kz_str("floor"))), kz_eq(name, kz_str("ceil"))), kz_eq(name, kz_str("round"))))) {
+#line 2052
         return kz_num((kaze_float_t)1);
     }
+#line 2053
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("vector")), kz_eq(name, kz_str("link_lost"))), kz_eq(name, kz_str("length"))))) {
+#line 2054
         return kz_num((kaze_float_t)1);
     }
+#line 2055
     if (kz_is_truthy(kz_eq(name, kz_str("channel")))) {
+#line 2056
         return kz_num((kaze_float_t)1);
     }
+#line 2060
     if (kz_is_truthy(kz_eq(name, kz_str("http_fetch")))) {
+#line 2061
         return kz_num((kaze_float_t)1);
     }
+#line 2064
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("tensor")), kz_eq(name, kz_str("zeros"))))) {
+#line 2065
         return kz_num((kaze_float_t)1);
     }
+#line 2066
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("matmul")), kz_eq(name, kz_str("matmul_t"))), kz_eq(name, kz_str("add_bias"))))) {
+#line 2067
         return kz_num((kaze_float_t)1);
     }
+#line 2068
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(name, kz_str("tensor_add")), kz_eq(name, kz_str("tensor_sub"))), kz_eq(name, kz_str("tensor_mul"))), kz_eq(name, kz_str("tensor_div"))))) {
+#line 2069
         return kz_num((kaze_float_t)1);
     }
+#line 2070
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("transpose")), kz_eq(name, kz_str("reshape"))))) {
+#line 2071
         return kz_num((kaze_float_t)1);
     }
+#line 2072
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("softmax")), kz_eq(name, kz_str("rms_norm"))), kz_eq(name, kz_str("layer_norm"))))) {
+#line 2073
         return kz_num((kaze_float_t)1);
     }
+#line 2074
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("gelu")), kz_eq(name, kz_str("silu"))), kz_eq(name, kz_str("relu"))))) {
+#line 2075
         return kz_num((kaze_float_t)1);
     }
+#line 2076
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("tensor_sum")), kz_eq(name, kz_str("tensor_mean"))))) {
+#line 2077
         return kz_num((kaze_float_t)1);
     }
+#line 2078
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("argmax")), kz_eq(name, kz_str("tensor_get"))), kz_eq(name, kz_str("tensor_shape"))))) {
+#line 2079
         return kz_num((kaze_float_t)1);
     }
+#line 2080
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("model_open")), kz_eq(name, kz_str("model_forward"))))) {
+#line 2081
         return kz_num((kaze_float_t)1);
     }
+#line 2082
     if (kz_is_truthy(kz_eq(name, kz_str("cli_text")))) {
+#line 2083
         return kz_num((kaze_float_t)1);
     }
+#line 2084
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2092
 KZ_MAYBE_UNUSED static KzValue kaze_fn_key_of(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 2094
     if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("IDENT")))) {
+#line 2095
         return kz_get_field(e, "name");
     }
+#line 2096
     if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("FIELD")))) {
+#line 2097
         KzValue base = kaze_fn_key_of(kaze_fn_child_at(e, kz_num((kaze_float_t)0)));
+#line 2098
         if (kz_is_truthy(kz_eq(base, kz_str("")))) {
+#line 2099
             return kz_str("");
         }
+#line 2100
         return kz_add(kz_add(base, kz_str(".")), kz_get_field(e, "name"));
     }
+#line 2101
     return kz_str("");
     return kz_nil();
 }
 
+#line 2105
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bound_coll_key(KzValue bound, KzValue facts) {
     (void)bound;   /* a routine need not use every parameter */
     (void)facts;   /* a routine need not use every parameter */
+#line 2106
     if (kz_is_truthy(kz_eq(kz_get_field(bound, "kind"), kz_str("LEN")))) {
+#line 2107
         return kaze_fn_key_of(kaze_fn_child_at(bound, kz_num((kaze_float_t)0)));
     }
+#line 2108
     if (kz_is_truthy(kz_eq(kz_get_field(bound, "kind"), kz_str("IDENT")))) {
+#line 2109
         return kaze_fn_alias_target(facts, kz_get_field(bound, "name"));
     }
+#line 2110
     return kz_str("");
     return kz_nil();
 }
 
+#line 2112
 KZ_MAYBE_UNUSED static KzValue kaze_fn_alias_target(KzValue facts, KzValue name) {
     (void)facts;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 2113
     KzValue prefix = kz_add(kz_add(kz_str("alias:"), name), kz_str(":"));
+#line 2114
     KzValue i = kz_num((kaze_float_t)0);
+#line 2115
     KzValue len = kz_len(facts);
+#line 2116
     KzValue out = kz_str("");
+#line 2117
     { long _kz_loop_l2117 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2117 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2117 = _kz_loop_l2117 + 1;
+#line 2118
             KzValue f = kz_fb_index(facts, i, kz_str(""));
+#line 2119
             if (kz_is_truthy(kz_eq(kaze_fn_starts_with(f, prefix), kz_num((kaze_float_t)1)))) {
+#line 2120
                 out = kaze_fn_tail_from(f, prefix);
             }
+#line 2121
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2122
     return out;
     return kz_nil();
 }
 
+#line 2124
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fact_lt(KzValue idx, KzValue bound, KzValue facts) {
     (void)idx;   /* a routine need not use every parameter */
     (void)bound;   /* a routine need not use every parameter */
     (void)facts;   /* a routine need not use every parameter */
+#line 2125
     KzValue out = kz_list_new(0);
+#line 2126
     KzValue ik = kaze_fn_key_of(idx);
+#line 2127
     KzValue ck = kaze_fn_bound_coll_key(bound, facts);
+#line 2128
     if (kz_is_truthy(kz_and(kz_ne(ik, kz_str("")), kz_ne(ck, kz_str(""))))) {
+#line 2129
         out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_add(kz_add(kz_add(kz_str("lt:"), ik), kz_str(":")), ck) }));
     }
+#line 2130
     return out;
     return kz_nil();
 }
 
+#line 2132
 KZ_MAYBE_UNUSED static KzValue kaze_fn_facts_from_cond(KzValue cond, KzValue facts) {
     (void)cond;   /* a routine need not use every parameter */
     (void)facts;   /* a routine need not use every parameter */
+#line 2134
     KzValue out = kz_list_new(0);
+#line 2135
     if (kz_is_truthy(kz_eq(kz_get_field(cond, "kind"), kz_str("BIN")))) {
+#line 2136
         if (kz_is_truthy(kz_eq(kz_get_field(cond, "name"), kz_str("and")))) {
+#line 2137
             out = kz_add_own(out, kaze_fn_facts_from_cond(kaze_fn_child_at(cond, kz_num((kaze_float_t)0)), facts));
+#line 2138
             out = kz_add_own(out, kaze_fn_facts_from_cond(kaze_fn_child_at(cond, kz_num((kaze_float_t)1)), facts));
         }
+#line 2139
         if (kz_is_truthy(kz_eq(kz_get_field(cond, "name"), kz_str("<")))) {
+#line 2140
             out = kz_add_own(out, kaze_fn_fact_lt(kaze_fn_child_at(cond, kz_num((kaze_float_t)0)), kaze_fn_child_at(cond, kz_num((kaze_float_t)1)), facts));
         }
+#line 2141
         if (kz_is_truthy(kz_eq(kz_get_field(cond, "name"), kz_str(">")))) {
+#line 2142
             out = kz_add_own(out, kaze_fn_fact_lt(kaze_fn_child_at(cond, kz_num((kaze_float_t)1)), kaze_fn_child_at(cond, kz_num((kaze_float_t)0)), facts));
         }
     }
+#line 2143
     return out;
     return kz_nil();
 }
 
+#line 2145
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_constant(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 2146
     if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("NUM")))) {
+#line 2147
         return kz_num((kaze_float_t)1);
     }
+#line 2148
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2150
 KZ_MAYBE_UNUSED static KzValue kaze_fn_constant_value(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 2151
     return kaze_fn_text_to_num(kz_get_field(e, "val_str"));
     return kz_nil();
 }
 
+#line 2154
 KZ_MAYBE_UNUSED static KzValue kaze_fn_nonzero_literal(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 2155
     if (kz_is_truthy(kz_ne(kz_get_field(e, "kind"), kz_str("NUM")))) {
+#line 2156
         return kz_num((kaze_float_t)0);
     }
+#line 2157
     KzValue v = kaze_fn_text_to_num(kz_get_field(e, "val_str"));
+#line 2158
     if (kz_is_truthy(kz_gt(v, kz_num((kaze_float_t)0)))) {
+#line 2159
         return kz_num((kaze_float_t)1);
     }
+#line 2160
     if (kz_is_truthy(kz_lt(v, kz_num((kaze_float_t)0)))) {
+#line 2161
         return kz_num((kaze_float_t)1);
     }
+#line 2162
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2166
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_boolean_expr(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 2168
     if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("BOOL")))) {
+#line 2169
         return kz_num((kaze_float_t)1);
     }
+#line 2170
     if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("BIN")))) {
+#line 2171
         if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(kz_get_field(e, "name"), kz_str("==")), kz_eq(kz_get_field(e, "name"), kz_str("!="))), kz_eq(kz_get_field(e, "name"), kz_str("<"))), kz_eq(kz_get_field(e, "name"), kz_str("<="))), kz_eq(kz_get_field(e, "name"), kz_str(">"))), kz_eq(kz_get_field(e, "name"), kz_str(">="))))) {
+#line 2172
             return kz_num((kaze_float_t)1);
         }
+#line 2173
         if (kz_is_truthy(kz_or(kz_or(kz_eq(kz_get_field(e, "name"), kz_str("and")), kz_eq(kz_get_field(e, "name"), kz_str("or"))), kz_eq(kz_get_field(e, "name"), kz_str("not"))))) {
+#line 2174
             return kz_num((kaze_float_t)1);
         }
     }
+#line 2175
     if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("CALL")))) {
+#line 2176
         if (kz_is_truthy(kz_and(kz_eq(kaze_fn_has_dot(kz_get_field(e, "name")), kz_num((kaze_float_t)1)), kz_eq(kaze_fn_head_words(kz_get_field(e, "name")), kz_str("policy"))))) {
+#line 2177
             return kz_num((kaze_float_t)1);
         }
+#line 2178
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("link_lost")))) {
+#line 2179
             return kz_num((kaze_float_t)1);
         }
     }
+#line 2180
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2184
 KZ_MAYBE_UNUSED static KzValue kaze_fn_name_allowed(KzValue name, KzValue names) {
     (void)name;   /* a routine need not use every parameter */
     (void)names;   /* a routine need not use every parameter */
+#line 2185
     if (kz_is_truthy(kz_eq(kaze_fn_list_has(names, name), kz_num((kaze_float_t)1)))) {
+#line 2186
         return kz_num((kaze_float_t)1);
     }
+#line 2187
     if (kz_is_truthy(kz_eq(kaze_fn_is_telemetry(name), kz_num((kaze_float_t)1)))) {
+#line 2188
         return kz_num((kaze_float_t)1);
     }
+#line 2189
     if (kz_is_truthy(kz_eq(name, kz_str("result")))) {
+#line 2190
         return kz_num((kaze_float_t)1);
     }
+#line 2191
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2193
 KZ_MAYBE_UNUSED static KzValue kaze_fn_routine_named(KzValue items, KzValue name) {
     (void)items;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 2194
     KzValue i = kz_num((kaze_float_t)0);
+#line 2195
     KzValue len = kz_len(items);
+#line 2196
     KzValue found = kaze_fn_none_node();
+#line 2197
     { long _kz_loop_l2197 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2197 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2197 = _kz_loop_l2197 + 1;
+#line 2198
             KzValue it = kaze_fn_node_at(items, i);
+#line 2199
             if (kz_is_truthy(kz_eq(kz_get_field(it, "name"), name))) {
+#line 2200
                 found = it;
             }
+#line 2201
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2202
     return found;
     return kz_nil();
 }
 
+#line 2204
 KZ_MAYBE_UNUSED static KzValue kaze_fn_record_named(KzValue items, KzValue name) {
     (void)items;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 2205
     KzValue i = kz_num((kaze_float_t)0);
+#line 2206
     KzValue len = kz_len(items);
+#line 2207
     KzValue found = kz_num((kaze_float_t)0);
+#line 2208
     { long _kz_loop_l2208 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2208 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2208 = _kz_loop_l2208 + 1;
+#line 2209
             KzValue it = kaze_fn_node_at(items, i);
+#line 2210
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(it, "name"), name), kz_eq(kz_get_field(it, "kind"), kz_str("RECORD"))))) {
+#line 2211
                 found = kz_num((kaze_float_t)1);
             }
+#line 2212
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2213
     return found;
     return kz_nil();
 }
 
+#line 2220
 KZ_MAYBE_UNUSED static KzValue kaze_fn_promised_length(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 2221
     KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 2222
     KzValue i = kz_num((kaze_float_t)0);
+#line 2223
     KzValue len = kz_len(kz_get_field(contracts, "children"));
+#line 2224
     KzValue out = kz_num((kaze_float_t)0);
+#line 2225
     { long _kz_loop_l2225 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2225 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2225 = _kz_loop_l2225 + 1;
+#line 2226
             KzValue c = kaze_fn_child_at(contracts, i);
+#line 2227
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("ensures"))))) {
+#line 2228
                 KzValue e = kaze_fn_child_at(c, kz_num((kaze_float_t)0));
+#line 2229
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(e, "kind"), kz_str("BIN")), kz_eq(kz_get_field(e, "name"), kz_str("=="))))) {
+#line 2230
                     KzValue left = kaze_fn_child_at(e, kz_num((kaze_float_t)0));
+#line 2231
                     KzValue right = kaze_fn_child_at(e, kz_num((kaze_float_t)1));
+#line 2232
                     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(left, "kind"), kz_str("LEN")), kz_eq(kz_get_field(right, "kind"), kz_str("NUM"))))) {
+#line 2233
                         out = kaze_fn_text_to_num(kz_get_field(right, "val_str"));
                     }
                 }
             }
+#line 2234
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2235
     return out;
     return kz_nil();
 }
 
+#line 2239
 KZ_MAYBE_UNUSED static KzValue kaze_fn_starts_with(KzValue s, KzValue prefix) {
     (void)s;   /* a routine need not use every parameter */
     (void)prefix;   /* a routine need not use every parameter */
+#line 2240
     KzValue plen = kz_len(prefix);
+#line 2241
     if (kz_is_truthy(kz_lt(kz_len(s), plen))) {
+#line 2242
         return kz_num((kaze_float_t)0);
     }
+#line 2243
     KzValue i = kz_num((kaze_float_t)0);
+#line 2244
     KzValue ok = kz_num((kaze_float_t)1);
+#line 2245
     { long _kz_loop_l2245 = 0;
         while (kz_is_truthy(kz_lt(i, plen))) {
             if (_kz_loop_l2245 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2245 = _kz_loop_l2245 + 1;
+#line 2246
             if (kz_is_truthy(kz_ne(kz_fb_index(s, i, kz_str("x")), kz_fb_index(prefix, i, kz_str("y"))))) {
+#line 2247
                 ok = kz_num((kaze_float_t)0);
             }
+#line 2248
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2249
     return ok;
     return kz_nil();
 }
 
+#line 2251
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tail_from(KzValue s, KzValue prefix) {
     (void)s;   /* a routine need not use every parameter */
     (void)prefix;   /* a routine need not use every parameter */
+#line 2252
     KzValue plen = kz_len(prefix);
+#line 2253
     KzValue len = kz_len(s);
+#line 2254
     KzValue i = plen;
+#line 2255
     KzValue out = kz_str("");
+#line 2256
     { long _kz_loop_l2256 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2256 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2256 = _kz_loop_l2256 + 1;
+#line 2257
             out = kz_add_own(out, kz_fb_index(s, i, kz_str("")));
+#line 2258
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2259
     return out;
     return kz_nil();
 }
 
+#line 2261
 KZ_MAYBE_UNUSED static KzValue kaze_fn_find_len_fact(KzValue facts, KzValue ck) {
     (void)facts;   /* a routine need not use every parameter */
     (void)ck;   /* a routine need not use every parameter */
+#line 2262
     KzValue i = kz_num((kaze_float_t)0);
+#line 2263
     KzValue len = kz_len(facts);
+#line 2264
     KzValue out = kz_num((kaze_float_t)0);
+#line 2265
     KzValue prefix = kz_add(kz_add(kz_str("len:"), ck), kz_str(":"));
+#line 2266
     { long _kz_loop_l2266 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2266 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2266 = _kz_loop_l2266 + 1;
+#line 2267
             KzValue f = kz_fb_index(facts, i, kz_str(""));
+#line 2268
             if (kz_is_truthy(kz_eq(kaze_fn_starts_with(f, prefix), kz_num((kaze_float_t)1)))) {
+#line 2269
                 out = kaze_fn_text_to_num(kaze_fn_tail_from(f, prefix));
             }
+#line 2270
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2271
     return out;
     return kz_nil();
 }
 
+#line 2281
 KZ_MAYBE_UNUSED static KzValue kaze_fn_dimension_of_unit(KzValue u) {
     (void)u;   /* a routine need not use every parameter */
+#line 2282
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(u, kz_str("m")), kz_eq(u, kz_str("km"))), kz_eq(u, kz_str("cm"))), kz_eq(u, kz_str("mm"))))) {
+#line 2283
         return kz_str("length");
     }
+#line 2284
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(u, kz_str("seconds")), kz_eq(u, kz_str("ms"))), kz_eq(u, kz_str("hours"))), kz_eq(u, kz_str("minutes"))))) {
+#line 2285
         return kz_str("time");
     }
+#line 2286
     if (kz_is_truthy(kz_or(kz_eq(u, kz_str("kg")), kz_eq(u, kz_str("gram"))))) {
+#line 2287
         return kz_str("mass");
     }
+#line 2288
     if (kz_is_truthy(kz_or(kz_eq(u, kz_str("Celsius")), kz_eq(u, kz_str("Kelvin"))))) {
+#line 2289
         return kz_str("temperature");
     }
+#line 2290
     if (kz_is_truthy(kz_or(kz_or(kz_eq(u, kz_str("Pascal")), kz_eq(u, kz_str("mbar"))), kz_eq(u, kz_str("hPa"))))) {
+#line 2291
         return kz_str("pressure");
     }
+#line 2292
     if (kz_is_truthy(kz_eq(u, kz_str("ampere")))) {
+#line 2293
         return kz_str("current");
     }
+#line 2294
     if (kz_is_truthy(kz_or(kz_eq(u, kz_str("degrees")), kz_eq(u, kz_str("radians"))))) {
+#line 2295
         return kz_str("angle");
     }
+#line 2296
     if (kz_is_truthy(kz_eq(u, kz_str("%")))) {
+#line 2297
         return kz_str("percent");
     }
+#line 2298
     return kz_str("");
     return kz_nil();
 }
 
+#line 2300
 KZ_MAYBE_UNUSED static KzValue kaze_fn_unit_dimension(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 2302
     if (kz_is_truthy(kz_or(kz_eq(kz_get_field(e, "kind"), kz_str("NUM")), kz_eq(kz_get_field(e, "kind"), kz_str("IN_UNIT"))))) {
+#line 2303
         return kaze_fn_dimension_of_unit(kaze_fn_unit_word(kz_get_field(e, "name")));
     }
+#line 2304
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(e, "kind"), kz_str("BIN")), kz_or(kz_eq(kz_get_field(e, "name"), kz_str("+")), kz_eq(kz_get_field(e, "name"), kz_str("-")))))) {
+#line 2305
         KzValue l = kaze_fn_unit_dimension(kaze_fn_child_at(e, kz_num((kaze_float_t)0)));
+#line 2306
         KzValue r = kaze_fn_unit_dimension(kaze_fn_child_at(e, kz_num((kaze_float_t)1)));
+#line 2307
         if (kz_is_truthy(kz_eq(l, r))) {
+#line 2308
             return l;
         }
+#line 2310
         return kz_str("");
     }
+#line 2311
     return kz_str("");
     return kz_nil();
 }
 
+#line 2313
 KZ_MAYBE_UNUSED static KzValue kaze_fn_unit_mismatch(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 2315
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(e, "kind"), kz_str("BIN")), kz_or(kz_eq(kz_get_field(e, "name"), kz_str("+")), kz_eq(kz_get_field(e, "name"), kz_str("-")))))) {
+#line 2316
         KzValue l = kaze_fn_unit_dimension(kaze_fn_child_at(e, kz_num((kaze_float_t)0)));
+#line 2317
         KzValue r = kaze_fn_unit_dimension(kaze_fn_child_at(e, kz_num((kaze_float_t)1)));
+#line 2318
         if (kz_is_truthy(kz_and(kz_and(kz_gt(kz_len(l), kz_num((kaze_float_t)0)), kz_gt(kz_len(r), kz_num((kaze_float_t)0))), kz_ne(l, r)))) {
+#line 2319
             return kz_add(kz_add(kz_add(kz_str("cannot add or subtract "), l), kz_str(" and ")), r);
         }
     }
+#line 2320
     if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("BIN")))) {
+#line 2321
         KzValue l = kaze_fn_unit_mismatch(kaze_fn_child_at(e, kz_num((kaze_float_t)0)));
+#line 2322
         if (kz_is_truthy(kz_gt(kz_len(l), kz_num((kaze_float_t)0)))) {
+#line 2323
             return l;
         }
+#line 2324
         return kaze_fn_unit_mismatch(kaze_fn_child_at(e, kz_num((kaze_float_t)1)));
     }
+#line 2325
     return kz_str("");
     return kz_nil();
 }
 
+#line 2331
 KZ_MAYBE_UNUSED static KzValue kaze_fn_check_expr(KzValue e, KzValue names, KzValue facts, KzValue items, KzValue needs, KzValue open, KzValue diags) {
     (void)e;   /* a routine need not use every parameter */
     (void)names;   /* a routine need not use every parameter */
@@ -5029,10 +6680,12 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_check_expr(KzValue e, KzValue names, KzVa
     (void)needs;   /* a routine need not use every parameter */
     (void)open;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
+#line 2333
     return kaze_fn_check_expr_g(e, names, facts, items, needs, open, diags, kz_num((kaze_float_t)0));
     return kz_nil();
 }
 
+#line 2335
 KZ_MAYBE_UNUSED static KzValue kaze_fn_check_expr_g(KzValue e, KzValue names, KzValue facts, KzValue items, KzValue needs, KzValue open, KzValue diags, KzValue guard) {
     (void)e;   /* a routine need not use every parameter */
     (void)names;   /* a routine need not use every parameter */
@@ -5042,117 +6695,189 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_check_expr_g(KzValue e, KzValue names, Kz
     (void)open;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
     (void)guard;   /* a routine need not use every parameter */
+#line 2337
     KzValue k = kz_get_field(e, "kind");
+#line 2338
     if (kz_is_truthy(kz_or(kz_or(kz_eq(k, kz_str("NUM")), kz_eq(k, kz_str("STR"))), kz_eq(k, kz_str("BOOL"))))) {
+#line 2339
         return diags;
     }
+#line 2341
     if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 2342
         if (kz_is_truthy(kz_eq(kaze_fn_name_allowed(kz_get_field(e, "name"), names), kz_num((kaze_float_t)1)))) {
+#line 2343
             return diags;
         }
+#line 2344
         diags = kz_add(diags, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_UNKNOWN_NAME"), kz_get_field(e, "line"), kz_add(kz_add(kz_str("'"), kz_get_field(e, "name")), kz_str("' is not a parameter, a let binding or a known value"))) }));
+#line 2345
         return diags;
     }
+#line 2347
     if (kz_is_truthy(kz_eq(k, kz_str("UNKNOWN")))) {
+#line 2348
         diags = kz_add(diags, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_PARSE"), kz_get_field(e, "line"), kz_str("the parser could not read this expression")) }));
+#line 2349
         return diags;
     }
+#line 2351
     if (kz_is_truthy(kz_eq(k, kz_str("FIELD")))) {
+#line 2352
         KzValue out = kaze_fn_check_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
+#line 2353
         KzValue base = kaze_fn_child_at(e, kz_num((kaze_float_t)0));
+#line 2357
         if (kz_is_truthy(kz_and(kz_and(kz_and(kz_and(kz_eq(guard, kz_num((kaze_float_t)0)), kz_eq(kz_get_field(base, "kind"), kz_str("IDENT"))), kz_eq(kaze_fn_list_has(facts, kz_add(kz_str("param:"), kz_get_field(base, "name"))), kz_num((kaze_float_t)1))), kz_eq(kaze_fn_list_has(facts, kz_add(kz_str("recparam:"), kz_get_field(base, "name"))), kz_num((kaze_float_t)0))), kz_or(kz_eq(open, kz_num((kaze_float_t)0)), kaze_fn_list_has(facts, kz_add(kz_str("untyped:"), kz_get_field(base, "name"))))))) {
+#line 2358
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_MISSING_FALLBACK"), kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("'"), kz_get_field(base, "name")), kz_str(".")), kz_get_field(e, "name")), kz_str("' reads a field of '")), kz_get_field(base, "name")), kz_str("', which came from outside this routine and may not have it; write '<read> otherwise <fallback>' or declare '")), kz_get_field(base, "name")), kz_str("' with a record type"))) }));
         }
+#line 2359
         return out;
     }
+#line 2361
     if (kz_is_truthy(kz_or(kz_eq(k, kz_str("LEN")), kz_eq(k, kz_str("IN_UNIT"))))) {
+#line 2362
         return kaze_fn_check_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
     }
+#line 2364
     if (kz_is_truthy(kz_eq(k, kz_str("LIST")))) {
+#line 2365
         KzValue out = diags;
+#line 2366
         {
             KzValue _iter_target = kz_get_field(e, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue item = _iter_target.as.list->items[_i];
+#line 2367
                     out = kaze_fn_check_expr(item, names, facts, items, needs, open, out);
                 }
             }
         }
+#line 2368
         return out;
     }
+#line 2370
     if (kz_is_truthy(kz_eq(k, kz_str("INDEX")))) {
+#line 2371
         return kaze_fn_check_index(e, names, facts, items, needs, open, diags);
     }
+#line 2373
     if (kz_is_truthy(kz_eq(k, kz_str("BIN")))) {
+#line 2377
         KzValue rights = kz_list_new(0);
+#line 2378
         KzValue ops = kz_list_new(0);
+#line 2379
         KzValue cur = e;
+#line 2380
         KzValue guard = kz_num((kaze_float_t)0);
+#line 2381
         { long _kz_loop_l2381 = 0;
             while (kz_is_truthy(kz_and(kz_eq(kz_get_field(cur, "kind"), kz_str("BIN")), kz_lt(guard, kz_num((kaze_float_t)100000))))) {
                 if (_kz_loop_l2381 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l2381 = _kz_loop_l2381 + 1;
+#line 2382
                 rights = kz_add(rights, kz_list_from(1, (KzValue[]){ kaze_fn_child_at(cur, kz_num((kaze_float_t)1)) }));
+#line 2383
                 ops = kz_add(ops, kz_list_from(1, (KzValue[]){ kz_get_field(cur, "name") }));
+#line 2384
                 cur = kaze_fn_child_at(cur, kz_num((kaze_float_t)0));
+#line 2385
                 guard = kz_add(guard, kz_num((kaze_float_t)1));
             }
         }
+#line 2386
         KzValue out = kaze_fn_check_expr(cur, names, facts, items, needs, open, diags);
+#line 2387
         KzValue umsg = kaze_fn_unit_mismatch(e);
+#line 2388
         if (kz_is_truthy(kz_gt(kz_len(umsg), kz_num((kaze_float_t)0)))) {
+#line 2389
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_UNIT_MISMATCH"), kz_get_field(e, "line"), umsg) }));
         }
+#line 2390
         KzValue i = kz_sub(kz_len(rights), kz_num((kaze_float_t)1));
+#line 2391
         { long _kz_loop_l2391 = 0;
             while (kz_is_truthy(kz_ge(i, kz_num((kaze_float_t)0)))) {
                 if (_kz_loop_l2391 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l2391 = _kz_loop_l2391 + 1;
+#line 2392
                 KzValue right = kaze_fn_node_at(rights, i);
+#line 2393
                 KzValue op = kz_fb_index(ops, i, kz_str(""));
+#line 2394
                 out = kaze_fn_check_expr(right, names, facts, items, needs, open, out);
+#line 2395
                 if (kz_is_truthy(kz_or(kz_eq(op, kz_str("/")), kz_eq(op, kz_str("%"))))) {
+#line 2396
                     if (kz_is_truthy(kz_eq(kaze_fn_nonzero_literal(right), kz_num((kaze_float_t)0)))) {
+#line 2397
                         out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_MISSING_FALLBACK"), kz_get_field(right, "line"), kz_add(kz_add(kz_add(kz_add(kz_str("this '"), op), kz_str("' can divide by zero and has no fallback; write '<value> ")), op), kz_str(" <divisor> otherwise <fallback>'"))) }));
                     }
                 }
+#line 2398
                 i = kz_sub(i, kz_num((kaze_float_t)1));
             }
         }
+#line 2399
         return out;
     }
+#line 2401
     if (kz_is_truthy(kz_eq(k, kz_str("FALLBACK")))) {
+#line 2402
         KzValue inner = kaze_fn_child_at(e, kz_num((kaze_float_t)0));
+#line 2403
         KzValue fb = kaze_fn_child_at(e, kz_num((kaze_float_t)1));
+#line 2405
         if (kz_is_truthy(kz_eq(kz_get_field(inner, "kind"), kz_str("INDEX")))) {
+#line 2406
             KzValue out = kaze_fn_check_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
+#line 2407
             out = kaze_fn_check_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)1)), names, facts, items, needs, open, out);
+#line 2408
             return kaze_fn_check_expr(fb, names, facts, items, needs, open, out);
         }
+#line 2409
         if (kz_is_truthy(kz_and(kz_eq(kz_get_field(inner, "kind"), kz_str("BIN")), kz_or(kz_eq(kz_get_field(inner, "name"), kz_str("/")), kz_eq(kz_get_field(inner, "name"), kz_str("%")))))) {
+#line 2410
             KzValue out = kaze_fn_check_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
+#line 2411
             out = kaze_fn_check_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)1)), names, facts, items, needs, open, out);
+#line 2412
             return kaze_fn_check_expr(fb, names, facts, items, needs, open, out);
         }
+#line 2413
         KzValue out = kaze_fn_check_expr_g(inner, names, facts, items, needs, open, diags, kz_num((kaze_float_t)1));
+#line 2414
         return kaze_fn_check_expr(fb, names, facts, items, needs, open, out);
     }
+#line 2416
     if (kz_is_truthy(kz_eq(k, kz_str("CALL")))) {
+#line 2417
         return kaze_fn_check_call(e, names, facts, items, needs, open, diags, guard);
     }
+#line 2422
     if (kz_is_truthy(kz_eq(k, kz_str("RECEIVE")))) {
+#line 2423
         KzValue out = kaze_fn_check_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
+#line 2424
         if (kz_is_truthy(kz_eq(guard, kz_num((kaze_float_t)0)))) {
+#line 2425
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_MISSING_FALLBACK"), kz_get_field(e, "line"), kz_str("this 'receive from' fails when the channel is empty and has no fallback; write 'receive from <channel> otherwise <fallback>'")) }));
         }
+#line 2426
         return out;
     }
+#line 2428
     return diags;
     return kz_nil();
 }
 
+#line 2430
 KZ_MAYBE_UNUSED static KzValue kaze_fn_check_index(KzValue e, KzValue names, KzValue facts, KzValue items, KzValue needs, KzValue open, KzValue diags) {
     (void)e;   /* a routine need not use every parameter */
     (void)names;   /* a routine need not use every parameter */
@@ -5161,82 +6886,135 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_check_index(KzValue e, KzValue names, KzV
     (void)needs;   /* a routine need not use every parameter */
     (void)open;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
+#line 2432
     KzValue coll = kaze_fn_child_at(e, kz_num((kaze_float_t)0));
+#line 2433
     KzValue idx = kaze_fn_child_at(e, kz_num((kaze_float_t)1));
+#line 2434
     KzValue out = kaze_fn_check_expr(coll, names, facts, items, needs, open, diags);
+#line 2435
     out = kaze_fn_check_expr(idx, names, facts, items, needs, open, out);
+#line 2436
     KzValue ck = kaze_fn_key_of(coll);
+#line 2437
     if (kz_is_truthy(kz_eq(kaze_fn_is_constant(idx), kz_num((kaze_float_t)1)))) {
+#line 2439
         if (kz_is_truthy(kz_eq(kz_get_field(coll, "kind"), kz_str("LIST")))) {
+#line 2440
             KzValue n = kz_len(kz_get_field(coll, "children"));
+#line 2441
             KzValue k = kaze_fn_constant_value(idx);
+#line 2442
             if (kz_is_truthy(kz_and(kz_ge(k, kz_num((kaze_float_t)0)), kz_lt(k, n)))) {
+#line 2443
                 return out;
             }
+#line 2444
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_BOUNDS"), kz_get_field(e, "line"), kz_str("this index is outside the value it reads; a constant position past the end is refused")) }));
+#line 2445
             return out;
         }
+#line 2446
         if (kz_is_truthy(kz_eq(kz_get_field(coll, "kind"), kz_str("STR")))) {
+#line 2451
             KzValue n = kz_len(kz_get_field(coll, "val_str"));
+#line 2452
             KzValue k = kaze_fn_constant_value(idx);
+#line 2453
             if (kz_is_truthy(kz_and(kz_ge(k, kz_num((kaze_float_t)0)), kz_lt(k, n)))) {
+#line 2454
                 return out;
             }
+#line 2455
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_BOUNDS"), kz_get_field(e, "line"), kz_str("this index is outside the value it reads; a constant position past the end is refused")) }));
+#line 2456
             return out;
         }
+#line 2457
         if (kz_is_truthy(kz_ne(ck, kz_str("")))) {
+#line 2458
             if (kz_is_truthy(kz_eq(kaze_fn_list_has(facts, kz_add(kz_add(kz_add(kz_str("lt:"), kz_get_field(idx, "val_str")), kz_str(":")), ck)), kz_num((kaze_float_t)1)))) {
+#line 2459
                 return out;
             }
+#line 2460
             KzValue promised = kaze_fn_find_len_fact(facts, ck);
+#line 2461
             KzValue k = kaze_fn_constant_value(idx);
+#line 2462
             if (kz_is_truthy(kz_gt(promised, kz_num((kaze_float_t)0)))) {
+#line 2463
                 if (kz_is_truthy(kz_and(kz_ge(k, kz_num((kaze_float_t)0)), kz_lt(k, promised)))) {
+#line 2464
                     return out;
                 }
+#line 2465
                 out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_BOUNDS"), kz_get_field(e, "line"), kz_str("this index is outside the value it reads; a constant position past the end is refused")) }));
+#line 2466
                 return out;
             }
         }
+#line 2467
         out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_MISSING_FALLBACK"), kz_get_field(e, "line"), kz_str("this index is not proved to be inside the value; guard it (if i < length of xs:) or write '<value>[<i>] otherwise <fallback>'")) }));
+#line 2468
         return out;
     }
+#line 2469
     if (kz_is_truthy(kz_eq(ck, kz_str("")))) {
+#line 2470
         out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_MISSING_FALLBACK"), kz_get_field(e, "line"), kz_str("this index is not proved to be inside the value; guard it (if i < length of xs:) or write '<value>[<i>] otherwise <fallback>'")) }));
+#line 2471
         return out;
     }
+#line 2472
     KzValue ik = kaze_fn_key_of(idx);
+#line 2473
     if (kz_is_truthy(kz_and(kz_ne(ik, kz_str("")), kz_eq(kaze_fn_list_has(facts, kz_add(kz_add(kz_add(kz_str("lt:"), ik), kz_str(":")), ck)), kz_num((kaze_float_t)1))))) {
+#line 2474
         return out;
     }
+#line 2475
     out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_MISSING_FALLBACK"), kz_get_field(e, "line"), kz_str("this index is not proved to be inside the value; guard it (if i < length of xs:) or write '<value>[<i>] otherwise <fallback>'")) }));
+#line 2476
     return out;
     return kz_nil();
 }
 
+#line 2482
 KZ_MAYBE_UNUSED static KzValue kaze_fn_needs_fallback_cap(KzValue family, KzValue op) {
     (void)family;   /* a routine need not use every parameter */
     (void)op;   /* a routine need not use every parameter */
+#line 2483
     if (kz_is_truthy(kz_eq(family, kz_str("sensor")))) {
+#line 2484
         return kz_num((kaze_float_t)1);
     }
+#line 2485
     if (kz_is_truthy(kz_eq(family, kz_str("device")))) {
+#line 2486
         if (kz_is_truthy(kz_or(kz_eq(op, kz_str("read_gpio")), kz_eq(op, kz_str("read"))))) {
+#line 2487
             return kz_num((kaze_float_t)1);
         }
+#line 2488
         return kz_num((kaze_float_t)0);
     }
+#line 2489
     if (kz_is_truthy(kz_eq(family, kz_str("memory")))) {
+#line 2490
         if (kz_is_truthy(kz_eq(op, kz_str("recall")))) {
+#line 2491
             return kz_num((kaze_float_t)1);
         }
+#line 2492
         return kz_num((kaze_float_t)0);
     }
+#line 2493
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2495
 KZ_MAYBE_UNUSED static KzValue kaze_fn_check_call(KzValue e, KzValue names, KzValue facts, KzValue items, KzValue needs, KzValue open, KzValue diags, KzValue guarded) {
     (void)e;   /* a routine need not use every parameter */
     (void)names;   /* a routine need not use every parameter */
@@ -5246,64 +7024,99 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_check_call(KzValue e, KzValue names, KzVa
     (void)open;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
     (void)guarded;   /* a routine need not use every parameter */
+#line 2497
     KzValue name = kz_get_field(e, "name");
+#line 2498
     KzValue out = diags;
+#line 2499
     {
         KzValue _iter_target = kz_get_field(e, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue a = _iter_target.as.list->items[_i];
+#line 2500
                 if (kz_is_truthy(kz_eq(kz_get_field(a, "kind"), kz_str("NAMED_ARG")))) {
+#line 2501
                     out = kaze_fn_check_expr(kaze_fn_child_at(a, kz_num((kaze_float_t)0)), names, facts, items, needs, open, out);
                 } else {
+#line 2503
                     out = kaze_fn_check_expr(a, names, facts, items, needs, open, out);
                 }
             }
         }
     }
+#line 2505
     if (kz_is_truthy(kz_eq(kaze_fn_has_dot(name), kz_num((kaze_float_t)1)))) {
+#line 2506
         KzValue head = kaze_fn_head_words(name);
+#line 2507
         KzValue op = kaze_fn_tail_words(name);
+#line 2510
         if (kz_is_truthy(kz_eq(head, kz_str("geo")))) {
+#line 2513
             if (kz_is_truthy(kz_and(kz_and(kz_eq(guarded, kz_num((kaze_float_t)0)), kz_eq(kaze_fn_list_has(facts, kz_str("in_try")), kz_num((kaze_float_t)0))), kz_eq(kaze_fn_needs_fallback_cap(kz_str("device"), op), kz_num((kaze_float_t)1))))) {
+#line 2514
                 out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_MISSING_FALLBACK"), kz_get_field(e, "line"), kz_add(kz_add(kz_str("this reads geo."), op), kz_str(" and needs a fallback; write '<read> otherwise <fallback>'"))) }));
             }
+#line 2515
             return out;
         }
+#line 2516
         KzValue family = kaze_fn_family_of_word(head);
+#line 2517
         if (kz_is_truthy(kz_eq(kaze_fn_list_has(needs, family), kz_num((kaze_float_t)0)))) {
+#line 2518
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_CAP_UNDECLARED"), kz_get_field(e, "line"), kz_add(kz_add(kz_str("'"), family), kz_str("' is used but this file does not declare it; add it to the needs: line"))) }));
         }
+#line 2519
         if (kz_is_truthy(kz_eq(kaze_fn_op_known(family, op), kz_num((kaze_float_t)0)))) {
+#line 2520
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_CAP_OP"), kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_add(kz_str("'"), family), kz_str(".")), op), kz_str("' is not an operation Kaze knows"))) }));
         }
+#line 2521
         if (kz_is_truthy(kz_and(kz_and(kz_and(kz_eq(guarded, kz_num((kaze_float_t)0)), kz_eq(kaze_fn_list_has(facts, kz_str("in_try")), kz_num((kaze_float_t)0))), kz_eq(kaze_fn_list_has(needs, family), kz_num((kaze_float_t)1))), kz_eq(kaze_fn_needs_fallback_cap(family, op), kz_num((kaze_float_t)1))))) {
+#line 2522
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_MISSING_FALLBACK"), kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_add(kz_str("this reads "), family), kz_str(".")), op), kz_str(" and needs a fallback; write '<read> otherwise <fallback>'"))) }));
         }
+#line 2523
         return out;
     }
+#line 2525
     if (kz_is_truthy(kz_eq(kaze_fn_is_upper(name), kz_num((kaze_float_t)1)))) {
+#line 2526
         if (kz_is_truthy(kz_and(kz_eq(open, kz_num((kaze_float_t)0)), kz_eq(kaze_fn_record_named(items, name), kz_num((kaze_float_t)0))))) {
+#line 2527
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_UNKNOWN_NAME"), kz_get_field(e, "line"), kz_add(kz_add(kz_str("record '"), name), kz_str("' is not defined in this file"))) }));
         }
+#line 2528
         return out;
     }
+#line 2530
     if (kz_is_truthy(kz_eq(kaze_fn_pure_builtin(name), kz_num((kaze_float_t)1)))) {
+#line 2531
         return out;
     }
+#line 2533
     KzValue callee = kaze_fn_routine_named(items, name);
+#line 2534
     if (kz_is_truthy(kz_ne(kz_get_field(callee, "kind"), kz_str("NONE")))) {
+#line 2535
         return out;
     }
+#line 2536
     if (kz_is_truthy(kz_eq(open, kz_num((kaze_float_t)1)))) {
+#line 2537
         return out;
     }
+#line 2538
     out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_UNKNOWN_NAME"), kz_get_field(e, "line"), kz_add(kz_add(kz_str("'"), name), kz_str("' is not a routine in this file"))) }));
+#line 2539
     return out;
     return kz_nil();
 }
 
+#line 2543
 KZ_MAYBE_UNUSED static KzValue kaze_fn_check_stmt(KzValue s, KzValue names, KzValue facts, KzValue items, KzValue needs, KzValue open, KzValue diags) {
     (void)s;   /* a routine need not use every parameter */
     (void)names;   /* a routine need not use every parameter */
@@ -5312,71 +7125,119 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_check_stmt(KzValue s, KzValue names, KzVa
     (void)needs;   /* a routine need not use every parameter */
     (void)open;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
+#line 2545
     KzValue k = kz_get_field(s, "kind");
+#line 2546
     if (kz_is_truthy(kz_eq(k, kz_str("LET")))) {
+#line 2547
         return kaze_fn_check_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
     }
+#line 2548
     if (kz_is_truthy(kz_eq(k, kz_str("SET")))) {
+#line 2549
         KzValue out = kaze_fn_check_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
+#line 2550
         if (kz_is_truthy(kz_eq(kaze_fn_list_has(names, kz_get_field(s, "name")), kz_num((kaze_float_t)0)))) {
+#line 2551
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_UNKNOWN_NAME"), kz_get_field(s, "line"), kz_add(kz_add(kz_add(kz_add(kz_str("'"), kz_get_field(s, "name")), kz_str("' is set but never bound; use 'let ")), kz_get_field(s, "name")), kz_str(" = ...' first"))) }));
         }
+#line 2552
         return out;
     }
+#line 2553
     if (kz_is_truthy(kz_eq(k, kz_str("RETURN")))) {
+#line 2554
         if (kz_is_truthy(kz_gt(kz_len(kz_get_field(s, "children")), kz_num((kaze_float_t)0)))) {
+#line 2555
             return kaze_fn_check_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
         }
+#line 2556
         return diags;
     }
+#line 2557
     if (kz_is_truthy(kz_eq(k, kz_str("EXPR")))) {
+#line 2558
         return kaze_fn_check_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
     }
+#line 2559
     if (kz_is_truthy(kz_eq(k, kz_str("GUARD")))) {
+#line 2560
         return kaze_fn_check_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
     }
+#line 2561
     if (kz_is_truthy(kz_eq(k, kz_str("IF")))) {
+#line 2562
         KzValue cond = kaze_fn_child_at(s, kz_num((kaze_float_t)0));
+#line 2563
         KzValue inner_facts = kz_add(facts, kaze_fn_facts_from_cond(cond, facts));
+#line 2564
         KzValue out = kaze_fn_check_expr(cond, names, facts, items, needs, open, diags);
+#line 2565
         out = kaze_fn_check_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), names, inner_facts, items, needs, open, out);
+#line 2566
         out = kaze_fn_check_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)2))), names, facts, items, needs, open, out);
+#line 2567
         return out;
     }
+#line 2568
     if (kz_is_truthy(kz_eq(k, kz_str("WHILE")))) {
+#line 2569
         KzValue cond = kaze_fn_child_at(s, kz_num((kaze_float_t)0));
+#line 2570
         KzValue bound = kaze_fn_child_at(s, kz_num((kaze_float_t)2));
+#line 2571
         KzValue out = kaze_fn_check_expr(cond, names, facts, items, needs, open, diags);
+#line 2572
         if (kz_is_truthy(kz_or(kz_eq(kz_get_field(bound, "val_str"), kz_str("")), kz_eq(kz_get_field(bound, "val_str"), kz_str("?"))))) {
+#line 2573
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_LOOP_UNBOUNDED"), kz_get_field(s, "line"), kz_str("this while loop declares no fuel ceiling; write a bounded form")) }));
         } else {
+#line 2575
             if (kz_is_truthy(kz_lt(kaze_fn_text_to_num(kz_get_field(bound, "val_str")), kz_num((kaze_float_t)1)))) {
+#line 2576
                 out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_LOOP_UNBOUNDED"), kz_get_field(s, "line"), kz_str("this while loop needs a whole number of iterations from 1 up")) }));
             }
         }
+#line 2577
         KzValue inner_facts = kz_add(facts, kaze_fn_facts_from_cond(cond, facts));
+#line 2578
         out = kaze_fn_check_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), names, inner_facts, items, needs, open, out);
+#line 2579
         return out;
     }
+#line 2580
     if (kz_is_truthy(kz_eq(k, kz_str("FOR_EACH")))) {
+#line 2581
         KzValue out = kaze_fn_check_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), names, facts, items, needs, open, diags);
+#line 2582
         out = kaze_fn_check_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), kz_add(names, kz_list_from(1, (KzValue[]){ kz_get_field(s, "name") })), facts, items, needs, open, out);
+#line 2583
         return out;
     }
+#line 2584
     if (kz_is_truthy(kz_eq(k, kz_str("TRY")))) {
+#line 2587
         KzValue try_facts = kz_add(facts, kz_list_from(1, (KzValue[]){ kz_str("in_try") }));
+#line 2588
         KzValue out = kaze_fn_check_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)0))), names, try_facts, items, needs, open, diags);
+#line 2589
         KzValue inner = names;
+#line 2590
         if (kz_is_truthy(kz_ne(kz_get_field(s, "name"), kz_str("")))) {
+#line 2591
             inner = kz_add(names, kz_list_from(1, (KzValue[]){ kz_get_field(s, "name") }));
         }
+#line 2592
         out = kaze_fn_check_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), inner, facts, items, needs, open, out);
+#line 2593
         return out;
     }
+#line 2594
     return diags;
     return kz_nil();
 }
 
+#line 2596
 KZ_MAYBE_UNUSED static KzValue kaze_fn_check_stmts(KzValue stmts, KzValue names, KzValue facts, KzValue items, KzValue needs, KzValue open, KzValue diags) {
     (void)stmts;   /* a routine need not use every parameter */
     (void)names;   /* a routine need not use every parameter */
@@ -5385,173 +7246,256 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_check_stmts(KzValue stmts, KzValue names,
     (void)needs;   /* a routine need not use every parameter */
     (void)open;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
+#line 2598
     KzValue i = kz_num((kaze_float_t)0);
+#line 2599
     KzValue len = kz_len(stmts);
+#line 2600
     KzValue cur_names = names;
+#line 2601
     KzValue cur_facts = facts;
+#line 2602
     KzValue out = diags;
+#line 2603
     { long _kz_loop_l2603 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2603 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2603 = _kz_loop_l2603 + 1;
+#line 2604
             KzValue s = kaze_fn_node_at(stmts, i);
+#line 2605
             out = kaze_fn_check_stmt(s, cur_names, cur_facts, items, needs, open, out);
+#line 2606
             if (kz_is_truthy(kz_eq(kz_get_field(s, "kind"), kz_str("LET")))) {
+#line 2607
                 cur_names = kz_add(cur_names, kz_list_from(1, (KzValue[]){ kz_get_field(s, "name") }));
+#line 2608
                 KzValue v = kaze_fn_child_at(s, kz_num((kaze_float_t)0));
+#line 2609
                 if (kz_is_truthy(kz_eq(kz_get_field(v, "kind"), kz_str("LIST")))) {
+#line 2610
                     cur_facts = kz_add(cur_facts, kz_list_from(1, (KzValue[]){ kz_add(kz_add(kz_add(kz_str("len:"), kz_get_field(s, "name")), kz_str(":")), kz_len(kz_get_field(v, "children"))) }));
                 }
+#line 2611
                 if (kz_is_truthy(kz_eq(kz_get_field(v, "kind"), kz_str("CALL")))) {
+#line 2612
                     KzValue callee = kaze_fn_routine_named(items, kz_get_field(v, "name"));
+#line 2613
                     KzValue n = kaze_fn_promised_length(callee);
+#line 2614
                     if (kz_is_truthy(kz_gt(n, kz_num((kaze_float_t)0)))) {
+#line 2615
                         cur_facts = kz_add(cur_facts, kz_list_from(1, (KzValue[]){ kz_add(kz_add(kz_add(kz_str("len:"), kz_get_field(s, "name")), kz_str(":")), n) }));
                     }
                 }
             }
+#line 2616
             if (kz_is_truthy(kz_eq(kz_get_field(s, "kind"), kz_str("LET")))) {
+#line 2617
                 KzValue v2 = kaze_fn_child_at(s, kz_num((kaze_float_t)0));
+#line 2618
                 if (kz_is_truthy(kz_eq(kz_get_field(v2, "kind"), kz_str("LEN")))) {
+#line 2619
                     KzValue ck2 = kaze_fn_key_of(kaze_fn_child_at(v2, kz_num((kaze_float_t)0)));
+#line 2620
                     if (kz_is_truthy(kz_ne(ck2, kz_str("")))) {
+#line 2621
                         cur_facts = kz_add(cur_facts, kz_list_from(1, (KzValue[]){ kz_add(kz_add(kz_add(kz_str("alias:"), kz_get_field(s, "name")), kz_str(":")), ck2) }));
                     }
                 }
             }
+#line 2622
             if (kz_is_truthy(kz_eq(kz_get_field(s, "kind"), kz_str("GUARD")))) {
+#line 2623
                 cur_facts = kz_add(cur_facts, kaze_fn_facts_from_cond(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), cur_facts));
             }
+#line 2624
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2625
     return out;
     return kz_nil();
 }
 
+#line 2629
 KZ_MAYBE_UNUSED static KzValue kaze_fn_calls_in_expr(KzValue e, KzValue out) {
     (void)e;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
+#line 2631
     KzValue acc = out;
+#line 2632
     if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("CALL")))) {
+#line 2633
         if (kz_is_truthy(kz_eq(kaze_fn_has_dot(kz_get_field(e, "name")), kz_num((kaze_float_t)0)))) {
+#line 2634
             acc = kz_add(acc, kz_list_from(1, (KzValue[]){ kz_get_field(e, "name") }));
         }
     }
+#line 2635
     {
         KzValue _iter_target = kz_get_field(e, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 2636
                 acc = kaze_fn_calls_in_expr(c, acc);
             }
         }
     }
+#line 2637
     return acc;
     return kz_nil();
 }
 
+#line 2639
 KZ_MAYBE_UNUSED static KzValue kaze_fn_calls_in_stmt_blocks(KzValue s, KzValue out) {
     (void)s;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
+#line 2641
     KzValue acc = out;
+#line 2642
     if (kz_is_truthy(kz_eq(kz_get_field(s, "kind"), kz_str("IF")))) {
+#line 2643
         acc = kaze_fn_calls_in_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), acc);
+#line 2644
         acc = kaze_fn_calls_in_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)2))), acc);
     }
+#line 2645
     if (kz_is_truthy(kz_eq(kz_get_field(s, "kind"), kz_str("WHILE")))) {
+#line 2646
         acc = kaze_fn_calls_in_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), acc);
     }
+#line 2647
     if (kz_is_truthy(kz_eq(kz_get_field(s, "kind"), kz_str("FOR_EACH")))) {
+#line 2648
         acc = kaze_fn_calls_in_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), acc);
     }
+#line 2649
     if (kz_is_truthy(kz_eq(kz_get_field(s, "kind"), kz_str("TRY")))) {
+#line 2650
         acc = kaze_fn_calls_in_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)0))), acc);
+#line 2651
         acc = kaze_fn_calls_in_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), acc);
     }
+#line 2652
     return acc;
     return kz_nil();
 }
 
+#line 2654
 KZ_MAYBE_UNUSED static KzValue kaze_fn_calls_in_stmts(KzValue stmts, KzValue out) {
     (void)stmts;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
+#line 2656
     KzValue acc = out;
+#line 2657
     KzValue i = kz_num((kaze_float_t)0);
+#line 2658
     KzValue len = kz_len(stmts);
+#line 2659
     { long _kz_loop_l2659 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2659 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2659 = _kz_loop_l2659 + 1;
+#line 2660
             KzValue s = kaze_fn_node_at(stmts, i);
+#line 2661
             acc = kaze_fn_calls_in_expr(s, acc);
+#line 2662
             acc = kaze_fn_calls_in_stmt_blocks(s, acc);
+#line 2663
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2664
     return acc;
     return kz_nil();
 }
 
+#line 2671
 KZ_MAYBE_UNUSED static KzValue kaze_fn_routine_names(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 2672
     KzValue out = kz_list_new(0);
+#line 2673
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 2674
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_get_field(item, "name") }));
             }
         }
     }
+#line 2675
     return out;
     return kz_nil();
 }
 
+#line 2677
 KZ_MAYBE_UNUSED static KzValue kaze_fn_index_of(KzValue names, KzValue name) {
     (void)names;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 2678
     KzValue i = kz_num((kaze_float_t)0);
+#line 2679
     KzValue len = kz_len(names);
+#line 2680
     { long _kz_loop_l2680 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2680 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2680 = _kz_loop_l2680 + 1;
+#line 2681
             if (kz_is_truthy(kz_eq(kz_fb_index(names, i, kz_str("")), name))) {
+#line 2682
                 return i;
             }
+#line 2683
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2684
     return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     return kz_nil();
 }
 
+#line 2686
 KZ_MAYBE_UNUSED static KzValue kaze_fn_call_edges(KzValue items, KzValue names) {
     (void)items;   /* a routine need not use every parameter */
     (void)names;   /* a routine need not use every parameter */
+#line 2687
     KzValue froms = kz_list_new(0);
+#line 2688
     KzValue tos = kz_list_new(0);
+#line 2689
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 2690
                 KzValue from = kaze_fn_index_of(names, kz_get_field(item, "name"));
+#line 2691
                 KzValue callees = kaze_fn_calls_in_stmts(kaze_fn_kids_of(kaze_fn_child_at(item, kz_num((kaze_float_t)2))), kz_list_new(0));
+#line 2692
                 {
                     KzValue _iter_target = callees;
                     if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                         size_t _len = _iter_target.as.list->len;
                         for (size_t _i = 0; _i < _len; _i++) {
                             KzValue c = _iter_target.as.list->items[_i];
+#line 2693
                             KzValue to = kaze_fn_index_of(names, c);
+#line 2694
                             if (kz_is_truthy(kz_ge(to, kz_num((kaze_float_t)0)))) {
+#line 2695
                                 froms = kz_add_own(froms, kz_list_from(1, (KzValue[]){ from }));
+#line 2696
                                 tos = kz_add_own(tos, kz_list_from(1, (KzValue[]){ to }));
                             }
                         }
@@ -5560,59 +7504,85 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_call_edges(KzValue items, KzValue names) 
             }
         }
     }
+#line 2697
     return kz_list_from(2, (KzValue[]){ froms, tos });
     return kz_nil();
 }
 
+#line 2699
 KZ_MAYBE_UNUSED static KzValue kaze_fn_neighbours(KzValue froms, KzValue tos, KzValue idx) {
     (void)froms;   /* a routine need not use every parameter */
     (void)tos;   /* a routine need not use every parameter */
     (void)idx;   /* a routine need not use every parameter */
+#line 2700
     KzValue out = kz_list_new(0);
+#line 2701
     KzValue i = kz_num((kaze_float_t)0);
+#line 2702
     KzValue len = kz_len(froms);
+#line 2703
     { long _kz_loop_l2703 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2703 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2703 = _kz_loop_l2703 + 1;
+#line 2704
             if (kz_is_truthy(kz_eq(kz_fb_index(froms, i, kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1))), idx))) {
+#line 2705
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_fb_index(tos, i, kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1))) }));
             }
+#line 2706
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2707
     return out;
     return kz_nil();
 }
 
+#line 2711
 KZ_MAYBE_UNUSED static KzValue kaze_fn_reaches(KzValue start_idx, KzValue target_idx, KzValue froms, KzValue tos) {
     (void)start_idx;   /* a routine need not use every parameter */
     (void)target_idx;   /* a routine need not use every parameter */
     (void)froms;   /* a routine need not use every parameter */
     (void)tos;   /* a routine need not use every parameter */
+#line 2712
     KzValue stack = kaze_fn_neighbours(froms, tos, start_idx);
+#line 2713
     KzValue visited = kz_list_new(0);
+#line 2714
     KzValue found = kz_num((kaze_float_t)0);
+#line 2715
     KzValue fuel = kz_num((kaze_float_t)0);
+#line 2716
     { long _kz_loop_l2716 = 0;
         while (kz_is_truthy(kz_and(kz_and(kz_gt(kz_len(stack), kz_num((kaze_float_t)0)), kz_eq(found, kz_num((kaze_float_t)0))), kz_lt(fuel, kz_num((kaze_float_t)100000))))) {
             if (_kz_loop_l2716 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2716 = _kz_loop_l2716 + 1;
+#line 2717
             fuel = kz_add(fuel, kz_num((kaze_float_t)1));
+#line 2718
             KzValue cur = kz_fb_index(stack, kz_sub(kz_len(stack), kz_num((kaze_float_t)1)), kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1)));
+#line 2719
             stack = kaze_fn_drop_last(stack);
+#line 2720
             if (kz_is_truthy(kz_eq(cur, target_idx))) {
+#line 2721
                 found = kz_num((kaze_float_t)1);
             } else {
+#line 2723
                 if (kz_is_truthy(kz_eq(kaze_fn_list_has(visited, cur), kz_num((kaze_float_t)0)))) {
+#line 2724
                     visited = kz_add(visited, kz_list_from(1, (KzValue[]){ cur }));
+#line 2725
                     {
                         KzValue _iter_target = kaze_fn_neighbours(froms, tos, cur);
                         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                             size_t _len = _iter_target.as.list->len;
                             for (size_t _i = 0; _i < _len; _i++) {
                                 KzValue c = _iter_target.as.list->items[_i];
+#line 2731
                                 if (kz_is_truthy(kz_and(kz_eq(kaze_fn_list_has(visited, c), kz_num((kaze_float_t)0)), kz_eq(kaze_fn_list_has(stack, c), kz_num((kaze_float_t)0))))) {
+#line 2732
                                     stack = kz_add(stack, kz_list_from(1, (KzValue[]){ c }));
                                 }
                             }
@@ -5622,444 +7592,643 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_reaches(KzValue start_idx, KzValue target
             }
         }
     }
+#line 2733
     return found;
     return kz_nil();
 }
 
+#line 2735
 KZ_MAYBE_UNUSED static KzValue kaze_fn_recursion_bound_of(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 2736
     KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 2737
     KzValue i = kz_num((kaze_float_t)0);
+#line 2738
     KzValue len = kz_len(kz_get_field(contracts, "children"));
+#line 2739
     KzValue out = kz_num((kaze_float_t)0);
+#line 2740
     { long _kz_loop_l2740 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2740 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2740 = _kz_loop_l2740 + 1;
+#line 2741
             KzValue c = kaze_fn_child_at(contracts, i);
+#line 2742
             if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("RECURSION_BOUND")))) {
+#line 2743
                 out = kaze_fn_text_to_num(kz_get_field(c, "val_str"));
             }
+#line 2744
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2745
     return out;
     return kz_nil();
 }
 
+#line 2749
 KZ_MAYBE_UNUSED static KzValue kaze_fn_ends_with_verdict(KzValue stmts) {
     (void)stmts;   /* a routine need not use every parameter */
+#line 2751
     KzValue len = kz_len(stmts);
+#line 2752
     if (kz_is_truthy(kz_eq(len, kz_num((kaze_float_t)0)))) {
+#line 2753
         return kz_num((kaze_float_t)0);
     }
+#line 2754
     KzValue last = kaze_fn_node_at(stmts, kz_sub(len, kz_num((kaze_float_t)1)));
+#line 2755
     if (kz_is_truthy(kz_eq(kz_get_field(last, "kind"), kz_str("RETURN")))) {
+#line 2756
         return kz_num((kaze_float_t)1);
     }
+#line 2757
     if (kz_is_truthy(kz_eq(kz_get_field(last, "kind"), kz_str("EXPR")))) {
+#line 2758
         KzValue e = kaze_fn_child_at(last, kz_num((kaze_float_t)0));
+#line 2759
         if (kz_is_truthy(kz_eq(kz_get_field(e, "kind"), kz_str("CALL")))) {
+#line 2760
             KzValue head = kaze_fn_head_words(kz_get_field(e, "name"));
+#line 2761
             KzValue op = kaze_fn_tail_words(kz_get_field(e, "name"));
+#line 2762
             if (kz_is_truthy(kz_and(kz_eq(head, kz_str("policy")), kz_or(kz_eq(op, kz_str("allow")), kz_eq(op, kz_str("reject")))))) {
+#line 2763
                 return kz_num((kaze_float_t)1);
             }
         }
     }
+#line 2764
     if (kz_is_truthy(kz_eq(kz_get_field(last, "kind"), kz_str("IF")))) {
+#line 2765
         KzValue then_ok = kaze_fn_ends_with_verdict(kaze_fn_kids_of(kaze_fn_child_at(last, kz_num((kaze_float_t)1))));
+#line 2766
         KzValue else_ok = kaze_fn_ends_with_verdict(kaze_fn_kids_of(kaze_fn_child_at(last, kz_num((kaze_float_t)2))));
+#line 2767
         if (kz_is_truthy(kz_and(kz_eq(then_ok, kz_num((kaze_float_t)1)), kz_eq(else_ok, kz_num((kaze_float_t)1))))) {
+#line 2768
             return kz_num((kaze_float_t)1);
         }
     }
+#line 2769
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2774
 KZ_MAYBE_UNUSED static KzValue kaze_fn_reserved_name(KzValue w) {
     (void)w;   /* a routine need not use every parameter */
+#line 2775
     if (kz_is_truthy(kz_lt(kz_len(w), kz_num((kaze_float_t)4)))) {
+#line 2776
         return kz_num((kaze_float_t)0);
     }
+#line 2777
     if (kz_is_truthy(kz_eq(w, kz_str("_kz_")))) {
+#line 2778
         return kz_num((kaze_float_t)1);
     }
+#line 2779
     KzValue i = kz_num((kaze_float_t)0);
+#line 2780
     KzValue prefix = kz_str("");
+#line 2781
     { long _kz_loop_l2781 = 0;
         while (kz_is_truthy(kz_lt(i, kz_num((kaze_float_t)4)))) {
             if (_kz_loop_l2781 >= 8L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2781 = _kz_loop_l2781 + 1;
+#line 2782
             prefix = kz_add(prefix, kz_fb_index(w, i, kz_str(" ")));
+#line 2783
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2784
     if (kz_is_truthy(kz_eq(prefix, kz_str("_kz_")))) {
+#line 2785
         return kz_num((kaze_float_t)1);
     }
+#line 2786
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2788
 KZ_MAYBE_UNUSED static KzValue kaze_fn_reserved_diags(KzValue n, KzValue out, KzValue depth) {
     (void)n;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 2790
     KzValue acc = out;
+#line 2791
     if (kz_is_truthy(kz_lt(depth, kz_num((kaze_float_t)60)))) {
+#line 2792
         KzValue nm = kz_str("");
+#line 2793
         if (kz_is_truthy(kz_or(kz_or(kz_eq(kz_get_field(n, "kind"), kz_str("LET")), kz_eq(kz_get_field(n, "kind"), kz_str("SET"))), kz_eq(kz_get_field(n, "kind"), kz_str("FOR_EACH"))))) {
+#line 2794
             nm = kz_get_field(n, "name");
         }
+#line 2795
         if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("SPAWN")))) {
+#line 2796
             nm = kz_get_field(n, "val_str");
         }
+#line 2797
         if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("PARAM")))) {
+#line 2798
             nm = kz_get_field(n, "name");
         }
+#line 2799
         if (kz_is_truthy(kz_and(kz_ne(nm, kz_str("")), kz_eq(kaze_fn_reserved_name(nm), kz_num((kaze_float_t)1))))) {
+#line 2800
             acc = kz_add(acc, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_RESERVED"), kz_get_field(n, "line"), kz_add(kz_add(kz_str("'"), nm), kz_str("' starts with _kz_, which the compiler reserves for its own bookkeeping"))) }));
         }
+#line 2801
         {
             KzValue _iter_target = kz_get_field(n, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 2802
                     acc = kaze_fn_reserved_diags(c, acc, kz_add(depth, kz_num((kaze_float_t)1)));
                 }
             }
         }
     }
+#line 2803
     return acc;
     return kz_nil();
 }
 
+#line 2817
 KZ_MAYBE_UNUSED static KzValue kaze_fn_name_is_capability(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 2818
     if (kz_is_truthy(kz_eq(kaze_fn_has_dot(name), kz_num((kaze_float_t)0)))) {
+#line 2819
         return kz_num((kaze_float_t)0);
     }
+#line 2820
     if (kz_is_truthy(kz_eq(kaze_fn_head_words(name), kz_str("geo")))) {
+#line 2821
         return kz_num((kaze_float_t)0);
     }
+#line 2822
     return kaze_fn_cap_name_known(kaze_fn_head_words(name));
     return kz_nil();
 }
 
+#line 2824
 KZ_MAYBE_UNUSED static KzValue kaze_fn_call_names_of(KzValue nodes) {
     (void)nodes;   /* a routine need not use every parameter */
+#line 2825
     KzValue out = kz_list_new(0);
+#line 2826
     {
         KzValue _iter_target = nodes;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue n = _iter_target.as.list->items[_i];
+#line 2827
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_get_field(n, "name") }));
             }
         }
     }
+#line 2828
     return out;
     return kz_nil();
 }
 
+#line 2830
 KZ_MAYBE_UNUSED static KzValue kaze_fn_calls_reach_capability(KzValue call_names, KzValue items, KzValue depth) {
     (void)call_names;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 2832
     if (kz_is_truthy(kz_gt(depth, kz_num((kaze_float_t)8)))) {
+#line 2833
         return kz_num((kaze_float_t)0);
     }
+#line 2834
     {
         KzValue _iter_target = call_names;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue nm = _iter_target.as.list->items[_i];
+#line 2835
                 if (kz_is_truthy(kz_eq(kaze_fn_name_is_capability(nm), kz_num((kaze_float_t)1)))) {
+#line 2836
                     return kz_num((kaze_float_t)1);
                 }
+#line 2837
                 KzValue callee = kaze_fn_routine_named(items, nm);
+#line 2838
                 if (kz_is_truthy(kz_and(kz_ne(kz_get_field(callee, "kind"), kz_str("NONE")), kz_ne(kz_get_field(callee, "kind"), kz_str("RECORD"))))) {
+#line 2839
                     KzValue inner = kaze_fn_call_names_of(kaze_fn_collect_kind(kaze_fn_child_at(callee, kz_num((kaze_float_t)2)), kz_str("CALL"), kz_list_new(0), kz_num((kaze_float_t)0)));
+#line 2840
                     if (kz_is_truthy(kz_eq(kaze_fn_calls_reach_capability(inner, items, kz_add(depth, kz_num((kaze_float_t)1))), kz_num((kaze_float_t)1)))) {
+#line 2841
                         return kz_num((kaze_float_t)1);
                     }
                 }
             }
         }
     }
+#line 2842
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2845
 KZ_MAYBE_UNUSED static KzValue kaze_fn_collect_kind(KzValue n, KzValue want, KzValue out, KzValue depth) {
     (void)n;   /* a routine need not use every parameter */
     (void)want;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 2847
     KzValue acc = out;
+#line 2848
     if (kz_is_truthy(kz_lt(depth, kz_num((kaze_float_t)60)))) {
+#line 2849
         if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), want))) {
+#line 2850
             acc = kz_add(acc, kz_list_from(1, (KzValue[]){ n }));
         }
+#line 2851
         {
             KzValue _iter_target = kz_get_field(n, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 2852
                     acc = kaze_fn_collect_kind(c, want, acc, kz_add(depth, kz_num((kaze_float_t)1)));
                 }
             }
         }
     }
+#line 2853
     return acc;
     return kz_nil();
 }
 
+#line 2855
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fiber_declared(KzValue items, KzValue name) {
     (void)items;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 2856
     KzValue it = kaze_fn_routine_named(items, name);
+#line 2857
     if (kz_is_truthy(kz_eq(kz_get_field(it, "kind"), kz_str("FIBER")))) {
+#line 2858
         return kz_num((kaze_float_t)1);
     }
+#line 2859
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2861
 KZ_MAYBE_UNUSED static KzValue kaze_fn_body_of(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 2862
     if (kz_is_truthy(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("WHEN")), kz_eq(kz_get_field(item, "kind"), kz_str("EVERY"))))) {
+#line 2863
         return kaze_fn_child_at(item, kz_num((kaze_float_t)1));
     }
+#line 2864
     return kaze_fn_child_at(item, kz_num((kaze_float_t)2));
     return kz_nil();
 }
 
+#line 2866
 KZ_MAYBE_UNUSED static KzValue kaze_fn_concurrency_diags_item(KzValue item, KzValue items) {
     (void)item;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
+#line 2868
     KzValue out = kz_list_new(0);
+#line 2869
     KzValue body = kaze_fn_body_of(item);
+#line 2870
     KzValue yields = kaze_fn_collect_kind(body, kz_str("YIELD"), kz_list_new(0), kz_num((kaze_float_t)0));
+#line 2871
     KzValue spawns = kaze_fn_collect_kind(body, kz_str("SPAWN"), kz_list_new(0), kz_num((kaze_float_t)0));
+#line 2873
     KzValue calls = kaze_fn_call_names_of(kaze_fn_collect_kind(body, kz_str("CALL"), kz_list_new(0), kz_num((kaze_float_t)0)));
+#line 2876
     if (kz_is_truthy(kz_ne(kz_get_field(item, "kind"), kz_str("FIBER")))) {
+#line 2877
         {
             KzValue _iter_target = yields;
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue y = _iter_target.as.list->items[_i];
+#line 2878
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_YIELD"), kz_get_field(y, "line"), kz_str("'yield' is only legal inside a fiber body; a routine an action calls cannot suspend")) }));
                 }
             }
         }
     } else {
+#line 2881
         if (kz_is_truthy(kz_gt(kz_len(kaze_fn_routine_needs(item)), kz_num((kaze_float_t)0)))) {
+#line 2882
             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_FIBER_EFFECT"), kz_get_field(item, "line"), kz_add(kz_add(kz_str("fiber '"), kz_get_field(item, "name")), kz_str("' declares 'needs:'; a fiber is pure by construction, so hardware calls stay in the root task"))) }));
         }
+#line 2883
         if (kz_is_truthy(kz_eq(kaze_fn_calls_reach_capability(calls, items, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)1)))) {
+#line 2884
             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_FIBER_EFFECT"), kz_get_field(item, "line"), kz_add(kz_add(kz_str("fiber '"), kz_get_field(item, "name")), kz_str("' reaches a capability call; spawn a pure routine instead so no two tasks can race for a device"))) }));
         }
     }
+#line 2887
     {
         KzValue _iter_target = calls;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue nm = _iter_target.as.list->items[_i];
+#line 2888
                 if (kz_is_truthy(kz_eq(kaze_fn_fiber_declared(items, nm), kz_num((kaze_float_t)1)))) {
+#line 2889
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_FIBER_CALL"), kz_get_field(item, "line"), kz_add(kz_add(kz_add(kz_add(kz_str("'"), nm), kz_str("' is a fiber; write 'spawn ")), nm), kz_str("(...) as <task>' instead of calling it"))) }));
                 }
             }
         }
     }
+#line 2892
     {
         KzValue _iter_target = spawns;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue sp = _iter_target.as.list->items[_i];
+#line 2893
                 if (kz_is_truthy(kz_eq(kaze_fn_fiber_declared(items, kz_get_field(sp, "name")), kz_num((kaze_float_t)0)))) {
+#line 2894
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_FIBER_TARGET"), kz_get_field(sp, "line"), kz_add(kz_add(kz_add(kz_add(kz_str("'"), kz_get_field(sp, "name")), kz_str("' is not a fiber declared in this file; declare it with 'fiber ")), kz_get_field(sp, "name")), kz_str("(...)'"))) }));
                 }
             }
         }
     }
+#line 2895
     return out;
     return kz_nil();
 }
 
+#line 2897
 KZ_MAYBE_UNUSED static KzValue kaze_fn_concurrency_diags(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 2899
     KzValue out = kz_list_new(0);
+#line 2900
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 2901
                 if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("FIBER")), kz_eq(kz_get_field(item, "kind"), kz_str("ACTION"))), kz_eq(kz_get_field(item, "kind"), kz_str("CHECK"))), kz_eq(kz_get_field(item, "kind"), kz_str("FILTER"))), kz_eq(kz_get_field(item, "kind"), kz_str("WHEN"))), kz_eq(kz_get_field(item, "kind"), kz_str("EVERY"))))) {
+#line 2902
                     out = kz_add_own(out, kaze_fn_concurrency_diags_item(item, items));
                 }
             }
         }
     }
+#line 2903
     return out;
     return kz_nil();
 }
 
+#line 2907
 KZ_MAYBE_UNUSED static KzValue kaze_fn_param_names(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 2908
     KzValue params = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 2909
     KzValue out = kz_list_new(0);
+#line 2910
     {
         KzValue _iter_target = kz_get_field(params, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 2911
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_get_field(p, "name") }));
             }
         }
     }
+#line 2912
     return out;
     return kz_nil();
 }
 
+#line 2914
 KZ_MAYBE_UNUSED static KzValue kaze_fn_routine_needs(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 2915
     KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 2916
     KzValue out = kz_list_new(0);
+#line 2917
     KzValue i = kz_num((kaze_float_t)0);
+#line 2918
     KzValue len = kz_len(kz_get_field(contracts, "children"));
+#line 2919
     { long _kz_loop_l2919 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2919 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2919 = _kz_loop_l2919 + 1;
+#line 2920
             KzValue c = kaze_fn_child_at(contracts, i);
+#line 2921
             if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("ROUTINE_NEED")))) {
+#line 2922
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_family_of_word(kz_get_field(c, "name")) }));
             }
+#line 2923
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2924
     return out;
     return kz_nil();
 }
 
+#line 2926
 KZ_MAYBE_UNUSED static KzValue kaze_fn_requires_facts(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 2927
     KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 2928
     KzValue out = kz_list_new(0);
+#line 2929
     KzValue i = kz_num((kaze_float_t)0);
+#line 2930
     KzValue len = kz_len(kz_get_field(contracts, "children"));
+#line 2931
     { long _kz_loop_l2931 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2931 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2931 = _kz_loop_l2931 + 1;
+#line 2932
             KzValue c = kaze_fn_child_at(contracts, i);
+#line 2933
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("requires"))))) {
+#line 2934
                 out = kz_add(out, kaze_fn_facts_from_cond(kaze_fn_child_at(c, kz_num((kaze_float_t)0)), out));
             }
+#line 2935
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2936
     return out;
     return kz_nil();
 }
 
+#line 2938
 KZ_MAYBE_UNUSED static KzValue kaze_fn_contract_diags(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 2939
     KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 2940
     KzValue out = kz_list_new(0);
+#line 2941
     KzValue i = kz_num((kaze_float_t)0);
+#line 2942
     KzValue len = kz_len(kz_get_field(contracts, "children"));
+#line 2943
     { long _kz_loop_l2943 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l2943 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l2943 = _kz_loop_l2943 + 1;
+#line 2944
             KzValue c = kaze_fn_child_at(contracts, i);
+#line 2945
             if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")))) {
+#line 2946
                 if (kz_is_truthy(kz_eq(kaze_fn_is_boolean_expr(kaze_fn_child_at(c, kz_num((kaze_float_t)0))), kz_num((kaze_float_t)0)))) {
+#line 2947
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_CONTRACT_NOT_BOOL"), kz_get_field(c, "line"), kz_add(kz_add(kz_str("this '"), kz_get_field(c, "name")), kz_str("' clause is not true-or-false; a contract must compare or combine conditions"))) }));
                 }
             }
+#line 2948
             if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("RECURSION_BOUND")))) {
+#line 2949
                 KzValue n = kaze_fn_text_to_num(kz_get_field(c, "val_str"));
+#line 2950
                 if (kz_is_truthy(kz_or(kz_lt(n, kz_num((kaze_float_t)1)), kz_gt(n, kz_num((kaze_float_t)256))))) {
+#line 2951
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_PARSE"), kz_get_field(c, "line"), kz_str("'recursion bounded' needs a whole number of frames from 1 to 256")) }));
                 }
             }
+#line 2952
             if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("FUEL")))) {
+#line 2953
                 KzValue f = kaze_fn_text_to_num(kz_get_field(c, "val_str"));
+#line 2954
                 if (kz_is_truthy(kz_or(kz_lt(f, kz_num((kaze_float_t)1)), kz_gt(f, kz_num((kaze_float_t)10000000))))) {
+#line 2955
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_PARSE"), kz_get_field(c, "line"), kz_str("'fuel' needs a whole number of scheduler steps from 1 to 10000000")) }));
                 }
             }
+#line 2956
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 2957
     return out;
     return kz_nil();
 }
 
+#line 2966
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_builtin_type_word(KzValue w) {
     (void)w;   /* a routine need not use every parameter */
+#line 2967
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(w, kz_str("int")), kz_eq(w, kz_str("num"))), kz_eq(w, kz_str("number"))), kz_eq(w, kz_str("float"))))) {
+#line 2968
         return kz_num((kaze_float_t)1);
     }
+#line 2969
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(w, kz_str("str")), kz_eq(w, kz_str("text"))), kz_eq(w, kz_str("bool"))), kz_eq(w, kz_str("percent"))))) {
+#line 2970
         return kz_num((kaze_float_t)1);
     }
+#line 2971
     if (kz_is_truthy(kz_or(kz_eq(w, kz_str("length")), kz_eq(w, kz_str("meters"))))) {
+#line 2972
         return kz_num((kaze_float_t)1);
     }
+#line 2973
     if (kz_is_truthy(kz_or(kz_eq(w, kz_str("time")), kz_eq(w, kz_str("seconds"))))) {
+#line 2974
         return kz_num((kaze_float_t)1);
     }
+#line 2975
     if (kz_is_truthy(kz_or(kz_eq(w, kz_str("angle")), kz_eq(w, kz_str("degrees"))))) {
+#line 2976
         return kz_num((kaze_float_t)1);
     }
+#line 2977
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_eq(w, kz_str("temperature")), kz_eq(w, kz_str("Celsius"))), kz_eq(w, kz_str("celsius"))), kz_eq(w, kz_str("Kelvin"))), kz_eq(w, kz_str("kelvin"))))) {
+#line 2978
         return kz_num((kaze_float_t)1);
     }
+#line 2979
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 2981
 KZ_MAYBE_UNUSED static KzValue kaze_fn_param_facts(KzValue item, KzValue items) {
     (void)item;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
+#line 2988
     KzValue out = kz_list_new(0);
+#line 2989
     KzValue params = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 2990
     {
         KzValue _iter_target = kz_get_field(params, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 2991
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_add(kz_str("param:"), kz_get_field(p, "name")) }));
+#line 2992
                 if (kz_is_truthy(kz_eq(kz_get_field(p, "val_str"), kz_str("")))) {
+#line 2993
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_add(kz_str("untyped:"), kz_get_field(p, "name")) }));
                 } else {
+#line 2995
                     if (kz_is_truthy(kz_and(kz_eq(kaze_fn_record_named(items, kz_get_field(p, "val_str")), kz_num((kaze_float_t)1)), kz_eq(kaze_fn_is_builtin_type_word(kz_get_field(p, "val_str")), kz_num((kaze_float_t)0))))) {
+#line 2996
                         out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_add(kz_str("recparam:"), kz_get_field(p, "name")) }));
                     }
                 }
             }
         }
     }
+#line 2997
     return out;
     return kz_nil();
 }
 
+#line 2999
 KZ_MAYBE_UNUSED static KzValue kaze_fn_check_item(KzValue item, KzValue module_needs, KzValue items, KzValue names_all, KzValue froms, KzValue tos, KzValue open) {
     (void)item;   /* a routine need not use every parameter */
     (void)module_needs;   /* a routine need not use every parameter */
@@ -6068,884 +8237,1371 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_check_item(KzValue item, KzValue module_n
     (void)froms;   /* a routine need not use every parameter */
     (void)tos;   /* a routine need not use every parameter */
     (void)open;   /* a routine need not use every parameter */
+#line 3000
     KzValue out = kaze_fn_contract_diags(item);
+#line 3001
     KzValue needs = kz_add(module_needs, kaze_fn_routine_needs(item));
+#line 3002
     KzValue names = kaze_fn_param_names(item);
+#line 3003
     KzValue facts = kz_add(kaze_fn_requires_facts(item), kaze_fn_param_facts(item, items));
+#line 3004
     KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)2));
+#line 3005
     out = kaze_fn_check_stmts(kz_get_field(body, "children"), names, facts, items, needs, open, out);
+#line 3006
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("FILTER")))) {
+#line 3007
         if (kz_is_truthy(kz_eq(kaze_fn_ends_with_verdict(kz_get_field(body, "children")), kz_num((kaze_float_t)0)))) {
+#line 3008
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_FILTER_FALLTHROUGH"), kz_get_field(item, "line"), kz_str("this filter can fall off the end without an allow or a reject verdict")) }));
         }
     }
+#line 3009
     if (kz_is_truthy(kz_eq(kaze_fn_recursion_bound_of(item), kz_num((kaze_float_t)0)))) {
+#line 3010
         if (kz_is_truthy(kz_eq(kaze_fn_reaches(kaze_fn_index_of(names_all, kz_get_field(item, "name")), kaze_fn_index_of(names_all, kz_get_field(item, "name")), froms, tos), kz_num((kaze_float_t)1)))) {
+#line 3011
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_RECURSION_UNBOUNDED"), kz_get_field(item, "line"), kz_add(kz_add(kz_str("'"), kz_get_field(item, "name")), kz_str("' reaches itself and declares no ceiling; add a bounded recursion declaration at the top of its body"))) }));
         }
     }
+#line 3012
     return out;
     return kz_nil();
 }
 
+#line 3014
 KZ_MAYBE_UNUSED static KzValue kaze_fn_need_names(KzValue needs_node) {
     (void)needs_node;   /* a routine need not use every parameter */
+#line 3015
     KzValue out = kz_list_new(0);
+#line 3016
     {
         KzValue _iter_target = kz_get_field(needs_node, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue n = _iter_target.as.list->items[_i];
+#line 3017
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_get_field(n, "name") }));
             }
         }
     }
+#line 3018
     return out;
     return kz_nil();
 }
 
+#line 3020
 KZ_MAYBE_UNUSED static KzValue kaze_fn_declared_families(KzValue need_list) {
     (void)need_list;   /* a routine need not use every parameter */
+#line 3021
     KzValue out = kz_list_new(0);
+#line 3022
     {
         KzValue _iter_target = need_list;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue n = _iter_target.as.list->items[_i];
+#line 3023
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_family_of_word(n) }));
             }
         }
     }
+#line 3024
     return out;
     return kz_nil();
 }
 
+#line 3042
 KZ_MAYBE_UNUSED static KzValue kaze_fn_ts_char(KzValue s, KzValue i) {
     (void)s;   /* a routine need not use every parameter */
     (void)i;   /* a routine need not use every parameter */
+#line 3043
     if (kz_is_truthy(kz_and(kz_ge(i, kz_num((kaze_float_t)0)), kz_lt(i, kz_len(s))))) {
+#line 3044
         return kz_fb_index(s, i, kz_str(""));
     }
+#line 3045
     return kz_str("");
     return kz_nil();
 }
 
+#line 3047
 KZ_MAYBE_UNUSED static KzValue kaze_fn_ts_find(KzValue s, KzValue want, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)want;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 3048
     KzValue i = from;
+#line 3049
     KzValue n = kz_len(s);
+#line 3050
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
+#line 3051
     { long _kz_loop_l3051 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
             if (_kz_loop_l3051 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3051 = _kz_loop_l3051 + 1;
+#line 3052
             if (kz_is_truthy(kz_eq(kaze_fn_ts_char(s, i), want))) {
+#line 3053
                 found = i;
+#line 3054
                 i = n;
             } else {
+#line 3056
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 3057
     return found;
     return kz_nil();
 }
 
+#line 3059
 KZ_MAYBE_UNUSED static KzValue kaze_fn_ts_starts(KzValue s, KzValue pre) {
     (void)s;   /* a routine need not use every parameter */
     (void)pre;   /* a routine need not use every parameter */
+#line 3060
     if (kz_is_truthy(kz_gt(kz_len(pre), kz_len(s)))) {
+#line 3061
         return kz_num((kaze_float_t)0);
     }
+#line 3062
     KzValue i = kz_num((kaze_float_t)0);
+#line 3063
     KzValue ok = kz_num((kaze_float_t)1);
+#line 3064
     { long _kz_loop_l3064 = 0;
         while (kz_is_truthy(kz_lt(i, kz_len(pre)))) {
             if (_kz_loop_l3064 >= 10000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3064 = _kz_loop_l3064 + 1;
+#line 3065
             if (kz_is_truthy(kz_ne(kaze_fn_ts_char(s, i), kaze_fn_ts_char(pre, i)))) {
+#line 3066
                 ok = kz_num((kaze_float_t)0);
+#line 3067
                 i = kz_len(pre);
             } else {
+#line 3069
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 3070
     return ok;
     return kz_nil();
 }
 
+#line 3072
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_num_text(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 3073
     if (kz_is_truthy(kz_eq(kz_len(s), kz_num((kaze_float_t)0)))) {
+#line 3074
         return kz_num((kaze_float_t)0);
     }
+#line 3075
     KzValue i = kz_num((kaze_float_t)0);
+#line 3076
     KzValue ok = kz_num((kaze_float_t)1);
+#line 3077
     { long _kz_loop_l3077 = 0;
         while (kz_is_truthy(kz_lt(i, kz_len(s)))) {
             if (_kz_loop_l3077 >= 10000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3077 = _kz_loop_l3077 + 1;
+#line 3078
             KzValue c = kaze_fn_ts_char(s, i);
+#line 3079
             if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(c, kz_str("0")), kz_eq(c, kz_str("1"))), kz_eq(c, kz_str("2"))), kz_eq(c, kz_str("3"))), kz_eq(c, kz_str("4"))), kz_eq(c, kz_str("5"))), kz_eq(c, kz_str("6"))), kz_eq(c, kz_str("7"))), kz_eq(c, kz_str("8"))), kz_eq(c, kz_str("9"))))) {
+#line 3080
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 3082
                 ok = kz_num((kaze_float_t)0);
+#line 3083
                 i = kz_len(s);
             }
         }
     }
+#line 3084
     return ok;
     return kz_nil();
 }
 
+#line 3086
 KZ_MAYBE_UNUSED static KzValue kaze_fn_num_text_of(KzValue i) {
     (void)i;   /* a routine need not use every parameter */
+#line 3089
     if (kz_is_truthy(kz_le(i, kz_num((kaze_float_t)0)))) {
+#line 3090
         return kz_str("0");
     }
+#line 3091
     KzValue n = i;
+#line 3092
     KzValue out = kz_str("");
+#line 3093
     KzValue guard = kz_num((kaze_float_t)0);
+#line 3094
     { long _kz_loop_l3094 = 0;
         while (kz_is_truthy(kz_gt(n, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l3094 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3094 = _kz_loop_l3094 + 1;
+#line 3095
             KzValue q = kz_num((kaze_float_t)0);
+#line 3096
             KzValue rem = n;
+#line 3097
             { long _kz_loop_l3097 = 0;
                 while (kz_is_truthy(kz_ge(rem, kz_num((kaze_float_t)10)))) {
                     if (_kz_loop_l3097 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                     _kz_loop_l3097 = _kz_loop_l3097 + 1;
+#line 3098
                     rem = kz_sub(rem, kz_num((kaze_float_t)10));
+#line 3099
                     q = kz_add(q, kz_num((kaze_float_t)1));
                 }
             }
+#line 3100
             KzValue ch = kaze_fn_ts_char(kz_str("0123456789"), rem);
+#line 3101
             out = kz_add(ch, out);
+#line 3102
             n = q;
+#line 3103
             guard = kz_add(guard, kz_num((kaze_float_t)1));
         }
     }
+#line 3104
     return out;
     return kz_nil();
 }
 
+#line 3108
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_spec_of_type(KzValue ty) {
     (void)ty;   /* a routine need not use every parameter */
+#line 3109
     if (kz_is_truthy(kz_eq(kaze_fn_ts_starts(ty, kz_str("tensor<")), kz_num((kaze_float_t)0)))) {
+#line 3110
         return kz_list_new(0);
     }
+#line 3111
     KzValue n = kz_len(ty);
+#line 3112
     KzValue comma = kaze_fn_ts_find(ty, kz_str(","), kz_num((kaze_float_t)7));
+#line 3113
     if (kz_is_truthy(kz_lt(comma, kz_num((kaze_float_t)0)))) {
+#line 3114
         return kz_list_new(0);
     }
+#line 3115
     KzValue p = kz_add(comma, kz_num((kaze_float_t)1));
+#line 3116
     if (kz_is_truthy(kz_ne(kaze_fn_ts_char(ty, p), kz_str("[")))) {
+#line 3117
         return kz_list_new(0);
     }
+#line 3118
     p = kz_add(p, kz_num((kaze_float_t)1));
+#line 3119
     KzValue dims = kz_list_new(0);
+#line 3120
     KzValue cur = kz_str("");
+#line 3121
     KzValue done = kz_num((kaze_float_t)0);
+#line 3122
     { long _kz_loop_l3122 = 0;
         while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l3122 >= 10000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3122 = _kz_loop_l3122 + 1;
+#line 3123
             KzValue c = kaze_fn_ts_char(ty, p);
+#line 3124
             if (kz_is_truthy(kz_or(kz_eq(c, kz_str("")), kz_eq(c, kz_str("]"))))) {
+#line 3125
                 if (kz_is_truthy(kz_ne(cur, kz_str("")))) {
+#line 3126
                     dims = kz_add(dims, kz_list_from(1, (KzValue[]){ cur }));
                 }
+#line 3127
                 done = kz_num((kaze_float_t)1);
             } else {
+#line 3129
                 if (kz_is_truthy(kz_eq(c, kz_str(",")))) {
+#line 3130
                     if (kz_is_truthy(kz_ne(cur, kz_str("")))) {
+#line 3131
                         dims = kz_add(dims, kz_list_from(1, (KzValue[]){ cur }));
                     }
+#line 3132
                     cur = kz_str("");
                 } else {
+#line 3134
                     cur = kz_add(cur, c);
                 }
             }
+#line 3135
             p = kz_add(p, kz_num((kaze_float_t)1));
         }
     }
+#line 3136
     if (kz_is_truthy(kz_eq(kz_len(dims), kz_num((kaze_float_t)0)))) {
+#line 3137
         return kz_list_new(0);
     }
+#line 3138
     return kz_add(kz_list_from(1, (KzValue[]){ kz_str("tensor") }), dims);
     return kz_nil();
 }
 
+#line 3140
 KZ_MAYBE_UNUSED static KzValue kaze_fn_rank_of(KzValue spec) {
     (void)spec;   /* a routine need not use every parameter */
+#line 3141
     if (kz_is_truthy(kz_eq(kz_len(spec), kz_num((kaze_float_t)0)))) {
+#line 3142
         return kz_num((kaze_float_t)0);
     }
+#line 3143
     if (kz_is_truthy(kz_ne(kz_fb_index(spec, kz_num((kaze_float_t)0), kz_str("")), kz_str("tensor")))) {
+#line 3144
         return kz_num((kaze_float_t)0);
     }
+#line 3145
     return kz_sub(kz_len(spec), kz_num((kaze_float_t)1));
     return kz_nil();
 }
 
+#line 3147
 KZ_MAYBE_UNUSED static KzValue kaze_fn_dim_of(KzValue spec, KzValue i) {
     (void)spec;   /* a routine need not use every parameter */
     (void)i;   /* a routine need not use every parameter */
+#line 3148
     if (kz_is_truthy(kz_and(kz_ge(i, kz_num((kaze_float_t)0)), kz_lt(i, kaze_fn_rank_of(spec))))) {
+#line 3149
         return kz_fb_index(spec, kz_add(i, kz_num((kaze_float_t)1)), kz_str(""));
     }
+#line 3150
     return kz_str("");
     return kz_nil();
 }
 
+#line 3152
 KZ_MAYBE_UNUSED static KzValue kaze_fn_spec_equal(KzValue a, KzValue b) {
     (void)a;   /* a routine need not use every parameter */
     (void)b;   /* a routine need not use every parameter */
+#line 3153
     if (kz_is_truthy(kz_ne(kz_len(a), kz_len(b)))) {
+#line 3154
         return kz_num((kaze_float_t)0);
     }
+#line 3155
     KzValue i = kz_num((kaze_float_t)0);
+#line 3156
     KzValue ok = kz_num((kaze_float_t)1);
+#line 3157
     { long _kz_loop_l3157 = 0;
         while (kz_is_truthy(kz_lt(i, kz_len(a)))) {
             if (_kz_loop_l3157 >= 10000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3157 = _kz_loop_l3157 + 1;
+#line 3158
             if (kz_is_truthy(kz_ne(kz_fb_index(a, i, kz_str("")), kz_fb_index(b, i, kz_str(""))))) {
+#line 3159
                 ok = kz_num((kaze_float_t)0);
+#line 3160
                 i = kz_len(a);
             } else {
+#line 3162
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 3163
     return ok;
     return kz_nil();
 }
 
+#line 3165
 KZ_MAYBE_UNUSED static KzValue kaze_fn_render_spec(KzValue spec) {
     (void)spec;   /* a routine need not use every parameter */
+#line 3166
     if (kz_is_truthy(kz_eq(kz_len(spec), kz_num((kaze_float_t)0)))) {
+#line 3167
         return kz_str("nothing");
     }
+#line 3168
     if (kz_is_truthy(kz_ne(kz_fb_index(spec, kz_num((kaze_float_t)0), kz_str("")), kz_str("tensor")))) {
+#line 3169
         return kz_fb_index(spec, kz_num((kaze_float_t)0), kz_str(""));
     }
+#line 3170
     KzValue out = kz_str("[");
+#line 3171
     KzValue i = kz_num((kaze_float_t)0);
+#line 3172
     { long _kz_loop_l3172 = 0;
         while (kz_is_truthy(kz_lt(i, kaze_fn_rank_of(spec)))) {
             if (_kz_loop_l3172 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3172 = _kz_loop_l3172 + 1;
+#line 3173
             if (kz_is_truthy(kz_gt(i, kz_num((kaze_float_t)0)))) {
+#line 3174
                 out = kz_add_own(out, kz_str(","));
             }
+#line 3175
             out = kz_add_own(out, kaze_fn_dim_of(spec, i));
+#line 3176
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3177
     return kz_add(out, kz_str("]"));
     return kz_nil();
 }
 
+#line 3179
 KZ_MAYBE_UNUSED static KzValue kaze_fn_resolve_dim(KzValue dim, KzValue binds) {
     (void)dim;   /* a routine need not use every parameter */
     (void)binds;   /* a routine need not use every parameter */
+#line 3180
     KzValue cur = dim;
+#line 3181
     KzValue guard = kz_num((kaze_float_t)0);
+#line 3182
     { long _kz_loop_l3182 = 0;
         while (kz_is_truthy(kz_lt(guard, kz_num((kaze_float_t)128)))) {
             if (_kz_loop_l3182 >= 128L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3182 = _kz_loop_l3182 + 1;
+#line 3183
             KzValue next = kz_str("");
+#line 3184
             {
                 KzValue _iter_target = binds;
                 if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                     size_t _len = _iter_target.as.list->len;
                     for (size_t _i = 0; _i < _len; _i++) {
                         KzValue b = _iter_target.as.list->items[_i];
+#line 3185
                         if (kz_is_truthy(kz_eq(kz_fb_index(b, kz_num((kaze_float_t)0), kz_str("")), cur))) {
+#line 3186
                             next = kz_fb_index(b, kz_num((kaze_float_t)1), kz_str(""));
                         }
                     }
                 }
             }
+#line 3187
             if (kz_is_truthy(kz_or(kz_eq(next, kz_str("")), kz_eq(next, cur)))) {
+#line 3188
                 return cur;
             }
+#line 3189
             cur = next;
+#line 3190
             guard = kz_add(guard, kz_num((kaze_float_t)1));
         }
     }
+#line 3191
     return cur;
     return kz_nil();
 }
 
+#line 3194
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bind_dim(KzValue x, KzValue y, KzValue binds) {
     (void)x;   /* a routine need not use every parameter */
     (void)y;   /* a routine need not use every parameter */
     (void)binds;   /* a routine need not use every parameter */
+#line 3195
     KzValue rx = kaze_fn_resolve_dim(x, binds);
+#line 3196
     KzValue ry = kaze_fn_resolve_dim(y, binds);
+#line 3197
     if (kz_is_truthy(kz_eq(rx, ry))) {
+#line 3198
         return kz_list_from(2, (KzValue[]){ kz_str("1"), binds });
     }
+#line 3199
     if (kz_is_truthy(kz_and(kz_eq(kaze_fn_is_num_text(rx), kz_num((kaze_float_t)1)), kz_eq(kaze_fn_is_num_text(ry), kz_num((kaze_float_t)1))))) {
+#line 3200
         return kz_list_from(2, (KzValue[]){ kz_str("0"), binds });
     }
+#line 3201
     if (kz_is_truthy(kz_eq(kaze_fn_is_num_text(rx), kz_num((kaze_float_t)1)))) {
+#line 3202
         return kz_list_from(2, (KzValue[]){ kz_str("1"), kz_add(binds, kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ ry, rx }) })) });
     }
+#line 3203
     if (kz_is_truthy(kz_eq(kaze_fn_is_num_text(ry), kz_num((kaze_float_t)1)))) {
+#line 3204
         return kz_list_from(2, (KzValue[]){ kz_str("1"), kz_add(binds, kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ rx, ry }) })) });
     }
+#line 3205
     return kz_list_from(2, (KzValue[]){ kz_str("1"), kz_add(binds, kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ ry, rx }) })) });
     return kz_nil();
 }
 
+#line 3208
 KZ_MAYBE_UNUSED static KzValue kaze_fn_unify_shape(KzValue a, KzValue b, KzValue binds) {
     (void)a;   /* a routine need not use every parameter */
     (void)b;   /* a routine need not use every parameter */
     (void)binds;   /* a routine need not use every parameter */
+#line 3209
     if (kz_is_truthy(kz_ne(kaze_fn_rank_of(a), kaze_fn_rank_of(b)))) {
+#line 3210
         return kz_list_from(2, (KzValue[]){ kz_str("0"), binds });
     }
+#line 3211
     KzValue cur = binds;
+#line 3212
     KzValue i = kz_num((kaze_float_t)0);
+#line 3213
     KzValue ok = kz_num((kaze_float_t)1);
+#line 3214
     { long _kz_loop_l3214 = 0;
         while (kz_is_truthy(kz_lt(i, kaze_fn_rank_of(a)))) {
             if (_kz_loop_l3214 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3214 = _kz_loop_l3214 + 1;
+#line 3215
             KzValue r = kaze_fn_bind_dim(kaze_fn_dim_of(a, i), kaze_fn_dim_of(b, i), cur);
+#line 3216
             if (kz_is_truthy(kz_eq(kz_fb_index(r, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3217
                 ok = kz_num((kaze_float_t)0);
+#line 3218
                 i = kaze_fn_rank_of(a);
             } else {
+#line 3220
                 cur = kz_fb_index(r, kz_num((kaze_float_t)1), kz_str(""));
+#line 3221
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 3222
     return kz_list_from(2, (KzValue[]){ kaze_fn_num_text_of(ok), cur });
     return kz_nil();
 }
 
+#line 3224
 KZ_MAYBE_UNUSED static KzValue kaze_fn_env_get(KzValue env, KzValue name) {
     (void)env;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 3225
     KzValue i = kz_sub(kz_len(env), kz_num((kaze_float_t)1));
+#line 3226
     { long _kz_loop_l3226 = 0;
         while (kz_is_truthy(kz_ge(i, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l3226 >= 10000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3226 = _kz_loop_l3226 + 1;
+#line 3227
             KzValue e = kz_fb_index(env, i, kz_str(""));
+#line 3228
             if (kz_is_truthy(kz_eq(kz_fb_index(e, kz_num((kaze_float_t)0), kz_str("")), name))) {
+#line 3229
                 return kz_fb_index(e, kz_num((kaze_float_t)1), kz_str(""));
             }
+#line 3230
             i = kz_sub(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3231
     return kz_list_from(1, (KzValue[]){ kz_str("?") });
     return kz_nil();
 }
 
+#line 3233
 KZ_MAYBE_UNUSED static KzValue kaze_fn_env_set(KzValue env, KzValue name, KzValue spec) {
     (void)env;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
     (void)spec;   /* a routine need not use every parameter */
+#line 3234
     return kz_add(env, kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ name, spec }) }));
     return kz_nil();
 }
 
+#line 3236
 KZ_MAYBE_UNUSED static KzValue kaze_fn_unify_specs(KzValue a, KzValue b, KzValue binds) {
     (void)a;   /* a routine need not use every parameter */
     (void)b;   /* a routine need not use every parameter */
     (void)binds;   /* a routine need not use every parameter */
+#line 3240
     if (kz_is_truthy(kz_or(kz_eq(kz_len(a), kz_num((kaze_float_t)0)), kz_eq(kz_len(b), kz_num((kaze_float_t)0))))) {
+#line 3241
         return kz_list_from(2, (KzValue[]){ kz_str("1"), binds });
     }
+#line 3242
     if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(a, kz_num((kaze_float_t)0), kz_str("")), kz_str("?")), kz_eq(kz_fb_index(b, kz_num((kaze_float_t)0), kz_str("")), kz_str("?"))))) {
+#line 3243
         return kz_list_from(2, (KzValue[]){ kz_str("1"), binds });
     }
+#line 3244
     if (kz_is_truthy(kz_and(kz_eq(kz_fb_index(a, kz_num((kaze_float_t)0), kz_str("")), kz_str("tensor")), kz_eq(kz_fb_index(b, kz_num((kaze_float_t)0), kz_str("")), kz_str("tensor"))))) {
+#line 3245
         return kaze_fn_unify_shape(a, b, binds);
     }
+#line 3246
     return kz_list_from(2, (KzValue[]){ kz_str("1"), binds });
     return kz_nil();
 }
 
+#line 3248
 KZ_MAYBE_UNUSED static KzValue kaze_fn_specs_compatible(KzValue a, KzValue b) {
     (void)a;   /* a routine need not use every parameter */
     (void)b;   /* a routine need not use every parameter */
+#line 3249
     if (kz_is_truthy(kz_or(kz_eq(kz_len(a), kz_num((kaze_float_t)0)), kz_eq(kz_len(b), kz_num((kaze_float_t)0))))) {
+#line 3250
         return kz_num((kaze_float_t)1);
     }
+#line 3251
     if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(a, kz_num((kaze_float_t)0), kz_str("")), kz_str("?")), kz_eq(kz_fb_index(b, kz_num((kaze_float_t)0), kz_str("")), kz_str("?"))))) {
+#line 3252
         return kz_num((kaze_float_t)1);
     }
+#line 3253
     if (kz_is_truthy(kz_ne(kz_fb_index(a, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(b, kz_num((kaze_float_t)0), kz_str(""))))) {
+#line 3254
         return kz_num((kaze_float_t)0);
     }
+#line 3255
     if (kz_is_truthy(kz_ne(kz_fb_index(a, kz_num((kaze_float_t)0), kz_str("")), kz_str("tensor")))) {
+#line 3256
         return kz_num((kaze_float_t)1);
     }
+#line 3257
     if (kz_is_truthy(kz_ne(kaze_fn_rank_of(a), kaze_fn_rank_of(b)))) {
+#line 3258
         return kz_num((kaze_float_t)0);
     }
+#line 3259
     KzValue i = kz_num((kaze_float_t)0);
+#line 3260
     KzValue ok = kz_num((kaze_float_t)1);
+#line 3261
     { long _kz_loop_l3261 = 0;
         while (kz_is_truthy(kz_lt(i, kaze_fn_rank_of(a)))) {
             if (_kz_loop_l3261 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3261 = _kz_loop_l3261 + 1;
+#line 3262
             KzValue x = kaze_fn_dim_of(a, i);
+#line 3263
             KzValue y = kaze_fn_dim_of(b, i);
+#line 3264
             if (kz_is_truthy(kz_and(kz_and(kz_eq(kaze_fn_is_num_text(x), kz_num((kaze_float_t)1)), kz_eq(kaze_fn_is_num_text(y), kz_num((kaze_float_t)1))), kz_ne(x, y)))) {
+#line 3265
                 ok = kz_num((kaze_float_t)0);
+#line 3266
                 i = kaze_fn_rank_of(a);
             } else {
+#line 3268
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 3269
     return ok;
     return kz_nil();
 }
 
+#line 3271
 KZ_MAYBE_UNUSED static KzValue kaze_fn_shape_error(KzValue diags, KzValue line, KzValue msg) {
     (void)diags;   /* a routine need not use every parameter */
     (void)line;   /* a routine need not use every parameter */
     (void)msg;   /* a routine need not use every parameter */
+#line 3272
     return kz_add(diags, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_SHAPE_MISMATCH"), line, msg) }));
     return kz_nil();
 }
 
+#line 3274
 KZ_MAYBE_UNUSED static KzValue kaze_fn_dims_product(KzValue spec) {
     (void)spec;   /* a routine need not use every parameter */
+#line 3275
     if (kz_is_truthy(kz_eq(kaze_fn_rank_of(spec), kz_num((kaze_float_t)0)))) {
+#line 3276
         return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     }
+#line 3277
     KzValue p = kz_num((kaze_float_t)1);
+#line 3278
     KzValue i = kz_num((kaze_float_t)0);
+#line 3279
     KzValue known = kz_num((kaze_float_t)1);
+#line 3280
     { long _kz_loop_l3280 = 0;
         while (kz_is_truthy(kz_lt(i, kaze_fn_rank_of(spec)))) {
             if (_kz_loop_l3280 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3280 = _kz_loop_l3280 + 1;
+#line 3281
             KzValue d = kaze_fn_dim_of(spec, i);
+#line 3282
             if (kz_is_truthy(kz_eq(kaze_fn_is_num_text(d), kz_num((kaze_float_t)1)))) {
+#line 3283
                 p = kz_mul(p, kaze_fn_text_to_num(d));
+#line 3284
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 3286
                 known = kz_num((kaze_float_t)0);
+#line 3287
                 i = kaze_fn_rank_of(spec);
             }
         }
     }
+#line 3288
     if (kz_is_truthy(kz_eq(known, kz_num((kaze_float_t)0)))) {
+#line 3289
         return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     }
+#line 3290
     return p;
     return kz_nil();
 }
 
+#line 3292
 KZ_MAYBE_UNUSED static KzValue kaze_fn_spec_with_last_one(KzValue spec) {
     (void)spec;   /* a routine need not use every parameter */
+#line 3293
     if (kz_is_truthy(kz_eq(kaze_fn_rank_of(spec), kz_num((kaze_float_t)0)))) {
+#line 3294
         return spec;
     }
+#line 3295
     KzValue out = kz_list_from(1, (KzValue[]){ kz_str("tensor") });
+#line 3296
     KzValue i = kz_num((kaze_float_t)0);
+#line 3297
     { long _kz_loop_l3297 = 0;
         while (kz_is_truthy(kz_lt(i, kaze_fn_rank_of(spec)))) {
             if (_kz_loop_l3297 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3297 = _kz_loop_l3297 + 1;
+#line 3298
             if (kz_is_truthy(kz_eq(kz_add(i, kz_num((kaze_float_t)1)), kaze_fn_rank_of(spec)))) {
+#line 3299
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_str("1") }));
             } else {
+#line 3301
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_dim_of(spec, i) }));
             }
+#line 3302
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3303
     return out;
     return kz_nil();
 }
 
+#line 3305
 KZ_MAYBE_UNUSED static KzValue kaze_fn_spec_swap_last2(KzValue spec) {
     (void)spec;   /* a routine need not use every parameter */
+#line 3306
     if (kz_is_truthy(kz_ne(kaze_fn_rank_of(spec), kz_num((kaze_float_t)2)))) {
+#line 3307
         return spec;
     }
+#line 3308
     return kz_list_from(3, (KzValue[]){ kz_str("tensor"), kaze_fn_dim_of(spec, kz_num((kaze_float_t)1)), kaze_fn_dim_of(spec, kz_num((kaze_float_t)0)) });
     return kz_nil();
 }
 
+#line 3310
 KZ_MAYBE_UNUSED static KzValue kaze_fn_spec_matmul_result(KzValue a, KzValue b, KzValue transpose_right) {
     (void)a;   /* a routine need not use every parameter */
     (void)b;   /* a routine need not use every parameter */
     (void)transpose_right;   /* a routine need not use every parameter */
+#line 3314
     KzValue out = kz_list_from(1, (KzValue[]){ kz_str("tensor") });
+#line 3315
     KzValue i = kz_num((kaze_float_t)0);
+#line 3316
     { long _kz_loop_l3316 = 0;
         while (kz_is_truthy(kz_lt(i, kz_sub(kaze_fn_rank_of(a), kz_num((kaze_float_t)1))))) {
             if (_kz_loop_l3316 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3316 = _kz_loop_l3316 + 1;
+#line 3317
             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_dim_of(a, i) }));
+#line 3318
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3319
     if (kz_is_truthy(kz_eq(transpose_right, kz_num((kaze_float_t)1)))) {
+#line 3320
         i = kz_num((kaze_float_t)0);
+#line 3321
         { long _kz_loop_l3321 = 0;
             while (kz_is_truthy(kz_lt(i, kz_sub(kaze_fn_rank_of(b), kz_num((kaze_float_t)1))))) {
                 if (_kz_loop_l3321 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l3321 = _kz_loop_l3321 + 1;
+#line 3322
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_dim_of(b, i) }));
+#line 3323
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     } else {
+#line 3325
         i = kz_num((kaze_float_t)1);
+#line 3326
         { long _kz_loop_l3326 = 0;
             while (kz_is_truthy(kz_lt(i, kaze_fn_rank_of(b)))) {
                 if (_kz_loop_l3326 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l3326 = _kz_loop_l3326 + 1;
+#line 3327
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_dim_of(b, i) }));
+#line 3328
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 3329
     return out;
     return kz_nil();
 }
 
+#line 3331
 KZ_MAYBE_UNUSED static KzValue kaze_fn_spec_of_list_dims(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 3334
     if (kz_is_truthy(kz_ne(kz_get_field(e, "kind"), kz_str("LIST")))) {
+#line 3335
         return kz_list_new(0);
     }
+#line 3336
     KzValue dims = kz_list_from(1, (KzValue[]){ kz_str("tensor") });
+#line 3337
     {
         KzValue _iter_target = kz_get_field(e, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 3338
                 if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("NUM")))) {
+#line 3339
                     dims = kz_add(dims, kz_list_from(1, (KzValue[]){ kz_get_field(c, "val_str") }));
                 } else {
+#line 3341
                     return kz_list_new(0);
                 }
             }
         }
     }
+#line 3342
     if (kz_is_truthy(kz_lt(kz_len(dims), kz_num((kaze_float_t)2)))) {
+#line 3343
         return kz_list_new(0);
     }
+#line 3344
     return dims;
     return kz_nil();
 }
 
+#line 3346
 KZ_MAYBE_UNUSED static KzValue kaze_fn_infer_expr(KzValue e, KzValue env, KzValue binds, KzValue items, KzValue diags) {
     (void)e;   /* a routine need not use every parameter */
     (void)env;   /* a routine need not use every parameter */
     (void)binds;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
+#line 3348
     KzValue k = kz_get_field(e, "kind");
+#line 3349
     if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 3350
         return kz_list_from(3, (KzValue[]){ kaze_fn_env_get(env, kz_get_field(e, "name")), binds, diags });
     }
+#line 3351
     if (kz_is_truthy(kz_eq(k, kz_str("NUM")))) {
+#line 3352
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("num") }), binds, diags });
     }
+#line 3353
     if (kz_is_truthy(kz_eq(k, kz_str("STR")))) {
+#line 3354
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("text") }), binds, diags });
     }
+#line 3355
     if (kz_is_truthy(kz_eq(k, kz_str("BOOL")))) {
+#line 3356
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("bool") }), binds, diags });
     }
+#line 3357
     if (kz_is_truthy(kz_eq(k, kz_str("LIST")))) {
+#line 3358
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("list") }), binds, diags });
     }
+#line 3359
     if (kz_is_truthy(kz_or(kz_eq(k, kz_str("LEN")), kz_eq(k, kz_str("LEN_LIT"))))) {
+#line 3360
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("num") }), binds, diags });
     }
+#line 3361
     if (kz_is_truthy(kz_or(kz_or(kz_eq(k, kz_str("BIN")), kz_eq(k, kz_str("INDEX"))), kz_eq(k, kz_str("IN_UNIT"))))) {
+#line 3362
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("num") }), binds, diags });
     }
+#line 3363
     if (kz_is_truthy(kz_eq(k, kz_str("FIELD")))) {
+#line 3364
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), binds, diags });
     }
+#line 3365
     if (kz_is_truthy(kz_eq(k, kz_str("FALLBACK")))) {
+#line 3366
         KzValue ri = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3367
         KzValue rf = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)1)), env, kz_fb_index(ri, kz_num((kaze_float_t)1), kz_str("")), items, kz_fb_index(ri, kz_num((kaze_float_t)2), kz_str("")));
+#line 3368
         KzValue u = kaze_fn_unify_specs(kz_fb_index(ri, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(rf, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(rf, kz_num((kaze_float_t)1), kz_str("")));
+#line 3369
         KzValue out = kz_fb_index(rf, kz_num((kaze_float_t)2), kz_str(""));
+#line 3370
         if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3371
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_str("the two sides of otherwise have different shapes: "), kaze_fn_render_spec(kz_fb_index(ri, kz_num((kaze_float_t)0), kz_str("")))), kz_str(" and ")), kaze_fn_render_spec(kz_fb_index(rf, kz_num((kaze_float_t)0), kz_str("")))));
         }
+#line 3372
         return kz_list_from(3, (KzValue[]){ kz_fb_index(ri, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3373
     if (kz_is_truthy(kz_eq(k, kz_str("CALL")))) {
+#line 3374
         return kaze_fn_infer_call(e, env, binds, items, diags);
     }
+#line 3375
     return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), binds, diags });
     return kz_nil();
 }
 
+#line 3377
 KZ_MAYBE_UNUSED static KzValue kaze_fn_infer_call(KzValue e, KzValue env, KzValue binds, KzValue items, KzValue diags) {
     (void)e;   /* a routine need not use every parameter */
     (void)env;   /* a routine need not use every parameter */
     (void)binds;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
+#line 3379
     KzValue name = kz_get_field(e, "name");
+#line 3380
     KzValue cnt = kz_len(kz_get_field(e, "children"));
+#line 3382
     if (kz_is_truthy(kz_eq(name, kz_str("tensor")))) {
+#line 3383
         if (kz_is_truthy(kz_lt(cnt, kz_num((kaze_float_t)2)))) {
+#line 3384
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), binds, diags });
         }
+#line 3385
         KzValue vals = kaze_fn_child_at(e, kz_num((kaze_float_t)0));
+#line 3386
         KzValue spec = kaze_fn_spec_of_list_dims(kaze_fn_child_at(e, kz_num((kaze_float_t)1)));
+#line 3387
         KzValue out = diags;
+#line 3388
         if (kz_is_truthy(kz_eq(kz_len(spec), kz_num((kaze_float_t)0)))) {
+#line 3389
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("tensor(...) needs a literal shape list such as [2, 3]"));
+#line 3390
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), binds, out });
         }
+#line 3391
         if (kz_is_truthy(kz_eq(kz_get_field(vals, "kind"), kz_str("LIST")))) {
+#line 3392
             KzValue want = kaze_fn_dims_product(spec);
+#line 3393
             if (kz_is_truthy(kz_and(kz_ge(want, kz_num((kaze_float_t)0)), kz_ne(kz_len(kz_get_field(vals, "children")), want)))) {
+#line 3394
                 out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("tensor(...) shape "), kaze_fn_render_spec(spec)), kz_str(" needs ")), kaze_fn_num_text_of(want)), kz_str(" values, the list has ")), kaze_fn_num_text_of(kz_len(kz_get_field(vals, "children")))));
+#line 3395
                 return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), binds, out });
             }
         }
+#line 3396
         return kz_list_from(3, (KzValue[]){ spec, binds, out });
     }
+#line 3398
     if (kz_is_truthy(kz_eq(name, kz_str("zeros")))) {
+#line 3399
         KzValue spec = kaze_fn_spec_of_list_dims(kaze_fn_child_at(e, kz_num((kaze_float_t)0)));
+#line 3400
         if (kz_is_truthy(kz_eq(kz_len(spec), kz_num((kaze_float_t)0)))) {
+#line 3401
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), binds, kaze_fn_shape_error(diags, kz_get_field(e, "line"), kz_str("zeros(...) needs a literal shape list such as [2, 3]")) });
         }
+#line 3402
         return kz_list_from(3, (KzValue[]){ spec, binds, diags });
     }
+#line 3404
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("matmul")), kz_eq(name, kz_str("matmul_t"))))) {
+#line 3405
         KzValue ra = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3406
         KzValue rb = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)1)), env, kz_fb_index(ra, kz_num((kaze_float_t)1), kz_str("")), items, kz_fb_index(ra, kz_num((kaze_float_t)2), kz_str("")));
+#line 3407
         KzValue a = kz_fb_index(ra, kz_num((kaze_float_t)0), kz_str(""));
+#line 3408
         KzValue b = kz_fb_index(rb, kz_num((kaze_float_t)0), kz_str(""));
+#line 3409
         KzValue out = kz_fb_index(rb, kz_num((kaze_float_t)2), kz_str(""));
+#line 3410
         if (kz_is_truthy(kz_or(kz_lt(kaze_fn_rank_of(a), kz_num((kaze_float_t)2)), kz_lt(kaze_fn_rank_of(b), kz_num((kaze_float_t)2))))) {
+#line 3411
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_add(name, kz_str(" needs two matrices; got ")), kaze_fn_render_spec(a)), kz_str(" and ")), kaze_fn_render_spec(b)));
+#line 3412
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3413
         KzValue xdim = kaze_fn_dim_of(a, kz_sub(kaze_fn_rank_of(a), kz_num((kaze_float_t)1)));
+#line 3414
         KzValue ydim = kaze_fn_dim_of(b, kz_num((kaze_float_t)0));
+#line 3415
         if (kz_is_truthy(kz_eq(name, kz_str("matmul_t")))) {
+#line 3416
             ydim = kaze_fn_dim_of(b, kz_sub(kaze_fn_rank_of(b), kz_num((kaze_float_t)1)));
         }
+#line 3417
         KzValue u = kaze_fn_bind_dim(xdim, ydim, kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")));
+#line 3418
         if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3419
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_add(name, kz_str(" inner dimensions do not match: ")), kaze_fn_render_spec(a)), kz_str(" and ")), kaze_fn_render_spec(b)));
+#line 3420
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3421
         KzValue tx = kz_num((kaze_float_t)0);
+#line 3422
         if (kz_is_truthy(kz_eq(name, kz_str("matmul_t")))) {
+#line 3423
             tx = kz_num((kaze_float_t)1);
         }
+#line 3424
         return kz_list_from(3, (KzValue[]){ kaze_fn_spec_matmul_result(a, b, tx), kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3426
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(name, kz_str("tensor_add")), kz_eq(name, kz_str("tensor_sub"))), kz_eq(name, kz_str("tensor_mul"))), kz_eq(name, kz_str("tensor_div"))))) {
+#line 3427
         KzValue ra = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3428
         KzValue rb = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)1)), env, kz_fb_index(ra, kz_num((kaze_float_t)1), kz_str("")), items, kz_fb_index(ra, kz_num((kaze_float_t)2), kz_str("")));
+#line 3429
         KzValue a = kz_fb_index(ra, kz_num((kaze_float_t)0), kz_str(""));
+#line 3430
         KzValue b = kz_fb_index(rb, kz_num((kaze_float_t)0), kz_str(""));
+#line 3431
         KzValue out = kz_fb_index(rb, kz_num((kaze_float_t)2), kz_str(""));
+#line 3432
         if (kz_is_truthy(kz_and(kz_gt(kaze_fn_rank_of(a), kz_num((kaze_float_t)0)), kz_gt(kaze_fn_rank_of(b), kz_num((kaze_float_t)0))))) {
+#line 3433
             KzValue u = kaze_fn_unify_shape(a, b, kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")));
+#line 3434
             if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3435
                 out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_add(name, kz_str(" needs equal shapes; got ")), kaze_fn_render_spec(a)), kz_str(" and ")), kaze_fn_render_spec(b)));
+#line 3436
                 return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
             }
+#line 3437
             return kz_list_from(3, (KzValue[]){ a, kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3438
         if (kz_is_truthy(kz_gt(kaze_fn_rank_of(a), kz_num((kaze_float_t)0)))) {
+#line 3439
             return kz_list_from(3, (KzValue[]){ a, kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3440
         if (kz_is_truthy(kz_gt(kaze_fn_rank_of(b), kz_num((kaze_float_t)0)))) {
+#line 3441
             return kz_list_from(3, (KzValue[]){ b, kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3442
         if (kz_is_truthy(kz_and(kz_eq(kz_fb_index(a, kz_num((kaze_float_t)0), kz_str("")), kz_str("num")), kz_eq(kz_fb_index(b, kz_num((kaze_float_t)0), kz_str("")), kz_str("num"))))) {
+#line 3443
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("num") }), kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3444
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3446
     if (kz_is_truthy(kz_eq(name, kz_str("add_bias")))) {
+#line 3447
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3448
         KzValue rb = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)1)), env, kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), items, kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")));
+#line 3449
         KzValue x = kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""));
+#line 3450
         KzValue b = kz_fb_index(rb, kz_num((kaze_float_t)0), kz_str(""));
+#line 3451
         KzValue out = kz_fb_index(rb, kz_num((kaze_float_t)2), kz_str(""));
+#line 3452
         if (kz_is_truthy(kz_or(kz_lt(kaze_fn_rank_of(x), kz_num((kaze_float_t)1)), kz_ne(kaze_fn_rank_of(b), kz_num((kaze_float_t)1))))) {
+#line 3453
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_str("add_bias needs a tensor and a rank-1 bias; got "), kaze_fn_render_spec(x)), kz_str(" and ")), kaze_fn_render_spec(b)));
+#line 3454
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3455
         KzValue u = kaze_fn_bind_dim(kaze_fn_dim_of(x, kz_sub(kaze_fn_rank_of(x), kz_num((kaze_float_t)1))), kaze_fn_dim_of(b, kz_num((kaze_float_t)0)), kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")));
+#line 3456
         if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3457
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_str("add_bias bias width does not match the last dimension: "), kaze_fn_render_spec(x)), kz_str(" and ")), kaze_fn_render_spec(b)));
+#line 3458
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rb, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3459
         return kz_list_from(3, (KzValue[]){ x, kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3461
     if (kz_is_truthy(kz_eq(name, kz_str("transpose")))) {
+#line 3462
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3463
         if (kz_is_truthy(kz_ne(kaze_fn_rank_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)2)))) {
+#line 3464
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), kaze_fn_shape_error(kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")), kz_get_field(e, "line"), kz_add(kz_str("transpose here needs a rank-2 tensor; got "), kaze_fn_render_spec(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))))) });
         }
+#line 3465
         return kz_list_from(3, (KzValue[]){ kaze_fn_spec_swap_last2(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3467
     if (kz_is_truthy(kz_eq(name, kz_str("reshape")))) {
+#line 3468
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3469
         KzValue spec = kaze_fn_spec_of_list_dims(kaze_fn_child_at(e, kz_num((kaze_float_t)1)));
+#line 3470
         KzValue out = kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str(""));
+#line 3471
         if (kz_is_truthy(kz_eq(kz_len(spec), kz_num((kaze_float_t)0)))) {
+#line 3472
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("reshape needs a literal target shape such as [2, 3]")) });
         }
+#line 3473
         KzValue from_n = kaze_fn_dims_product(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str("")));
+#line 3474
         KzValue to_n = kaze_fn_dims_product(spec);
+#line 3475
         if (kz_is_truthy(kz_and(kz_and(kz_ge(from_n, kz_num((kaze_float_t)0)), kz_ge(to_n, kz_num((kaze_float_t)0))), kz_ne(from_n, to_n)))) {
+#line 3476
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_str("reshape changes the element count: "), kaze_fn_render_spec(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str("")))), kz_str(" -> ")), kaze_fn_render_spec(spec)));
+#line 3477
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3478
         return kz_list_from(3, (KzValue[]){ spec, kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3480
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(name, kz_str("softmax")), kz_eq(name, kz_str("gelu"))), kz_eq(name, kz_str("silu"))), kz_eq(name, kz_str("relu"))))) {
+#line 3481
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3482
         return kz_list_from(3, (KzValue[]){ kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3484
     if (kz_is_truthy(kz_eq(name, kz_str("rms_norm")))) {
+#line 3485
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3486
         KzValue rw = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)1)), env, kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), items, kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")));
+#line 3487
         KzValue out = kz_fb_index(rw, kz_num((kaze_float_t)2), kz_str(""));
+#line 3488
         if (kz_is_truthy(kz_or(kz_lt(kaze_fn_rank_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)1)), kz_ne(kaze_fn_rank_of(kz_fb_index(rw, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)1))))) {
+#line 3489
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("rms_norm needs a tensor and a rank-1 weight"));
+#line 3490
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rw, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3491
         KzValue u = kaze_fn_bind_dim(kaze_fn_dim_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str("")), kz_sub(kaze_fn_rank_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)1))), kaze_fn_dim_of(kz_fb_index(rw, kz_num((kaze_float_t)0), kz_str("")), kz_num((kaze_float_t)0)), kz_fb_index(rw, kz_num((kaze_float_t)1), kz_str("")));
+#line 3492
         if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3493
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("rms_norm weight width does not match the last dimension"));
+#line 3494
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rw, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3495
         return kz_list_from(3, (KzValue[]){ kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3497
     if (kz_is_truthy(kz_eq(name, kz_str("layer_norm")))) {
+#line 3498
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3499
         KzValue rw = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)1)), env, kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), items, kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")));
+#line 3500
         KzValue out = kz_fb_index(rw, kz_num((kaze_float_t)2), kz_str(""));
+#line 3501
         if (kz_is_truthy(kz_or(kz_lt(kaze_fn_rank_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)1)), kz_ne(kaze_fn_rank_of(kz_fb_index(rw, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)1))))) {
+#line 3502
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("layer_norm needs a tensor and a rank-1 weight"));
+#line 3503
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rw, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3504
         KzValue u = kaze_fn_bind_dim(kaze_fn_dim_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str("")), kz_sub(kaze_fn_rank_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)1))), kaze_fn_dim_of(kz_fb_index(rw, kz_num((kaze_float_t)0), kz_str("")), kz_num((kaze_float_t)0)), kz_fb_index(rw, kz_num((kaze_float_t)1), kz_str("")));
+#line 3505
         if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3506
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("layer_norm weight width does not match the last dimension"));
+#line 3507
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rw, kz_num((kaze_float_t)1), kz_str("")), out });
         }
+#line 3508
         KzValue outb = out;
+#line 3509
         if (kz_is_truthy(kz_gt(cnt, kz_num((kaze_float_t)2)))) {
+#line 3510
             KzValue rbb = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)2)), env, kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), items, outb);
+#line 3511
             out = kz_fb_index(rbb, kz_num((kaze_float_t)2), kz_str(""));
+#line 3512
             if (kz_is_truthy(kz_eq(kaze_fn_rank_of(kz_fb_index(rbb, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)1)))) {
+#line 3513
                 KzValue u2 = kaze_fn_bind_dim(kaze_fn_dim_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str("")), kz_sub(kaze_fn_rank_of(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)1))), kaze_fn_dim_of(kz_fb_index(rbb, kz_num((kaze_float_t)0), kz_str("")), kz_num((kaze_float_t)0)), kz_fb_index(rbb, kz_num((kaze_float_t)1), kz_str("")));
+#line 3514
                 if (kz_is_truthy(kz_eq(kz_fb_index(u2, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3515
                     out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("layer_norm bias width does not match the last dimension"));
                 }
             }
         }
+#line 3516
         return kz_list_from(3, (KzValue[]){ kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3518
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("tensor_sum")), kz_eq(name, kz_str("tensor_mean"))))) {
+#line 3519
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3520
         return kz_list_from(3, (KzValue[]){ kaze_fn_spec_with_last_one(kz_fb_index(rx, kz_num((kaze_float_t)0), kz_str(""))), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3522
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("argmax")), kz_eq(name, kz_str("tensor_argmax"))))) {
+#line 3523
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3524
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("num") }), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3526
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_get")))) {
+#line 3527
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3528
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("num") }), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3530
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_shape")))) {
+#line 3531
         KzValue rx = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3532
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("list") }), kz_fb_index(rx, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(rx, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3534
     if (kz_is_truthy(kz_eq(name, kz_str("cli_text")))) {
+#line 3535
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("text") }), binds, diags });
     }
+#line 3537
     if (kz_is_truthy(kz_eq(name, kz_str("model_open")))) {
+#line 3538
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("model") }), binds, diags });
     }
+#line 3540
     if (kz_is_truthy(kz_eq(name, kz_str("model_forward")))) {
+#line 3541
         KzValue rm = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3542
         KzValue out = kz_fb_index(rm, kz_num((kaze_float_t)2), kz_str(""));
+#line 3543
         KzValue rms = kz_fb_index(rm, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 3544
         if (kz_is_truthy(kz_and(kz_ne(kz_fb_index(rms, kz_num((kaze_float_t)0), kz_str("")), kz_str("model")), kz_ne(kz_fb_index(rms, kz_num((kaze_float_t)0), kz_str("")), kz_str("?"))))) {
+#line 3545
             out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("model_forward needs the value model_open returned"));
         }
+#line 3546
         if (kz_is_truthy(kz_lt(cnt, kz_num((kaze_float_t)2)))) {
+#line 3547
             return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), kz_fb_index(rm, kz_num((kaze_float_t)1), kz_str("")), kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_str("model_forward needs a token list")) });
         }
+#line 3548
         KzValue rt = kaze_fn_infer_expr(kaze_fn_child_at(e, kz_num((kaze_float_t)1)), env, kz_fb_index(rm, kz_num((kaze_float_t)1), kz_str("")), items, out);
+#line 3549
         return kz_list_from(3, (KzValue[]){ kz_list_from(3, (KzValue[]){ kz_str("tensor"), kz_str("1"), kz_str("V") }), kz_fb_index(rt, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(rt, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3551
     KzValue callee = kaze_fn_routine_named(items, name);
+#line 3552
     if (kz_is_truthy(kz_and(kz_ne(kz_get_field(callee, "kind"), kz_str("NONE")), kz_eq(cnt, kz_len(kz_get_field(kaze_fn_child_at(callee, kz_num((kaze_float_t)0)), "children")))))) {
+#line 3553
         KzValue params = kaze_fn_child_at(callee, kz_num((kaze_float_t)0));
+#line 3554
         KzValue cur = binds;
+#line 3555
         KzValue out = diags;
+#line 3556
         KzValue i = kz_num((kaze_float_t)0);
+#line 3557
         { long _kz_loop_l3557 = 0;
             while (kz_is_truthy(kz_lt(i, cnt))) {
                 if (_kz_loop_l3557 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l3557 = _kz_loop_l3557 + 1;
+#line 3558
                 KzValue ra = kaze_fn_infer_expr(kaze_fn_child_at(e, i), env, cur, items, out);
+#line 3559
                 KzValue ps = kaze_fn_tensor_spec_of_type(kz_get_field(kaze_fn_child_at(params, i), "val_str"));
+#line 3560
                 out = kz_fb_index(ra, kz_num((kaze_float_t)2), kz_str(""));
+#line 3561
                 if (kz_is_truthy(kz_and(kz_gt(kz_len(ps), kz_num((kaze_float_t)0)), kz_gt(kaze_fn_rank_of(kz_fb_index(ra, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)0))))) {
+#line 3562
                     KzValue u = kaze_fn_unify_shape(kz_fb_index(ra, kz_num((kaze_float_t)0), kz_str("")), ps, kz_fb_index(ra, kz_num((kaze_float_t)1), kz_str("")));
+#line 3563
                     if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3564
                         out = kaze_fn_shape_error(out, kz_get_field(e, "line"), kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("argument "), kaze_fn_num_text_of(kz_add(i, kz_num((kaze_float_t)1)))), kz_str(" of ")), name), kz_str(" has shape ")), kaze_fn_render_spec(kz_fb_index(ra, kz_num((kaze_float_t)0), kz_str("")))), kz_str(", the parameter declares ")), kaze_fn_render_spec(ps)));
                     } else {
+#line 3566
                         cur = kz_fb_index(u, kz_num((kaze_float_t)1), kz_str(""));
                     }
                 } else {
+#line 3568
                     cur = kz_fb_index(ra, kz_num((kaze_float_t)1), kz_str(""));
                 }
+#line 3569
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
+#line 3570
         KzValue rs = kaze_fn_tensor_spec_of_type(kz_get_field(callee, "val_str"));
+#line 3571
         if (kz_is_truthy(kz_gt(kz_len(rs), kz_num((kaze_float_t)0)))) {
+#line 3572
             return kz_list_from(3, (KzValue[]){ rs, cur, out });
         }
+#line 3573
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), cur, out });
     }
+#line 3575
     if (kz_is_truthy(kz_eq(kaze_fn_pure_builtin(name), kz_num((kaze_float_t)1)))) {
+#line 3576
         return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("num") }), binds, diags });
     }
+#line 3577
     return kz_list_from(3, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_str("?") }), binds, diags });
     return kz_nil();
 }
 
+#line 3579
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_stmt(KzValue s, KzValue env, KzValue result_spec, KzValue items, KzValue binds, KzValue diags) {
     (void)s;   /* a routine need not use every parameter */
     (void)env;   /* a routine need not use every parameter */
@@ -6953,84 +9609,139 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_stmt(KzValue s, KzValue env, KzVal
     (void)items;   /* a routine need not use every parameter */
     (void)binds;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
+#line 3581
     KzValue k = kz_get_field(s, "kind");
+#line 3582
     if (kz_is_truthy(kz_eq(k, kz_str("LET")))) {
+#line 3583
         KzValue r = kaze_fn_infer_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3584
         return kz_list_from(3, (KzValue[]){ kaze_fn_env_set(env, kz_get_field(s, "name"), kz_fb_index(r, kz_num((kaze_float_t)0), kz_str(""))), kz_fb_index(r, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(r, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3585
     if (kz_is_truthy(kz_eq(k, kz_str("SET")))) {
+#line 3586
         KzValue r = kaze_fn_infer_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3587
         KzValue old = kaze_fn_env_get(env, kz_get_field(s, "name"));
+#line 3588
         KzValue u = kaze_fn_unify_specs(old, kz_fb_index(r, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(r, kz_num((kaze_float_t)1), kz_str("")));
+#line 3589
         KzValue out = kz_fb_index(r, kz_num((kaze_float_t)2), kz_str(""));
+#line 3590
         if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3591
             out = kaze_fn_shape_error(out, kz_get_field(s, "line"), kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("'"), kz_get_field(s, "name")), kz_str("' has shape ")), kaze_fn_render_spec(old)), kz_str(" but this assignment gives ")), kaze_fn_render_spec(kz_fb_index(r, kz_num((kaze_float_t)0), kz_str("")))));
         }
+#line 3592
         return kz_list_from(3, (KzValue[]){ env, kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3593
     if (kz_is_truthy(kz_eq(k, kz_str("RETURN")))) {
+#line 3594
         if (kz_is_truthy(kz_eq(kz_len(kz_get_field(s, "children")), kz_num((kaze_float_t)0)))) {
+#line 3595
             return kz_list_from(3, (KzValue[]){ env, binds, diags });
         }
+#line 3596
         KzValue r = kaze_fn_infer_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3597
         KzValue u = kaze_fn_unify_specs(result_spec, kz_fb_index(r, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(r, kz_num((kaze_float_t)1), kz_str("")));
+#line 3598
         KzValue out = kz_fb_index(r, kz_num((kaze_float_t)2), kz_str(""));
+#line 3599
         if (kz_is_truthy(kz_eq(kz_fb_index(u, kz_num((kaze_float_t)0), kz_str("")), kz_str("0")))) {
+#line 3600
             out = kaze_fn_shape_error(out, kz_get_field(s, "line"), kz_add(kz_add(kz_add(kz_str("this routine declares shape "), kaze_fn_render_spec(result_spec)), kz_str(" but returns ")), kaze_fn_render_spec(kz_fb_index(r, kz_num((kaze_float_t)0), kz_str("")))));
         }
+#line 3601
         return kz_list_from(3, (KzValue[]){ env, kz_fb_index(u, kz_num((kaze_float_t)1), kz_str("")), out });
     }
+#line 3602
     if (kz_is_truthy(kz_or(kz_eq(k, kz_str("EXPR")), kz_eq(k, kz_str("GUARD"))))) {
+#line 3603
         KzValue r = kaze_fn_infer_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3604
         return kz_list_from(3, (KzValue[]){ env, kz_fb_index(r, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(r, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3605
     if (kz_is_truthy(kz_eq(k, kz_str("IF")))) {
+#line 3606
         KzValue r = kaze_fn_infer_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3607
         KzValue t = kaze_fn_tensor_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), kz_fb_index(r, kz_num((kaze_float_t)0), kz_str("")), result_spec, items, kz_fb_index(r, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(r, kz_num((kaze_float_t)2), kz_str("")));
+#line 3608
         KzValue e = kaze_fn_tensor_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)2))), kz_fb_index(t, kz_num((kaze_float_t)0), kz_str("")), result_spec, items, kz_fb_index(t, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(t, kz_num((kaze_float_t)2), kz_str("")));
+#line 3609
         return kz_list_from(3, (KzValue[]){ kz_fb_index(e, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(e, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(e, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3610
     if (kz_is_truthy(kz_eq(k, kz_str("WHILE")))) {
+#line 3611
         KzValue r = kaze_fn_infer_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3612
         KzValue b = kaze_fn_tensor_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), kz_fb_index(r, kz_num((kaze_float_t)0), kz_str("")), result_spec, items, kz_fb_index(r, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(r, kz_num((kaze_float_t)2), kz_str("")));
+#line 3613
         return kz_list_from(3, (KzValue[]){ kz_fb_index(b, kz_num((kaze_float_t)0), kz_str("")), kz_fb_index(b, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(b, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3614
     if (kz_is_truthy(kz_eq(k, kz_str("FOR_EACH")))) {
+#line 3615
         KzValue r = kaze_fn_infer_expr(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), env, binds, items, diags);
+#line 3616
         KzValue inner = kaze_fn_env_set(kz_fb_index(r, kz_num((kaze_float_t)0), kz_str("")), kz_get_field(s, "name"), kz_list_from(1, (KzValue[]){ kz_str("num") }));
+#line 3617
         KzValue b = kaze_fn_tensor_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), inner, result_spec, items, kz_fb_index(r, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(r, kz_num((kaze_float_t)2), kz_str("")));
+#line 3618
         return kz_list_from(3, (KzValue[]){ env, kz_fb_index(b, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(b, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3619
     if (kz_is_truthy(kz_eq(k, kz_str("TRY")))) {
+#line 3620
         KzValue inner = env;
+#line 3621
         if (kz_is_truthy(kz_ne(kz_get_field(s, "name"), kz_str("")))) {
+#line 3622
             inner = kaze_fn_env_set(env, kz_get_field(s, "name"), kz_list_from(1, (KzValue[]){ kz_str("?") }));
         }
+#line 3623
         KzValue b = kaze_fn_tensor_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)0))), inner, result_spec, items, binds, diags);
+#line 3624
         KzValue e = kaze_fn_tensor_stmts(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))), kz_fb_index(b, kz_num((kaze_float_t)0), kz_str("")), result_spec, items, kz_fb_index(b, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(b, kz_num((kaze_float_t)2), kz_str("")));
+#line 3625
         return kz_list_from(3, (KzValue[]){ env, kz_fb_index(e, kz_num((kaze_float_t)1), kz_str("")), kz_fb_index(e, kz_num((kaze_float_t)2), kz_str("")) });
     }
+#line 3626
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_eq(k, kz_str("SPAWN")), kz_eq(k, kz_str("JOIN"))), kz_eq(k, kz_str("SEND"))), kz_eq(k, kz_str("RECEIVE"))), kz_eq(k, kz_str("RETURN_VALUE"))))) {
+#line 3627
         KzValue cur = binds;
+#line 3628
         KzValue out = diags;
+#line 3629
         {
             KzValue _iter_target = kz_get_field(s, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 3630
                     KzValue r = kaze_fn_infer_expr(c, env, cur, items, out);
+#line 3631
                     cur = kz_fb_index(r, kz_num((kaze_float_t)1), kz_str(""));
+#line 3632
                     out = kz_fb_index(r, kz_num((kaze_float_t)2), kz_str(""));
                 }
             }
         }
+#line 3633
         return kz_list_from(3, (KzValue[]){ env, cur, out });
     }
+#line 3634
     return kz_list_from(3, (KzValue[]){ env, binds, diags });
     return kz_nil();
 }
 
+#line 3636
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_stmts(KzValue stmts, KzValue env, KzValue result_spec, KzValue items, KzValue binds, KzValue diags) {
     (void)stmts;   /* a routine need not use every parameter */
     (void)env;   /* a routine need not use every parameter */
@@ -7038,549 +9749,808 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_stmts(KzValue stmts, KzValue env, 
     (void)items;   /* a routine need not use every parameter */
     (void)binds;   /* a routine need not use every parameter */
     (void)diags;   /* a routine need not use every parameter */
+#line 3638
     KzValue cur_env = env;
+#line 3639
     KzValue cur_binds = binds;
+#line 3640
     KzValue out = diags;
+#line 3641
     {
         KzValue _iter_target = stmts;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue s = _iter_target.as.list->items[_i];
+#line 3642
                 KzValue r = kaze_fn_tensor_stmt(s, cur_env, result_spec, items, cur_binds, out);
+#line 3643
                 cur_env = kz_fb_index(r, kz_num((kaze_float_t)0), kz_str(""));
+#line 3644
                 cur_binds = kz_fb_index(r, kz_num((kaze_float_t)1), kz_str(""));
+#line 3645
                 out = kz_fb_index(r, kz_num((kaze_float_t)2), kz_str(""));
             }
         }
     }
+#line 3646
     return kz_list_from(3, (KzValue[]){ cur_env, cur_binds, out });
     return kz_nil();
 }
 
+#line 3648
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_item_diags(KzValue item, KzValue items) {
     (void)item;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
+#line 3650
     if (kz_is_truthy(kz_and(kz_and(kz_and(kz_ne(kz_get_field(item, "kind"), kz_str("ACTION")), kz_ne(kz_get_field(item, "kind"), kz_str("CHECK"))), kz_ne(kz_get_field(item, "kind"), kz_str("FILTER"))), kz_ne(kz_get_field(item, "kind"), kz_str("FIBER"))))) {
+#line 3651
         return kz_list_new(0);
     }
+#line 3652
     KzValue params = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 3653
     KzValue env = kz_list_new(0);
+#line 3654
     {
         KzValue _iter_target = kz_get_field(params, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 3655
                 KzValue spec = kaze_fn_tensor_spec_of_type(kz_get_field(p, "val_str"));
+#line 3656
                 if (kz_is_truthy(kz_gt(kz_len(spec), kz_num((kaze_float_t)0)))) {
+#line 3657
                     env = kaze_fn_env_set(env, kz_get_field(p, "name"), spec);
                 }
             }
         }
     }
+#line 3658
     KzValue result_spec = kaze_fn_tensor_spec_of_type(kz_get_field(item, "val_str"));
+#line 3659
     KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)2));
+#line 3660
     KzValue r = kaze_fn_tensor_stmts(kz_get_field(body, "children"), env, result_spec, items, kz_list_new(0), kz_list_new(0));
+#line 3661
     return kz_fb_index(r, kz_num((kaze_float_t)2), kz_str(""));
     return kz_nil();
 }
 
+#line 3663
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_diags(KzValue items, KzValue need_list) {
     (void)items;   /* a routine need not use every parameter */
     (void)need_list;   /* a routine need not use every parameter */
+#line 3665
     KzValue out = kz_list_new(0);
+#line 3666
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 3667
                 out = kz_add_own(out, kaze_fn_tensor_item_diags(item, items));
             }
         }
     }
+#line 3671
     KzValue calls = kz_list_new(0);
+#line 3672
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 3673
                 calls = kz_add(calls, kaze_fn_collect_kind(item, kz_str("CALL"), kz_list_new(0), kz_num((kaze_float_t)0)));
             }
         }
     }
+#line 3674
     KzValue names = kaze_fn_call_names_of(calls);
+#line 3675
     KzValue needs_mem = kz_num((kaze_float_t)0);
+#line 3676
     {
         KzValue _iter_target = names;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue nm = _iter_target.as.list->items[_i];
+#line 3677
                 if (kz_is_truthy(kz_or(kz_eq(nm, kz_str("model_open")), kz_eq(nm, kz_str("model_forward"))))) {
+#line 3678
                     needs_mem = kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 3679
     if (kz_is_truthy(kz_eq(needs_mem, kz_num((kaze_float_t)1)))) {
+#line 3680
         KzValue declared = kz_num((kaze_float_t)0);
+#line 3681
         {
             KzValue _iter_target = need_list;
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue n = _iter_target.as.list->items[_i];
+#line 3682
                     if (kz_is_truthy(kz_eq(kaze_fn_family_of_word(n), kz_str("memory")))) {
+#line 3683
                         declared = kz_num((kaze_float_t)1);
                     }
                 }
             }
         }
+#line 3684
         if (kz_is_truthy(kz_eq(declared, kz_num((kaze_float_t)0)))) {
+#line 3685
             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_CAP_UNDECLARED"), kz_num((kaze_float_t)1), kz_str("model_open reads the host filesystem but this file does not declare it; add 'memory' to the needs: line")) }));
         }
     }
+#line 3686
     return out;
     return kz_nil();
 }
 
+#line 3690
 KZ_MAYBE_UNUSED static KzValue kaze_fn_check_program(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 3692
     KzValue out = kz_list_new(0);
+#line 3693
     KzValue items = kaze_fn_program_items(prog);
+#line 3694
     KzValue need_list = kaze_fn_need_names(kaze_fn_program_needs(prog));
+#line 3695
     KzValue open = kz_num((kaze_float_t)0);
+#line 3696
     KzValue use_node = kaze_fn_program_uses(prog);
+#line 3697
     if (kz_is_truthy(kz_gt(kz_len(kz_get_field(use_node, "children")), kz_num((kaze_float_t)0)))) {
+#line 3698
         open = kz_num((kaze_float_t)1);
     }
+#line 3700
     KzValue i = kz_num((kaze_float_t)0);
+#line 3701
     { long _kz_loop_l3701 = 0;
         while (kz_is_truthy(kz_lt(i, kz_len(need_list)))) {
             if (_kz_loop_l3701 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3701 = _kz_loop_l3701 + 1;
+#line 3702
             KzValue n = kz_fb_index(need_list, i, kz_str(""));
+#line 3703
             if (kz_is_truthy(kz_eq(kaze_fn_cap_name_known(n), kz_num((kaze_float_t)0)))) {
+#line 3704
                 out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_CAP_UNKNOWN"), kz_num((kaze_float_t)1), kz_add(kz_add(kz_str("'"), n), kz_str("' does not name a capability family or an instance"))) }));
             }
+#line 3705
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3708
     KzValue declared = kaze_fn_declared_families(need_list);
+#line 3709
     KzValue names_all = kaze_fn_routine_names(items);
+#line 3710
     KzValue graph = kaze_fn_call_edges(items, names_all);
+#line 3711
     KzValue froms = kz_fb_index(graph, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 3712
     KzValue tos = kz_fb_index(graph, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 3713
     i = kz_num((kaze_float_t)0);
+#line 3714
     { long _kz_loop_l3714 = 0;
         while (kz_is_truthy(kz_lt(i, kz_len(items)))) {
             if (_kz_loop_l3714 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3714 = _kz_loop_l3714 + 1;
+#line 3715
             KzValue item = kaze_fn_node_at(items, i);
+#line 3716
             if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("ACTION")), kz_eq(kz_get_field(item, "kind"), kz_str("CHECK"))), kz_eq(kz_get_field(item, "kind"), kz_str("FILTER"))), kz_eq(kz_get_field(item, "kind"), kz_str("FIBER"))))) {
+#line 3717
                 out = kz_add(out, kaze_fn_check_item(item, declared, items, names_all, froms, tos, open));
             }
+#line 3718
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(item, "kind"), kz_str("RECORD")), kz_eq(kz_len(kz_get_field(item, "children")), kz_num((kaze_float_t)0))))) {
+#line 3722
                 out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_RECORD_NO_FIELDS"), kz_get_field(item, "line"), kz_add(kz_add(kz_str("record '"), kz_get_field(item, "name")), kz_str("' declares no fields; indent each 'name: type' line under it"))) }));
             }
+#line 3723
             if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("UNKNOWN_ITEM")))) {
+#line 3724
                 out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_PARSE"), kz_get_field(item, "line"), kz_add(kz_add(kz_str("the machine reader does not know the form '"), kz_get_field(item, "name")), kz_str("'"))) }));
             }
+#line 3725
             if (kz_is_truthy(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("WHEN")), kz_eq(kz_get_field(item, "kind"), kz_str("EVERY"))))) {
+#line 3726
                 KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 3727
                 out = kaze_fn_check_stmts(kz_get_field(body, "children"), kz_list_new(0), kz_list_new(0), items, declared, open, out);
             }
+#line 3728
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3732
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 3733
                 if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("ACTION")), kz_eq(kz_get_field(item, "kind"), kz_str("CHECK"))), kz_eq(kz_get_field(item, "kind"), kz_str("FILTER"))), kz_eq(kz_get_field(item, "kind"), kz_str("FIBER"))))) {
+#line 3734
                     if (kz_is_truthy(kz_eq(kaze_fn_pure_builtin(kz_get_field(item, "name")), kz_num((kaze_float_t)1)))) {
+#line 3735
                         out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_diag(kz_str("E_KAZE_RESERVED_NAME"), kz_get_field(item, "line"), kz_add(kz_add(kz_str("'"), kz_get_field(item, "name")), kz_str("' is a builtin; a routine may not reuse the name"))) }));
                     }
                 }
             }
         }
     }
+#line 3737
     out = kz_add(out, kaze_fn_concurrency_diags(items));
+#line 3739
     out = kz_add(out, kaze_fn_tensor_diags(items, need_list));
+#line 3741
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 3742
                 out = kz_add(out, kaze_fn_reserved_diags(item, kz_list_new(0), kz_num((kaze_float_t)0)));
             }
         }
     }
+#line 3743
     return out;
     return kz_nil();
 }
 
+#line 3750
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_opcodes(void) {
+#line 3751
     return kz_list_from(49, (KzValue[]){ kz_str("Const@0"), kz_str("LoadLocal@1"), kz_str("StoreLocal@2"), kz_str("NewArr@3"), kz_str("GetIndex@4"), kz_str("Len@5"), kz_str("Pop@6"), kz_str("Add@7"), kz_str("Sub@8"), kz_str("Mul@9"), kz_str("Div@10"), kz_str("Mod@11"), kz_str("Neg@12"), kz_str("CmpLt@13"), kz_str("CmpLe@14"), kz_str("CmpGt@15"), kz_str("CmpGe@16"), kz_str("CmpEq@17"), kz_str("CmpNe@18"), kz_str("Not@19"), kz_str("Jmp@20"), kz_str("JmpIfFalse@21"), kz_str("CallCap@22"), kz_str("PolicyStop@23"), kz_str("Ret@24"), kz_str("RetUnit@25"), kz_str("FuelTick@26"), kz_str("Trap@27"), kz_str("Halt@28"), kz_str("JmpIfTrue@29"), kz_str("GetField@30"), kz_str("Jeq@31"), kz_str("Jne@32"), kz_str("VecNew@33"), kz_str("VecDist@34"), kz_str("VecBearing@35"), kz_str("VecBearingBetween@36"), kz_str("Sin@37"), kz_str("Cos@38"), kz_str("Atan2@39"), kz_str("Sqrt@40"), kz_str("DegToRad@41"), kz_str("RadToDeg@42"), kz_str("VecSlantDist@43"), kz_str("TryBegin@44"), kz_str("TryEnd@45"), kz_str("LinkLost@46"), kz_str("CallRoutine@47"), kz_str("NewMap@48") });
     return kz_nil();
 }
 
+#line 3768
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_opcode_numbers(void) {
+#line 3769
     return kz_list_from(49, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)1), kz_num((kaze_float_t)2), kz_num((kaze_float_t)3), kz_num((kaze_float_t)4), kz_num((kaze_float_t)5), kz_num((kaze_float_t)6), kz_num((kaze_float_t)7), kz_num((kaze_float_t)8), kz_num((kaze_float_t)9), kz_num((kaze_float_t)10), kz_num((kaze_float_t)11), kz_num((kaze_float_t)12), kz_num((kaze_float_t)13), kz_num((kaze_float_t)14), kz_num((kaze_float_t)15), kz_num((kaze_float_t)16), kz_num((kaze_float_t)17), kz_num((kaze_float_t)18), kz_num((kaze_float_t)19), kz_num((kaze_float_t)20), kz_num((kaze_float_t)21), kz_num((kaze_float_t)22), kz_num((kaze_float_t)23), kz_num((kaze_float_t)24), kz_num((kaze_float_t)25), kz_num((kaze_float_t)26), kz_num((kaze_float_t)27), kz_num((kaze_float_t)28), kz_num((kaze_float_t)29), kz_num((kaze_float_t)30), kz_num((kaze_float_t)31), kz_num((kaze_float_t)32), kz_num((kaze_float_t)33), kz_num((kaze_float_t)34), kz_num((kaze_float_t)35), kz_num((kaze_float_t)36), kz_num((kaze_float_t)37), kz_num((kaze_float_t)38), kz_num((kaze_float_t)39), kz_num((kaze_float_t)40), kz_num((kaze_float_t)41), kz_num((kaze_float_t)42), kz_num((kaze_float_t)43), kz_num((kaze_float_t)44), kz_num((kaze_float_t)45), kz_num((kaze_float_t)46), kz_num((kaze_float_t)47), kz_num((kaze_float_t)48) });
     return kz_nil();
 }
 
+#line 3779
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_opcode_known(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 3780
     {
         KzValue _iter_target = kaze_fn_bc_opcode_numbers();
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue m = _iter_target.as.list->items[_i];
+#line 3781
                 if (kz_is_truthy(kz_eq(m, n))) {
+#line 3782
                     return kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 3783
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 3833
 KZ_MAYBE_UNUSED static KzValue kaze_fn_m_pad(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 3834
     KzValue out = kz_str("");
+#line 3835
     KzValue i = kz_num((kaze_float_t)0);
+#line 3836
     { long _kz_loop_l3836 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
             if (_kz_loop_l3836 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3836 = _kz_loop_l3836 + 1;
+#line 3837
             out = kz_add_own(out, kz_str("  "));
+#line 3838
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3839
     return out;
     return kz_nil();
 }
 
+#line 3841
 KZ_MAYBE_UNUSED static KzValue kaze_fn_h_pad(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 3842
     KzValue out = kz_str("");
+#line 3843
     KzValue i = kz_num((kaze_float_t)0);
+#line 3844
     { long _kz_loop_l3844 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
             if (_kz_loop_l3844 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3844 = _kz_loop_l3844 + 1;
+#line 3845
             out = kz_add_own(out, kz_str("    "));
+#line 3846
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3847
     return out;
     return kz_nil();
 }
 
+#line 3849
 KZ_MAYBE_UNUSED static KzValue kaze_fn_quoted(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 3850
     KzValue out = kz_str("\"");
+#line 3851
     KzValue len = kz_len(s);
+#line 3852
     KzValue i = kz_num((kaze_float_t)0);
+#line 3853
     { long _kz_loop_l3853 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l3853 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3853 = _kz_loop_l3853 + 1;
+#line 3854
             KzValue c = kz_fb_index(s, i, kz_str("x"));
+#line 3855
             if (kz_is_truthy(kz_eq(c, kz_str("\\")))) {
+#line 3856
                 out = kz_add_own(out, kz_str("\\\\"));
             } else {
+#line 3858
                 if (kz_is_truthy(kz_eq(c, kz_str("\"")))) {
+#line 3859
                     out = kz_add_own(out, kz_str("\\\""));
                 } else {
+#line 3861
                     if (kz_is_truthy(kz_eq(c, kz_str("\n")))) {
+#line 3862
                         out = kz_add_own(out, kz_str("\\n"));
                     } else {
+#line 3864
                         if (kz_is_truthy(kz_eq(c, kz_str("\t")))) {
+#line 3865
                             out = kz_add_own(out, kz_str("\\t"));
                         } else {
+#line 3867
                             out = kz_add_own(out, c);
                         }
                     }
                 }
             }
+#line 3868
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3869
     out = kz_add_own(out, kz_str("\""));
+#line 3870
     return out;
     return kz_nil();
 }
 
+#line 3872
 KZ_MAYBE_UNUSED static KzValue kaze_fn_drop_first(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 3873
     KzValue out = kz_list_new(0);
+#line 3874
     KzValue len = kz_len(items);
+#line 3875
     KzValue i = kz_num((kaze_float_t)1);
+#line 3876
     { long _kz_loop_l3876 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l3876 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l3876 = _kz_loop_l3876 + 1;
+#line 3877
             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_node_at(items, i) }));
+#line 3878
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 3879
     return out;
     return kz_nil();
 }
 
+#line 3882
 KZ_MAYBE_UNUSED static KzValue kaze_fn_m_head(KzValue form) {
     (void)form;   /* a routine need not use every parameter */
+#line 3883
     KzValue kids = kz_get_field(form, "children");
+#line 3884
     if (kz_is_truthy(kz_or(kz_ne(kz_get_field(form, "kind"), kz_str("L")), kz_eq(kz_len(kids), kz_num((kaze_float_t)0))))) {
+#line 3885
         return kz_str("");
     }
+#line 3886
     KzValue h = kaze_fn_node_at(kids, kz_num((kaze_float_t)0));
+#line 3887
     if (kz_is_truthy(kz_eq(kz_get_field(h, "kind"), kz_str("A")))) {
+#line 3888
         return kz_get_field(h, "name");
     }
+#line 3889
     return kz_str("");
     return kz_nil();
 }
 
+#line 3892
 KZ_MAYBE_UNUSED static KzValue kaze_fn_m_arg(KzValue form, KzValue i) {
     (void)form;   /* a routine need not use every parameter */
     (void)i;   /* a routine need not use every parameter */
+#line 3893
     return kaze_fn_child_at(form, kz_add(i, kz_num((kaze_float_t)1)));
     return kz_nil();
 }
 
+#line 3896
 KZ_MAYBE_UNUSED static KzValue kaze_fn_m_text(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 3897
     if (kz_is_truthy(kz_eq(kz_get_field(node, "kind"), kz_str("S")))) {
+#line 3898
         return kz_get_field(node, "val_str");
     }
+#line 3899
     if (kz_is_truthy(kz_eq(kz_get_field(node, "kind"), kz_str("A")))) {
+#line 3900
         return kz_get_field(node, "name");
     }
+#line 3901
     return kz_str("");
     return kz_nil();
 }
 
+#line 3905
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_expr_machine(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 3907
     KzValue k = kz_get_field(e, "kind");
+#line 3908
     if (kz_is_truthy(kz_eq(k, kz_str("NUM")))) {
+#line 3909
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("")))) {
+#line 3910
             return kz_add(kz_add(kz_str("(number "), kaze_fn_quoted(kz_get_field(e, "val_str"))), kz_str(")"));
         }
+#line 3911
         return kz_add(kz_add(kz_add(kz_add(kz_str("(number "), kaze_fn_quoted(kz_get_field(e, "val_str"))), kz_str(" ")), kaze_fn_quoted(kz_get_field(e, "name"))), kz_str(")"));
     }
+#line 3912
     if (kz_is_truthy(kz_eq(k, kz_str("STR")))) {
+#line 3913
         return kz_add(kz_add(kz_str("(string "), kaze_fn_quoted(kz_get_field(e, "val_str"))), kz_str(")"));
     }
+#line 3914
     if (kz_is_truthy(kz_eq(k, kz_str("BOOL")))) {
+#line 3915
         return kz_add(kz_add(kz_str("(bool "), kz_get_field(e, "val_str")), kz_str(")"));
     }
+#line 3916
     if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 3917
         return kz_add(kz_add(kz_str("(name "), kaze_fn_quoted(kz_get_field(e, "name"))), kz_str(")"));
     }
+#line 3918
     if (kz_is_truthy(kz_eq(k, kz_str("BIN")))) {
+#line 3919
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("(bin "), kaze_fn_quoted(kz_get_field(e, "name"))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)1)))), kz_str(")"));
     }
+#line 3920
     if (kz_is_truthy(kz_eq(k, kz_str("FALLBACK")))) {
+#line 3921
         return kz_add(kz_add(kz_add(kz_add(kz_str("(fallback "), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)1)))), kz_str(")"));
     }
+#line 3922
     if (kz_is_truthy(kz_eq(k, kz_str("FIELD")))) {
+#line 3923
         return kz_add(kz_add(kz_add(kz_add(kz_str("(field "), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(" ")), kaze_fn_quoted(kz_get_field(e, "name"))), kz_str(")"));
     }
+#line 3924
     if (kz_is_truthy(kz_eq(k, kz_str("INDEX")))) {
+#line 3925
         return kz_add(kz_add(kz_add(kz_add(kz_str("(index "), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)1)))), kz_str(")"));
     }
+#line 3926
     if (kz_is_truthy(kz_eq(k, kz_str("LEN")))) {
+#line 3927
         return kz_add(kz_add(kz_str("(len "), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3928
     if (kz_is_truthy(kz_eq(k, kz_str("IN_UNIT")))) {
+#line 3929
         return kz_add(kz_add(kz_add(kz_add(kz_str("(in_unit "), kaze_fn_quoted(kz_get_field(e, "name"))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3930
     if (kz_is_truthy(kz_eq(k, kz_str("LIST")))) {
+#line 3931
         KzValue parts = kz_str("");
+#line 3932
         {
             KzValue _iter_target = kz_get_field(e, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue it = _iter_target.as.list->items[_i];
+#line 3933
                     parts = kz_add(kz_add(parts, kz_str(" ")), kaze_fn_emit_expr_machine(it));
                 }
             }
         }
+#line 3934
         return kz_add(kz_add(kz_str("(list"), parts), kz_str(")"));
     }
+#line 3935
     if (kz_is_truthy(kz_eq(k, kz_str("CALL")))) {
+#line 3936
         KzValue parts = kz_str("");
+#line 3937
         {
             KzValue _iter_target = kz_get_field(e, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue a = _iter_target.as.list->items[_i];
+#line 3938
                     parts = kz_add(kz_add(parts, kz_str(" ")), kaze_fn_emit_expr_machine(a));
                 }
             }
         }
+#line 3939
         return kz_add(kz_add(kz_add(kz_str("(call "), kaze_fn_quoted(kz_get_field(e, "name"))), parts), kz_str(")"));
     }
+#line 3940
     if (kz_is_truthy(kz_eq(k, kz_str("NAMED_ARG")))) {
+#line 3941
         return kz_add(kz_add(kz_add(kz_add(kz_str("(named "), kaze_fn_quoted(kz_get_field(e, "name"))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3942
     if (kz_is_truthy(kz_eq(k, kz_str("RECEIVE")))) {
+#line 3943
         return kz_add(kz_add(kz_str("(receive "), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3944
     if (kz_is_truthy(kz_eq(k, kz_str("JOIN")))) {
+#line 3945
         return kz_add(kz_add(kz_str("(join "), kaze_fn_emit_expr_machine(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3946
     return kz_add(kz_add(kz_str("(unsupported "), kaze_fn_quoted(k)), kz_str(")"));
     return kz_nil();
 }
 
+#line 3948
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_stmts_machine(KzValue stmts) {
     (void)stmts;   /* a routine need not use every parameter */
+#line 3950
     KzValue parts = kz_str("");
+#line 3951
     {
         KzValue _iter_target = stmts;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue s = _iter_target.as.list->items[_i];
+#line 3952
                 parts = kz_add(kz_add(parts, kz_str(" ")), kaze_fn_emit_stmt_machine(s));
             }
         }
     }
+#line 3953
     return parts;
     return kz_nil();
 }
 
+#line 3955
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_stmt_machine(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 3957
     KzValue k = kz_get_field(s, "kind");
+#line 3958
     if (kz_is_truthy(kz_eq(k, kz_str("LET")))) {
+#line 3959
         return kz_add(kz_add(kz_add(kz_add(kz_str("(let "), kaze_fn_quoted(kz_get_field(s, "name"))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3960
     if (kz_is_truthy(kz_eq(k, kz_str("SET")))) {
+#line 3961
         return kz_add(kz_add(kz_add(kz_add(kz_str("(set "), kaze_fn_quoted(kz_get_field(s, "name"))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3962
     if (kz_is_truthy(kz_eq(k, kz_str("RETURN")))) {
+#line 3963
         if (kz_is_truthy(kz_eq(kz_len(kz_get_field(s, "children")), kz_num((kaze_float_t)0)))) {
+#line 3964
             return kz_str("(return)");
         }
+#line 3965
         return kz_add(kz_add(kz_str("(return "), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3966
     if (kz_is_truthy(kz_eq(k, kz_str("EXPR")))) {
+#line 3967
         return kz_add(kz_add(kz_str("(eval "), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3968
     if (kz_is_truthy(kz_eq(k, kz_str("GUARD")))) {
+#line 3969
         return kz_add(kz_add(kz_str("(guard "), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3970
     if (kz_is_truthy(kz_eq(k, kz_str("IF")))) {
+#line 3971
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("(if "), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(" (then")), kaze_fn_emit_stmts_machine(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))))), kz_str(") (otherwise")), kaze_fn_emit_stmts_machine(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)2))))), kz_str("))"));
     }
+#line 3972
     if (kz_is_truthy(kz_eq(k, kz_str("WHILE")))) {
+#line 3973
         KzValue bound = kaze_fn_child_at(s, kz_num((kaze_float_t)2));
+#line 3974
         KzValue bound_part = kz_str("");
+#line 3975
         if (kz_is_truthy(kz_and(kz_ne(kz_get_field(bound, "val_str"), kz_str("")), kz_ne(kz_get_field(bound, "val_str"), kz_str("?"))))) {
+#line 3976
             bound_part = kz_add(kz_add(kz_str(" (bounded "), kz_get_field(bound, "val_str")), kz_str(")"));
         }
+#line 3977
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("(while "), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), bound_part), kz_str(" (body")), kaze_fn_emit_stmts_machine(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))))), kz_str("))"));
     }
+#line 3978
     if (kz_is_truthy(kz_eq(k, kz_str("FOR_EACH")))) {
+#line 3979
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("(for_each "), kaze_fn_quoted(kz_get_field(s, "name"))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(" (body")), kaze_fn_emit_stmts_machine(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))))), kz_str("))"));
     }
+#line 3980
     if (kz_is_truthy(kz_eq(k, kz_str("TRY")))) {
+#line 3981
         KzValue with_part = kz_str("");
+#line 3982
         if (kz_is_truthy(kz_ne(kz_get_field(s, "name"), kz_str("")))) {
+#line 3983
             with_part = kz_add(kz_add(kz_str(" (with "), kaze_fn_quoted(kz_get_field(s, "name"))), kz_str(")"));
         }
+#line 3984
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("(try (body"), kaze_fn_emit_stmts_machine(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)0))))), kz_str(") (otherwise")), with_part), kaze_fn_emit_stmts_machine(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)1))))), kz_str("))"));
     }
+#line 3986
     if (kz_is_truthy(kz_eq(k, kz_str("SPAWN")))) {
+#line 3987
         KzValue parts = kz_str("");
+#line 3988
         {
             KzValue _iter_target = kz_get_field(s, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue a = _iter_target.as.list->items[_i];
+#line 3989
                     parts = kz_add(kz_add(parts, kz_str(" ")), kaze_fn_emit_expr_machine(a));
                 }
             }
         }
+#line 3990
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("(spawn "), kaze_fn_quoted(kz_get_field(s, "name"))), kz_str(" (args")), parts), kz_str(") ")), kaze_fn_quoted(kz_get_field(s, "val_str"))), kz_str(")"));
     }
+#line 3991
     if (kz_is_truthy(kz_eq(k, kz_str("YIELD")))) {
+#line 3992
         return kz_str("(yield)");
     }
+#line 3993
     if (kz_is_truthy(kz_eq(k, kz_str("JOIN")))) {
+#line 3994
         return kz_add(kz_add(kz_str("(join "), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3995
     if (kz_is_truthy(kz_eq(k, kz_str("CANCEL")))) {
+#line 3996
         return kz_add(kz_add(kz_str("(cancel "), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 3997
     if (kz_is_truthy(kz_eq(k, kz_str("SEND")))) {
+#line 3998
         return kz_add(kz_add(kz_add(kz_add(kz_str("(send "), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(s, kz_num((kaze_float_t)1)))), kz_str(")"));
     }
+#line 3999
     return kz_add(kz_add(kz_str("(unsupported_stmt "), kaze_fn_quoted(k)), kz_str(")"));
     return kz_nil();
 }
 
+#line 4001
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_params_machine(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 4002
     KzValue params = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 4003
     KzValue parts = kz_str("");
+#line 4004
     {
         KzValue _iter_target = kz_get_field(params, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 4005
                 parts = kz_add(kz_add(kz_add(kz_add(parts, kz_str(" (param ")), kaze_fn_quoted(kz_get_field(p, "name"))), kz_str(" ")), kaze_fn_quoted(kz_get_field(p, "val_str")));
+#line 4006
                 if (kz_is_truthy(kz_gt(kz_len(kz_get_field(p, "children")), kz_num((kaze_float_t)0)))) {
+#line 4007
                     parts = kz_add(kz_add(parts, kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(p, kz_num((kaze_float_t)0))));
                 }
+#line 4008
                 parts = kz_add(parts, kz_str(")"));
             }
         }
     }
+#line 4009
     return kz_add(kz_add(kz_str("(params"), parts), kz_str(")"));
     return kz_nil();
 }
 
+#line 4011
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_contracts_machine(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 4012
     KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 4013
     KzValue parts = kz_str("");
+#line 4014
     {
         KzValue _iter_target = kz_get_field(contracts, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 4015
                 if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")))) {
+#line 4016
                     parts = kz_add(kz_add(kz_add(kz_add(kz_add(parts, kz_str(" (")), kz_get_field(c, "name")), kz_str(" ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(c, kz_num((kaze_float_t)0)))), kz_str(")"));
                 } else {
+#line 4018
                     if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("RECURSION_BOUND")))) {
+#line 4019
                         parts = kz_add(kz_add(kz_add(parts, kz_str(" (recursion ")), kz_get_field(c, "val_str")), kz_str(")"));
                     } else {
+#line 4021
                         if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("ROUTINE_NEED")))) {
+#line 4022
                             parts = kz_add(kz_add(kz_add(parts, kz_str(" (needs ")), kaze_fn_quoted(kz_get_field(c, "name"))), kz_str(")"));
                         }
+#line 4023
                         if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("FUEL")))) {
+#line 4024
                             parts = kz_add(kz_add(kz_add(parts, kz_str(" (fuel ")), kz_get_field(c, "val_str")), kz_str(")"));
                         } else {
+#line 4026
                             parts = kz_add(kz_add(kz_add(parts, kz_str(" (unsupported_contract ")), kaze_fn_quoted(kz_get_field(c, "kind"))), kz_str(")"));
                         }
                     }
@@ -7588,151 +10558,219 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_contracts_machine(KzValue item) {
             }
         }
     }
+#line 4027
     return kz_add(kz_add(kz_str("(contracts"), parts), kz_str(")"));
     return kz_nil();
 }
 
+#line 4029
 KZ_MAYBE_UNUSED static KzValue kaze_fn_item_keyword(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 4030
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("CHECK")))) {
+#line 4031
         return kz_str("check");
     }
+#line 4032
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("FILTER")))) {
+#line 4033
         return kz_str("filter");
     }
+#line 4034
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("FIBER")))) {
+#line 4035
         return kz_str("fiber");
     }
+#line 4036
     return kz_str("action");
     return kz_nil();
 }
 
+#line 4038
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_item_machine(KzValue item, KzValue depth) {
     (void)item;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 4040
     KzValue ind = kaze_fn_m_pad(depth);
+#line 4041
     KzValue out = kz_str("");
+#line 4042
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("RECORD")))) {
+#line 4043
         KzValue fields = kz_str("");
+#line 4044
         {
             KzValue _iter_target = kz_get_field(item, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue f = _iter_target.as.list->items[_i];
+#line 4045
                     fields = kz_add(kz_add(kz_add(kz_add(kz_add(fields, kz_str(" (")), kz_get_field(f, "name")), kz_str(" ")), kz_get_field(f, "val_str")), kz_str(")"));
                 }
             }
         }
+#line 4046
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("(record ")), kaze_fn_quoted(kz_get_field(item, "name"))), kz_str("\n")), ind), kz_str("  (fields")), fields), kz_str("))\n"));
     }
+#line 4047
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("ACTION")), kz_eq(kz_get_field(item, "kind"), kz_str("CHECK"))), kz_eq(kz_get_field(item, "kind"), kz_str("FILTER"))), kz_eq(kz_get_field(item, "kind"), kz_str("FIBER"))))) {
+#line 4048
         KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)2));
+#line 4049
         out = kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("(")), kaze_fn_item_keyword(item)), kz_str(" ")), kaze_fn_quoted(kz_get_field(item, "name"))), kz_str("\n"));
+#line 4050
         out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("  ")), kaze_fn_emit_params_machine(item)), kz_str("\n"));
+#line 4051
         out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("  ")), kaze_fn_emit_contracts_machine(item)), kz_str("\n"));
+#line 4052
         out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("  (body")), kaze_fn_emit_stmts_machine(kz_get_field(body, "children"))), kz_str("))\n"));
+#line 4053
         return out;
     }
+#line 4054
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("WHEN")))) {
+#line 4055
         KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 4056
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("(when ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(item, kz_num((kaze_float_t)0)))), kz_str("\n")), ind), kz_str("  (body")), kaze_fn_emit_stmts_machine(kz_get_field(body, "children"))), kz_str("))\n"));
     }
+#line 4057
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("EVERY")))) {
+#line 4058
         KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 4059
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("(every ")), kaze_fn_emit_expr_machine(kaze_fn_child_at(item, kz_num((kaze_float_t)0)))), kz_str("\n")), ind), kz_str("  (body")), kaze_fn_emit_stmts_machine(kz_get_field(body, "children"))), kz_str("))\n"));
     }
+#line 4060
     return kz_add(kz_add(kz_add(ind, kz_str("(unsupported_item ")), kaze_fn_quoted(kz_get_field(item, "kind"))), kz_str(")\n"));
     return kz_nil();
 }
 
+#line 4062
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_machine(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 4064
     KzValue out = kz_str("(kaze\n  (format 1)\n");
+#line 4065
     {
         KzValue _iter_target = kaze_fn_kids_of(kaze_fn_program_uses(prog));
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue u = _iter_target.as.list->items[_i];
+#line 4066
                 out = kz_add(kz_add(kz_add(out, kz_str("  (use ")), kaze_fn_quoted(kz_get_field(u, "name"))), kz_str(")\n"));
             }
         }
     }
+#line 4067
     KzValue needs_node = kaze_fn_program_needs(prog);
+#line 4068
     if (kz_is_truthy(kz_gt(kz_len(kz_get_field(needs_node, "children")), kz_num((kaze_float_t)0)))) {
+#line 4069
         KzValue parts = kz_str("");
+#line 4070
         {
             KzValue _iter_target = kz_get_field(needs_node, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue n = _iter_target.as.list->items[_i];
+#line 4071
                     parts = kz_add(kz_add(parts, kz_str(" ")), kaze_fn_quoted(kz_get_field(n, "name")));
                 }
             }
         }
+#line 4072
         out = kz_add(kz_add(kz_add(out, kz_str("  (needs")), parts), kz_str(")\n"));
     }
+#line 4073
     {
         KzValue _iter_target = kaze_fn_program_config(prog);
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 4074
                 if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("TASKS_BOUND")))) {
+#line 4075
                     out = kz_add(kz_add(kz_add(out, kz_str("  (tasks ")), kz_get_field(c, "val_str")), kz_str(")\n"));
                 }
             }
         }
     }
+#line 4076
     {
         KzValue _iter_target = kaze_fn_program_items(prog);
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 4077
                 out = kz_add(out, kaze_fn_emit_item_machine(item, kz_num((kaze_float_t)1)));
             }
         }
     }
+#line 4078
     out = kz_add(out, kz_str(")\n"));
+#line 4079
     return out;
     return kz_nil();
 }
 
+#line 4084
 KZ_MAYBE_UNUSED static KzValue kaze_fn_m_sexpr(KzValue tokens, KzValue pos) {
     (void)tokens;   /* a routine need not use every parameter */
     (void)pos;   /* a routine need not use every parameter */
+#line 4087
     KzValue p = kaze_fn_skip_nl(tokens, pos);
+#line 4088
     KzValue t = kaze_fn_tok(tokens, p);
+#line 4089
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(t, "kind"), kz_str("SYM")), kz_eq(kz_get_field(t, "text"), kz_str("("))))) {
+#line 4090
         KzValue kids = kz_list_new(0);
+#line 4091
         KzValue q = kz_add(p, kz_num((kaze_float_t)1));
+#line 4092
         KzValue done = kz_num((kaze_float_t)0);
+#line 4093
         { long _kz_loop_l4093 = 0;
             while (kz_is_truthy(kz_eq(done, kz_num((kaze_float_t)0)))) {
                 if (_kz_loop_l4093 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                 _kz_loop_l4093 = _kz_loop_l4093 + 1;
+#line 4094
                 q = kaze_fn_skip_nl(tokens, q);
+#line 4095
                 if (kz_is_truthy(kaze_fn_is_sym(tokens, q, kz_str(")")))) {
+#line 4096
                     q = kz_add(q, kz_num((kaze_float_t)1));
+#line 4097
                     done = kz_num((kaze_float_t)1);
                 } else {
+#line 4099
                     if (kz_is_truthy(kz_or(kz_eq(kaze_fn_at_end(tokens, q), kz_num((kaze_float_t)1)), kz_eq(kaze_fn_tok_kind(tokens, q), kz_str("EOF"))))) {
+#line 4100
                         done = kz_num((kaze_float_t)1);
                     } else {
+#line 4102
                         if (kz_is_truthy(kz_or(kz_eq(kaze_fn_tok_kind(tokens, q), kz_str("DEDENT")), kz_eq(kaze_fn_tok_kind(tokens, q), kz_str("INDENT"))))) {
+#line 4103
                             q = kz_add(q, kz_num((kaze_float_t)1));
                         } else {
+#line 4105
                             KzValue r = kaze_fn_m_sexpr(tokens, q);
+#line 4106
                             kids = kz_add(kids, kz_list_from(1, (KzValue[]){ kz_index(r, kz_num((kaze_float_t)0)) }));
+#line 4107
                             q = kz_index(r, kz_num((kaze_float_t)1));
                         }
                     }
                 }
             }
         }
+#line 4108
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_node(kz_str("L"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kids, kz_get_field(t, "line")), q });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -7740,7 +10778,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_m_sexpr(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 4109
     if (kz_is_truthy(kz_eq(kz_get_field(t, "kind"), kz_str("STR")))) {
+#line 4110
         KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_node(kz_str("S"), kz_str(""), kz_get_field(t, "text"), kz_num((kaze_float_t)0), kz_list_new(0), kz_get_field(t, "line")), kz_add(p, kz_num((kaze_float_t)1)) });
         if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -7748,6 +10788,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_m_sexpr(KzValue tokens, KzValue pos) {
         }
         return _kz_ret;
     }
+#line 4111
     KzValue _kz_ret = kz_list_from(2, (KzValue[]){ kaze_fn_make_node(kz_str("A"), kz_get_field(t, "text"), kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), kz_get_field(t, "line")), kz_add(p, kz_num((kaze_float_t)1)) });
     if (!kz_is_truthy(kz_eq(kz_len(_kz_ret), kz_num((kaze_float_t)2)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -7757,369 +10798,565 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_m_sexpr(KzValue tokens, KzValue pos) {
     return kz_nil();
 }
 
+#line 4113
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_expr(KzValue form) {
     (void)form;   /* a routine need not use every parameter */
+#line 4115
     KzValue h = kaze_fn_m_head(form);
+#line 4116
     if (kz_is_truthy(kz_eq(h, kz_str("number")))) {
+#line 4117
         KzValue unit = kz_str("");
+#line 4118
         if (kz_is_truthy(kz_gt(kz_len(kz_get_field(form, "children")), kz_num((kaze_float_t)2)))) {
+#line 4119
             unit = kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)1)));
         }
+#line 4120
         return kaze_fn_make_node(kz_str("NUM"), unit, kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_num((kaze_float_t)0), kz_list_new(0), kz_get_field(form, "line"));
     }
+#line 4121
     if (kz_is_truthy(kz_eq(h, kz_str("string")))) {
+#line 4122
         return kaze_fn_make_str(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
     }
+#line 4123
     if (kz_is_truthy(kz_eq(h, kz_str("bool")))) {
+#line 4124
         KzValue b = kz_num((kaze_float_t)0);
+#line 4125
         if (kz_is_truthy(kz_eq(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_str("true")))) {
+#line 4126
             b = kz_num((kaze_float_t)1);
         }
+#line 4127
         return kaze_fn_make_bool(b, kz_get_field(form, "line"));
     }
+#line 4128
     if (kz_is_truthy(kz_eq(h, kz_str("name")))) {
+#line 4129
         return kaze_fn_make_ident(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
     }
+#line 4130
     if (kz_is_truthy(kz_eq(h, kz_str("bin")))) {
+#line 4131
         return kaze_fn_make_bin(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)2))), kz_get_field(form, "line"));
     }
+#line 4132
     if (kz_is_truthy(kz_eq(h, kz_str("fallback")))) {
+#line 4133
         return kaze_fn_make_fallback(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line"));
     }
+#line 4134
     if (kz_is_truthy(kz_eq(h, kz_str("field")))) {
+#line 4135
         return kaze_fn_make_field(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line"));
     }
+#line 4136
     if (kz_is_truthy(kz_eq(h, kz_str("index")))) {
+#line 4137
         return kaze_fn_make_index(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line"));
     }
+#line 4138
     if (kz_is_truthy(kz_eq(h, kz_str("len")))) {
+#line 4139
         return kaze_fn_make_len(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
     }
+#line 4140
     if (kz_is_truthy(kz_eq(h, kz_str("in_unit")))) {
+#line 4141
         return kaze_fn_make_in_unit(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line"));
     }
+#line 4142
     if (kz_is_truthy(kz_eq(h, kz_str("list")))) {
+#line 4143
         KzValue items = kz_list_new(0);
+#line 4144
         {
             KzValue _iter_target = kaze_fn_drop_first(kz_get_field(form, "children"));
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 4145
                     items = kz_add_own(items, kz_list_from(1, (KzValue[]){ kaze_fn_lower_expr(c) }));
                 }
             }
         }
+#line 4146
         return kaze_fn_make_list_expr(items, kz_get_field(form, "line"));
     }
+#line 4147
     if (kz_is_truthy(kz_eq(h, kz_str("call")))) {
+#line 4148
         KzValue args = kz_list_new(0);
+#line 4149
         {
             KzValue _iter_target = kaze_fn_drop_first(kaze_fn_drop_first(kz_get_field(form, "children")));
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 4150
                     args = kz_add_own(args, kz_list_from(1, (KzValue[]){ kaze_fn_lower_expr(c) }));
                 }
             }
         }
+#line 4151
         return kaze_fn_make_call(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), args, kz_get_field(form, "line"));
     }
+#line 4152
     if (kz_is_truthy(kz_eq(h, kz_str("named")))) {
+#line 4153
         return kaze_fn_make_named_arg(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line"));
     }
+#line 4154
     if (kz_is_truthy(kz_eq(h, kz_str("receive")))) {
+#line 4155
         return kaze_fn_make_receive(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
     }
+#line 4156
     if (kz_is_truthy(kz_eq(h, kz_str("join")))) {
+#line 4157
         return kaze_fn_make_join(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
     }
+#line 4158
     return kaze_fn_make_unknown(kz_get_field(form, "line"));
     return kz_nil();
 }
 
+#line 4160
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_stmts(KzValue forms) {
     (void)forms;   /* a routine need not use every parameter */
+#line 4162
     KzValue out = kz_list_new(0);
+#line 4163
     {
         KzValue _iter_target = forms;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue f = _iter_target.as.list->items[_i];
+#line 4164
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_lower_stmt(f) }));
             }
         }
     }
+#line 4165
     return out;
     return kz_nil();
 }
 
+#line 4167
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_block(KzValue form) {
     (void)form;   /* a routine need not use every parameter */
+#line 4169
     return kaze_fn_lower_stmts(kaze_fn_drop_first(kz_get_field(form, "children")));
     return kz_nil();
 }
 
+#line 4171
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_stmt(KzValue form) {
     (void)form;   /* a routine need not use every parameter */
+#line 4173
     KzValue h = kaze_fn_m_head(form);
+#line 4174
     if (kz_is_truthy(kz_eq(h, kz_str("let")))) {
+#line 4175
         return kaze_fn_make_stmt(kz_str("LET"), kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_list_from(1, (KzValue[]){ kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))) }), kz_get_field(form, "line"));
     }
+#line 4176
     if (kz_is_truthy(kz_eq(h, kz_str("set")))) {
+#line 4177
         return kaze_fn_make_stmt(kz_str("SET"), kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_list_from(1, (KzValue[]){ kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))) }), kz_get_field(form, "line"));
     }
+#line 4178
     if (kz_is_truthy(kz_eq(h, kz_str("return")))) {
+#line 4179
         if (kz_is_truthy(kz_lt(kz_len(kz_get_field(form, "children")), kz_num((kaze_float_t)2)))) {
+#line 4180
             return kaze_fn_make_stmt(kz_str("RETURN"), kz_str(""), kz_list_new(0), kz_get_field(form, "line"));
         }
+#line 4181
         return kaze_fn_make_stmt(kz_str("RETURN"), kz_str(""), kz_list_from(1, (KzValue[]){ kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))) }), kz_get_field(form, "line"));
     }
+#line 4182
     if (kz_is_truthy(kz_eq(h, kz_str("eval")))) {
+#line 4183
         return kaze_fn_make_stmt(kz_str("EXPR"), kz_str(""), kz_list_from(1, (KzValue[]){ kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))) }), kz_get_field(form, "line"));
     }
+#line 4184
     if (kz_is_truthy(kz_eq(h, kz_str("guard")))) {
+#line 4185
         return kaze_fn_make_guard(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
     }
+#line 4186
     if (kz_is_truthy(kz_eq(h, kz_str("if")))) {
+#line 4187
         KzValue cond = kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0)));
+#line 4188
         KzValue then_block = kaze_fn_make_block(kz_str("then"), kaze_fn_lower_block(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line"));
+#line 4189
         KzValue other_block = kaze_fn_make_block(kz_str("otherwise"), kaze_fn_lower_block(kaze_fn_m_arg(form, kz_num((kaze_float_t)2))), kz_get_field(form, "line"));
+#line 4190
         return kaze_fn_make_if(cond, then_block, other_block, kz_get_field(form, "line"));
     }
+#line 4191
     if (kz_is_truthy(kz_eq(h, kz_str("while")))) {
+#line 4192
         KzValue cond = kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0)));
+#line 4193
         KzValue bound = kaze_fn_make_bound(kz_str(""), kz_get_field(form, "line"));
+#line 4194
         KzValue body_arg = kz_num((kaze_float_t)1);
+#line 4195
         KzValue inner = kaze_fn_m_arg(form, kz_num((kaze_float_t)1));
+#line 4196
         if (kz_is_truthy(kz_eq(kaze_fn_m_head(inner), kz_str("bounded")))) {
+#line 4197
             bound = kaze_fn_make_bound(kaze_fn_m_text(kaze_fn_m_arg(inner, kz_num((kaze_float_t)0))), kz_get_field(inner, "line"));
+#line 4198
             body_arg = kz_num((kaze_float_t)2);
         }
+#line 4199
         return kaze_fn_make_while(cond, kaze_fn_make_block(kz_str("body"), kaze_fn_lower_block(kaze_fn_m_arg(form, body_arg)), kz_get_field(form, "line")), bound, kz_get_field(form, "line"));
     }
+#line 4200
     if (kz_is_truthy(kz_eq(h, kz_str("for_each")))) {
+#line 4201
         KzValue list_expr = kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1)));
+#line 4202
         KzValue body = kaze_fn_make_block(kz_str("body"), kaze_fn_lower_block(kaze_fn_m_arg(form, kz_num((kaze_float_t)2))), kz_get_field(form, "line"));
+#line 4203
         return kaze_fn_make_for_each(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), list_expr, body, kz_get_field(form, "line"));
     }
+#line 4204
     if (kz_is_truthy(kz_eq(h, kz_str("try")))) {
+#line 4205
         KzValue body = kaze_fn_make_block(kz_str("body"), kaze_fn_lower_block(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
+#line 4206
         KzValue other_form = kaze_fn_m_arg(form, kz_num((kaze_float_t)1));
+#line 4207
         KzValue inner = kaze_fn_drop_first(kz_get_field(other_form, "children"));
+#line 4208
         KzValue err = kz_str("");
+#line 4209
         KzValue body_forms = inner;
+#line 4210
         if (kz_is_truthy(kz_gt(kz_len(inner), kz_num((kaze_float_t)0)))) {
+#line 4211
             KzValue first = kaze_fn_node_at(inner, kz_num((kaze_float_t)0));
+#line 4212
             if (kz_is_truthy(kz_eq(kaze_fn_m_head(first), kz_str("with")))) {
+#line 4213
                 err = kaze_fn_m_text(kaze_fn_m_arg(first, kz_num((kaze_float_t)0)));
+#line 4214
                 body_forms = kaze_fn_drop_first(inner);
             }
         }
+#line 4215
         KzValue other = kaze_fn_make_block(kz_str("otherwise"), kaze_fn_lower_stmts(body_forms), kz_get_field(form, "line"));
+#line 4216
         return kaze_fn_make_try(err, body, other, kz_get_field(form, "line"));
     }
+#line 4217
     if (kz_is_truthy(kz_eq(h, kz_str("spawn")))) {
+#line 4218
         KzValue args = kz_list_new(0);
+#line 4219
         KzValue args_form = kaze_fn_m_arg(form, kz_num((kaze_float_t)1));
+#line 4220
         if (kz_is_truthy(kz_eq(kaze_fn_m_head(args_form), kz_str("args")))) {
+#line 4221
             {
                 KzValue _iter_target = kaze_fn_drop_first(kz_get_field(args_form, "children"));
                 if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                     size_t _len = _iter_target.as.list->len;
                     for (size_t _i = 0; _i < _len; _i++) {
                         KzValue c = _iter_target.as.list->items[_i];
+#line 4222
                         args = kz_add_own(args, kz_list_from(1, (KzValue[]){ kaze_fn_lower_expr(c) }));
                     }
                 }
             }
         }
+#line 4223
         return kaze_fn_make_spawn(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), args, kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)2))), kz_get_field(form, "line"));
     }
+#line 4224
     if (kz_is_truthy(kz_eq(h, kz_str("yield")))) {
+#line 4225
         return kaze_fn_make_yield(kz_get_field(form, "line"));
     }
+#line 4226
     if (kz_is_truthy(kz_eq(h, kz_str("join")))) {
+#line 4227
         return kaze_fn_make_join(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
     }
+#line 4228
     if (kz_is_truthy(kz_eq(h, kz_str("cancel")))) {
+#line 4229
         return kaze_fn_make_cancel(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line"));
     }
+#line 4230
     if (kz_is_truthy(kz_eq(h, kz_str("send")))) {
+#line 4231
         return kaze_fn_make_send(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line"));
     }
+#line 4232
     return kaze_fn_make_unknown(kz_get_field(form, "line"));
     return kz_nil();
 }
 
+#line 4234
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_params(KzValue form) {
     (void)form;   /* a routine need not use every parameter */
+#line 4235
     KzValue out = kz_list_new(0);
+#line 4236
     {
         KzValue _iter_target = kaze_fn_drop_first(kz_get_field(form, "children"));
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 4237
                 if (kz_is_truthy(kz_eq(kaze_fn_m_head(p), kz_str("param")))) {
+#line 4238
                     KzValue defaults = kz_list_new(0);
+#line 4239
                     if (kz_is_truthy(kz_gt(kz_len(kz_get_field(p, "children")), kz_num((kaze_float_t)3)))) {
+#line 4240
                         defaults = kz_list_from(1, (KzValue[]){ kaze_fn_lower_expr(kaze_fn_m_arg(p, kz_num((kaze_float_t)2))) });
                     }
+#line 4241
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_make_param(kaze_fn_m_text(kaze_fn_m_arg(p, kz_num((kaze_float_t)0))), kaze_fn_m_text(kaze_fn_m_arg(p, kz_num((kaze_float_t)1))), defaults, kz_get_field(p, "line")) }));
                 }
             }
         }
     }
+#line 4242
     return out;
     return kz_nil();
 }
 
+#line 4244
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_contracts(KzValue form) {
     (void)form;   /* a routine need not use every parameter */
+#line 4245
     KzValue out = kz_list_new(0);
+#line 4246
     {
         KzValue _iter_target = kaze_fn_drop_first(kz_get_field(form, "children"));
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 4247
                 KzValue h = kaze_fn_m_head(c);
+#line 4248
                 if (kz_is_truthy(kz_or(kz_eq(h, kz_str("requires")), kz_eq(h, kz_str("ensures"))))) {
+#line 4249
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_make_contract(h, kaze_fn_lower_expr(kaze_fn_m_arg(c, kz_num((kaze_float_t)0))), kz_get_field(c, "line")) }));
                 } else {
+#line 4251
                     if (kz_is_truthy(kz_eq(h, kz_str("recursion")))) {
+#line 4252
                         out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_make_recursion_bound(kaze_fn_m_text(kaze_fn_m_arg(c, kz_num((kaze_float_t)0))), kz_get_field(c, "line")) }));
                     } else {
+#line 4254
                         if (kz_is_truthy(kz_eq(h, kz_str("needs")))) {
+#line 4255
                             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_make_routine_need(kaze_fn_m_text(kaze_fn_m_arg(c, kz_num((kaze_float_t)0))), kz_get_field(c, "line")) }));
                         }
                     }
+#line 4256
                     if (kz_is_truthy(kz_eq(h, kz_str("fuel")))) {
+#line 4257
                         out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_make_fuel(kaze_fn_m_text(kaze_fn_m_arg(c, kz_num((kaze_float_t)0))), kz_get_field(c, "line")) }));
                     }
                 }
             }
         }
     }
+#line 4258
     return out;
     return kz_nil();
 }
 
+#line 4260
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_item(KzValue form) {
     (void)form;   /* a routine need not use every parameter */
+#line 4262
     KzValue h = kaze_fn_m_head(form);
+#line 4263
     if (kz_is_truthy(kz_eq(h, kz_str("record")))) {
+#line 4264
         KzValue fields = kz_list_new(0);
+#line 4265
         KzValue fields_form = kaze_fn_m_arg(form, kz_num((kaze_float_t)1));
+#line 4266
         if (kz_is_truthy(kz_eq(kaze_fn_m_head(fields_form), kz_str("fields")))) {
+#line 4267
             {
                 KzValue _iter_target = kaze_fn_drop_first(kz_get_field(fields_form, "children"));
                 if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                     size_t _len = _iter_target.as.list->len;
                     for (size_t _i = 0; _i < _len; _i++) {
                         KzValue f = _iter_target.as.list->items[_i];
+#line 4268
                         if (kz_is_truthy(kz_eq(kz_get_field(f, "kind"), kz_str("L")))) {
+#line 4269
                             fields = kz_add_own(fields, kz_list_from(1, (KzValue[]){ kaze_fn_make_field_def(kaze_fn_m_text(kaze_fn_m_arg(f, kz_num((kaze_float_t)0))), kaze_fn_m_text(kaze_fn_m_arg(f, kz_num((kaze_float_t)1))), kz_get_field(f, "line")) }));
                         } else {
+#line 4271
                             fields = kz_add_own(fields, kz_list_from(1, (KzValue[]){ kaze_fn_make_field_def(kaze_fn_m_text(f), kz_str("any"), kz_get_field(f, "line")) }));
                         }
                     }
                 }
             }
         }
+#line 4272
         return kaze_fn_make_record_item(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), fields, kz_get_field(form, "line"));
     }
+#line 4273
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(h, kz_str("action")), kz_eq(h, kz_str("check"))), kz_eq(h, kz_str("filter"))), kz_eq(h, kz_str("fiber"))))) {
+#line 4274
         KzValue params_form = kaze_fn_none_node();
+#line 4275
         KzValue contracts_form = kaze_fn_none_node();
+#line 4276
         KzValue body_form = kaze_fn_none_node();
+#line 4277
         KzValue line = kz_get_field(form, "line");
+#line 4278
         {
             KzValue _iter_target = kaze_fn_drop_first(kaze_fn_drop_first(kz_get_field(form, "children")));
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue part = _iter_target.as.list->items[_i];
+#line 4279
                     KzValue ph = kaze_fn_m_head(part);
+#line 4280
                     if (kz_is_truthy(kz_eq(ph, kz_str("params")))) {
+#line 4281
                         params_form = part;
                     }
+#line 4282
                     if (kz_is_truthy(kz_eq(ph, kz_str("contracts")))) {
+#line 4283
                         contracts_form = part;
                     }
+#line 4284
                     if (kz_is_truthy(kz_eq(ph, kz_str("body")))) {
+#line 4285
                         body_form = part;
                     }
                 }
             }
         }
+#line 4286
         KzValue params = kz_list_new(0);
+#line 4287
         if (kz_is_truthy(kz_eq(kz_get_field(params_form, "kind"), kz_str("L")))) {
+#line 4288
             params = kaze_fn_lower_params(params_form);
         }
+#line 4289
         KzValue contracts = kz_list_new(0);
+#line 4290
         if (kz_is_truthy(kz_eq(kz_get_field(contracts_form, "kind"), kz_str("L")))) {
+#line 4291
             contracts = kaze_fn_lower_contracts(contracts_form);
         }
+#line 4292
         KzValue body = kaze_fn_make_block(kz_str("body"), kz_list_new(0), line);
+#line 4293
         if (kz_is_truthy(kz_eq(kz_get_field(body_form, "kind"), kz_str("L")))) {
+#line 4294
             body = kaze_fn_make_block(kz_str("body"), kaze_fn_lower_block(body_form), line);
         }
+#line 4295
         KzValue params_node = kaze_fn_make_node(kz_str("PARAMS"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), params, line);
+#line 4296
         KzValue contracts_node = kaze_fn_make_node(kz_str("CONTRACTS"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), contracts, line);
+#line 4297
         return kaze_fn_make_item(h, kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), params_node, contracts_node, kz_str(""), body, line);
     }
+#line 4298
     if (kz_is_truthy(kz_eq(h, kz_str("when")))) {
+#line 4299
         return kaze_fn_make_when(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_make_block(kz_str("body"), kaze_fn_lower_block(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line")), kz_get_field(form, "line"));
     }
+#line 4300
     if (kz_is_truthy(kz_eq(h, kz_str("every")))) {
+#line 4301
         return kaze_fn_make_every(kaze_fn_lower_expr(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kaze_fn_make_block(kz_str("body"), kaze_fn_lower_block(kaze_fn_m_arg(form, kz_num((kaze_float_t)1))), kz_get_field(form, "line")), kz_get_field(form, "line"));
     }
+#line 4302
     return kaze_fn_make_node(kz_str("UNKNOWN_ITEM"), h, kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), kz_get_field(form, "line"));
     return kz_nil();
 }
 
+#line 4304
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_program(KzValue root) {
     (void)root;   /* a routine need not use every parameter */
+#line 4306
     KzValue uses = kz_list_new(0);
+#line 4307
     KzValue needs = kz_list_new(0);
+#line 4308
     KzValue items = kz_list_new(0);
+#line 4309
     KzValue config = kz_list_new(0);
+#line 4310
     if (kz_is_truthy(kz_ne(kz_get_field(root, "kind"), kz_str("L")))) {
+#line 4311
         return kaze_fn_make_program(uses, needs, items, config);
     }
+#line 4312
     {
         KzValue _iter_target = kz_get_field(root, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue form = _iter_target.as.list->items[_i];
+#line 4313
                 KzValue h = kaze_fn_m_head(form);
+#line 4314
                 if (kz_is_truthy(kz_ne(kz_get_field(form, "kind"), kz_str("L")))) {
+#line 4315
                     h = kz_str("kaze");
                 }
+#line 4316
                 if (kz_is_truthy(kz_eq(h, kz_str("use")))) {
+#line 4317
                     uses = kz_add_own(uses, kz_list_from(1, (KzValue[]){ kaze_fn_make_node(kz_str("USE"), kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), kz_get_field(form, "line")) }));
                 } else {
+#line 4319
                     if (kz_is_truthy(kz_eq(h, kz_str("needs")))) {
+#line 4320
                         {
                             KzValue _iter_target = kaze_fn_drop_first(kz_get_field(form, "children"));
                             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                                 size_t _len = _iter_target.as.list->len;
                                 for (size_t _i = 0; _i < _len; _i++) {
                                     KzValue c = _iter_target.as.list->items[_i];
+#line 4321
                                     needs = kz_add_own(needs, kz_list_from(1, (KzValue[]){ kaze_fn_make_node(kz_str("NEED"), kaze_fn_m_text(c), kz_str(""), kz_num((kaze_float_t)0), kz_list_new(0), kz_get_field(form, "line")) }));
                                 }
                             }
                         }
                     } else {
+#line 4323
                         if (kz_is_truthy(kz_eq(h, kz_str("tasks")))) {
+#line 4324
                             config = kz_add_own(config, kz_list_from(1, (KzValue[]){ kaze_fn_make_tasks_bound(kaze_fn_m_text(kaze_fn_m_arg(form, kz_num((kaze_float_t)0))), kz_get_field(form, "line")) }));
                         } else {
+#line 4326
                             if (kz_is_truthy(kz_and(kz_ne(h, kz_str("kaze")), kz_ne(h, kz_str("format"))))) {
+#line 4327
                                 items = kz_add_own(items, kz_list_from(1, (KzValue[]){ kaze_fn_lower_item(form) }));
                             }
                         }
@@ -8128,365 +11365,565 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_lower_program(KzValue root) {
             }
         }
     }
+#line 4328
     return kaze_fn_make_program(uses, needs, items, config);
     return kz_nil();
 }
 
+#line 4331
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_machine(KzValue src) {
     (void)src;   /* a routine need not use every parameter */
+#line 4333
     KzValue tokens = kaze_fn_tokenize(src);
+#line 4334
     KzValue r = kaze_fn_m_sexpr(tokens, kz_num((kaze_float_t)0));
+#line 4335
     return kaze_fn_lower_program(kz_index(r, kz_num((kaze_float_t)0)));
     return kz_nil();
 }
 
+#line 4342
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tier_of(KzValue op) {
     (void)op;   /* a routine need not use every parameter */
+#line 4343
     if (kz_is_truthy(kz_eq(op, kz_str("or")))) {
+#line 4344
         return kz_num((kaze_float_t)1);
     }
+#line 4345
     if (kz_is_truthy(kz_eq(op, kz_str("and")))) {
+#line 4346
         return kz_num((kaze_float_t)2);
     }
+#line 4347
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(op, kz_str("==")), kz_eq(op, kz_str("!="))), kz_eq(op, kz_str("<"))), kz_eq(op, kz_str("<="))), kz_eq(op, kz_str(">"))), kz_eq(op, kz_str(">="))))) {
+#line 4348
         return kz_num((kaze_float_t)4);
     }
+#line 4349
     if (kz_is_truthy(kz_or(kz_eq(op, kz_str("+")), kz_eq(op, kz_str("-"))))) {
+#line 4350
         return kz_num((kaze_float_t)5);
     }
+#line 4351
     return kz_num((kaze_float_t)6);
     return kz_nil();
 }
 
+#line 4353
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_bin_human(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 4355
     KzValue t = kaze_fn_tier_of(kz_get_field(e, "name"));
+#line 4360
     KzValue ops = kz_list_new(0);
+#line 4361
     KzValue rights = kz_list_new(0);
+#line 4362
     KzValue cur = e;
+#line 4363
     KzValue guard = kz_num((kaze_float_t)0);
+#line 4364
     { long _kz_loop_l4364 = 0;
         while (kz_is_truthy(kz_and(kz_and(kz_and(kz_eq(kz_get_field(cur, "kind"), kz_str("BIN")), kz_ne(kz_get_field(cur, "name"), kz_str("not"))), kz_eq(kaze_fn_tier_of(kz_get_field(cur, "name")), t)), kz_lt(guard, kz_num((kaze_float_t)100000))))) {
             if (_kz_loop_l4364 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l4364 = _kz_loop_l4364 + 1;
+#line 4365
             ops = kz_add(ops, kz_list_from(1, (KzValue[]){ kz_get_field(cur, "name") }));
+#line 4366
             rights = kz_add(rights, kz_list_from(1, (KzValue[]){ kaze_fn_child_at(cur, kz_num((kaze_float_t)1)) }));
+#line 4367
             cur = kaze_fn_child_at(cur, kz_num((kaze_float_t)0));
+#line 4368
             guard = kz_add(guard, kz_num((kaze_float_t)1));
         }
     }
+#line 4369
     KzValue out = kaze_fn_emit_expr_human(cur);
+#line 4370
     KzValue i = kz_sub(kz_len(ops), kz_num((kaze_float_t)1));
+#line 4371
     { long _kz_loop_l4371 = 0;
         while (kz_is_truthy(kz_ge(i, kz_num((kaze_float_t)0)))) {
             if (_kz_loop_l4371 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l4371 = _kz_loop_l4371 + 1;
+#line 4372
             out = kz_add(kz_add(kz_add(kz_add(out, kz_str(" ")), kz_fb_index(ops, i, kz_str(""))), kz_str(" ")), kaze_fn_emit_expr_human(kaze_fn_node_at(rights, i)));
+#line 4373
             i = kz_sub(i, kz_num((kaze_float_t)1));
         }
     }
+#line 4374
     return out;
     return kz_nil();
 }
 
+#line 4376
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_expr_human(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 4378
     KzValue k = kz_get_field(e, "kind");
+#line 4379
     if (kz_is_truthy(kz_eq(k, kz_str("NUM")))) {
+#line 4380
         KzValue text = kz_get_field(e, "val_str");
+#line 4381
         if (kz_is_truthy(kz_eq(text, kz_str("")))) {
+#line 4382
             text = kz_str("0");
         }
+#line 4383
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("")))) {
+#line 4384
             return text;
         }
+#line 4385
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("%")))) {
+#line 4386
             return kz_add(text, kz_str("%"));
         }
+#line 4387
         return kz_add(kz_add(text, kz_str(" ")), kz_get_field(e, "name"));
     }
+#line 4388
     if (kz_is_truthy(kz_eq(k, kz_str("STR")))) {
+#line 4389
         return kaze_fn_quoted(kz_get_field(e, "val_str"));
     }
+#line 4390
     if (kz_is_truthy(kz_eq(k, kz_str("BOOL")))) {
+#line 4391
         if (kz_is_truthy(kz_eq(kz_get_field(e, "val_str"), kz_str("true")))) {
+#line 4392
             return kz_str("true");
         }
+#line 4393
         return kz_str("false");
     }
+#line 4394
     if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 4395
         return kz_get_field(e, "name");
     }
+#line 4396
     if (kz_is_truthy(kz_eq(k, kz_str("BIN")))) {
+#line 4397
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("not")))) {
+#line 4398
             return kz_add(kz_add(kz_str("(not "), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(")"));
         }
+#line 4399
         return kz_add(kz_add(kz_str("("), kaze_fn_emit_bin_human(e)), kz_str(")"));
     }
+#line 4400
     if (kz_is_truthy(kz_eq(k, kz_str("FALLBACK")))) {
+#line 4401
         return kz_add(kz_add(kz_add(kz_add(kz_str("("), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(" otherwise ")), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)1)))), kz_str(")"));
     }
+#line 4402
     if (kz_is_truthy(kz_eq(k, kz_str("FIELD")))) {
+#line 4403
         return kz_add(kz_add(kz_add(kz_str("("), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(").")), kz_get_field(e, "name"));
     }
+#line 4404
     if (kz_is_truthy(kz_eq(k, kz_str("INDEX")))) {
+#line 4405
         return kz_add(kz_add(kz_add(kz_add(kz_str("("), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(")[")), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)1)))), kz_str("]"));
     }
+#line 4406
     if (kz_is_truthy(kz_eq(k, kz_str("LEN")))) {
+#line 4407
         return kz_add(kz_add(kz_str("length of ("), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 4408
     if (kz_is_truthy(kz_eq(k, kz_str("IN_UNIT")))) {
+#line 4409
         return kz_add(kz_add(kz_add(kz_add(kz_str("("), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0)))), kz_str(" in ")), kz_get_field(e, "name")), kz_str(")"));
     }
+#line 4410
     if (kz_is_truthy(kz_eq(k, kz_str("LIST")))) {
+#line 4411
         KzValue parts = kz_str("");
+#line 4412
         KzValue first = kz_num((kaze_float_t)1);
+#line 4413
         {
             KzValue _iter_target = kz_get_field(e, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue it = _iter_target.as.list->items[_i];
+#line 4414
                     if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 4415
                         parts = kz_add_own(parts, kz_str(", "));
                     }
+#line 4416
                     parts = kz_add_own(parts, kaze_fn_emit_expr_human(it));
+#line 4417
                     first = kz_num((kaze_float_t)0);
                 }
             }
         }
+#line 4418
         return kz_add(kz_add(kz_str("["), parts), kz_str("]"));
     }
+#line 4419
     if (kz_is_truthy(kz_eq(k, kz_str("CALL")))) {
+#line 4420
         KzValue parts = kz_str("");
+#line 4421
         KzValue first = kz_num((kaze_float_t)1);
+#line 4422
         {
             KzValue _iter_target = kz_get_field(e, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue a = _iter_target.as.list->items[_i];
+#line 4423
                     if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 4424
                         parts = kz_add_own(parts, kz_str(", "));
                     }
+#line 4425
                     parts = kz_add_own(parts, kaze_fn_emit_expr_human(a));
+#line 4426
                     first = kz_num((kaze_float_t)0);
                 }
             }
         }
+#line 4427
         return kz_add(kz_add(kz_add(kz_get_field(e, "name"), kz_str("(")), parts), kz_str(")"));
     }
+#line 4428
     if (kz_is_truthy(kz_eq(k, kz_str("NAMED_ARG")))) {
+#line 4429
         return kz_add(kz_add(kz_get_field(e, "name"), kz_str(": ")), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0))));
     }
+#line 4430
     if (kz_is_truthy(kz_eq(k, kz_str("RECEIVE")))) {
+#line 4431
         return kz_add(kz_str("receive from "), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0))));
     }
+#line 4432
     if (kz_is_truthy(kz_eq(k, kz_str("JOIN")))) {
+#line 4433
         return kz_add(kz_str("join "), kaze_fn_emit_expr_human(kaze_fn_child_at(e, kz_num((kaze_float_t)0))));
     }
+#line 4434
     if (kz_is_truthy(kz_eq(k, kz_str("UNKNOWN")))) {
+#line 4435
         return kz_str("# the machine reader could not lower an expression here\n    guard false");
     }
+#line 4436
     return kz_str("0");
     return kz_nil();
 }
 
+#line 4438
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_stmts_human(KzValue stmts, KzValue depth) {
     (void)stmts;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 4440
     KzValue out = kz_str("");
+#line 4441
     {
         KzValue _iter_target = stmts;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue s = _iter_target.as.list->items[_i];
+#line 4442
                 out = kz_add_own(out, kaze_fn_emit_stmt_human(s, depth));
             }
         }
     }
+#line 4443
     return out;
     return kz_nil();
 }
 
+#line 4447
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_block_human(KzValue block, KzValue depth) {
     (void)block;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 4449
     KzValue stmts = kz_get_field(block, "children");
+#line 4450
     if (kz_is_truthy(kz_eq(kz_len(stmts), kz_num((kaze_float_t)0)))) {
+#line 4451
         return kz_add(kz_add(kz_add(kaze_fn_h_pad(depth), kz_str("# empty block\n")), kaze_fn_h_pad(depth)), kz_str("guard true\n"));
     }
+#line 4452
     return kaze_fn_emit_stmts_human(stmts, depth);
     return kz_nil();
 }
 
+#line 4454
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_stmt_human(KzValue s, KzValue depth) {
     (void)s;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 4456
     KzValue ind = kaze_fn_h_pad(depth);
+#line 4457
     KzValue k = kz_get_field(s, "kind");
+#line 4458
     if (kz_is_truthy(kz_eq(k, kz_str("LET")))) {
+#line 4459
         return kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("let ")), kz_get_field(s, "name")), kz_str(" = ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str("\n"));
     }
+#line 4460
     if (kz_is_truthy(kz_eq(k, kz_str("SET")))) {
+#line 4461
         return kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("set ")), kz_get_field(s, "name")), kz_str(" to ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str("\n"));
     }
+#line 4462
     if (kz_is_truthy(kz_eq(k, kz_str("RETURN")))) {
+#line 4463
         if (kz_is_truthy(kz_eq(kz_len(kz_get_field(s, "children")), kz_num((kaze_float_t)0)))) {
+#line 4464
             return kz_add(ind, kz_str("return\n"));
         }
+#line 4465
         return kz_add(kz_add(kz_add(ind, kz_str("return ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str("\n"));
     }
+#line 4466
     if (kz_is_truthy(kz_eq(k, kz_str("EXPR")))) {
+#line 4467
         return kz_add(kz_add(ind, kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str("\n"));
     }
+#line 4468
     if (kz_is_truthy(kz_eq(k, kz_str("GUARD")))) {
+#line 4469
         return kz_add(kz_add(kz_add(ind, kz_str("guard ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str("\n"));
     }
+#line 4470
     if (kz_is_truthy(kz_eq(k, kz_str("IF")))) {
+#line 4471
         KzValue out = kz_add(kz_add(kz_add(ind, kz_str("if ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(":\n"));
+#line 4472
         out = kz_add(out, kaze_fn_emit_block_human(kaze_fn_child_at(s, kz_num((kaze_float_t)1)), kz_add(depth, kz_num((kaze_float_t)1))));
+#line 4473
         if (kz_is_truthy(kz_gt(kz_len(kaze_fn_kids_of(kaze_fn_child_at(s, kz_num((kaze_float_t)2)))), kz_num((kaze_float_t)0)))) {
+#line 4474
             out = kz_add(kz_add(out, ind), kz_str("otherwise:\n"));
+#line 4475
             out = kz_add(out, kaze_fn_emit_block_human(kaze_fn_child_at(s, kz_num((kaze_float_t)2)), kz_add(depth, kz_num((kaze_float_t)1))));
         }
+#line 4476
         return out;
     }
+#line 4477
     if (kz_is_truthy(kz_eq(k, kz_str("WHILE")))) {
+#line 4478
         KzValue bound = kaze_fn_child_at(s, kz_num((kaze_float_t)2));
+#line 4479
         KzValue head = kz_add(kz_add(ind, kz_str("while ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0))));
+#line 4480
         if (kz_is_truthy(kz_and(kz_ne(kz_get_field(bound, "val_str"), kz_str("")), kz_ne(kz_get_field(bound, "val_str"), kz_str("?"))))) {
+#line 4481
             head = kz_add(kz_add(head, kz_str(" bounded ")), kz_get_field(bound, "val_str"));
         }
+#line 4482
         return kz_add(kz_add(head, kz_str(":\n")), kaze_fn_emit_block_human(kaze_fn_child_at(s, kz_num((kaze_float_t)1)), kz_add(depth, kz_num((kaze_float_t)1))));
     }
+#line 4483
     if (kz_is_truthy(kz_eq(k, kz_str("FOR_EACH")))) {
+#line 4484
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("for each ")), kz_get_field(s, "name")), kz_str(" in ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(":\n")), kaze_fn_emit_block_human(kaze_fn_child_at(s, kz_num((kaze_float_t)1)), kz_add(depth, kz_num((kaze_float_t)1))));
     }
+#line 4485
     if (kz_is_truthy(kz_eq(k, kz_str("TRY")))) {
+#line 4486
         KzValue out = kz_add(ind, kz_str("try:\n"));
+#line 4487
         out = kz_add(out, kaze_fn_emit_block_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)), kz_add(depth, kz_num((kaze_float_t)1))));
+#line 4488
         out = kz_add(kz_add(out, ind), kz_str("otherwise"));
+#line 4489
         if (kz_is_truthy(kz_ne(kz_get_field(s, "name"), kz_str("")))) {
+#line 4490
             out = kz_add(kz_add(out, kz_str(" with ")), kz_get_field(s, "name"));
         }
+#line 4491
         out = kz_add(out, kz_str(":\n"));
+#line 4492
         out = kz_add(out, kaze_fn_emit_block_human(kaze_fn_child_at(s, kz_num((kaze_float_t)1)), kz_add(depth, kz_num((kaze_float_t)1))));
+#line 4493
         return out;
     }
+#line 4494
     if (kz_is_truthy(kz_eq(k, kz_str("SPAWN")))) {
+#line 4495
         KzValue args = kz_str("");
+#line 4496
         KzValue first = kz_num((kaze_float_t)1);
+#line 4497
         {
             KzValue _iter_target = kz_get_field(s, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue a = _iter_target.as.list->items[_i];
+#line 4498
                     if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 4499
                         args = kz_add(args, kz_str(", "));
                     }
+#line 4500
                     args = kz_add(args, kaze_fn_emit_expr_human(a));
+#line 4501
                     first = kz_num((kaze_float_t)0);
                 }
             }
         }
+#line 4502
         KzValue out = kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("spawn ")), kz_get_field(s, "name")), kz_str("(")), args), kz_str(")"));
+#line 4503
         if (kz_is_truthy(kz_ne(kz_get_field(s, "val_str"), kz_str("")))) {
+#line 4504
             out = kz_add(kz_add(out, kz_str(" as ")), kz_get_field(s, "val_str"));
         }
+#line 4505
         return kz_add(out, kz_str("\n"));
     }
+#line 4506
     if (kz_is_truthy(kz_eq(k, kz_str("YIELD")))) {
+#line 4507
         return kz_add(ind, kz_str("yield\n"));
     }
+#line 4508
     if (kz_is_truthy(kz_eq(k, kz_str("JOIN")))) {
+#line 4509
         return kz_add(kz_add(kz_add(ind, kz_str("join ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str("\n"));
     }
+#line 4510
     if (kz_is_truthy(kz_eq(k, kz_str("CANCEL")))) {
+#line 4511
         return kz_add(kz_add(kz_add(ind, kz_str("cancel ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str("\n"));
     }
+#line 4512
     if (kz_is_truthy(kz_eq(k, kz_str("SEND")))) {
+#line 4513
         return kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("send ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)0)))), kz_str(" to ")), kaze_fn_emit_expr_human(kaze_fn_child_at(s, kz_num((kaze_float_t)1)))), kz_str("\n"));
     }
+#line 4514
     if (kz_is_truthy(kz_eq(k, kz_str("UNKNOWN")))) {
+#line 4515
         return kz_add(kz_add(kz_add(ind, kz_str("# unreadable statement\n")), ind), kz_str("guard false\n"));
     }
+#line 4516
     return kz_add(ind, kz_str("guard false\n"));
     return kz_nil();
 }
 
+#line 4518
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_params_human(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 4519
     KzValue params = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 4520
     KzValue out = kz_str("");
+#line 4521
     KzValue first = kz_num((kaze_float_t)1);
+#line 4522
     {
         KzValue _iter_target = kz_get_field(params, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 4523
                 if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 4524
                     out = kz_add(out, kz_str(", "));
                 }
+#line 4525
                 out = kz_add(out, kz_get_field(p, "name"));
+#line 4526
                 if (kz_is_truthy(kz_ne(kz_get_field(p, "val_str"), kz_str("")))) {
+#line 4527
                     out = kz_add(kz_add(out, kz_str(": ")), kz_get_field(p, "val_str"));
                 }
+#line 4528
                 if (kz_is_truthy(kz_gt(kz_len(kz_get_field(p, "children")), kz_num((kaze_float_t)0)))) {
+#line 4529
                     out = kz_add(kz_add(out, kz_str(" = ")), kaze_fn_emit_expr_human(kaze_fn_child_at(p, kz_num((kaze_float_t)0))));
                 }
+#line 4530
                 first = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 4531
     return out;
     return kz_nil();
 }
 
+#line 4533
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_item_human(KzValue item, KzValue depth) {
     (void)item;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 4535
     KzValue ind = kaze_fn_h_pad(depth);
+#line 4536
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("RECORD")))) {
+#line 4537
         KzValue out = kz_add(kz_add(kz_add(ind, kz_str("record ")), kz_get_field(item, "name")), kz_str(":\n"));
+#line 4538
         {
             KzValue _iter_target = kz_get_field(item, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue f = _iter_target.as.list->items[_i];
+#line 4539
                     out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("    ")), kz_get_field(f, "name")), kz_str(": ")), kz_get_field(f, "val_str")), kz_str("\n"));
                 }
             }
         }
+#line 4540
         return out;
     }
+#line 4541
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("ACTION")), kz_eq(kz_get_field(item, "kind"), kz_str("CHECK"))), kz_eq(kz_get_field(item, "kind"), kz_str("FILTER"))), kz_eq(kz_get_field(item, "kind"), kz_str("FIBER"))))) {
+#line 4542
         KzValue head = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(ind, kaze_fn_item_keyword(item)), kz_str(" ")), kz_get_field(item, "name")), kz_str("(")), kaze_fn_emit_params_human(item)), kz_str(")"));
+#line 4543
         if (kz_is_truthy(kz_ne(kz_get_field(item, "val_str"), kz_str("")))) {
+#line 4544
             head = kz_add(kz_add(head, kz_str(" -> ")), kz_get_field(item, "val_str"));
         }
+#line 4545
         KzValue out = kz_add(head, kz_str(":\n"));
+#line 4546
         KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 4547
         {
             KzValue _iter_target = kz_get_field(contracts, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 4548
                     if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")))) {
+#line 4549
                         out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("    ")), kz_get_field(c, "name")), kz_str(" ")), kaze_fn_emit_expr_human(kaze_fn_child_at(c, kz_num((kaze_float_t)0)))), kz_str("\n"));
                     } else {
+#line 4551
                         if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("RECURSION_BOUND")))) {
+#line 4552
                             out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("    recursion bounded ")), kz_get_field(c, "val_str")), kz_str("\n"));
                         }
+#line 4553
                         if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("FUEL")))) {
+#line 4554
                             out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("    fuel ")), kz_get_field(c, "val_str")), kz_str("\n"));
                         } else {
+#line 4556
                             if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("ROUTINE_NEED")))) {
+#line 4557
                                 out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("    needs: ")), kz_get_field(c, "name")), kz_str("\n"));
                             }
                         }
@@ -8494,1128 +11931,2099 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_item_human(KzValue item, KzValue dep
                 }
             }
         }
+#line 4558
         out = kz_add(out, kaze_fn_emit_block_human(kaze_fn_child_at(item, kz_num((kaze_float_t)2)), kz_add(depth, kz_num((kaze_float_t)1))));
+#line 4559
         return out;
     }
+#line 4560
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("WHEN")))) {
+#line 4561
         return kz_add(kz_add(kz_add(kz_add(ind, kz_str("when ")), kaze_fn_emit_expr_human(kaze_fn_child_at(item, kz_num((kaze_float_t)0)))), kz_str(":\n")), kaze_fn_emit_block_human(kaze_fn_child_at(item, kz_num((kaze_float_t)1)), kz_add(depth, kz_num((kaze_float_t)1))));
     }
+#line 4562
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("EVERY")))) {
+#line 4563
         return kz_add(kz_add(kz_add(kz_add(ind, kz_str("every ")), kaze_fn_emit_expr_human(kaze_fn_child_at(item, kz_num((kaze_float_t)0)))), kz_str(":\n")), kaze_fn_emit_block_human(kaze_fn_child_at(item, kz_num((kaze_float_t)1)), kz_add(depth, kz_num((kaze_float_t)1))));
     }
+#line 4564
     return kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("# E_KAZE_UNSUPPORTED: the machine reader does not know ")), kz_get_field(item, "kind")), kz_str(" at machine line ")), kz_get_field(item, "line")), kz_str("\n"));
     return kz_nil();
 }
 
+#line 4566
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_human(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 4568
     KzValue out = kz_str("");
+#line 4569
     {
         KzValue _iter_target = kaze_fn_kids_of(kaze_fn_program_uses(prog));
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue u = _iter_target.as.list->items[_i];
+#line 4570
                 out = kz_add(kz_add(kz_add(out, kz_str("use ")), kaze_fn_quoted(kz_get_field(u, "name"))), kz_str("\n"));
             }
         }
     }
+#line 4571
     KzValue needs_node = kaze_fn_program_needs(prog);
+#line 4572
     if (kz_is_truthy(kz_gt(kz_len(kz_get_field(needs_node, "children")), kz_num((kaze_float_t)0)))) {
+#line 4573
         KzValue parts = kz_str("");
+#line 4574
         KzValue first = kz_num((kaze_float_t)1);
+#line 4575
         {
             KzValue _iter_target = kz_get_field(needs_node, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue n = _iter_target.as.list->items[_i];
+#line 4576
                     if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 4577
                         parts = kz_add(parts, kz_str(", "));
                     }
+#line 4578
                     parts = kz_add(parts, kz_get_field(n, "name"));
+#line 4579
                     first = kz_num((kaze_float_t)0);
                 }
             }
         }
+#line 4580
         out = kz_add(kz_add(kz_add(out, kz_str("needs: ")), parts), kz_str("\n"));
     }
+#line 4581
     {
         KzValue _iter_target = kaze_fn_program_config(prog);
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 4582
                 if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("TASKS_BOUND")))) {
+#line 4583
                     out = kz_add(kz_add(kz_add(out, kz_str("tasks bounded ")), kz_get_field(c, "val_str")), kz_str("\n"));
                 }
             }
         }
     }
+#line 4584
     {
         KzValue _iter_target = kaze_fn_program_items(prog);
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 4585
                 out = kz_add(kz_add(out, kz_str("\n")), kaze_fn_emit_item_human(item, kz_num((kaze_float_t)0)));
             }
         }
     }
+#line 4586
     return out;
     return kz_nil();
 }
 
+#line 4590
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_machine_source(KzValue src) {
     (void)src;   /* a routine need not use every parameter */
+#line 4591
     KzValue len = kz_len(src);
+#line 4592
     KzValue i = kz_num((kaze_float_t)0);
+#line 4593
     KzValue looking = kz_num((kaze_float_t)1);
+#line 4594
     KzValue found = kz_num((kaze_float_t)0);
+#line 4595
     { long _kz_loop_l4595 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, len), kz_eq(looking, kz_num((kaze_float_t)1))))) {
             if (_kz_loop_l4595 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l4595 = _kz_loop_l4595 + 1;
+#line 4596
             KzValue c = kz_fb_index(src, i, kz_str("x"));
+#line 4597
             if (kz_is_truthy(kz_or(kz_or(kz_eq(c, kz_str(" ")), kz_eq(c, kz_str("\n"))), kz_eq(c, kz_str("\t"))))) {
+#line 4598
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 4600
                 if (kz_is_truthy(kz_eq(c, kz_str("#")))) {
+#line 4601
                     { long _kz_loop_l4601 = 0;
                         while (kz_is_truthy(kz_and(kz_lt(i, len), kz_ne(kz_fb_index(src, i, kz_str("x")), kz_str("\n"))))) {
                             if (_kz_loop_l4601 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
                             _kz_loop_l4601 = _kz_loop_l4601 + 1;
+#line 4602
                             i = kz_add(i, kz_num((kaze_float_t)1));
                         }
                     }
                 } else {
+#line 4604
                     looking = kz_num((kaze_float_t)0);
+#line 4605
                     if (kz_is_truthy(kz_eq(c, kz_str("(")))) {
+#line 4606
                         found = kz_num((kaze_float_t)1);
                     }
                 }
             }
         }
     }
+#line 4607
     return found;
     return kz_nil();
 }
 
+#line 4611
 KZ_MAYBE_UNUSED static KzValue kaze_fn_get_c_runtime_header(void) {
+#line 4612
     KzValue h = kz_str("/* Generated by Kaze-in-Kaze Self-Hosted Compiler (Stage 1) */\n");
+#line 4613
     h = kz_add_own(h, kz_str("#include <stdint.h>\n"));
+#line 4614
     h = kz_add_own(h, kz_str("#include <stdbool.h>\n"));
+#line 4615
     h = kz_add_own(h, kz_str("#include <stddef.h>\n"));
+#line 4616
     h = kz_add_own(h, kz_str("#include <stdlib.h>\n"));
+#line 4617
     h = kz_add_own(h, kz_str("#include <string.h>\n"));
+#line 4618
     h = kz_add_own(h, kz_str("#include <stdio.h>\n"));
+#line 4619
     h = kz_add_own(h, kz_str("#include <math.h>\n"));
+#line 4620
     h = kz_add_own(h, kz_str("#include \"kaze_rt.h\"   /* arena, checked arithmetic, portable types */\n"));
+#line 4621
     h = kz_add_own(h, kz_str("#pragma STDC FP_CONTRACT OFF\n\n"));
+#line 4622
     h = kz_add_own(h, kz_str("#if !defined(_WIN32)\n"));
+#line 4623
     h = kz_add_own(h, kz_str("#include <unistd.h>\n"));
+#line 4624
     h = kz_add_own(h, kz_str("#else\n"));
+#line 4625
     h = kz_add_own(h, kz_str("#include <io.h>\n"));
+#line 4626
     h = kz_add_own(h, kz_str("#define isatty _isatty\n"));
+#line 4627
     h = kz_add_own(h, kz_str("#define fileno _fileno\n"));
+#line 4628
     h = kz_add_own(h, kz_str("#endif\n\n"));
+#line 4629
     h = kz_add_own(h, kz_str("/* A program need not use every helper; keep strict builds clean. */\n"));
+#line 4630
     h = kz_add_own(h, kz_str("#if defined(__GNUC__) || defined(__clang__)\n"));
+#line 4631
     h = kz_add_own(h, kz_str("#define KZ_MAYBE_UNUSED __attribute__((unused))\n"));
+#line 4632
     h = kz_add_own(h, kz_str("#else\n"));
+#line 4633
     h = kz_add_own(h, kz_str("#define KZ_MAYBE_UNUSED\n"));
+#line 4634
     h = kz_add_own(h, kz_str("#endif\n\n"));
+#line 4635
     h = kz_add_own(h, kz_str("/* Bulk allocation: every dynamic structure comes from this arena and is\n"));
+#line 4636
     h = kz_add_own(h, kz_str("   released in one reset. KAZE_ARENA_BYTES sizes it. */\n"));
+#line 4637
     h = kz_add_own(h, kz_str("static kaze_arena_t kz_arena;\n"));
+#line 4638
     h = kz_add_own(h, kz_str("/* KAZE_ARENA_BYTES sizes the arena; 64 MiB default. */\n"));
+#line 4639
     h = kz_add_own(h, kz_str("static size_t kz_arena_bytes(void) {\n"));
+#line 4640
     h = kz_add_own(h, kz_str("    const char* env = getenv(\"KAZE_ARENA_BYTES\");\n"));
+#line 4641
     h = kz_add_own(h, kz_str("    if (env && env[0]) { long n = strtol(env, NULL, 10); if (n > 0) return (size_t)n; }\n"));
+#line 4642
     h = kz_add_own(h, kz_str("    return (size_t)1024 * 1024 * 1024;\n"));
+#line 4643
     h = kz_add_own(h, kz_str("}\n"));
+#line 4644
     h = kz_add_own(h, kz_str("/* Per-function allocation accounting: KAZE_ARENA_STATS=1 answers where the\n"));
+#line 4645
     h = kz_add_own(h, kz_str("   memory went, from data. __func__ names the emitting helper, so no call site\n"));
+#line 4646
     h = kz_add_own(h, kz_str("   has to be tagged. */\n"));
+#line 4647
     h = kz_add_own(h, kz_str("#define KZ_ALLOC_SITES 16\n"));
+#line 4648
     h = kz_add_own(h, kz_str("static const char* kz_site_name[KZ_ALLOC_SITES];\n"));
+#line 4649
     h = kz_add_own(h, kz_str("static size_t kz_site_bytes[KZ_ALLOC_SITES];\n"));
+#line 4650
     h = kz_add_own(h, kz_str("static size_t kz_site_calls[KZ_ALLOC_SITES];\n"));
+#line 4651
     h = kz_add_own(h, kz_str("static void kz_note_site(const char* site, size_t n) {\n"));
+#line 4652
     h = kz_add_own(h, kz_str("    for (int i = 0; i < KZ_ALLOC_SITES; i++) {\n"));
+#line 4653
     h = kz_add_own(h, kz_str("        if (kz_site_name[i] == site || kz_site_name[i] == NULL) {\n"));
+#line 4654
     h = kz_add_own(h, kz_str("            if (kz_site_name[i] == NULL) kz_site_name[i] = site;\n"));
+#line 4655
     h = kz_add_own(h, kz_str("            kz_site_bytes[i] += n;\n"));
+#line 4656
     h = kz_add_own(h, kz_str("            kz_site_calls[i] += 1;\n"));
+#line 4657
     h = kz_add_own(h, kz_str("            return;\n"));
+#line 4658
     h = kz_add_own(h, kz_str("        }\n"));
+#line 4659
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4660
     h = kz_add_own(h, kz_str("}\n"));
+#line 4661
     h = kz_add_own(h, kz_str("static void* kz_alloc_site(const char* site, size_t n);\n"));
+#line 4662
     h = kz_add_own(h, kz_str("#define kz_alloc(n) kz_alloc_site(__func__, (n))\n"));
+#line 4663
     h = kz_add_own(h, kz_str("static void* kz_alloc_raw(size_t n) {\n"));
+#line 4664
     h = kz_add_own(h, kz_str("    void* p = kmalloc(&kz_arena, n);\n"));
+#line 4665
     h = kz_add_own(h, kz_str("    if (p == NULL) {\n"));
+#line 4666
     h = kz_add_own(h, kz_str("        kaze_trap(KAZE_ERR_OOM, \"the arena is full; raise KAZE_ARENA_BYTES\");\n"));
+#line 4667
     h = kz_add_own(h, kz_str("        exit(70);\n"));
+#line 4668
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4669
     h = kz_add_own(h, kz_str("    return p;\n"));
+#line 4670
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 4671
     h = kz_add_own(h, kz_str("static void* kz_alloc_site(const char* site, size_t n) {\n"));
+#line 4672
     h = kz_add_own(h, kz_str("    kz_note_site(site, n);\n"));
+#line 4673
     h = kz_add_own(h, kz_str("    return kz_alloc_raw(n);\n"));
+#line 4674
     h = kz_add_own(h, kz_str("}\n"));
+#line 4675
     h = kz_add_own(h, kz_str("static void kz_print_alloc_sites(void) {\n"));
+#line 4676
     h = kz_add_own(h, kz_str("    const char* env = getenv(\"KAZE_ARENA_STATS\");\n"));
+#line 4677
     h = kz_add_own(h, kz_str("    if (env == NULL || env[0] == 0 || env[0] == 48) return;\n"));
+#line 4678
     h = kz_add_own(h, kz_str("    fprintf(stderr, \"kaze-alloc: %zu bytes used in the arena\\n\", kaze_arena_used(&kz_arena));\n"));
+#line 4679
     h = kz_add_own(h, kz_str("    for (int i = 0; i < KZ_ALLOC_SITES; i++) {\n"));
+#line 4680
     h = kz_add_own(h, kz_str("        if (kz_site_name[i] != NULL)\n"));
+#line 4681
     h = kz_add_own(h, kz_str("            fprintf(stderr, \"kaze-alloc:   %-12s %12zu bytes %10zu calls\\n\", kz_site_name[i], kz_site_bytes[i], kz_site_calls[i]);\n"));
+#line 4682
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4683
     h = kz_add_own(h, kz_str("}\n"));
+#line 4684
     h = kz_add_own(h, kz_str("typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD, KZ_VAL_POINT, KZ_VAL_CHAN, KZ_VAL_FIBER } KzValKind;\n"));
+#line 4685
     h = kz_add_own(h, kz_str("struct KzValue;\n"));
+#line 4686
     h = kz_add_own(h, kz_str("typedef struct { size_t len; size_t cap; struct KzValue* items; } KzList;\n"));
+#line 4687
     h = kz_add_own(h, kz_str("typedef struct { const char* type_name; size_t field_count; const char** keys; struct KzValue* values; } KzRecord;\n"));
+#line 4688
     h = kz_add_own(h, kz_str("typedef struct { const char* data; size_t len; } KzStr;\n"));
+#line 4689
     h = kz_add_own(h, kz_str("typedef struct { kaze_float_t x, y, z; } KzPoint;\n"));
+#line 4690
     h = kz_add_own(h, kz_str("typedef struct KzValue {\n"));
+#line 4691
     h = kz_add_own(h, kz_str("    KzValKind kind;\n"));
+#line 4692
     h = kz_add_own(h, kz_str("    union { bool boolean; kaze_float_t number; KzStr str; KzList* list; KzRecord* record; KzPoint point; void* ptr; } as;\n"));
+#line 4693
     h = kz_add_own(h, kz_str("} KzValue;\n\n"));
+#line 4694
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"));
+#line 4695
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"));
+#line 4696
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_num(double n) { KzValue v; v.kind = KZ_VAL_NUM; v.as.number = n; return v; }\n"));
+#line 4697
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_str(const char* s) {\n"));
+#line 4698
     h = kz_add_own(h, kz_str("    KzValue v; v.kind = KZ_VAL_STR;\n"));
+#line 4699
     h = kz_add_own(h, kz_str("    v.as.str.data = s ? s : \"\";\n"));
+#line 4700
     h = kz_add_own(h, kz_str("    v.as.str.len = strlen(v.as.str.data);   /* measured once, never again */\n"));
+#line 4701
     h = kz_add_own(h, kz_str("    return v;\n"));
+#line 4702
     h = kz_add_own(h, kz_str("}\n"));
+#line 4703
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_point(KzValue x, KzValue y, KzValue z);\n"));
+#line 4704
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline double kz_pt(KzValue v, int i);\n"));
+#line 4705
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline bool kz_is_truthy(KzValue v) {\n"));
+#line 4706
     h = kz_add_own(h, kz_str("    switch (v.kind) {\n"));
+#line 4707
     h = kz_add_own(h, kz_str("        case KZ_VAL_BOOL: return v.as.boolean;\n"));
+#line 4708
     h = kz_add_own(h, kz_str("        case KZ_VAL_NUM: return v.as.number != 0.0;\n"));
+#line 4709
     h = kz_add_own(h, kz_str("        case KZ_VAL_STR: return v.as.str.data && v.as.str.data[0] != '\\0';\n"));
+#line 4710
     h = kz_add_own(h, kz_str("        case KZ_VAL_LIST: return v.as.list && v.as.list->len > 0;\n"));
+#line 4711
     h = kz_add_own(h, kz_str("        case KZ_VAL_RECORD: return true;\n"));
+#line 4712
     h = kz_add_own(h, kz_str("        case KZ_VAL_CHAN: return v.as.ptr != NULL;\n"));
+#line 4713
     h = kz_add_own(h, kz_str("        case KZ_VAL_FIBER: return v.as.ptr != NULL;\n"));
+#line 4714
     h = kz_add_own(h, kz_str("        default: return false;\n"));
+#line 4715
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4716
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 4717
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline char* kz_str_alloc_copy(const char* s) {\n"));
+#line 4718
     h = kz_add_own(h, kz_str("    if (!s) return \"\";\n"));
+#line 4719
     h = kz_add_own(h, kz_str("    size_t l = strlen(s);\n"));
+#line 4720
     h = kz_add_own(h, kz_str("    char* out = (char*)kz_alloc(l + 1);\n"));
+#line 4721
     h = kz_add_own(h, kz_str("    if (!out) return \"\";\n"));
+#line 4722
     h = kz_add_own(h, kz_str("    memcpy(out, s, l + 1);\n"));
+#line 4723
     h = kz_add_own(h, kz_str("    return out;\n"));
+#line 4724
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 4725
     h = kz_add_own(h, kz_str("/* Concatenate with known lengths: nothing is re-walked. */\n"));
+#line 4726
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline char* kz_str_concat_n(const char* a, size_t la, const char* b, size_t lb) {\n"));
+#line 4727
     h = kz_add_own(h, kz_str("    char* out = (char*)kz_alloc(la + lb + 1);\n"));
+#line 4728
     h = kz_add_own(h, kz_str("    if (la) memcpy(out, a, la);\n"));
+#line 4729
     h = kz_add_own(h, kz_str("    if (lb) memcpy(out + la, b, lb);\n"));
+#line 4730
     h = kz_add_own(h, kz_str("    out[la + lb] = 0;\n"));
+#line 4731
     h = kz_add_own(h, kz_str("    return out;\n"));
+#line 4732
     h = kz_add_own(h, kz_str("}\n"));
+#line 4734
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline char* kz_str_concat(const char* a, const char* b) {\n"));
+#line 4735
     h = kz_add_own(h, kz_str("    size_t la = a ? strlen(a) : 0;\n"));
+#line 4736
     h = kz_add_own(h, kz_str("    size_t lb = b ? strlen(b) : 0;\n"));
+#line 4737
     h = kz_add_own(h, kz_str("    char* out = (char*)kz_alloc(la + lb + 1);\n"));
+#line 4738
     h = kz_add_own(h, kz_str("    if (!out) return \"\";\n"));
+#line 4739
     h = kz_add_own(h, kz_str("    if (la) memcpy(out, a, la);\n"));
+#line 4740
     h = kz_add_own(h, kz_str("    if (lb) memcpy(out + la, b, lb);\n"));
+#line 4741
     h = kz_add_own(h, kz_str("    out[la + lb] = '\\0';\n"));
+#line 4742
     h = kz_add_own(h, kz_str("    return out;\n"));
+#line 4743
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 4744
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_add(KzValue a, KzValue b);\n"));
+#line 4745
     h = kz_add_own(h, kz_str("/* `v = v + x` where v is proved append-only. Same result as kz_add, but a text\n"));
+#line 4746
     h = kz_add_own(h, kz_str("   or list buffer that is still the newest arena allocation grows in place\n"));
+#line 4747
     h = kz_add_own(h, kz_str("   instead of being copied. Dispatch is by runtime type, so any operand is safe. */\n"));
+#line 4748
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_add_own(KzValue a, KzValue b) {\n"));
+#line 4749
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) {\n"));
+#line 4750
     h = kz_add_own(h, kz_str("        const char* s = a.as.str.data;\n"));
+#line 4751
     h = kz_add_own(h, kz_str("        size_t la = a.as.str.len, lb = b.as.str.len;\n"));
+#line 4752
     h = kz_add_own(h, kz_str("        if (kz_arena.base != NULL && s != NULL &&\n"));
+#line 4753
     h = kz_add_own(h, kz_str("            s + la + 1 == (const char*)kz_arena.base + kz_arena.offset &&\n"));
+#line 4754
     h = kz_add_own(h, kz_str("            kz_arena.offset + lb <= kz_arena.cap) {\n"));
+#line 4755
     h = kz_add_own(h, kz_str("            memcpy((char*)s + la, b.as.str.data, lb);\n"));
+#line 4756
     h = kz_add_own(h, kz_str("            ((char*)s)[la + lb] = 0;\n"));
+#line 4757
     h = kz_add_own(h, kz_str("            kz_arena.offset += lb;\n"));
+#line 4758
     h = kz_add_own(h, kz_str("            a.as.str.len = la + lb;   /* the value carries its length: keep it true */\n"));
+#line 4759
     h = kz_add_own(h, kz_str("            return a;\n"));
+#line 4760
     h = kz_add_own(h, kz_str("        }\n"));
+#line 4761
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4762
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST && a.as.list != NULL &&\n"));
+#line 4763
     h = kz_add_own(h, kz_str("        b.as.list != NULL && b.as.list->len == 1) {\n"));
+#line 4764
     h = kz_add_own(h, kz_str("        KzList* l = a.as.list;\n"));
+#line 4765
     h = kz_add_own(h, kz_str("        if (l->len >= l->cap) {\n"));
+#line 4766
     h = kz_add_own(h, kz_str("            size_t cap = l->cap ? l->cap * 2 : 4;\n"));
+#line 4767
     h = kz_add_own(h, kz_str("            KzValue* items;\n"));
+#line 4768
     h = kz_add_own(h, kz_str("            if (kz_arena.base != NULL &&\n"));
+#line 4769
     h = kz_add_own(h, kz_str("                (const char*)l->items + l->cap * sizeof(KzValue) ==\n"));
+#line 4770
     h = kz_add_own(h, kz_str("                    (const char*)kz_arena.base + kz_arena.offset &&\n"));
+#line 4771
     h = kz_add_own(h, kz_str("                kz_arena.offset + (cap - l->cap) * sizeof(KzValue) <= kz_arena.cap) {\n"));
+#line 4772
     h = kz_add_own(h, kz_str("                items = l->items;\n"));
+#line 4773
     h = kz_add_own(h, kz_str("                kz_arena.offset += (cap - l->cap) * sizeof(KzValue);\n"));
+#line 4774
     h = kz_add_own(h, kz_str("            } else {\n"));
+#line 4775
     h = kz_add_own(h, kz_str("                items = (KzValue*)kz_alloc(cap * sizeof(KzValue));\n"));
+#line 4776
     h = kz_add_own(h, kz_str("                memcpy(items, l->items, l->len * sizeof(KzValue));\n"));
+#line 4777
     h = kz_add_own(h, kz_str("            }\n"));
+#line 4778
     h = kz_add_own(h, kz_str("            l->items = items;\n"));
+#line 4779
     h = kz_add_own(h, kz_str("            l->cap = cap;\n"));
+#line 4780
     h = kz_add_own(h, kz_str("        }\n"));
+#line 4781
     h = kz_add_own(h, kz_str("        l->items[l->len] = b.as.list->items[0];\n"));
+#line 4782
     h = kz_add_own(h, kz_str("        l->len += 1;\n"));
+#line 4783
     h = kz_add_own(h, kz_str("        return a;\n"));
+#line 4784
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4785
     h = kz_add_own(h, kz_str("    return kz_add(a, b);\n"));
+#line 4786
     h = kz_add_own(h, kz_str("}\n"));
+#line 4791
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline void kz_format_number(char* buf, size_t cap, double v) {\n"));
+#line 4792
     h = kz_add_own(h, kz_str("    if (isnan(v)) { snprintf(buf, cap, \"NaN\"); return; }\n"));
+#line 4793
     h = kz_add_own(h, kz_str("    if (isinf(v)) { snprintf(buf, cap, v > 0 ? \"inf\" : \"-inf\"); return; }\n"));
+#line 4794
     h = kz_add_own(h, kz_str("    if (floor(v) == v && fabs(v) < 1e17) { snprintf(buf, cap, \"%.0f\", v); return; }\n"));
+#line 4795
     h = kz_add_own(h, kz_str("    for (int prec = 15; prec <= 17; prec++) {\n"));
+#line 4796
     h = kz_add_own(h, kz_str("        snprintf(buf, cap, \"%.*g\", prec, v);\n"));
+#line 4797
     h = kz_add_own(h, kz_str("        if (strtod(buf, NULL) == v) return;\n"));
+#line 4798
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4799
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 4800
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline const char* kz_to_string(KzValue v) {\n"));
+#line 4801
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_POINT) {\n"));
+#line 4802
     h = kz_add_own(h, kz_str("        char pbuf[192], b1[40], b2[40], b3[40];\n"));
+#line 4803
     h = kz_add_own(h, kz_str("        kz_format_number(b1, sizeof(b1), v.as.point.x);\n"));
+#line 4804
     h = kz_add_own(h, kz_str("        kz_format_number(b2, sizeof(b2), v.as.point.y);\n"));
+#line 4805
     h = kz_add_own(h, kz_str("        kz_format_number(b3, sizeof(b3), v.as.point.z);\n"));
+#line 4806
     h = kz_add_own(h, kz_str("        snprintf(pbuf, sizeof(pbuf), \"(%s, %s, %s)\", b1, b2, b3);\n"));
+#line 4807
     h = kz_add_own(h, kz_str("        return kz_str_alloc_copy(pbuf);\n"));
+#line 4808
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4809
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_STR) return v.as.str.data ? v.as.str.data : \"\";\n"));
+#line 4810
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_BOOL) return v.as.boolean ? \"true\" : \"false\";\n"));
+#line 4811
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_NUM) {\n"));
+#line 4812
     h = kz_add_own(h, kz_str("        char buf[64];\n"));
+#line 4813
     h = kz_add_own(h, kz_str("        kz_format_number(buf, sizeof(buf), v.as.number);\n"));
+#line 4814
     h = kz_add_own(h, kz_str("        return kz_str_alloc_copy(buf);\n"));
+#line 4815
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4816
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_NIL) return \"nil\";\n"));
+#line 4817
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_RECORD) return v.as.record ? v.as.record->type_name : \"record\";\n"));
+#line 4818
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_LIST) return \"list\";\n"));
+#line 4819
     h = kz_add_own(h, kz_str("    return \"\";\n"));
+#line 4820
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 4821
     h = kz_add_own(h, kz_str("/* --- phase 13: deterministic cooperative concurrency ------------------- */\n"));
+#line 4822
     h = kz_add_own(h, kz_str("/* One OS thread, one linear arena, one run. Tasks switch only where the\n"));
+#line 4823
     h = kz_add_own(h, kz_str(" * program says yield, in round-robin spawn order, so a run is a deterministic\n"));
+#line 4824
     h = kz_add_own(h, kz_str(" * sequence of steps: no wall clock, no scheduler tick, and no two tasks\n"));
+#line 4825
     h = kz_add_own(h, kz_str(" * executing at once. Channels are bounded ring buffers of KzValue: a send\n"));
+#line 4826
     h = kz_add_own(h, kz_str(" * moves the value header and never the data it points at, and a full or empty\n"));
+#line 4827
     h = kz_add_own(h, kz_str(" * channel is a value (false / a fallback), never a block, so a program cannot\n"));
+#line 4828
     h = kz_add_own(h, kz_str(" * deadlock on one. */\n"));
+#line 4829
     h = kz_add_own(h, kz_str("#define KZ_CHAN_MAX 64\n"));
+#line 4830
     h = kz_add_own(h, kz_str("#define KZ_TASKS_DEFAULT 8\n"));
+#line 4831
     h = kz_add_own(h, kz_str("#define KZ_FUEL_DEFAULT 10000\n"));
+#line 4832
     h = kz_add_own(h, kz_str("#define KZ_FRAME_SLOTS 32\n"));
+#line 4833
     h = kz_add_own(h, kz_str("#define KZ_FRAME_GUARDS 16\n"));
+#line 4834
     h = kz_add_own(h, kz_str("\n"));
+#line 4835
     h = kz_add_own(h, kz_str("typedef struct kz_chan { KzValue* buf; size_t cap, head, tail, len; } kz_chan;\n"));
+#line 4836
     h = kz_add_own(h, kz_str("typedef struct kz_fiber kz_fiber;\n"));
+#line 4837
     h = kz_add_own(h, kz_str("struct kz_fiber {\n"));
+#line 4838
     h = kz_add_own(h, kz_str("    kz_fiber* parent;\n"));
+#line 4839
     h = kz_add_own(h, kz_str("    kz_fiber* next;\n"));
+#line 4840
     h = kz_add_own(h, kz_str("    int (*step)(kz_fiber*);\n"));
+#line 4841
     h = kz_add_own(h, kz_str("    KzValue* slots;\n"));
+#line 4842
     h = kz_add_own(h, kz_str("    size_t slot_count;\n"));
+#line 4843
     h = kz_add_own(h, kz_str("    long* guards;\n"));
+#line 4844
     h = kz_add_own(h, kz_str("    size_t guard_count;\n"));
+#line 4845
     h = kz_add_own(h, kz_str("    KzValue args;\n"));
+#line 4846
     h = kz_add_own(h, kz_str("    KzValue ret;\n"));
+#line 4847
     h = kz_add_own(h, kz_str("    long fuel;\n"));
+#line 4848
     h = kz_add_own(h, kz_str("    int pc;\n"));
+#line 4849
     h = kz_add_own(h, kz_str("    int done;\n"));
+#line 4850
     h = kz_add_own(h, kz_str("    int cancelled;\n"));
+#line 4851
     h = kz_add_own(h, kz_str("    const char* name;\n"));
+#line 4852
     h = kz_add_own(h, kz_str("};\n"));
+#line 4853
     h = kz_add_own(h, kz_str("\n"));
+#line 4854
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static kz_fiber* kz_tasks_head = NULL;\n"));
+#line 4855
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static kz_fiber* kz_tasks_tail = NULL;\n"));
+#line 4856
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static kz_fiber* kz_rr_cursor = NULL;\n"));
+#line 4857
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static kz_fiber* kz_current = NULL;\n"));
+#line 4858
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static long kz_switch_count = 0;\n"));
+#line 4859
     h = kz_add_own(h, kz_str("\n"));
+#line 4860
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static long kz_env_num(const char* name, long dflt) {\n"));
+#line 4861
     h = kz_add_own(h, kz_str("    const char* env = getenv(name);\n"));
+#line 4862
     h = kz_add_own(h, kz_str("    if (env == NULL || env[0] == '\\0') return dflt;\n"));
+#line 4863
     h = kz_add_own(h, kz_str("    long v = strtol(env, NULL, 10);\n"));
+#line 4864
     h = kz_add_own(h, kz_str("    if (v <= 0) return dflt;\n"));
+#line 4865
     h = kz_add_own(h, kz_str("    return v;\n"));
+#line 4866
     h = kz_add_own(h, kz_str("}\n"));
+#line 4867
     h = kz_add_own(h, kz_str("\n"));
+#line 4868
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static void kz_conc_fail(const char* code, const char* detail) {\n"));
+#line 4869
     h = kz_add_own(h, kz_str("    fprintf(stderr, \"%s: %s\\n\", code, detail);\n"));
+#line 4870
     h = kz_add_own(h, kz_str("    exit(70);\n"));
+#line 4871
     h = kz_add_own(h, kz_str("}\n"));
+#line 4872
     h = kz_add_own(h, kz_str("\n"));
+#line 4873
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static long kz_tasks_declared = 0;   /* the module's tasks bounded */\n"));
+#line 4874
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static long kz_task_ceiling(void) {\n"));
+#line 4875
     h = kz_add_own(h, kz_str("    long v = kz_tasks_declared;\n"));
+#line 4876
     h = kz_add_own(h, kz_str("    if (v <= 0) v = kz_env_num(\"KAZE_MAX_TASKS\", KZ_TASKS_DEFAULT);\n"));
+#line 4877
     h = kz_add_own(h, kz_str("    return v > 256 ? 256 : v;\n"));
+#line 4878
     h = kz_add_own(h, kz_str("}\n"));
+#line 4879
     h = kz_add_own(h, kz_str("\n"));
+#line 4880
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static long kz_live_tasks(void) {\n"));
+#line 4881
     h = kz_add_own(h, kz_str("    long n = 0;\n"));
+#line 4882
     h = kz_add_own(h, kz_str("    kz_fiber* f;\n"));
+#line 4883
     h = kz_add_own(h, kz_str("    for (f = kz_tasks_head; f != NULL; f = f->next)\n"));
+#line 4884
     h = kz_add_own(h, kz_str("        if (!f->done && !f->cancelled) n += 1;\n"));
+#line 4885
     h = kz_add_own(h, kz_str("    return n;\n"));
+#line 4886
     h = kz_add_own(h, kz_str("}\n"));
+#line 4887
     h = kz_add_own(h, kz_str("\n"));
+#line 4888
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_fiber_value(kz_fiber* f) {\n"));
+#line 4889
     h = kz_add_own(h, kz_str("    KzValue v; v.kind = KZ_VAL_FIBER; v.as.ptr = (void*)f; return v;\n"));
+#line 4890
     h = kz_add_own(h, kz_str("}\n"));
+#line 4891
     h = kz_add_own(h, kz_str("\n"));
+#line 4892
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_fiber_spawn(int (*step)(kz_fiber*), KzValue args, size_t slot_count, size_t guard_count, const char* name, long declared_fuel) {\n"));
+#line 4893
     h = kz_add_own(h, kz_str("    kz_fiber* f;\n"));
+#line 4894
     h = kz_add_own(h, kz_str("    size_t i;\n"));
+#line 4895
     h = kz_add_own(h, kz_str("    if (kz_live_tasks() >= kz_task_ceiling())\n"));
+#line 4896
     h = kz_add_own(h, kz_str("        kz_conc_fail(\"E_KAZE_TASK_BOUND\", \"the task ceiling is reached; raise KAZE_MAX_TASKS or spawn fewer tasks\");\n"));
+#line 4897
     h = kz_add_own(h, kz_str("    f = (kz_fiber*)kz_alloc(sizeof(kz_fiber));\n"));
+#line 4898
     h = kz_add_own(h, kz_str("    f->parent = kz_current;\n"));
+#line 4899
     h = kz_add_own(h, kz_str("    f->next = NULL;\n"));
+#line 4900
     h = kz_add_own(h, kz_str("    f->step = step;\n"));
+#line 4901
     h = kz_add_own(h, kz_str("    f->slot_count = slot_count;\n"));
+#line 4902
     h = kz_add_own(h, kz_str("    f->slots = (KzValue*)kz_alloc(sizeof(KzValue) * (slot_count ? slot_count : 1));\n"));
+#line 4903
     h = kz_add_own(h, kz_str("    for (i = 0; i < slot_count; i++) f->slots[i] = kz_nil();\n"));
+#line 4904
     h = kz_add_own(h, kz_str("    f->guard_count = guard_count;\n"));
+#line 4905
     h = kz_add_own(h, kz_str("    f->guards = (long*)kz_alloc(sizeof(long) * (guard_count ? guard_count : 1));\n"));
+#line 4906
     h = kz_add_own(h, kz_str("    for (i = 0; i < guard_count; i++) f->guards[i] = 0;\n"));
+#line 4907
     h = kz_add_own(h, kz_str("    f->args = args;\n"));
+#line 4908
     h = kz_add_own(h, kz_str("    if (args.kind == KZ_VAL_LIST && args.as.list != NULL) {\n"));
+#line 4909
     h = kz_add_own(h, kz_str("        size_t n = args.as.list->len;\n"));
+#line 4910
     h = kz_add_own(h, kz_str("        if (n > slot_count) n = slot_count;\n"));
+#line 4911
     h = kz_add_own(h, kz_str("        for (i = 0; i < n; i++) f->slots[i] = args.as.list->items[i];\n"));
+#line 4912
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4913
     h = kz_add_own(h, kz_str("    f->ret = kz_nil();\n"));
+#line 4914
     h = kz_add_own(h, kz_str("    f->fuel = declared_fuel > 0 ? declared_fuel : kz_env_num(\"KAZE_FUEL\", KZ_FUEL_DEFAULT);\n"));
+#line 4915
     h = kz_add_own(h, kz_str("    if (kz_current != NULL) {\n"));
+#line 4916
     h = kz_add_own(h, kz_str("        /* A child spends from the parent's budget, never more than half of\n"));
+#line 4917
     h = kz_add_own(h, kz_str("         * it, so a spawn cannot starve the spawner. */\n"));
+#line 4918
     h = kz_add_own(h, kz_str("        long share = kz_current->fuel / 2;\n"));
+#line 4919
     h = kz_add_own(h, kz_str("        if (share < 1) share = 1;\n"));
+#line 4920
     h = kz_add_own(h, kz_str("        if (f->fuel > share) f->fuel = share;\n"));
+#line 4921
     h = kz_add_own(h, kz_str("        kz_current->fuel -= f->fuel;\n"));
+#line 4922
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4923
     h = kz_add_own(h, kz_str("    f->pc = 0; f->done = 0; f->cancelled = 0; f->name = name;\n"));
+#line 4924
     h = kz_add_own(h, kz_str("    if (kz_tasks_tail == NULL) { kz_tasks_head = f; kz_tasks_tail = f; }\n"));
+#line 4925
     h = kz_add_own(h, kz_str("    else { kz_tasks_tail->next = f; kz_tasks_tail = f; }\n"));
+#line 4926
     h = kz_add_own(h, kz_str("    return kz_fiber_value(f);\n"));
+#line 4927
     h = kz_add_own(h, kz_str("}\n"));
+#line 4928
     h = kz_add_own(h, kz_str("\n"));
+#line 4929
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static kz_fiber* kz_task_after(kz_fiber* from) {\n"));
+#line 4930
     h = kz_add_own(h, kz_str("    kz_fiber* f = (from != NULL) ? from->next : kz_tasks_head;\n"));
+#line 4931
     h = kz_add_own(h, kz_str("    while (f != NULL) { if (!f->done && !f->cancelled) return f; f = f->next; }\n"));
+#line 4932
     h = kz_add_own(h, kz_str("    f = kz_tasks_head;\n"));
+#line 4933
     h = kz_add_own(h, kz_str("    while (f != NULL && f != from) { if (!f->done && !f->cancelled) return f; f = f->next; }\n"));
+#line 4934
     h = kz_add_own(h, kz_str("    if (from != NULL && !from->done && !from->cancelled) return from;\n"));
+#line 4935
     h = kz_add_own(h, kz_str("    return NULL;\n"));
+#line 4936
     h = kz_add_own(h, kz_str("}\n"));
+#line 4937
     h = kz_add_own(h, kz_str("\n"));
+#line 4938
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static void kz_task_step(kz_fiber* f) {\n"));
+#line 4939
     h = kz_add_own(h, kz_str("    kz_fiber* prev;\n"));
+#line 4940
     h = kz_add_own(h, kz_str("    kz_fiber* g;\n"));
+#line 4941
     h = kz_add_own(h, kz_str("    int st;\n"));
+#line 4942
     h = kz_add_own(h, kz_str("    if (f->done || f->cancelled) return;\n"));
+#line 4943
     h = kz_add_own(h, kz_str("    if (f->fuel <= 0) kz_conc_fail(\"E_KAZE_FUEL_EXHAUSTED\", \"a task spent its whole fuel budget\");\n"));
+#line 4944
     h = kz_add_own(h, kz_str("    f->fuel -= 1;\n"));
+#line 4945
     h = kz_add_own(h, kz_str("    prev = kz_current;\n"));
+#line 4946
     h = kz_add_own(h, kz_str("    kz_current = f;\n"));
+#line 4947
     h = kz_add_own(h, kz_str("    kz_switch_count += 1;\n"));
+#line 4948
     h = kz_add_own(h, kz_str("    st = f->step(f);\n"));
+#line 4949
     h = kz_add_own(h, kz_str("    kz_current = prev;\n"));
+#line 4950
     h = kz_add_own(h, kz_str("    if (st == 0) f->done = 1;\n"));
+#line 4951
     h = kz_add_own(h, kz_str("    if (f->done) {\n"));
+#line 4952
     h = kz_add_own(h, kz_str("        /* A parent's exit cancels the children it left running: nothing\n"));
+#line 4953
     h = kz_add_own(h, kz_str("         * outlives the task that owns it. */\n"));
+#line 4954
     h = kz_add_own(h, kz_str("        for (g = kz_tasks_head; g != NULL; g = g->next)\n"));
+#line 4955
     h = kz_add_own(h, kz_str("            if (g->parent == f && !g->done) g->cancelled = 1;\n"));
+#line 4956
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4957
     h = kz_add_own(h, kz_str("}\n"));
+#line 4958
     h = kz_add_own(h, kz_str("\n"));
+#line 4959
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static void kz_sched_drive(kz_fiber* target) {\n"));
+#line 4960
     h = kz_add_own(h, kz_str("    for (;;) {\n"));
+#line 4961
     h = kz_add_own(h, kz_str("        kz_fiber* next;\n"));
+#line 4962
     h = kz_add_own(h, kz_str("        if (target != NULL && (target->done || target->cancelled)) return;\n"));
+#line 4963
     h = kz_add_own(h, kz_str("        next = kz_task_after(kz_rr_cursor);\n"));
+#line 4964
     h = kz_add_own(h, kz_str("        if (next == NULL) return;\n"));
+#line 4965
     h = kz_add_own(h, kz_str("        if (next == kz_current) return;\n"));
+#line 4966
     h = kz_add_own(h, kz_str("        kz_rr_cursor = next;\n"));
+#line 4967
     h = kz_add_own(h, kz_str("        kz_task_step(next);\n"));
+#line 4968
     h = kz_add_own(h, kz_str("    }\n"));
+#line 4969
     h = kz_add_own(h, kz_str("}\n"));
+#line 4970
     h = kz_add_own(h, kz_str("\n"));
+#line 4971
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_fiber_join(KzValue v) {\n"));
+#line 4972
     h = kz_add_own(h, kz_str("    kz_fiber* f;\n"));
+#line 4973
     h = kz_add_own(h, kz_str("    if (v.kind != KZ_VAL_FIBER || v.as.ptr == NULL) return kz_nil();\n"));
+#line 4974
     h = kz_add_own(h, kz_str("    f = (kz_fiber*)v.as.ptr;\n"));
+#line 4975
     h = kz_add_own(h, kz_str("    kz_sched_drive(f);\n"));
+#line 4976
     h = kz_add_own(h, kz_str("    return f->ret;\n"));
+#line 4977
     h = kz_add_own(h, kz_str("}\n"));
+#line 4978
     h = kz_add_own(h, kz_str("\n"));
+#line 4979
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static void kz_fiber_cancel_value(KzValue v) {\n"));
+#line 4980
     h = kz_add_own(h, kz_str("    kz_fiber* f;\n"));
+#line 4981
     h = kz_add_own(h, kz_str("    kz_fiber* g;\n"));
+#line 4982
     h = kz_add_own(h, kz_str("    if (v.kind != KZ_VAL_FIBER || v.as.ptr == NULL) return;\n"));
+#line 4983
     h = kz_add_own(h, kz_str("    f = (kz_fiber*)v.as.ptr;\n"));
+#line 4984
     h = kz_add_own(h, kz_str("    for (g = kz_tasks_head; g != NULL; g = g->next)\n"));
+#line 4985
     h = kz_add_own(h, kz_str("        if (g->parent == f) g->cancelled = 1;\n"));
+#line 4986
     h = kz_add_own(h, kz_str("    f->cancelled = 1;\n"));
+#line 4987
     h = kz_add_own(h, kz_str("}\n"));
+#line 4988
     h = kz_add_own(h, kz_str("\n"));
+#line 4989
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_fiber_run_root(int (*step)(kz_fiber*), size_t slot_count, size_t guard_count, long declared_fuel) {\n"));
+#line 4990
     h = kz_add_own(h, kz_str("    KzValue v = kz_fiber_spawn(step, kz_nil(), slot_count, guard_count, \"main\", declared_fuel);\n"));
+#line 4991
     h = kz_add_own(h, kz_str("    return kz_fiber_join(v);\n"));
+#line 4992
     h = kz_add_own(h, kz_str("}\n"));
+#line 4993
     h = kz_add_own(h, kz_str("\n"));
+#line 4994
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_chan_new(KzValue depth) {\n"));
+#line 4995
     h = kz_add_own(h, kz_str("    kz_chan* c;\n"));
+#line 4996
     h = kz_add_own(h, kz_str("    size_t cap;\n"));
+#line 4997
     h = kz_add_own(h, kz_str("    KzValue v;\n"));
+#line 4998
     h = kz_add_own(h, kz_str("    double d = (depth.kind == KZ_VAL_NUM) ? depth.as.number : 0.0;\n"));
+#line 4999
     h = kz_add_own(h, kz_str("    if (d < 1 || d > KZ_CHAN_MAX) kz_conc_fail(\"E_KAZE_CHANNEL_DEPTH\", \"a channel holds from 1 to 64 values\");\n"));
+#line 5000
     h = kz_add_own(h, kz_str("    cap = (size_t)d;\n"));
+#line 5001
     h = kz_add_own(h, kz_str("    c = (kz_chan*)kz_alloc(sizeof(kz_chan));\n"));
+#line 5002
     h = kz_add_own(h, kz_str("    c->buf = (KzValue*)kz_alloc(sizeof(KzValue) * cap);\n"));
+#line 5003
     h = kz_add_own(h, kz_str("    c->cap = cap; c->head = 0; c->tail = 0; c->len = 0;\n"));
+#line 5004
     h = kz_add_own(h, kz_str("    v.kind = KZ_VAL_CHAN; v.as.ptr = (void*)c;\n"));
+#line 5005
     h = kz_add_own(h, kz_str("    return v;\n"));
+#line 5006
     h = kz_add_own(h, kz_str("}\n"));
+#line 5007
     h = kz_add_own(h, kz_str("\n"));
+#line 5008
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static bool kz_chan_send(KzValue ch, KzValue v) {\n"));
+#line 5009
     h = kz_add_own(h, kz_str("    kz_chan* c;\n"));
+#line 5010
     h = kz_add_own(h, kz_str("    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return false;\n"));
+#line 5011
     h = kz_add_own(h, kz_str("    c = (kz_chan*)ch.as.ptr;\n"));
+#line 5012
     h = kz_add_own(h, kz_str("    if (c->len >= c->cap) return false;\n"));
+#line 5013
     h = kz_add_own(h, kz_str("    c->buf[c->tail] = v;\n"));
+#line 5014
     h = kz_add_own(h, kz_str("    c->tail = (c->tail + 1) % c->cap;\n"));
+#line 5015
     h = kz_add_own(h, kz_str("    c->len += 1;\n"));
+#line 5016
     h = kz_add_own(h, kz_str("    return true;\n"));
+#line 5017
     h = kz_add_own(h, kz_str("}\n"));
+#line 5018
     h = kz_add_own(h, kz_str("\n"));
+#line 5019
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_chan_recv_or(KzValue ch, KzValue fallback) {\n"));
+#line 5020
     h = kz_add_own(h, kz_str("    kz_chan* c;\n"));
+#line 5021
     h = kz_add_own(h, kz_str("    KzValue v;\n"));
+#line 5022
     h = kz_add_own(h, kz_str("    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return fallback;\n"));
+#line 5023
     h = kz_add_own(h, kz_str("    c = (kz_chan*)ch.as.ptr;\n"));
+#line 5024
     h = kz_add_own(h, kz_str("    if (c->len == 0) return fallback;\n"));
+#line 5025
     h = kz_add_own(h, kz_str("    v = c->buf[c->head];\n"));
+#line 5026
     h = kz_add_own(h, kz_str("    c->head = (c->head + 1) % c->cap;\n"));
+#line 5027
     h = kz_add_own(h, kz_str("    c->len -= 1;\n"));
+#line 5028
     h = kz_add_own(h, kz_str("    return v;\n"));
+#line 5029
     h = kz_add_own(h, kz_str("}\n"));
+#line 5030
     h = kz_add_own(h, kz_str("\n"));
+#line 5031
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_chan_len(KzValue ch) {\n"));
+#line 5032
     h = kz_add_own(h, kz_str("    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return kz_num(0);\n"));
+#line 5033
     h = kz_add_own(h, kz_str("    return kz_num((double)((kz_chan*)ch.as.ptr)->len);\n"));
+#line 5034
     h = kz_add_own(h, kz_str("}\n"));
+#line 5035
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static void kz_print_switch_stats(void) {\n"));
+#line 5036
     h = kz_add_own(h, kz_str("    const char* env = getenv(\"KAZE_SWITCH_STATS\");\n"));
+#line 5037
     h = kz_add_own(h, kz_str("    if (env == NULL || env[0] == 0 || env[0] == 48) return;\n"));
+#line 5038
     h = kz_add_own(h, kz_str("    fprintf(stderr, \"kaze-switch: %ld task switches\\n\", kz_switch_count);\n"));
+#line 5039
     h = kz_add_own(h, kz_str("}\n"));
+#line 5040
     h = kz_add_own(h, kz_str("\n"));
+#line 5041
     h = kz_add_own(h, kz_str("/* Make room for `need` items. A list may start with no buffer at all, so every\n"));
+#line 5042
     h = kz_add_own(h, kz_str("   reader that indexes items must come through here (or check len first). */\n"));
+#line 5043
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline void kz_list_reserve(KzList* l, size_t need) {\n"));
+#line 5044
     h = kz_add_own(h, kz_str("    if (l->cap >= need && l->items != NULL) return;\n"));
+#line 5045
     h = kz_add_own(h, kz_str("    size_t cap = l->cap ? l->cap : 4;\n"));
+#line 5046
     h = kz_add_own(h, kz_str("    while (cap < need) cap *= 2;\n"));
+#line 5047
     h = kz_add_own(h, kz_str("    KzValue* items = (KzValue*)kz_alloc(cap * sizeof(KzValue));\n"));
+#line 5048
     h = kz_add_own(h, kz_str("    if (l->len) memcpy(items, l->items, l->len * sizeof(KzValue));\n"));
+#line 5049
     h = kz_add_own(h, kz_str("    l->items = items;\n"));
+#line 5050
     h = kz_add_own(h, kz_str("    l->cap = cap;\n"));
+#line 5051
     h = kz_add_own(h, kz_str("}\n"));
+#line 5052
     h = kz_add_own(h, kz_str("\n"));
+#line 5053
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_list_new(size_t cap) {\n"));
+#line 5054
     h = kz_add_own(h, kz_str("    KzList* l = (KzList*)kz_alloc(sizeof(KzList));\n"));
+#line 5055
     h = kz_add_own(h, kz_str("    l->len = 0;\n"));
+#line 5056
     h = kz_add_own(h, kz_str("    /* Lazy buffer: an empty list costs a header, not a header and a buffer.\n"));
+#line 5057
     h = kz_add_own(h, kz_str("       Every site that indexes items either checks len first or goes through\n"));
+#line 5058
     h = kz_add_own(h, kz_str("       kz_list_reserve (audited: concat, from, append, index, for-each). */\n"));
+#line 5059
     h = kz_add_own(h, kz_str("    l->cap = cap > 4 ? cap : 0;\n"));
+#line 5060
     h = kz_add_own(h, kz_str("    l->items = (cap > 4) ? (KzValue*)kz_alloc(l->cap * sizeof(KzValue)) : NULL;\n"));
+#line 5061
     h = kz_add_own(h, kz_str("    KzValue v; v.kind = KZ_VAL_LIST; v.as.list = l; return v;\n"));
+#line 5062
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5063
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_list_concat(KzValue a, KzValue b) {\n"));
+#line 5064
     h = kz_add_own(h, kz_str("    size_t la = (a.kind == KZ_VAL_LIST && a.as.list) ? a.as.list->len : 0;\n"));
+#line 5065
     h = kz_add_own(h, kz_str("    size_t lb = (b.kind == KZ_VAL_LIST && b.as.list) ? b.as.list->len : 0;\n"));
+#line 5066
     h = kz_add_own(h, kz_str("    KzValue res = kz_list_new(la + lb);\n"));
+#line 5067
     h = kz_add_own(h, kz_str("    kz_list_reserve(res.as.list, la + lb);   /* the buffer is lazy: ask first */\n"));
+#line 5068
     h = kz_add_own(h, kz_str("    KzList* l = res.as.list;\n"));
+#line 5069
     h = kz_add_own(h, kz_str("    if (la) { memcpy(l->items, a.as.list->items, la * sizeof(KzValue)); l->len += la; }\n"));
+#line 5070
     h = kz_add_own(h, kz_str("    if (lb) { memcpy(l->items + l->len, b.as.list->items, lb * sizeof(KzValue)); l->len += lb; }\n"));
+#line 5071
     h = kz_add_own(h, kz_str("    return res;\n"));
+#line 5072
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5073
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_list_from(size_t n, const KzValue* items) {\n"));
+#line 5074
     h = kz_add_own(h, kz_str("    KzValue res = kz_list_new(n);\n"));
+#line 5075
     h = kz_add_own(h, kz_str("    if (n > 0 && items) { kz_list_reserve(res.as.list, n); memcpy(res.as.list->items, items, n * sizeof(KzValue)); res.as.list->len = n; }\n"));
+#line 5076
     h = kz_add_own(h, kz_str("    return res;\n"));
+#line 5077
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5078
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_record_create(const char* type_name, size_t n, const char** keys, const KzValue* vals) {\n"));
+#line 5079
     h = kz_add_own(h, kz_str("    KzRecord* r = (KzRecord*)kz_alloc(sizeof(KzRecord));\n"));
+#line 5080
     h = kz_add_own(h, kz_str("    r->type_name = type_name;\n"));
+#line 5081
     h = kz_add_own(h, kz_str("    r->field_count = n;\n"));
+#line 5082
     h = kz_add_own(h, kz_str("    r->keys = keys;\n"));
+#line 5083
     h = kz_add_own(h, kz_str("    r->values = (n > 0) ? (KzValue*)kz_alloc(n * sizeof(KzValue)) : NULL;\n"));
+#line 5084
     h = kz_add_own(h, kz_str("    if (n > 0 && vals && r->values) { memcpy(r->values, vals, n * sizeof(KzValue)); }\n"));
+#line 5085
     h = kz_add_own(h, kz_str("    KzValue v; v.kind = KZ_VAL_RECORD; v.as.record = r; return v;\n"));
+#line 5086
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5087
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_get_field(KzValue obj, const char* field) {\n"));
+#line 5088
     h = kz_add_own(h, kz_str("    if (obj.kind == KZ_VAL_POINT) {\n"));
+#line 5089
     h = kz_add_own(h, kz_str("        if (field && field[0] == 'x' && field[1] == 0) return kz_num(obj.as.point.x);\n"));
+#line 5090
     h = kz_add_own(h, kz_str("        if (field && field[0] == 'y' && field[1] == 0) return kz_num(obj.as.point.y);\n"));
+#line 5091
     h = kz_add_own(h, kz_str("        if (field && field[0] == 'z' && field[1] == 0) return kz_num(obj.as.point.z);\n"));
+#line 5092
     h = kz_add_own(h, kz_str("        return kz_nil();\n"));
+#line 5093
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5094
     h = kz_add_own(h, kz_str("    if (obj.kind != KZ_VAL_RECORD || !obj.as.record) return kz_nil();\n"));
+#line 5095
     h = kz_add_own(h, kz_str("    KzRecord* r = obj.as.record;\n"));
+#line 5096
     h = kz_add_own(h, kz_str("    for (size_t i = 0; i < r->field_count; i++) {\n"));
+#line 5097
     h = kz_add_own(h, kz_str("        /* Pointer identity first: record keys and field names come from the same\n"));
+#line 5098
     h = kz_add_own(h, kz_str("           literals, so the common hit costs one compare instead of a strcmp. */\n"));
+#line 5099
     h = kz_add_own(h, kz_str("        if (r->keys[i] == field || (field && strcmp(r->keys[i], field) == 0)) return r->values[i];\n"));
+#line 5100
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5101
     h = kz_add_own(h, kz_str("    return kz_nil();\n"));
+#line 5102
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5103
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_add(KzValue a, KzValue b) {\n"));
+#line 5104
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_num(a.as.number + b.as.number);\n"));
+#line 5105
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_STR || b.kind == KZ_VAL_STR) {\n"));
+#line 5106
     h = kz_add_own(h, kz_str("        KzValue sa = (a.kind == KZ_VAL_STR) ? a : kz_str(kz_to_string(a));\n"));
+#line 5107
     h = kz_add_own(h, kz_str("        KzValue sb = (b.kind == KZ_VAL_STR) ? b : kz_str(kz_to_string(b));\n"));
+#line 5108
     h = kz_add_own(h, kz_str("        return kz_str(kz_str_concat_n(sa.as.str.data, sa.as.str.len, sb.as.str.data, sb.as.str.len));\n"));
+#line 5109
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5110
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST) return kz_list_concat(a, b);\n"));
+#line 5111
     h = kz_add_own(h, kz_str("    return kz_nil();\n"));
+#line 5112
     h = kz_add_own(h, kz_str("}\n"));
+#line 5113
     h = kz_add_own(h, kz_str("/* Bitwise operators: Kaze numbers are doubles, so each operand is truncated to\n"));
+#line 5114
     h = kz_add_own(h, kz_str(" * the runtime integer type, and a shift count is masked to 0..63 so no shift is\n"));
+#line 5115
     h = kz_add_own(h, kz_str(" * undefined behaviour. Right shift is logical, which is what hashing and CRCs\n"));
+#line 5116
     h = kz_add_own(h, kz_str(" * want. */\n"));
+#line 5117
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_band(KzValue a, KzValue b) {\n"));
+#line 5118
     h = kz_add_own(h, kz_str("    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) & (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"));
+#line 5119
     h = kz_add_own(h, kz_str("}\n"));
+#line 5120
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_bor(KzValue a, KzValue b) {\n"));
+#line 5121
     h = kz_add_own(h, kz_str("    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) | (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"));
+#line 5122
     h = kz_add_own(h, kz_str("}\n"));
+#line 5123
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_bxor(KzValue a, KzValue b) {\n"));
+#line 5124
     h = kz_add_own(h, kz_str("    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) ^ (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"));
+#line 5125
     h = kz_add_own(h, kz_str("}\n"));
+#line 5126
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_shl(KzValue a, KzValue b) {\n"));
+#line 5127
     h = kz_add_own(h, kz_str("    kaze_int_t n = (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0) & 63;\n"));
+#line 5128
     h = kz_add_own(h, kz_str("    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) << n));\n"));
+#line 5129
     h = kz_add_own(h, kz_str("}\n"));
+#line 5130
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_shr(KzValue a, KzValue b) {\n"));
+#line 5131
     h = kz_add_own(h, kz_str("    kaze_int_t n = (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0) & 63;\n"));
+#line 5132
     h = kz_add_own(h, kz_str("    return kz_num((kaze_float_t)((kaze_uint_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) >> n));\n"));
+#line 5133
     h = kz_add_own(h, kz_str("}\n"));
+#line 5134
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_sub(KzValue a, KzValue b) {\n"));
+#line 5135
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_POINT) return kz_point(kz_num(a.as.point.x - b.as.point.x), kz_num(a.as.point.y - b.as.point.y), kz_num(a.as.point.z - b.as.point.z));\n"));
+#line 5136
     h = kz_add_own(h, kz_str("    return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) - ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0));\n"));
+#line 5137
     h = kz_add_own(h, kz_str("}\n"));
+#line 5138
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_mul(KzValue a, KzValue b) {\n"));
+#line 5139
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_NUM) return kz_point(kz_num(a.as.point.x * b.as.number), kz_num(a.as.point.y * b.as.number), kz_num(a.as.point.z * b.as.number));\n"));
+#line 5140
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_POINT) return kz_mul(b, a);\n"));
+#line 5141
     h = kz_add_own(h, kz_str("    return kz_num(((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) * ((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0));\n"));
+#line 5142
     h = kz_add_own(h, kz_str("}\n"));
+#line 5143
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_div(KzValue a, KzValue b) {\n"));
+#line 5144
     h = kz_add_own(h, kz_str("    kaze_float_t out = 0.0;   /* kaze_rt checks the divisor and the result */\n"));
+#line 5145
     h = kz_add_own(h, kz_str("    kaze_float_t x = (a.kind == KZ_VAL_NUM) ? a.as.number : 0.0;\n"));
+#line 5146
     h = kz_add_own(h, kz_str("    kaze_float_t y = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"));
+#line 5147
     h = kz_add_own(h, kz_str("    if (!kaze_float_div_checked(x, y, &out)) { kaze_trap(KAZE_ERR_DIV0, \"division by zero\"); exit(70); }\n"));
+#line 5148
     h = kz_add_own(h, kz_str("    return kz_num(out);\n"));
+#line 5149
     h = kz_add_own(h, kz_str("}\n"));
+#line 5150
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_mod(KzValue a, KzValue b) {\n"));
+#line 5151
     h = kz_add_own(h, kz_str("    kaze_float_t y = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"));
+#line 5152
     h = kz_add_own(h, kz_str("    kaze_float_t x = (a.kind == KZ_VAL_NUM) ? a.as.number : 0.0;\n"));
+#line 5153
     h = kz_add_own(h, kz_str("    if (y == 0.0) { kaze_trap(KAZE_ERR_DIV0, \"remainder by zero\"); exit(70); }\n"));
+#line 5154
     h = kz_add_own(h, kz_str("    return kz_num(fmod(x, y));\n"));
+#line 5155
     h = kz_add_own(h, kz_str("}\n"));
+#line 5156
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_not(KzValue a) { return kz_bool(!kz_is_truthy(a)); }\n\n"));
+#line 5157
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline bool kz_val_eq(KzValue a, KzValue b) {\n"));
+#line 5158
     h = kz_add_own(h, kz_str("    if (a.kind != b.kind) return false;\n"));
+#line 5159
     h = kz_add_own(h, kz_str("    switch (a.kind) {\n"));
+#line 5160
     h = kz_add_own(h, kz_str("        case KZ_VAL_NIL: return true;\n"));
+#line 5161
     h = kz_add_own(h, kz_str("        case KZ_VAL_BOOL: return a.as.boolean == b.as.boolean;\n"));
+#line 5162
     h = kz_add_own(h, kz_str("        case KZ_VAL_NUM: return a.as.number == b.as.number;\n"));
+#line 5163
     h = kz_add_own(h, kz_str("        case KZ_VAL_STR: return (a.as.str.data && b.as.str.data) ? (strcmp(a.as.str.data, b.as.str.data) == 0) : (a.as.str.data == b.as.str.data);\n"));
+#line 5164
     h = kz_add_own(h, kz_str("        default: return a.as.list == b.as.list;\n"));
+#line 5165
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5166
     h = kz_add_own(h, kz_str("}\n"));
+#line 5167
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_eq(KzValue a, KzValue b) { return kz_bool(kz_val_eq(a, b)); }\n"));
+#line 5168
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_ne(KzValue a, KzValue b) { return kz_bool(!kz_val_eq(a, b)); }\n"));
+#line 5169
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_lt(KzValue a, KzValue b) {\n"));
+#line 5170
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number < b.as.number);\n"));
+#line 5171
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) < 0);\n"));
+#line 5172
     h = kz_add_own(h, kz_str("    return kz_bool(false);\n"));
+#line 5173
     h = kz_add_own(h, kz_str("}\n"));
+#line 5174
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_le(KzValue a, KzValue b) {\n"));
+#line 5175
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number <= b.as.number);\n"));
+#line 5176
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) <= 0);\n"));
+#line 5177
     h = kz_add_own(h, kz_str("    return kz_bool(false);\n"));
+#line 5178
     h = kz_add_own(h, kz_str("}\n"));
+#line 5179
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_gt(KzValue a, KzValue b) {\n"));
+#line 5180
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number > b.as.number);\n"));
+#line 5181
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) > 0);\n"));
+#line 5182
     h = kz_add_own(h, kz_str("    return kz_bool(false);\n"));
+#line 5183
     h = kz_add_own(h, kz_str("}\n"));
+#line 5184
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_ge(KzValue a, KzValue b) {\n"));
+#line 5185
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_NUM && b.kind == KZ_VAL_NUM) return kz_bool(a.as.number >= b.as.number);\n"));
+#line 5186
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_STR && b.kind == KZ_VAL_STR) return kz_bool(strcmp(a.as.str.data, b.as.str.data) >= 0);\n"));
+#line 5187
     h = kz_add_own(h, kz_str("    return kz_bool(false);\n"));
+#line 5188
     h = kz_add_own(h, kz_str("}\n"));
+#line 5189
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_and(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) && kz_is_truthy(b)); }\n"));
+#line 5190
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_or(KzValue a, KzValue b) { return kz_bool(kz_is_truthy(a) || kz_is_truthy(b)); }\n\n"));
+#line 5191
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_len(KzValue a) {\n"));
+#line 5192
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_POINT) return kz_num(sqrt(a.as.point.x * a.as.point.x + a.as.point.y * a.as.point.y + a.as.point.z * a.as.point.z));\n"));
+#line 5193
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_STR) return kz_num((double)a.as.str.len);\n"));
+#line 5194
     h = kz_add_own(h, kz_str("    if (a.kind == KZ_VAL_LIST && a.as.list) return kz_num((double)a.as.list->len);\n"));
+#line 5195
     h = kz_add_own(h, kz_str("    /* length of applies to text, lists and points. Returning 0 for anything\n"));
+#line 5196
     h = kz_add_own(h, kz_str("       else would make a guard clause fall through instead of refusing. */\n"));
+#line 5197
     h = kz_add_own(h, kz_str("    kaze_trap(KAZE_ERR_TYPE, \"length of does not apply to this value\");\n"));
+#line 5198
     h = kz_add_own(h, kz_str("    exit(70);\n"));
+#line 5199
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5200
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_index(KzValue coll, KzValue idx) {\n"));
+#line 5201
     h = kz_add_own(h, kz_str("    size_t i = (idx.kind == KZ_VAL_NUM && idx.as.number >= 0.0) ? (size_t)idx.as.number : 0;\n"));
+#line 5202
     h = kz_add_own(h, kz_str("    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"));
+#line 5203
     h = kz_add_own(h, kz_str("        if (i < coll.as.list->len) return coll.as.list->items[i];\n"));
+#line 5204
     h = kz_add_own(h, kz_str("        return kz_nil();\n"));
+#line 5205
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5206
     h = kz_add_own(h, kz_str("    if (coll.kind == KZ_VAL_STR && coll.as.str.data) {\n"));
+#line 5207
     h = kz_add_own(h, kz_str("        size_t l = coll.as.str.len;\n"));
+#line 5208
     h = kz_add_own(h, kz_str("        if (i < l) {\n"));
+#line 5209
     h = kz_add_own(h, kz_str("            char* one = (char*)kz_alloc(2);\n"));
+#line 5210
     h = kz_add_own(h, kz_str("            one[0] = coll.as.str.data[i];\n"));
+#line 5211
     h = kz_add_own(h, kz_str("            one[1] = '\\0';\n"));
+#line 5212
     h = kz_add_own(h, kz_str("            return kz_str(one);\n"));
+#line 5213
     h = kz_add_own(h, kz_str("        }\n"));
+#line 5214
     h = kz_add_own(h, kz_str("        return kz_str(\"\");\n"));
+#line 5215
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5216
     h = kz_add_own(h, kz_str("    return kz_nil();\n"));
+#line 5217
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5218
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline void kz_builtin_log(KzValue msg) { printf(\"[info] %s\\n\", kz_to_string(msg)); }\n\n"));
+#line 5219
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_read_stream(FILE* f) {\n"));
+#line 5220
     h = kz_add_own(h, kz_str("    size_t cap = 4096; size_t len = 0;\n"));
+#line 5221
     h = kz_add_own(h, kz_str("    char* buf = (char*)kz_alloc(cap);\n"));
+#line 5222
     h = kz_add_own(h, kz_str("    if (!buf) return kz_str(\"\");\n"));
+#line 5223
     h = kz_add_own(h, kz_str("    size_t n;\n"));
+#line 5224
     h = kz_add_own(h, kz_str("    while ((n = fread(buf + len, 1, cap - len - 1, f)) > 0) {\n"));
+#line 5225
     h = kz_add_own(h, kz_str("        len += n;\n"));
+#line 5226
     h = kz_add_own(h, kz_str("        if (len + 1024 >= cap) { cap *= 2; char* nb = (char*)realloc(buf, cap); if (!nb) break; buf = nb; }\n"));
+#line 5227
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5228
     h = kz_add_own(h, kz_str("    buf[len] = '\\0';\n"));
+#line 5229
     h = kz_add_own(h, kz_str("    if (len == 0) return kz_nil();   /* nothing on stdin is no value, not empty text */\n"));
+#line 5230
     h = kz_add_own(h, kz_str("    return kz_str(buf);\n"));
+#line 5231
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5232
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_read_file_or_string(const char* path_or_str) {\n"));
+#line 5233
     h = kz_add_own(h, kz_str("    if (!path_or_str) return kz_str(\"\");\n"));
+#line 5234
     h = kz_add_own(h, kz_str("    FILE* f = fopen(path_or_str, \"rb\");\n"));
+#line 5235
     h = kz_add_own(h, kz_str("    if (!f) return kz_str(path_or_str);\n"));
+#line 5236
     h = kz_add_own(h, kz_str("    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n"));
+#line 5237
     h = kz_add_own(h, kz_str("    if (sz < 0) { fclose(f); return kz_str(path_or_str); }\n"));
+#line 5238
     h = kz_add_own(h, kz_str("    char* buf = (char*)kz_alloc((size_t)sz + 1);\n"));
+#line 5239
     h = kz_add_own(h, kz_str("    if (!buf) { fclose(f); return kz_str(path_or_str); }\n"));
+#line 5240
     h = kz_add_own(h, kz_str("    size_t rd = fread(buf, 1, (size_t)sz, f);\n"));
+#line 5241
     h = kz_add_own(h, kz_str("    buf[rd] = '\\0'; fclose(f);\n"));
+#line 5242
     h = kz_add_own(h, kz_str("    return kz_str(buf);\n"));
+#line 5243
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5244
     h = kz_add_own(h, kz_str("/* 12-factor input: --arg > AGENT_* > config > signature default. A parameter\n"));
+#line 5245
     h = kz_add_own(h, kz_str("   declared with a type must arrive with a value of that type; silently using 0\n"));
+#line 5246
     h = kz_add_own(h, kz_str("   or raw text is how a script acts on a number nobody gave it. */\n"));
+#line 5247
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_param(const char* ty, const char* name, const char* routine, KzValue v) {\n"));
+#line 5248
     h = kz_add_own(h, kz_str("    if (ty == NULL || ty[0] == 0) return v;\n"));
+#line 5249
     h = kz_add_own(h, kz_str("    int wants_text = (strcmp(ty, \"text\") == 0 || strcmp(ty, \"string\") == 0);\n"));
+#line 5250
     h = kz_add_own(h, kz_str("    int wants_bool = (strcmp(ty, \"bool\") == 0);\n"));
+#line 5251
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_NIL) {\n"));
+#line 5252
     h = kz_add_own(h, kz_str("        fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s and has no value; provide --arg %s=<value>, the environment variable AGENT_%s, or \\\"%s\\\" in the config file\\n\", name, routine, ty, name, name, name);\n"));
+#line 5253
     h = kz_add_own(h, kz_str("        exit(2);\n"));
+#line 5254
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5255
     h = kz_add_own(h, kz_str("    if (wants_text) return (v.kind == KZ_VAL_STR) ? v : kz_str(kz_to_string(v));\n"));
+#line 5256
     h = kz_add_own(h, kz_str("    if (wants_bool) {\n"));
+#line 5257
     h = kz_add_own(h, kz_str("        if (v.kind == KZ_VAL_BOOL) return v;\n"));
+#line 5258
     h = kz_add_own(h, kz_str("        if (v.kind == KZ_VAL_STR) {\n"));
+#line 5259
     h = kz_add_own(h, kz_str("            if (strcmp(v.as.str.data, \"true\") == 0) return kz_bool(true);\n"));
+#line 5260
     h = kz_add_own(h, kz_str("            if (strcmp(v.as.str.data, \"false\") == 0) return kz_bool(false);\n"));
+#line 5261
     h = kz_add_own(h, kz_str("        }\n"));
+#line 5262
     h = kz_add_own(h, kz_str("    } else {\n"));
+#line 5263
     h = kz_add_own(h, kz_str("        if (v.kind == KZ_VAL_NUM) return v;\n"));
+#line 5264
     h = kz_add_own(h, kz_str("        if (v.kind == KZ_VAL_STR) {\n"));
+#line 5265
     h = kz_add_own(h, kz_str("            char* end = NULL;\n"));
+#line 5266
     h = kz_add_own(h, kz_str("            double d = strtod(v.as.str.data, &end);\n"));
+#line 5267
     h = kz_add_own(h, kz_str("            if (end != NULL && end != v.as.str.data && *end == 0) return kz_num(d);\n"));
+#line 5268
     h = kz_add_own(h, kz_str("        }\n"));
+#line 5269
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5270
     h = kz_add_own(h, kz_str("    fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s but the value given is not one\\n\", name, routine, ty);\n"));
+#line 5271
     h = kz_add_own(h, kz_str("    exit(2);\n"));
+#line 5272
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5273
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_resolve_cli_arg(int argc, char** argv, const char* name, int index) {\n"));
+#line 5274
     h = kz_add_own(h, kz_str("    size_t nlen = strlen(name);\n"));
+#line 5275
     h = kz_add_own(h, kz_str("    for (int i = 1; i < argc; i++) {\n"));
+#line 5276
     h = kz_add_own(h, kz_str("        const char* a = argv[i];\n"));
+#line 5277
     h = kz_add_own(h, kz_str("        if (strncmp(a, \"--\", 2) == 0) {\n"));
+#line 5278
     h = kz_add_own(h, kz_str("            const char* opt = a + 2;\n"));
+#line 5279
     h = kz_add_own(h, kz_str("            if (strncmp(opt, name, nlen) == 0 && opt[nlen] == '=') return kz_read_file_or_string(opt + nlen + 1);\n"));
+#line 5280
     h = kz_add_own(h, kz_str("            if (strcmp(opt, \"arg\") == 0 && i + 1 < argc) {\n"));
+#line 5281
     h = kz_add_own(h, kz_str("                const char* next_arg = argv[i + 1];\n"));
+#line 5282
     h = kz_add_own(h, kz_str("                if (strncmp(next_arg, name, nlen) == 0 && next_arg[nlen] == '=') return kz_read_file_or_string(next_arg + nlen + 1);\n"));
+#line 5283
     h = kz_add_own(h, kz_str("            }\n"));
+#line 5284
     h = kz_add_own(h, kz_str("            if (strncmp(opt, \"arg=\", 4) == 0) {\n"));
+#line 5285
     h = kz_add_own(h, kz_str("                const char* next_arg = opt + 4;\n"));
+#line 5286
     h = kz_add_own(h, kz_str("                if (strncmp(next_arg, name, nlen) == 0 && next_arg[nlen] == '=') return kz_read_file_or_string(next_arg + nlen + 1);\n"));
+#line 5287
     h = kz_add_own(h, kz_str("            }\n"));
+#line 5288
     h = kz_add_own(h, kz_str("        }\n"));
+#line 5289
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5290
     h = kz_add_own(h, kz_str("    char env_name[128];\n"));
+#line 5291
     h = kz_add_own(h, kz_str("    snprintf(env_name, sizeof(env_name), \"AGENT_%s\", name);\n"));
+#line 5292
     h = kz_add_own(h, kz_str("    for (size_t j = 6; env_name[j]; j++) { if (env_name[j] >= 'a' && env_name[j] <= 'z') env_name[j] -= 32; }\n"));
+#line 5293
     h = kz_add_own(h, kz_str("    char* ev = getenv(env_name);\n"));
+#line 5294
     h = kz_add_own(h, kz_str("    if (ev) return kz_read_file_or_string(ev);\n"));
+#line 5295
     h = kz_add_own(h, kz_str("    snprintf(env_name, sizeof(env_name), \"SOFUU_%s\", name);\n"));
+#line 5296
     h = kz_add_own(h, kz_str("    for (size_t j = 6; env_name[j]; j++) { if (env_name[j] >= 'a' && env_name[j] <= 'z') env_name[j] -= 32; }\n"));
+#line 5297
     h = kz_add_own(h, kz_str("    ev = getenv(env_name);\n"));
+#line 5298
     h = kz_add_own(h, kz_str("    if (ev) return kz_read_file_or_string(ev);\n"));
+#line 5299
     h = kz_add_own(h, kz_str("    int pos_idx = 0;\n"));
+#line 5300
     h = kz_add_own(h, kz_str("    for (int i = 1; i < argc; i++) {\n"));
+#line 5301
     h = kz_add_own(h, kz_str("        /* An option value is not a positional argument: --ticks 2 used to\n"));
+#line 5302
     h = kz_add_own(h, kz_str("           hand the 2 to the first parameter. */\n"));
+#line 5303
     h = kz_add_own(h, kz_str("        if (strcmp(argv[i], \"--ticks\") == 0 || strcmp(argv[i], \"--cap\") == 0 ||\n"));
+#line 5304
     h = kz_add_own(h, kz_str("            strcmp(argv[i], \"--config\") == 0 || strcmp(argv[i], \"--arg\") == 0 ||\n"));
+#line 5305
     h = kz_add_own(h, kz_str("            strcmp(argv[i], \"--entry\") == 0 || strcmp(argv[i], \"-o\") == 0) { i++; continue; }\n"));
+#line 5306
     h = kz_add_own(h, kz_str("        if (argv[i][0] != '-') {\n"));
+#line 5307
     h = kz_add_own(h, kz_str("            if (pos_idx == index) return kz_read_file_or_string(argv[i]);\n"));
+#line 5308
     h = kz_add_own(h, kz_str("            pos_idx++;\n"));
+#line 5309
     h = kz_add_own(h, kz_str("        }\n"));
+#line 5310
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5311
     h = kz_add_own(h, kz_str("    if (index == 0 && !isatty(fileno(stdin))) return kz_read_stream(stdin);\n"));
+#line 5312
     h = kz_add_own(h, kz_str("    /* No layer supplied this argument: nothing, not empty text, so a\n"));
+#line 5313
     h = kz_add_own(h, kz_str("       guard clause on it refuses the way the interpreter does. */\n"));
+#line 5314
     h = kz_add_own(h, kz_str("    return kz_nil();\n"));
+#line 5315
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5316
     h = kz_add_own(h, kz_str("\n"));
+#line 5317
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_fb_div(KzValue a, KzValue b, KzValue fb) {\n"));
+#line 5318
     h = kz_add_own(h, kz_str("    double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"));
+#line 5319
     h = kz_add_own(h, kz_str("    if (d == 0.0) return fb;\n"));
+#line 5320
     h = kz_add_own(h, kz_str("    return kz_div(a, b);\n"));
+#line 5321
     h = kz_add_own(h, kz_str("}\n"));
+#line 5322
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_fb_mod(KzValue a, KzValue b, KzValue fb) {\n"));
+#line 5323
     h = kz_add_own(h, kz_str("    double d = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"));
+#line 5324
     h = kz_add_own(h, kz_str("    if (d == 0.0) return fb;\n"));
+#line 5325
     h = kz_add_own(h, kz_str("    return kz_mod(a, b);\n"));
+#line 5326
     h = kz_add_own(h, kz_str("}\n"));
+#line 5327
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_fb_index(KzValue coll, KzValue idx, KzValue fb) {\n"));
+#line 5328
     h = kz_add_own(h, kz_str("    double d = (idx.kind == KZ_VAL_NUM) ? idx.as.number : -1.0;\n"));
+#line 5329
     h = kz_add_own(h, kz_str("    if (d < 0.0) return fb;\n"));
+#line 5330
     h = kz_add_own(h, kz_str("    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"));
+#line 5331
     h = kz_add_own(h, kz_str("        if ((size_t)d >= coll.as.list->len) return fb;\n"));
+#line 5332
     h = kz_add_own(h, kz_str("    } else if (coll.kind == KZ_VAL_STR && coll.as.str.data) {\n"));
+#line 5333
     h = kz_add_own(h, kz_str("        if ((size_t)d >= coll.as.str.len) return fb;\n"));
+#line 5334
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5335
     h = kz_add_own(h, kz_str("    return kz_index(coll, idx);\n"));
+#line 5336
     h = kz_add_own(h, kz_str("}\n"));
+#line 5337
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline void kz_record_set(KzValue* vals, const char** keys, size_t count, size_t pos, const char* key, KzValue value) {\n"));
+#line 5338
     h = kz_add_own(h, kz_str("    if (key != NULL) {\n"));
+#line 5339
     h = kz_add_own(h, kz_str("        for (size_t j = 0; j < count; j++) {\n"));
+#line 5340
     h = kz_add_own(h, kz_str("            if (strcmp(keys[j], key) == 0) { vals[j] = value; return; }\n"));
+#line 5341
     h = kz_add_own(h, kz_str("        }\n"));
+#line 5342
     h = kz_add_own(h, kz_str("        return;\n"));
+#line 5343
     h = kz_add_own(h, kz_str("    }\n"));
+#line 5344
     h = kz_add_own(h, kz_str("    if (pos < count) vals[pos] = value;\n"));
+#line 5345
     h = kz_add_own(h, kz_str("}\n"));
+#line 5346
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"));
+#line 5347
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"));
+#line 5348
     h = kz_add_own(h, kz_str("/* Character codes. Kaze text is bytes with a length and indexing yields a\n"));
+#line 5349
     h = kz_add_own(h, kz_str(" * one-character text, so a program had no way to see a byte - which blocks every\n"));
+#line 5350
     h = kz_add_own(h, kz_str(" * hash, every JSON escape and every binary codec. code(c) returns the byte and\n"));
+#line 5351
     h = kz_add_own(h, kz_str(" * character(n) turns one back into text; n is clamped to a byte range so the pair\n"));
+#line 5352
     h = kz_add_own(h, kz_str(" * is total and needs no fallback at the call site. */\n"));
+#line 5353
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_code(KzValue v) {\n"));
+#line 5354
     h = kz_add_own(h, kz_str("    if (v.kind != KZ_VAL_STR || v.as.str.data == NULL || v.as.str.len == 0) return kz_num(0);\n"));
+#line 5355
     h = kz_add_own(h, kz_str("    return kz_num((kaze_float_t)(unsigned char)v.as.str.data[0]);\n"));
+#line 5356
     h = kz_add_own(h, kz_str("}\n"));
+#line 5357
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_character(KzValue n) {\n"));
+#line 5358
     h = kz_add_own(h, kz_str("    kaze_int_t c = (kaze_int_t)kz_to_num(n);\n"));
+#line 5359
     h = kz_add_own(h, kz_str("    if (c < 0 || c > 255) return kz_str(\"\");\n"));
+#line 5360
     h = kz_add_own(h, kz_str("    char one[2];\n"));
+#line 5361
     h = kz_add_own(h, kz_str("    one[0] = (char)c;\n"));
+#line 5362
     h = kz_add_own(h, kz_str("    one[1] = 0;\n"));
+#line 5363
     h = kz_add_own(h, kz_str("    /* kz_str wraps a pointer without copying and `one` is a stack buffer,\n"));
+#line 5364
     h = kz_add_own(h, kz_str("     * so the byte is copied into the arena before it escapes. */\n"));
+#line 5365
     h = kz_add_own(h, kz_str("    return kz_str(kz_str_concat_n(one, 1, \"\", 0));\n"));
+#line 5366
     h = kz_add_own(h, kz_str("}\n"));
+#line 5367
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"));
+#line 5368
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"));
+#line 5369
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"));
+#line 5370
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_math_to_radians(KzValue a) { return kz_num(kz_to_num(a) * 0.017453292519943295); }\n"));
+#line 5371
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_math_to_degrees(KzValue a) { return kz_num(kz_to_num(a) * 57.29577951308232); }\n"));
+#line 5372
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_point(KzValue x, KzValue y, KzValue z) {\n"));
+#line 5373
     h = kz_add_own(h, kz_str("    KzValue v; v.kind = KZ_VAL_POINT;\n"));
+#line 5374
     h = kz_add_own(h, kz_str("    v.as.point.x = (x.kind == KZ_VAL_NUM) ? x.as.number : 0.0;\n"));
+#line 5375
     h = kz_add_own(h, kz_str("    v.as.point.y = (y.kind == KZ_VAL_NUM) ? y.as.number : 0.0;\n"));
+#line 5376
     h = kz_add_own(h, kz_str("    v.as.point.z = (z.kind == KZ_VAL_NUM) ? z.as.number : 0.0;\n"));
+#line 5377
     h = kz_add_own(h, kz_str("    return v;\n"));
+#line 5378
     h = kz_add_own(h, kz_str("}\n"));
+#line 5379
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline double kz_pt(KzValue v, int i) {\n"));
+#line 5380
     h = kz_add_own(h, kz_str("    if (v.kind != KZ_VAL_POINT) return 0.0;\n"));
+#line 5381
     h = kz_add_own(h, kz_str("    return i == 0 ? v.as.point.x : (i == 1 ? v.as.point.y : v.as.point.z);\n"));
+#line 5382
     h = kz_add_own(h, kz_str("}\n"));
+#line 5383
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline double kz_list_num(KzValue v, size_t i) {\n"));
+#line 5384
     h = kz_add_own(h, kz_str("    if (v.kind == KZ_VAL_LIST && v.as.list && i < v.as.list->len) return kz_to_num(v.as.list->items[i]);\n"));
+#line 5385
     h = kz_add_own(h, kz_str("    return 0.0;\n"));
+#line 5386
     h = kz_add_own(h, kz_str("}\n"));
+#line 5387
     h = kz_add_own(h, kz_str("#define KZ_EARTH_RADIUS_M 6371008.8\n"));
+#line 5388
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline double kz_geo_rad(double d) { return d * (3.14159265358979323846 / 180.0); }\n"));
+#line 5389
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline double kz_geo_deg(double r) { return r * (180.0 / 3.14159265358979323846); }\n"));
+#line 5390
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline double kz_geo_norm(double d) { double m = fmod(d, 360.0); if (m < 0.0) m += 360.0; return m; }\n"));
+#line 5391
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline double kz_geo_haversine(double alat, double alon, double blat, double blon) {\n"));
+#line 5392
     h = kz_add_own(h, kz_str("    double lat1 = kz_geo_rad(alat), lon1 = kz_geo_rad(alon);\n"));
+#line 5393
     h = kz_add_own(h, kz_str("    double lat2 = kz_geo_rad(blat), lon2 = kz_geo_rad(blon);\n"));
+#line 5394
     h = kz_add_own(h, kz_str("    double dlat = lat2 - lat1, dlon = lon2 - lon1;\n"));
+#line 5395
     h = kz_add_own(h, kz_str("    double s1 = sin(dlat / 2.0), s2 = sin(dlon / 2.0);\n"));
+#line 5396
     h = kz_add_own(h, kz_str("    double hv = s1 * s1 + cos(lat1) * cos(lat2) * s2 * s2;\n"));
+#line 5397
     h = kz_add_own(h, kz_str("    if (hv > 1.0) hv = 1.0;\n"));
+#line 5398
     h = kz_add_own(h, kz_str("    return 2.0 * KZ_EARTH_RADIUS_M * asin(sqrt(hv));\n"));
+#line 5399
     h = kz_add_own(h, kz_str("}\n"));
+#line 5400
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_geo_distance(KzValue a, KzValue b) {\n"));
+#line 5401
     h = kz_add_own(h, kz_str("    return kz_num(kz_geo_haversine(kz_pt(a, 0), kz_pt(a, 1), kz_pt(b, 0), kz_pt(b, 1)));\n"));
+#line 5402
     h = kz_add_own(h, kz_str("}\n"));
+#line 5403
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_geo_slant_distance(KzValue a, KzValue b) {\n"));
+#line 5404
     h = kz_add_own(h, kz_str("    double ground = kz_geo_haversine(kz_pt(a, 0), kz_pt(a, 1), kz_pt(b, 0), kz_pt(b, 1));\n"));
+#line 5405
     h = kz_add_own(h, kz_str("    double dz = kz_pt(b, 2) - kz_pt(a, 2);\n"));
+#line 5406
     h = kz_add_own(h, kz_str("    return kz_num(sqrt(ground * ground + dz * dz));\n"));
+#line 5407
     h = kz_add_own(h, kz_str("}\n"));
+#line 5408
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_geo_bearing_from(KzValue a, KzValue b) {\n"));
+#line 5409
     h = kz_add_own(h, kz_str("    double lat1 = kz_geo_rad(kz_pt(a, 0)), lat2 = kz_geo_rad(kz_pt(b, 0));\n"));
+#line 5410
     h = kz_add_own(h, kz_str("    double dlon = kz_geo_rad(kz_pt(b, 1) - kz_pt(a, 1));\n"));
+#line 5411
     h = kz_add_own(h, kz_str("    double y = sin(dlon) * cos(lat2);\n"));
+#line 5412
     h = kz_add_own(h, kz_str("    double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon);\n"));
+#line 5413
     h = kz_add_own(h, kz_str("    return kz_num(kz_geo_norm(kz_geo_deg(atan2(y, x))));\n"));
+#line 5414
     h = kz_add_own(h, kz_str("}\n"));
+#line 5415
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_geo_bearing_of(KzValue p) {\n"));
+#line 5416
     h = kz_add_own(h, kz_str("    return kz_num(kz_geo_norm(kz_geo_deg(atan2(kz_pt(p, 0), kz_pt(p, 1)))));\n"));
+#line 5417
     h = kz_add_own(h, kz_str("}\n"));
+#line 5418
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_unavailable(const char* what) {\n"));
+#line 5419
     h = kz_add_own(h, kz_str("    fprintf(stderr, \"E_KAZE_UNSUPPORTED: %s is not lowered by the pure-Kaze C emitter\\n\", what);\n"));
+#line 5420
     h = kz_add_own(h, kz_str("    return kz_nil();\n"));
+#line 5421
     h = kz_add_own(h, kz_str("}\n"));
+#line 5422
     h = kz_add_own(h, kz_str("/* A bare telemetry field is a capability read. Returning nothing here would\n"));
+#line 5423
     h = kz_add_own(h, kz_str("   let `when battery < 20%` compare nothing against a percent. */\n"));
+#line 5424
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_cap_get(const char* family, const char* field) {\n"));
+#line 5425
     h = kz_add_own(h, kz_str("    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", family, field);\n"));
+#line 5426
     h = kz_add_own(h, kz_str("    exit(70);\n"));
+#line 5427
     h = kz_add_own(h, kz_str("}\n\n"));
+#line 5428
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_cap_call(const char* recv, const char* op, int n, KzValue* args) {\n"));
+#line 5429
     h = kz_add_own(h, kz_str("    (void)n; (void)args;\n"));
+#line 5430
     h = kz_add_own(h, kz_str("    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", recv, op);\n"));
+#line 5431
     h = kz_add_own(h, kz_str("    exit(70);\n"));
+#line 5432
     h = kz_add_own(h, kz_str("}\n"));
+#line 5433
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline void kz_builtin_alert(KzValue msg) { fprintf(stderr, \"[alert] %s\\n\", kz_to_string(msg)); }\n"));
+#line 5434
     return h;
     return kz_nil();
 }
 
+#line 5436
 KZ_MAYBE_UNUSED static KzValue kaze_fn_sanitize_c_id(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 5437
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(name, kz_str("auto")), kz_eq(name, kz_str("break"))), kz_eq(name, kz_str("case"))), kz_eq(name, kz_str("char"))), kz_eq(name, kz_str("const"))), kz_eq(name, kz_str("continue"))), kz_eq(name, kz_str("default"))), kz_eq(name, kz_str("do"))), kz_eq(name, kz_str("double"))), kz_eq(name, kz_str("else"))), kz_eq(name, kz_str("enum"))), kz_eq(name, kz_str("extern"))), kz_eq(name, kz_str("float"))), kz_eq(name, kz_str("for"))), kz_eq(name, kz_str("goto"))), kz_eq(name, kz_str("if"))), kz_eq(name, kz_str("inline"))), kz_eq(name, kz_str("int"))), kz_eq(name, kz_str("long"))), kz_eq(name, kz_str("register"))), kz_eq(name, kz_str("restrict"))), kz_eq(name, kz_str("return"))), kz_eq(name, kz_str("short"))), kz_eq(name, kz_str("signed"))), kz_eq(name, kz_str("sizeof"))), kz_eq(name, kz_str("static"))), kz_eq(name, kz_str("struct"))), kz_eq(name, kz_str("switch"))), kz_eq(name, kz_str("typedef"))), kz_eq(name, kz_str("union"))), kz_eq(name, kz_str("unsigned"))), kz_eq(name, kz_str("void"))), kz_eq(name, kz_str("volatile"))), kz_eq(name, kz_str("while"))), kz_eq(name, kz_str("main"))))) {
+#line 5438
         return kz_add(kz_str("_kz_"), name);
     }
+#line 5439
     return name;
     return kz_nil();
 }
 
+#line 5441
 KZ_MAYBE_UNUSED static KzValue kaze_fn_escape_c_str(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 5442
     KzValue res = kz_str("\"");
+#line 5443
     KzValue len = kz_len(s);
+#line 5444
     KzValue i = kz_num((kaze_float_t)0);
+#line 5445
     { long _kz_loop_l5445 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l5445 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l5445 = _kz_loop_l5445 + 1;
+#line 5446
             KzValue c = kz_fb_index(s, i, kz_str("x"));
+#line 5447
             if (kz_is_truthy(kz_eq(c, kz_str("\\")))) {
+#line 5448
                 res = kz_add_own(res, kz_str("\\\\"));
             } else {
+#line 5450
                 if (kz_is_truthy(kz_eq(c, kz_str("\"")))) {
+#line 5451
                     res = kz_add_own(res, kz_str("\\\""));
                 } else {
+#line 5453
                     if (kz_is_truthy(kz_eq(c, kz_str("\n")))) {
+#line 5454
                         res = kz_add_own(res, kz_str("\\n"));
                     } else {
+#line 5456
                         if (kz_is_truthy(kz_eq(c, kz_str("\t")))) {
+#line 5457
                             res = kz_add_own(res, kz_str("\\t"));
                         } else {
+#line 5459
                             res = kz_add_own(res, c);
                         }
                     }
                 }
             }
+#line 5460
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 5461
     res = kz_add_own(res, kz_str("\""));
+#line 5462
     return res;
     return kz_nil();
 }
 
+#line 5466
 KZ_MAYBE_UNUSED static KzValue kaze_fn_c_has_dot(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 5467
     KzValue len = kz_len(name);
+#line 5468
     KzValue i = kz_num((kaze_float_t)0);
+#line 5469
     KzValue found = kz_num((kaze_float_t)0);
+#line 5470
     { long _kz_loop_l5470 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l5470 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l5470 = _kz_loop_l5470 + 1;
+#line 5471
             if (kz_is_truthy(kz_eq(kz_fb_index(name, i, kz_str("x")), kz_str(".")))) {
+#line 5472
                 found = kz_num((kaze_float_t)1);
             }
+#line 5473
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 5474
     return found;
     return kz_nil();
 }
 
+#line 5477
 KZ_MAYBE_UNUSED static KzValue kaze_fn_name_head(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 5478
     KzValue len = kz_len(name);
+#line 5479
     KzValue i = kz_num((kaze_float_t)0);
+#line 5480
     KzValue out = kz_str("");
+#line 5481
     KzValue done = kz_num((kaze_float_t)0);
+#line 5482
     { long _kz_loop_l5482 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, len), kz_eq(done, kz_num((kaze_float_t)0))))) {
             if (_kz_loop_l5482 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l5482 = _kz_loop_l5482 + 1;
+#line 5483
             KzValue c = kz_fb_index(name, i, kz_str("x"));
+#line 5484
             if (kz_is_truthy(kz_eq(c, kz_str(".")))) {
+#line 5485
                 done = kz_num((kaze_float_t)1);
             } else {
+#line 5487
                 out = kz_add_own(out, c);
             }
+#line 5488
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 5489
     return out;
     return kz_nil();
 }
 
+#line 5492
 KZ_MAYBE_UNUSED static KzValue kaze_fn_name_tail(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 5493
     KzValue len = kz_len(name);
+#line 5494
     KzValue i = kz_num((kaze_float_t)0);
+#line 5495
     KzValue out = kz_str("");
+#line 5496
     KzValue seen = kz_num((kaze_float_t)0);
+#line 5497
     { long _kz_loop_l5497 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l5497 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l5497 = _kz_loop_l5497 + 1;
+#line 5498
             KzValue c = kz_fb_index(name, i, kz_str("x"));
+#line 5499
             if (kz_is_truthy(kz_eq(seen, kz_num((kaze_float_t)1)))) {
+#line 5500
                 out = kz_add_own(out, c);
             }
+#line 5501
             if (kz_is_truthy(kz_and(kz_eq(c, kz_str(".")), kz_eq(seen, kz_num((kaze_float_t)0))))) {
+#line 5502
                 seen = kz_num((kaze_float_t)1);
             }
+#line 5503
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 5504
     return out;
     return kz_nil();
 }
 
+#line 5507
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_record_name(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 5508
     KzValue len = kz_len(name);
+#line 5509
     if (kz_is_truthy(kz_eq(len, kz_num((kaze_float_t)0)))) {
+#line 5510
         return kz_num((kaze_float_t)0);
     }
+#line 5511
     KzValue c = kz_fb_index(name, kz_num((kaze_float_t)0), kz_str("?"));
+#line 5512
     if (kz_is_truthy(kz_and(kz_ge(c, kz_str("A")), kz_le(c, kz_str("Z"))))) {
+#line 5513
         return kz_num((kaze_float_t)1);
     }
+#line 5514
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 5518
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_bin_op(KzValue op, KzValue l, KzValue r) {
     (void)op;   /* a routine need not use every parameter */
     (void)l;   /* a routine need not use every parameter */
     (void)r;   /* a routine need not use every parameter */
+#line 5519
     if (kz_is_truthy(kz_eq(op, kz_str("+")))) {
+#line 5520
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_add("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5521
     if (kz_is_truthy(kz_eq(op, kz_str("-")))) {
+#line 5522
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_sub("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5523
     if (kz_is_truthy(kz_eq(op, kz_str("*")))) {
+#line 5524
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_mul("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5525
     if (kz_is_truthy(kz_eq(op, kz_str("/")))) {
+#line 5526
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_div("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5527
     if (kz_is_truthy(kz_eq(op, kz_str("&")))) {
+#line 5528
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_band("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5529
     if (kz_is_truthy(kz_eq(op, kz_str("|")))) {
+#line 5530
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_bor("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5531
     if (kz_is_truthy(kz_eq(op, kz_str("^")))) {
+#line 5532
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_bxor("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5533
     if (kz_is_truthy(kz_eq(op, kz_str("<<")))) {
+#line 5534
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_shl("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5535
     if (kz_is_truthy(kz_eq(op, kz_str(">>")))) {
+#line 5536
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_shr("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5537
     if (kz_is_truthy(kz_eq(op, kz_str("%")))) {
+#line 5538
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_mod("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5539
     if (kz_is_truthy(kz_eq(op, kz_str("==")))) {
+#line 5540
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_eq("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5541
     if (kz_is_truthy(kz_eq(op, kz_str("!=")))) {
+#line 5542
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_ne("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5543
     if (kz_is_truthy(kz_eq(op, kz_str("<")))) {
+#line 5544
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_lt("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5545
     if (kz_is_truthy(kz_eq(op, kz_str("<=")))) {
+#line 5546
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_le("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5547
     if (kz_is_truthy(kz_eq(op, kz_str(">")))) {
+#line 5548
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_gt("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5549
     if (kz_is_truthy(kz_eq(op, kz_str(">=")))) {
+#line 5550
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_ge("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5551
     if (kz_is_truthy(kz_eq(op, kz_str("and")))) {
+#line 5552
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_and("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5553
     if (kz_is_truthy(kz_eq(op, kz_str("or")))) {
+#line 5554
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_or("), l), kz_str(", ")), r), kz_str(")"));
     }
+#line 5555
     return kz_str("kz_nil()");
     return kz_nil();
 }
 
+#line 5561
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_fallback(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 5564
     KzValue inner = kaze_fn_child_at(node, kz_num((kaze_float_t)0));
+#line 5565
     KzValue fb = kaze_fn_child_at(node, kz_num((kaze_float_t)1));
+#line 5566
     KzValue fb_s = kaze_fn_emit_c_expr(fb);
+#line 5567
     if (kz_is_truthy(kz_eq(kz_get_field(inner, "kind"), kz_str("BIN")))) {
+#line 5568
         if (kz_is_truthy(kz_eq(kz_get_field(inner, "name"), kz_str("/")))) {
+#line 5569
             KzValue _kz_ret = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_fb_div("), kaze_fn_emit_c_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_emit_c_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)1)))), kz_str(", ")), fb_s), kz_str(")"));
             if (!kz_is_truthy(kz_ge(kz_len(_kz_ret), kz_num((kaze_float_t)0)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -9623,7 +14031,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_fallback(KzValue node) {
             }
             return _kz_ret;
         }
+#line 5570
         if (kz_is_truthy(kz_eq(kz_get_field(inner, "name"), kz_str("%")))) {
+#line 5571
             KzValue _kz_ret = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_fb_mod("), kaze_fn_emit_c_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_emit_c_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)1)))), kz_str(", ")), fb_s), kz_str(")"));
             if (!kz_is_truthy(kz_ge(kz_len(_kz_ret), kz_num((kaze_float_t)0)))) {
                 fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -9632,7 +14042,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_fallback(KzValue node) {
             return _kz_ret;
         }
     }
+#line 5572
     if (kz_is_truthy(kz_eq(kz_get_field(inner, "kind"), kz_str("INDEX")))) {
+#line 5573
         KzValue _kz_ret = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_fb_index("), kaze_fn_emit_c_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_emit_c_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)1)))), kz_str(", ")), fb_s), kz_str(")"));
         if (!kz_is_truthy(kz_ge(kz_len(_kz_ret), kz_num((kaze_float_t)0)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -9640,7 +14052,9 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_fallback(KzValue node) {
         }
         return _kz_ret;
     }
+#line 5576
     if (kz_is_truthy(kz_eq(kz_get_field(inner, "kind"), kz_str("RECEIVE")))) {
+#line 5577
         KzValue _kz_ret = kz_add(kz_add(kz_add(kz_add(kz_str("kz_chan_recv_or("), kaze_fn_emit_c_expr(kaze_fn_child_at(inner, kz_num((kaze_float_t)0)))), kz_str(", ")), fb_s), kz_str(")"));
         if (!kz_is_truthy(kz_ge(kz_len(_kz_ret), kz_num((kaze_float_t)0)))) {
             fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -9648,6 +14062,7 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_fallback(KzValue node) {
         }
         return _kz_ret;
     }
+#line 5578
     KzValue _kz_ret = kaze_fn_emit_c_expr(inner);
     if (!kz_is_truthy(kz_ge(kz_len(_kz_ret), kz_num((kaze_float_t)0)))) {
         fprintf(stderr, "E_KAZE_CONTRACT: an ensures clause is false for this result\n");
@@ -9657,1616 +14072,2442 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_fallback(KzValue node) {
     return kz_nil();
 }
 
+#line 5580
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_args(KzValue args) {
     (void)args;   /* a routine need not use every parameter */
+#line 5582
     KzValue out = kz_str("");
+#line 5583
     KzValue first = kz_num((kaze_float_t)1);
+#line 5584
     {
         KzValue _iter_target = args;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue a = _iter_target.as.list->items[_i];
+#line 5585
                 if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 5586
                     out = kz_add_own(out, kz_str(", "));
                 }
+#line 5587
                 if (kz_is_truthy(kz_eq(kz_get_field(a, "kind"), kz_str("NAMED_ARG")))) {
+#line 5588
                     out = kz_add_own(out, kaze_fn_emit_c_expr(kaze_fn_child_at(a, kz_num((kaze_float_t)0))));
                 } else {
+#line 5590
                     out = kz_add_own(out, kaze_fn_emit_c_expr(a));
                 }
+#line 5591
                 first = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 5592
     return out;
     return kz_nil();
 }
 
+#line 5596
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_keys(KzValue args) {
     (void)args;   /* a routine need not use every parameter */
+#line 5598
     KzValue out = kz_str("");
+#line 5599
     KzValue first = kz_num((kaze_float_t)1);
+#line 5600
     {
         KzValue _iter_target = args;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue a = _iter_target.as.list->items[_i];
+#line 5601
                 if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 5602
                     out = kz_add_own(out, kz_str(", "));
                 }
+#line 5603
                 if (kz_is_truthy(kz_eq(kz_get_field(a, "kind"), kz_str("NAMED_ARG")))) {
+#line 5604
                     out = kz_add_own(out, kaze_fn_escape_c_str(kz_get_field(a, "name")));
                 } else {
+#line 5606
                     out = kz_add_own(out, kz_str("NULL"));
                 }
+#line 5607
                 first = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 5608
     return out;
     return kz_nil();
 }
 
+#line 5610
 KZ_MAYBE_UNUSED static KzValue kaze_fn_nth_arg(KzValue args, KzValue n) {
     (void)args;   /* a routine need not use every parameter */
     (void)n;   /* a routine need not use every parameter */
+#line 5612
     if (kz_is_truthy(kz_le(kz_len(args), n))) {
+#line 5613
         return kz_str("kz_nil()");
     }
+#line 5614
     KzValue holder = kaze_fn_make_node(kz_str("ARGS"), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), args, kz_num((kaze_float_t)0));
+#line 5615
     KzValue a = kaze_fn_child_at(holder, n);
+#line 5616
     if (kz_is_truthy(kz_eq(kz_get_field(a, "kind"), kz_str("NAMED_ARG")))) {
+#line 5617
         return kaze_fn_emit_c_expr(kaze_fn_child_at(a, kz_num((kaze_float_t)0)));
     }
+#line 5618
     return kaze_fn_emit_c_expr(a);
     return kz_nil();
 }
 
+#line 5620
 KZ_MAYBE_UNUSED static KzValue kaze_fn_two_args(KzValue args) {
     (void)args;   /* a routine need not use every parameter */
+#line 5622
     return kz_add(kz_add(kaze_fn_nth_arg(args, kz_num((kaze_float_t)0)), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)1)));
     return kz_nil();
 }
 
+#line 5624
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_call(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 5626
     KzValue name = kz_get_field(node, "name");
+#line 5627
     KzValue args = kz_get_field(node, "children");
+#line 5628
     KzValue cnt = kz_len(args);
+#line 5629
     KzValue arg_str = kaze_fn_emit_c_args(args);
+#line 5632
     if (kz_is_truthy(kz_eq(kaze_fn_is_record_name(name), kz_num((kaze_float_t)1)))) {
+#line 5633
         if (kz_is_truthy(kz_eq(cnt, kz_num((kaze_float_t)0)))) {
+#line 5634
             return kz_add(kz_add(kz_str("kz_record_new_"), kaze_fn_sanitize_c_id(name)), kz_str("(0, NULL, NULL)"));
         }
+#line 5635
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_record_new_"), kaze_fn_sanitize_c_id(name)), kz_str("(")), cnt), kz_str(", (KzValue[]){ ")), arg_str), kz_str(" }, (const char*[]){ ")), kaze_fn_emit_c_keys(args)), kz_str(" })"));
     }
+#line 5638
     if (kz_is_truthy(kz_eq(kaze_fn_c_has_dot(name), kz_num((kaze_float_t)1)))) {
+#line 5639
         KzValue head = kaze_fn_name_head(name);
+#line 5640
         KzValue tail = kaze_fn_name_tail(name);
+#line 5641
         if (kz_is_truthy(kz_eq(head, kz_str("log")))) {
+#line 5642
             return kz_add(kz_add(kz_str("kz_builtin_log("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
         }
+#line 5643
         if (kz_is_truthy(kz_eq(head, kz_str("alert")))) {
+#line 5644
             return kz_add(kz_add(kz_str("kz_builtin_alert("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
         }
+#line 5645
         if (kz_is_truthy(kz_eq(head, kz_str("geo")))) {
+#line 5646
             if (kz_is_truthy(kz_eq(tail, kz_str("distance")))) {
+#line 5647
                 return kz_add(kz_add(kz_str("kz_geo_distance("), kaze_fn_two_args(args)), kz_str(")"));
             }
+#line 5648
             if (kz_is_truthy(kz_eq(tail, kz_str("slant_distance")))) {
+#line 5649
                 return kz_add(kz_add(kz_str("kz_geo_slant_distance("), kaze_fn_two_args(args)), kz_str(")"));
             }
+#line 5650
             if (kz_is_truthy(kz_eq(tail, kz_str("bearing_from")))) {
+#line 5651
                 return kz_add(kz_add(kz_str("kz_geo_bearing_from("), kaze_fn_two_args(args)), kz_str(")"));
             }
+#line 5652
             if (kz_is_truthy(kz_eq(tail, kz_str("bearing_of")))) {
+#line 5653
                 return kz_add(kz_add(kz_str("kz_geo_bearing_of("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
             }
         }
+#line 5654
         KzValue arr = kz_str("NULL");
+#line 5655
         if (kz_is_truthy(kz_ne(cnt, kz_num((kaze_float_t)0)))) {
+#line 5656
             arr = kz_add(kz_add(kz_str("(KzValue[]){ "), arg_str), kz_str(" }"));
         }
+#line 5657
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_cap_call("), kaze_fn_escape_c_str(head)), kz_str(", ")), kaze_fn_escape_c_str(tail)), kz_str(", ")), cnt), kz_str(", ")), arr), kz_str(")"));
     }
+#line 5660
     if (kz_is_truthy(kz_eq(name, kz_str("channel")))) {
+#line 5661
         return kz_add(kz_add(kz_str("kz_chan_new("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
     }
+#line 5662
     if (kz_is_truthy(kz_eq(name, kz_str("http_fetch")))) {
+#line 5663
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_http_request("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)1))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)2))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)3))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)4))), kz_str(")"));
     }
+#line 5666
     if (kz_is_truthy(kz_eq(name, kz_str("link_lost")))) {
+#line 5667
         return kz_str("kz_bool(false)");
     }
+#line 5668
     if (kz_is_truthy(kz_eq(name, kz_str("code")))) {
+#line 5669
         return kz_add(kz_add(kz_str("kz_code("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
     }
+#line 5670
     if (kz_is_truthy(kz_eq(name, kz_str("character")))) {
+#line 5671
         return kz_add(kz_add(kz_str("kz_character("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
     }
+#line 5672
     if (kz_is_truthy(kz_eq(name, kz_str("sin")))) {
+#line 5673
         return kz_add(kz_add(kz_str("kz_math_sin("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
     }
+#line 5674
     if (kz_is_truthy(kz_eq(name, kz_str("cos")))) {
+#line 5675
         return kz_add(kz_add(kz_str("kz_math_cos("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
     }
+#line 5676
     if (kz_is_truthy(kz_eq(name, kz_str("sqrt")))) {
+#line 5677
         return kz_add(kz_add(kz_str("kz_math_sqrt("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")"));
     }
+#line 5678
     if (kz_is_truthy(kz_eq(name, kz_str("atan2")))) {
+#line 5679
         return kz_add(kz_add(kz_str("kz_math_atan2("), kaze_fn_two_args(args)), kz_str(")"));
     }
+#line 5680
     if (kz_is_truthy(kz_eq(name, kz_str("vector")))) {
+#line 5681
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_point("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)1))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)2))), kz_str(")"));
     }
+#line 5682
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(name, kz_str("min")), kz_eq(name, kz_str("max"))), kz_eq(name, kz_str("abs"))), kz_eq(name, kz_str("floor"))), kz_eq(name, kz_str("ceil"))), kz_eq(name, kz_str("round"))))) {
+#line 5683
         return kz_add(kz_add(kz_str("kz_unavailable("), kaze_fn_escape_c_str(name)), kz_str(")"));
     }
+#line 5687
     if (kz_is_truthy(kz_eq(name, kz_str("tensor")))) {
+#line 5688
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kz_tensor_make("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)1))), kz_str("))"));
     }
+#line 5689
     if (kz_is_truthy(kz_eq(name, kz_str("zeros")))) {
+#line 5690
         return kz_add(kz_add(kz_str("kz_tensor_wrap(kz_tensor_zeros_of("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str("))"));
     }
+#line 5691
     if (kz_is_truthy(kz_eq(name, kz_str("matmul")))) {
+#line 5692
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_matmul(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str("))"));
     }
+#line 5693
     if (kz_is_truthy(kz_eq(name, kz_str("matmul_t")))) {
+#line 5694
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_matmul_t(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str("))"));
     }
+#line 5695
     if (kz_is_truthy(kz_eq(name, kz_str("add_bias")))) {
+#line 5696
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_add_bias(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str("))"));
     }
+#line 5697
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_add")))) {
+#line 5698
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_add(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str("))"));
     }
+#line 5699
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_sub")))) {
+#line 5700
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_sub(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str("))"));
     }
+#line 5701
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_mul")))) {
+#line 5702
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_mul(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str("))"));
     }
+#line 5703
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_div")))) {
+#line 5704
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_div(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str("))"));
     }
+#line 5705
     if (kz_is_truthy(kz_eq(name, kz_str("transpose")))) {
+#line 5706
         return kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_transpose(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", 0, 1))"));
     }
+#line 5707
     if (kz_is_truthy(kz_eq(name, kz_str("reshape")))) {
+#line 5708
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kz_tensor_reshape_of("), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)1))), kz_str("))"));
     }
+#line 5709
     if (kz_is_truthy(kz_eq(name, kz_str("softmax")))) {
+#line 5710
         return kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_softmax(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str("))"));
     }
+#line 5711
     if (kz_is_truthy(kz_eq(name, kz_str("gelu")))) {
+#line 5712
         return kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_gelu(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str("))"));
     }
+#line 5713
     if (kz_is_truthy(kz_eq(name, kz_str("silu")))) {
+#line 5714
         return kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_silu(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str("))"));
     }
+#line 5715
     if (kz_is_truthy(kz_eq(name, kz_str("relu")))) {
+#line 5716
         return kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_relu(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str("))"));
     }
+#line 5717
     if (kz_is_truthy(kz_eq(name, kz_str("rms_norm")))) {
+#line 5718
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_rms_norm(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str(", ")), kaze_fn_tensor_float(kaze_fn_child_at(node, kz_num((kaze_float_t)2)))), kz_str("))"));
     }
+#line 5719
     if (kz_is_truthy(kz_eq(name, kz_str("layer_norm")))) {
+#line 5720
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_layer_norm(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str(", ")), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)2)))), kz_str(", ")), kaze_fn_tensor_float(kaze_fn_child_at(node, kz_num((kaze_float_t)3)))), kz_str("))"));
     }
+#line 5721
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_sum")))) {
+#line 5722
         return kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_sum_last(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str("))"));
     }
+#line 5723
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_mean")))) {
+#line 5724
         return kz_add(kz_add(kz_str("kz_tensor_wrap(kaze_tensor_mean_last(&kz_arena, "), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str("))"));
     }
+#line 5725
     if (kz_is_truthy(kz_eq(name, kz_str("argmax")))) {
+#line 5726
         return kz_add(kz_add(kz_str("kz_num((kaze_float_t)kaze_tensor_argmax_last("), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str("))"));
     }
+#line 5727
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_get")))) {
+#line 5728
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_num(kaze_tensor_get("), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", kz_i64(")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)1))), kz_str(")))"));
     }
+#line 5729
     if (kz_is_truthy(kz_eq(name, kz_str("tensor_shape")))) {
+#line 5730
         return kz_add(kz_add(kz_str("kz_tensor_shape_value("), kaze_fn_tensor_unwrap(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 5731
     if (kz_is_truthy(kz_eq(name, kz_str("cli_text")))) {
+#line 5732
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_cli_text("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)1))), kz_str(")"));
     }
+#line 5733
     if (kz_is_truthy(kz_eq(name, kz_str("model_open")))) {
+#line 5734
         return kz_add(kz_add(kz_str("kz_model_wrap(kaze_llama_open(kz_text_cstr("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(")))"));
     }
+#line 5735
     if (kz_is_truthy(kz_eq(name, kz_str("model_forward")))) {
+#line 5736
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_model_forward_value("), kaze_fn_nth_arg(args, kz_num((kaze_float_t)0))), kz_str(", ")), kaze_fn_nth_arg(args, kz_num((kaze_float_t)1))), kz_str(")"));
     }
+#line 5739
     return kz_add(kz_add(kz_add(kz_add(kz_str("kaze_fn_"), kaze_fn_sanitize_c_id(name)), kz_str("(")), arg_str), kz_str(")"));
     return kz_nil();
 }
 
+#line 5741
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_plain_integer(KzValue t) {
     (void)t;   /* a routine need not use every parameter */
+#line 5743
     if (kz_is_truthy(kz_eq(t, kz_str("")))) {
+#line 5744
         return kz_num((kaze_float_t)0);
     }
+#line 5745
     KzValue i = kz_num((kaze_float_t)0);
+#line 5746
     KzValue n = kz_len(t);
+#line 5747
     { long _kz_loop_l5747 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
             if (_kz_loop_l5747 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l5747 = _kz_loop_l5747 + 1;
+#line 5748
             KzValue c = kz_fb_index(t, i, kz_str("?"));
+#line 5749
             if (kz_is_truthy(kz_and(kz_eq(c, kz_str("-")), kz_eq(i, kz_num((kaze_float_t)0))))) {
+#line 5750
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 5752
                 if (kz_is_truthy(kz_or(kz_lt(c, kz_str("0")), kz_gt(c, kz_str("9"))))) {
+#line 5753
                     return kz_num((kaze_float_t)0);
                 }
+#line 5754
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 5755
     return kz_num((kaze_float_t)1);
     return kz_nil();
 }
 
+#line 5757
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_expr(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 5759
     KzValue k = kz_get_field(node, "kind");
+#line 5761
     if (kz_is_truthy(kz_eq(k, kz_str("NUM")))) {
+#line 5764
         if (kz_is_truthy(kz_eq(kz_get_field(node, "name"), kz_str("degrees")))) {
+#line 5765
             return kz_add(kz_add(kz_str("kz_math_to_radians(kz_num("), kz_get_field(node, "val_str")), kz_str("))"));
         }
+#line 5766
         if (kz_is_truthy(kz_eq(kaze_fn_is_plain_integer(kz_get_field(node, "val_str")), kz_num((kaze_float_t)1)))) {
+#line 5769
             return kz_add(kz_add(kz_str("kz_num((kaze_float_t)"), kz_get_field(node, "val_str")), kz_str(")"));
         }
+#line 5770
         return kz_add(kz_add(kz_str("kz_num("), kz_get_field(node, "val_str")), kz_str(")"));
     }
+#line 5771
     if (kz_is_truthy(kz_eq(k, kz_str("STR")))) {
+#line 5772
         return kz_add(kz_add(kz_str("kz_str("), kaze_fn_escape_c_str(kz_get_field(node, "val_str"))), kz_str(")"));
     }
+#line 5773
     if (kz_is_truthy(kz_eq(k, kz_str("BOOL")))) {
+#line 5774
         return kz_add(kz_add(kz_str("kz_bool("), kz_get_field(node, "val_str")), kz_str(")"));
     }
+#line 5775
     if (kz_is_truthy(kz_eq(k, kz_str("TELEMETRY")))) {
+#line 5777
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_cap_get("), kaze_fn_escape_c_str(kz_get_field(node, "val_str"))), kz_str(", ")), kaze_fn_escape_c_str(kz_get_field(node, "name"))), kz_str(")"));
     }
+#line 5778
     if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 5781
         return kaze_fn_sanitize_c_id(kz_get_field(node, "name"));
     }
+#line 5782
     if (kz_is_truthy(kz_eq(k, kz_str("LEN")))) {
+#line 5783
         return kz_add(kz_add(kz_str("kz_len("), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 5784
     if (kz_is_truthy(kz_eq(k, kz_str("FIELD")))) {
+#line 5785
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_get_field("), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_escape_c_str(kz_get_field(node, "name"))), kz_str(")"));
     }
+#line 5786
     if (kz_is_truthy(kz_eq(k, kz_str("INDEX")))) {
+#line 5787
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_index("), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", ")), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)1)))), kz_str(")"));
     }
+#line 5788
     if (kz_is_truthy(kz_eq(k, kz_str("BIN")))) {
+#line 5789
         if (kz_is_truthy(kz_eq(kz_get_field(node, "name"), kz_str("not")))) {
+#line 5790
             return kz_add(kz_add(kz_str("kz_not("), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(")"));
         }
+#line 5791
         return kaze_fn_emit_bin_op(kz_get_field(node, "name"), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0))), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)1))));
     }
+#line 5792
     if (kz_is_truthy(kz_eq(k, kz_str("FALLBACK")))) {
+#line 5793
         return kaze_fn_emit_c_fallback(node);
     }
+#line 5794
     if (kz_is_truthy(kz_eq(k, kz_str("IN_UNIT")))) {
+#line 5795
         if (kz_is_truthy(kz_eq(kz_get_field(node, "name"), kz_str("radians")))) {
+#line 5796
             return kz_add(kz_add(kz_str("kz_math_to_radians("), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(")"));
         }
+#line 5797
         return kz_add(kz_add(kz_str("kz_math_to_degrees("), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 5798
     if (kz_is_truthy(kz_eq(k, kz_str("LIST")))) {
+#line 5799
         KzValue items = kz_get_field(node, "children");
+#line 5800
         KzValue cnt = kz_len(items);
+#line 5801
         if (kz_is_truthy(kz_eq(cnt, kz_num((kaze_float_t)0)))) {
+#line 5802
             return kz_str("kz_list_new(0)");
         }
+#line 5803
         return kz_add(kz_add(kz_add(kz_add(kz_str("kz_list_from("), cnt), kz_str(", (KzValue[]){ ")), kaze_fn_emit_c_args(items)), kz_str(" })"));
     }
+#line 5806
     if (kz_is_truthy(kz_eq(k, kz_str("RECEIVE")))) {
+#line 5807
         return kz_add(kz_add(kz_str("kz_chan_recv_or("), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(", kz_nil())"));
     }
+#line 5809
     if (kz_is_truthy(kz_eq(k, kz_str("JOIN")))) {
+#line 5810
         return kz_add(kz_add(kz_str("kz_fiber_join("), kaze_fn_emit_c_expr(kaze_fn_child_at(node, kz_num((kaze_float_t)0)))), kz_str(")"));
     }
+#line 5811
     if (kz_is_truthy(kz_eq(k, kz_str("CALL")))) {
+#line 5812
         return kaze_fn_emit_c_call(node);
     }
+#line 5813
     return kz_str("kz_nil()");
     return kz_nil();
 }
 
+#line 5832
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fx_plain(void) {
+#line 5833
     return kz_record_new_EmitFx(3, (KzValue[]){ kz_num((kaze_float_t)0), kz_list_new(0), kz_list_new(0) }, (const char*[]){ "fiber", "slots", "guards" });
     return kz_nil();
 }
 
+#line 5835
 KZ_MAYBE_UNUSED static KzValue kaze_fn_slot_of(KzValue slots, KzValue name) {
     (void)slots;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 5836
     KzValue i = kz_num((kaze_float_t)0);
+#line 5837
     KzValue len = kz_len(slots);
+#line 5838
     { long _kz_loop_l5838 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l5838 >= 512L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l5838 = _kz_loop_l5838 + 1;
+#line 5839
             if (kz_is_truthy(kz_eq(kz_fb_index(slots, i, kz_str("")), name))) {
+#line 5840
                 return i;
             }
+#line 5841
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 5842
     return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     return kz_nil();
 }
 
+#line 5844
 KZ_MAYBE_UNUSED static KzValue kaze_fn_guard_of(KzValue guards, KzValue name) {
     (void)guards;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 5845
     KzValue i = kz_num((kaze_float_t)0);
+#line 5846
     KzValue len = kz_len(guards);
+#line 5847
     { long _kz_loop_l5847 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
             if (_kz_loop_l5847 >= 512L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l5847 = _kz_loop_l5847 + 1;
+#line 5848
             if (kz_is_truthy(kz_eq(kz_fb_index(guards, i, kz_str("")), name))) {
+#line 5849
                 return i;
             }
+#line 5850
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 5851
     return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     return kz_nil();
 }
 
+#line 5855
 KZ_MAYBE_UNUSED static KzValue kaze_fn_collect_bindings(KzValue n, KzValue out, KzValue depth) {
     (void)n;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 5857
     KzValue acc = out;
+#line 5858
     if (kz_is_truthy(kz_lt(depth, kz_num((kaze_float_t)60)))) {
+#line 5859
         KzValue nm = kz_str("");
+#line 5860
         if (kz_is_truthy(kz_or(kz_or(kz_eq(kz_get_field(n, "kind"), kz_str("LET")), kz_eq(kz_get_field(n, "kind"), kz_str("SET"))), kz_eq(kz_get_field(n, "kind"), kz_str("FOR_EACH"))))) {
+#line 5861
             nm = kz_get_field(n, "name");
         }
+#line 5862
         if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("SPAWN")))) {
+#line 5863
             nm = kz_get_field(n, "val_str");
         }
+#line 5864
         if (kz_is_truthy(kz_and(kz_ne(nm, kz_str("")), kz_lt(kaze_fn_slot_of(acc, nm), kz_num((kaze_float_t)0))))) {
+#line 5865
             acc = kz_add(acc, kz_list_from(1, (KzValue[]){ nm }));
         }
+#line 5866
         {
             KzValue _iter_target = kz_get_field(n, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 5867
                     acc = kaze_fn_collect_bindings(c, acc, kz_add(depth, kz_num((kaze_float_t)1)));
                 }
             }
         }
     }
+#line 5868
     return acc;
     return kz_nil();
 }
 
+#line 5870
 KZ_MAYBE_UNUSED static KzValue kaze_fn_collect_guards(KzValue n, KzValue out, KzValue depth) {
     (void)n;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 5872
     KzValue acc = out;
+#line 5873
     if (kz_is_truthy(kz_lt(depth, kz_num((kaze_float_t)60)))) {
+#line 5874
         if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("WHILE")))) {
+#line 5875
             acc = kz_add(acc, kz_list_from(1, (KzValue[]){ kz_add(kz_str("_kz_loop_l"), kz_get_field(n, "line")) }));
         }
+#line 5876
         {
             KzValue _iter_target = kz_get_field(n, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 5877
                     acc = kaze_fn_collect_guards(c, acc, kz_add(depth, kz_num((kaze_float_t)1)));
                 }
             }
         }
     }
+#line 5878
     return acc;
     return kz_nil();
 }
 
+#line 5880
 KZ_MAYBE_UNUSED static KzValue kaze_fn_collect_yield_lines(KzValue n, KzValue out, KzValue depth) {
     (void)n;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
     (void)depth;   /* a routine need not use every parameter */
+#line 5882
     KzValue acc = out;
+#line 5883
     if (kz_is_truthy(kz_lt(depth, kz_num((kaze_float_t)60)))) {
+#line 5884
         if (kz_is_truthy(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("YIELD")), kz_lt(kaze_fn_slot_of(acc, kz_get_field(n, "line")), kz_num((kaze_float_t)0))))) {
+#line 5885
             acc = kz_add(acc, kz_list_from(1, (KzValue[]){ kz_get_field(n, "line") }));
         }
+#line 5886
         {
             KzValue _iter_target = kz_get_field(n, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue c = _iter_target.as.list->items[_i];
+#line 5887
                     acc = kaze_fn_collect_yield_lines(c, acc, kz_add(depth, kz_num((kaze_float_t)1)));
                 }
             }
         }
     }
+#line 5888
     return acc;
     return kz_nil();
 }
 
+#line 5891
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fx_restore(KzValue fx, KzValue ind) {
     (void)fx;   /* a routine need not use every parameter */
     (void)ind;   /* a routine need not use every parameter */
+#line 5892
     KzValue out = kz_str("");
+#line 5893
     if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)0)))) {
+#line 5894
         return out;
     }
+#line 5895
     {
         KzValue _iter_target = kz_get_field(fx, "slots");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue nm = _iter_target.as.list->items[_i];
+#line 5896
                 out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("KzValue ")), kaze_fn_sanitize_c_id(nm)), kz_str(" = _kz_task->slots[")), kaze_fn_slot_of(kz_get_field(fx, "slots"), nm)), kz_str("];\n"));
             }
         }
     }
+#line 5897
     {
         KzValue _iter_target = kz_get_field(fx, "guards");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue g = _iter_target.as.list->items[_i];
+#line 5898
                 out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("long ")), g), kz_str(" = _kz_task->guards[")), kaze_fn_guard_of(kz_get_field(fx, "guards"), g)), kz_str("];\n"));
             }
         }
     }
+#line 5899
     return out;
     return kz_nil();
 }
 
+#line 5902
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fx_spill(KzValue fx, KzValue ind) {
     (void)fx;   /* a routine need not use every parameter */
     (void)ind;   /* a routine need not use every parameter */
+#line 5903
     KzValue out = kz_str("");
+#line 5904
     if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)0)))) {
+#line 5905
         return out;
     }
+#line 5906
     {
         KzValue _iter_target = kz_get_field(fx, "slots");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue nm = _iter_target.as.list->items[_i];
+#line 5907
                 out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("_kz_task->slots[")), kaze_fn_slot_of(kz_get_field(fx, "slots"), nm)), kz_str("] = ")), kaze_fn_sanitize_c_id(nm)), kz_str(";\n"));
             }
         }
     }
+#line 5908
     {
         KzValue _iter_target = kz_get_field(fx, "guards");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue g = _iter_target.as.list->items[_i];
+#line 5909
                 out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("_kz_task->guards[")), kaze_fn_guard_of(kz_get_field(fx, "guards"), g)), kz_str("] = ")), g), kz_str(";\n"));
             }
         }
     }
+#line 5910
     return out;
     return kz_nil();
 }
 
+#line 5914
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_stmt(KzValue stmt, KzValue ind, KzValue fx) {
     (void)stmt;   /* a routine need not use every parameter */
     (void)ind;   /* a routine need not use every parameter */
     (void)fx;   /* a routine need not use every parameter */
+#line 5915
+    KzValue body = kaze_fn_emit_c_stmt_inner(stmt, ind, fx);
+#line 5916
+    if (kz_is_truthy(kz_gt(kz_get_field(stmt, "line"), kz_num((kaze_float_t)0)))) {
+#line 5917
+        return kz_add(kz_add(kz_add(kz_str("#line "), kz_get_field(stmt, "line")), kz_str("\n")), body);
+    }
+#line 5918
+    return body;
+    return kz_nil();
+}
+
+#line 5920
+KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_stmt_inner(KzValue stmt, KzValue ind, KzValue fx) {
+    (void)stmt;   /* a routine need not use every parameter */
+    (void)ind;   /* a routine need not use every parameter */
+    (void)fx;   /* a routine need not use every parameter */
+#line 5922
     KzValue k = kz_get_field(stmt, "kind");
+#line 5924
     if (kz_is_truthy(kz_eq(k, kz_str("LET")))) {
+#line 5925
         if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)1)))) {
+#line 5926
             return kz_add(kz_add(kz_add(kz_add(ind, kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"))), kz_str(" = ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(";\n"));
         }
+#line 5927
         return kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("KzValue ")), kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"))), kz_str(" = ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(";\n"));
     }
+#line 5929
     if (kz_is_truthy(kz_eq(k, kz_str("SET")))) {
+#line 5930
         return kz_add(kz_add(kz_add(kz_add(ind, kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"))), kz_str(" = ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(";\n"));
     }
+#line 5932
     if (kz_is_truthy(kz_eq(k, kz_str("RETURN")))) {
+#line 5933
         if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)1)))) {
+#line 5934
             if (kz_is_truthy(kz_gt(kz_len(kz_get_field(stmt, "children")), kz_num((kaze_float_t)0)))) {
+#line 5935
                 return kz_add(kz_add(kz_add(ind, kz_str("_kz_task->ret = ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str("; return 0;\n"));
             }
+#line 5936
             return kz_add(ind, kz_str("_kz_task->ret = kz_nil(); return 0;\n"));
         }
+#line 5937
         if (kz_is_truthy(kz_gt(kz_len(kz_get_field(stmt, "children")), kz_num((kaze_float_t)0)))) {
+#line 5938
             return kz_add(kz_add(kz_add(ind, kz_str("return ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(";\n"));
         }
+#line 5939
         return kz_add(ind, kz_str("return kz_nil();\n"));
     }
+#line 5941
     if (kz_is_truthy(kz_eq(k, kz_str("RETURN_CHECKED")))) {
+#line 5943
         KzValue out = kz_add(kz_add(kz_add(ind, kz_str("KzValue _kz_ret = ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(";\n"));
+#line 5944
         KzValue i = kz_num((kaze_float_t)1);
-        { long _kz_loop_l5939 = 0;
+#line 5945
+        { long _kz_loop_l5945 = 0;
             while (kz_is_truthy(kz_lt(i, kz_len(kz_get_field(stmt, "children"))))) {
-                if (_kz_loop_l5939 >= 32L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-                _kz_loop_l5939 = _kz_loop_l5939 + 1;
+                if (_kz_loop_l5945 >= 32L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+                _kz_loop_l5945 = _kz_loop_l5945 + 1;
+#line 5946
                 out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("if (!kz_is_truthy(")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, i))), kz_str(")) {\n"));
+#line 5947
                 out = kz_add(kz_add(out, ind), kz_str("    fprintf(stderr, \"E_KAZE_CONTRACT: an ensures clause is false for this result\\n\");\n"));
+#line 5948
                 out = kz_add(kz_add(out, ind), kz_str("    exit(70);\n"));
+#line 5949
                 out = kz_add(kz_add(out, ind), kz_str("}\n"));
+#line 5950
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
+#line 5951
         if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)1)))) {
+#line 5952
             out = kz_add(kz_add(out, ind), kz_str("_kz_task->ret = _kz_ret; return 0;\n"));
         } else {
+#line 5954
             out = kz_add(kz_add(out, ind), kz_str("return _kz_ret;\n"));
         }
+#line 5955
         return out;
     }
+#line 5957
     if (kz_is_truthy(kz_eq(k, kz_str("APPEND_OWN")))) {
+#line 5960
         KzValue target = kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"));
+#line 5961
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(ind, target), kz_str(" = kz_add_own(")), target), kz_str(", ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(");\n"));
     }
+#line 5963
     if (kz_is_truthy(kz_eq(k, kz_str("EXPR")))) {
+#line 5964
         return kz_add(kz_add(kz_add(ind, kz_str("(void)(")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(");\n"));
     }
+#line 5966
     if (kz_is_truthy(kz_eq(k, kz_str("APPEND_LIST_OWN")))) {
+#line 5967
         KzValue target = kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"));
+#line 5968
         return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(ind, target), kz_str(" = kz_list_append_own(")), target), kz_str(", ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(");\n"));
     }
+#line 5971
     if (kz_is_truthy(kz_eq(k, kz_str("GUARD")))) {
+#line 5972
         if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)1)))) {
+#line 5973
             return kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("if (!kz_is_truthy(")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line ")), kz_get_field(stmt, "line")), kz_str(" is false\\n\"); exit(70); }\n"));
         }
+#line 5974
         return kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("if (!kz_is_truthy(")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line ")), kz_get_field(stmt, "line")), kz_str(" is false\\n\"); return kz_nil(); }\n"));
     }
+#line 5976
     if (kz_is_truthy(kz_eq(k, kz_str("IF")))) {
+#line 5977
         KzValue cond = kaze_fn_child_at(stmt, kz_num((kaze_float_t)0));
+#line 5978
         KzValue then_block = kaze_fn_child_at(stmt, kz_num((kaze_float_t)1));
+#line 5979
         KzValue other_block = kaze_fn_child_at(stmt, kz_num((kaze_float_t)2));
+#line 5980
         KzValue out = kz_add(kz_add(kz_add(ind, kz_str("if (kz_is_truthy(")), kaze_fn_emit_c_expr(cond)), kz_str(")) {\n"));
+#line 5981
         {
             KzValue _iter_target = kz_get_field(then_block, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue s = _iter_target.as.list->items[_i];
+#line 5982
                     out = kz_add(out, kaze_fn_emit_c_stmt(s, kz_add(ind, kz_str("    ")), fx));
                 }
             }
         }
+#line 5983
         if (kz_is_truthy(kz_gt(kz_len(kz_get_field(other_block, "children")), kz_num((kaze_float_t)0)))) {
+#line 5984
             out = kz_add(kz_add(out, ind), kz_str("} else {\n"));
+#line 5985
             {
                 KzValue _iter_target = kz_get_field(other_block, "children");
                 if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                     size_t _len = _iter_target.as.list->len;
                     for (size_t _i = 0; _i < _len; _i++) {
                         KzValue s = _iter_target.as.list->items[_i];
+#line 5986
                         out = kz_add(out, kaze_fn_emit_c_stmt(s, kz_add(ind, kz_str("    ")), fx));
                     }
                 }
             }
         }
+#line 5987
         out = kz_add(kz_add(out, ind), kz_str("}\n"));
+#line 5988
         return out;
     }
+#line 5991
     if (kz_is_truthy(kz_eq(k, kz_str("WHILE")))) {
+#line 5992
         KzValue cond = kaze_fn_child_at(stmt, kz_num((kaze_float_t)0));
+#line 5993
         KzValue body = kaze_fn_child_at(stmt, kz_num((kaze_float_t)1));
+#line 5994
         KzValue bound = kaze_fn_child_at(stmt, kz_num((kaze_float_t)2));
+#line 5995
         KzValue guard_id = kz_add(kz_str("_kz_loop_l"), kz_get_field(stmt, "line"));
+#line 5996
         if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)1)))) {
+#line 5997
             KzValue fout = kz_add(kz_add(kz_add(ind, kz_str("while (kz_is_truthy(")), kaze_fn_emit_c_expr(cond)), kz_str(")) {\n"));
+#line 5998
             if (kz_is_truthy(kz_or(kz_eq(kz_get_field(bound, "val_str"), kz_str("")), kz_eq(kz_get_field(bound, "val_str"), kz_str("?"))))) {
+#line 5999
                 fout = kz_add(kz_add(fout, ind), kz_str("    /* no ceiling declared */\n"));
             } else {
+#line 6001
                 fout = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(fout, ind), kz_str("    if (")), guard_id), kz_str(" >= ")), kz_get_field(bound, "val_str")), kz_str("L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); exit(70); }\n"));
             }
+#line 6002
             fout = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(fout, ind), kz_str("    ")), guard_id), kz_str(" = ")), guard_id), kz_str(" + 1;\n"));
+#line 6003
             {
                 KzValue _iter_target = kz_get_field(body, "children");
                 if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                     size_t _len = _iter_target.as.list->len;
                     for (size_t _i = 0; _i < _len; _i++) {
                         KzValue s = _iter_target.as.list->items[_i];
+#line 6004
                         fout = kz_add(fout, kaze_fn_emit_c_stmt(s, kz_add(ind, kz_str("    ")), fx));
                     }
                 }
             }
+#line 6005
             fout = kz_add(kz_add(fout, ind), kz_str("}\n"));
+#line 6006
             return fout;
         }
+#line 6007
         KzValue out = kz_add(kz_add(kz_add(ind, kz_str("{ long ")), guard_id), kz_str(" = 0;\n"));
+#line 6008
         out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("    while (kz_is_truthy(")), kaze_fn_emit_c_expr(cond)), kz_str(")) {\n"));
+#line 6009
         if (kz_is_truthy(kz_or(kz_eq(kz_get_field(bound, "val_str"), kz_str("")), kz_eq(kz_get_field(bound, "val_str"), kz_str("?"))))) {
+#line 6010
             out = kz_add(kz_add(out, ind), kz_str("        /* no ceiling declared */\n"));
         } else {
+#line 6012
             out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("        if (")), guard_id), kz_str(" >= ")), kz_get_field(bound, "val_str")), kz_str("L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); return kz_nil(); }\n"));
         }
+#line 6013
         out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("        ")), guard_id), kz_str(" = ")), guard_id), kz_str(" + 1;\n"));
+#line 6014
         {
             KzValue _iter_target = kz_get_field(body, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue s = _iter_target.as.list->items[_i];
+#line 6015
                     out = kz_add(out, kaze_fn_emit_c_stmt(s, kz_add(ind, kz_str("        ")), fx));
                 }
             }
         }
+#line 6016
         out = kz_add(kz_add(out, ind), kz_str("    }\n"));
+#line 6017
         out = kz_add(kz_add(out, ind), kz_str("}\n"));
+#line 6018
         return out;
     }
+#line 6020
     if (kz_is_truthy(kz_eq(k, kz_str("FOR_EACH")))) {
+#line 6021
         KzValue list_e = kaze_fn_child_at(stmt, kz_num((kaze_float_t)0));
+#line 6022
         KzValue body = kaze_fn_child_at(stmt, kz_num((kaze_float_t)1));
+#line 6023
         KzValue out = kz_add(ind, kz_str("{\n"));
+#line 6024
         out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("    KzValue _iter_target = ")), kaze_fn_emit_c_expr(list_e)), kz_str(";\n"));
+#line 6025
         out = kz_add(kz_add(out, ind), kz_str("    if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {\n"));
+#line 6026
         out = kz_add(kz_add(out, ind), kz_str("        size_t _len = _iter_target.as.list->len;\n"));
+#line 6027
         out = kz_add(kz_add(out, ind), kz_str("        for (size_t _i = 0; _i < _len; _i++) {\n"));
+#line 6028
         if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)1)))) {
+#line 6029
             out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("            ")), kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"))), kz_str(" = _iter_target.as.list->items[_i];\n"));
         } else {
+#line 6031
             out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("            KzValue ")), kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"))), kz_str(" = _iter_target.as.list->items[_i];\n"));
         }
+#line 6032
         {
             KzValue _iter_target = kz_get_field(body, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue s = _iter_target.as.list->items[_i];
+#line 6033
                     out = kz_add(out, kaze_fn_emit_c_stmt(s, kz_add(ind, kz_str("            ")), fx));
                 }
             }
         }
+#line 6034
         out = kz_add(kz_add(out, ind), kz_str("        }\n"));
+#line 6035
         out = kz_add(kz_add(out, ind), kz_str("    }\n"));
+#line 6036
         out = kz_add(kz_add(out, ind), kz_str("}\n"));
+#line 6037
         return out;
     }
+#line 6040
     if (kz_is_truthy(kz_eq(k, kz_str("TRY")))) {
+#line 6041
         KzValue body = kaze_fn_child_at(stmt, kz_num((kaze_float_t)0));
+#line 6042
         KzValue other = kaze_fn_child_at(stmt, kz_num((kaze_float_t)1));
+#line 6043
         KzValue out = kz_add(ind, kz_str("{\n"));
+#line 6044
         out = kz_add(kz_add(out, ind), kz_str("    /* try block */\n"));
+#line 6045
         {
             KzValue _iter_target = kz_get_field(body, "children");
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue s = _iter_target.as.list->items[_i];
+#line 6046
                     out = kz_add(out, kaze_fn_emit_c_stmt(s, kz_add(ind, kz_str("    ")), fx));
                 }
             }
         }
+#line 6047
         if (kz_is_truthy(kz_gt(kz_len(kz_get_field(other, "children")), kz_num((kaze_float_t)0)))) {
+#line 6048
             out = kz_add(kz_add(out, ind), kz_str("    if (0) {\n"));
+#line 6049
             if (kz_is_truthy(kz_ne(kz_get_field(stmt, "name"), kz_str("")))) {
+#line 6050
                 if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)1)))) {
+#line 6051
                     out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("        ")), kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"))), kz_str(" = kz_nil();\n"));
                 } else {
+#line 6053
                     out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("        KzValue ")), kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"))), kz_str(" = kz_nil(); (void)")), kaze_fn_sanitize_c_id(kz_get_field(stmt, "name"))), kz_str(";\n"));
                 }
             }
+#line 6054
             {
                 KzValue _iter_target = kz_get_field(other, "children");
                 if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                     size_t _len = _iter_target.as.list->len;
                     for (size_t _i = 0; _i < _len; _i++) {
                         KzValue s = _iter_target.as.list->items[_i];
+#line 6055
                         out = kz_add(out, kaze_fn_emit_c_stmt(s, kz_add(ind, kz_str("        ")), fx));
                     }
                 }
             }
+#line 6056
             out = kz_add(kz_add(out, ind), kz_str("    }\n"));
         }
+#line 6057
         out = kz_add(kz_add(out, ind), kz_str("}\n"));
+#line 6058
         return out;
     }
+#line 6061
     if (kz_is_truthy(kz_eq(k, kz_str("SPAWN")))) {
+#line 6064
         KzValue task = kz_get_field(stmt, "val_str");
+#line 6065
         KzValue target = kz_get_field(stmt, "name");
+#line 6066
         KzValue args_s = kz_str("kz_nil()");
+#line 6067
         if (kz_is_truthy(kz_gt(kz_len(kz_get_field(stmt, "children")), kz_num((kaze_float_t)0)))) {
+#line 6068
             args_s = kz_add(kz_add(kz_add(kz_add(kz_str("kz_list_from("), kz_len(kz_get_field(stmt, "children"))), kz_str(", (KzValue[]){ ")), kaze_fn_emit_c_args(kz_get_field(stmt, "children"))), kz_str(" })"));
         }
+#line 6069
         KzValue tmp = kz_add(kz_str("_kz_args_"), kz_get_field(stmt, "line"));
+#line 6070
         KzValue call = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("kz_fiber_spawn(&kz_step_"), kaze_fn_sanitize_c_id(target)), kz_str(", ")), tmp), kz_str(", kz_slots_")), kaze_fn_sanitize_c_id(target)), kz_str("(), kz_guards_")), kaze_fn_sanitize_c_id(target)), kz_str("(), ")), kaze_fn_escape_c_str(task)), kz_str(", kz_fuel_")), kaze_fn_sanitize_c_id(target)), kz_str("())"));
+#line 6071
         KzValue out = kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("KzValue ")), tmp), kz_str(" = ")), args_s), kz_str(";\n"));
+#line 6072
         if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)1)))) {
+#line 6073
             out = kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kaze_fn_sanitize_c_id(task)), kz_str(" = ")), call), kz_str(";\n"));
         } else {
+#line 6075
             out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("KzValue ")), kaze_fn_sanitize_c_id(task)), kz_str(" = ")), call), kz_str(";\n"));
+#line 6076
             out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("(void)")), kaze_fn_sanitize_c_id(task)), kz_str(";   /* a task may be fire-and-forget */\n"));
         }
+#line 6077
         return out;
     }
+#line 6079
     if (kz_is_truthy(kz_eq(k, kz_str("YIELD")))) {
+#line 6082
         if (kz_is_truthy(kz_eq(kz_get_field(fx, "fiber"), kz_num((kaze_float_t)0)))) {
+#line 6083
             return kz_add(ind, kz_str("/* yield outside a fiber: refused before this point */\n"));
         }
+#line 6084
         KzValue out = kaze_fn_fx_spill(fx, ind);
+#line 6085
         out = kz_add(kz_add(kz_add(kz_add(out, ind), kz_str("_kz_task->pc = ")), kz_get_field(stmt, "line")), kz_str(";\n"));
+#line 6086
         out = kz_add(kz_add(out, ind), kz_str("return 1;\n"));
+#line 6087
         out = kz_add(kz_add(kz_add(out, kz_str("kz_L")), kz_get_field(stmt, "line")), kz_str(": ;\n"));
+#line 6088
         return out;
     }
+#line 6090
     if (kz_is_truthy(kz_eq(k, kz_str("JOIN")))) {
+#line 6091
         return kz_add(kz_add(kz_add(ind, kz_str("(void)kz_fiber_join(")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(");\n"));
     }
+#line 6093
     if (kz_is_truthy(kz_eq(k, kz_str("CANCEL")))) {
+#line 6094
         return kz_add(kz_add(kz_add(ind, kz_str("kz_fiber_cancel_value(")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(");\n"));
     }
+#line 6096
     if (kz_is_truthy(kz_eq(k, kz_str("SEND")))) {
+#line 6098
         return kz_add(kz_add(kz_add(kz_add(kz_add(ind, kz_str("(void)kz_chan_send(")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)1)))), kz_str(", ")), kaze_fn_emit_c_expr(kaze_fn_child_at(stmt, kz_num((kaze_float_t)0)))), kz_str(");\n"));
     }
+#line 6100
     return kz_str("");
     return kz_nil();
 }
 
+#line 6104
 KZ_MAYBE_UNUSED static KzValue kaze_fn_param_list(KzValue params_node) {
     (void)params_node;   /* a routine need not use every parameter */
+#line 6106
     KzValue out = kz_str("");
+#line 6107
     KzValue first = kz_num((kaze_float_t)1);
+#line 6108
     {
         KzValue _iter_target = kz_get_field(params_node, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 6109
                 if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)0)))) {
+#line 6110
                     out = kz_add(out, kz_str(", "));
                 }
+#line 6111
                 out = kz_add(kz_add(out, kz_str("KzValue ")), kaze_fn_sanitize_c_id(kz_get_field(p, "name")));
+#line 6112
                 first = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 6113
     if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)1)))) {
+#line 6114
         return kz_str("void");
     }
+#line 6115
     return out;
     return kz_nil();
 }
 
+#line 6117
 KZ_MAYBE_UNUSED static KzValue kaze_fn_find_named(KzValue items, KzValue name) {
     (void)items;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 6119
     KzValue i = kz_num((kaze_float_t)0);
+#line 6120
     KzValue len = kz_len(items);
+#line 6121
     KzValue found = kaze_fn_none_node();
-    { long _kz_loop_l6116 = 0;
+#line 6122
+    { long _kz_loop_l6122 = 0;
         while (kz_is_truthy(kz_lt(i, len))) {
-            if (_kz_loop_l6116 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l6116 = _kz_loop_l6116 + 1;
+            if (_kz_loop_l6122 >= 1000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l6122 = _kz_loop_l6122 + 1;
+#line 6123
             KzValue it = kaze_fn_node_at(items, i);
+#line 6124
             if (kz_is_truthy(kz_eq(kz_get_field(it, "name"), name))) {
+#line 6125
                 found = it;
             }
+#line 6126
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 6127
     return found;
     return kz_nil();
 }
 
+#line 6129
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_routine(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 6130
     if (kz_is_truthy(kz_or(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("ACTION")), kz_eq(kz_get_field(item, "kind"), kz_str("CHECK"))), kz_eq(kz_get_field(item, "kind"), kz_str("FILTER"))))) {
+#line 6131
         return kz_num((kaze_float_t)1);
     }
+#line 6132
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 6134
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_record_ctor(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 6136
     KzValue id = kaze_fn_sanitize_c_id(kz_get_field(item, "name"));
+#line 6137
     KzValue fields = kz_get_field(item, "children");
+#line 6138
     KzValue cnt = kz_len(fields);
+#line 6139
     KzValue out = kz_add(kz_add(kz_str("static inline KzValue kz_record_new_"), id), kz_str("(size_t n, KzValue* v, const char** k) {\n"));
+#line 6140
     out = kz_add(out, kz_str("    (void)n; (void)v; (void)k;\n"));
+#line 6141
     if (kz_is_truthy(kz_eq(cnt, kz_num((kaze_float_t)0)))) {
+#line 6142
         out = kz_add(kz_add(kz_add(out, kz_str("    return kz_record_create(")), kaze_fn_escape_c_str(kz_get_field(item, "name"))), kz_str(", 0, NULL, NULL);\n"));
     } else {
+#line 6144
         KzValue keys = kz_str("");
+#line 6145
         KzValue i = kz_num((kaze_float_t)0);
-        { long _kz_loop_l6140 = 0;
+#line 6146
+        { long _kz_loop_l6146 = 0;
             while (kz_is_truthy(kz_lt(i, cnt))) {
-                if (_kz_loop_l6140 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-                _kz_loop_l6140 = _kz_loop_l6140 + 1;
+                if (_kz_loop_l6146 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+                _kz_loop_l6146 = _kz_loop_l6146 + 1;
+#line 6147
                 KzValue f = kaze_fn_node_at(fields, i);
+#line 6148
                 if (kz_is_truthy(kz_gt(i, kz_num((kaze_float_t)0)))) {
+#line 6149
                     keys = kz_add(keys, kz_str(", "));
                 }
+#line 6150
                 keys = kz_add(keys, kaze_fn_escape_c_str(kz_get_field(f, "name")));
+#line 6151
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
+#line 6152
         out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("    static const char* _keys[")), cnt), kz_str("] = { ")), keys), kz_str(" };\n"));
+#line 6153
         out = kz_add(kz_add(kz_add(out, kz_str("    KzValue _vals[")), cnt), kz_str("];\n"));
+#line 6154
         KzValue j = kz_num((kaze_float_t)0);
-        { long _kz_loop_l6149 = 0;
+#line 6155
+        { long _kz_loop_l6155 = 0;
             while (kz_is_truthy(kz_lt(j, cnt))) {
-                if (_kz_loop_l6149 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-                _kz_loop_l6149 = _kz_loop_l6149 + 1;
+                if (_kz_loop_l6155 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+                _kz_loop_l6155 = _kz_loop_l6155 + 1;
+#line 6156
                 out = kz_add(kz_add(kz_add(out, kz_str("    _vals[")), j), kz_str("] = kz_nil();\n"));
+#line 6157
                 j = kz_add(j, kz_num((kaze_float_t)1));
             }
         }
+#line 6158
         out = kz_add(kz_add(kz_add(out, kz_str("    for (size_t _i = 0; _i < n; _i++) kz_record_set(_vals, _keys, ")), cnt), kz_str(", _i, k ? k[_i] : NULL, v[_i]);\n"));
+#line 6159
         out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("    return kz_record_create(")), kaze_fn_escape_c_str(kz_get_field(item, "name"))), kz_str(", ")), cnt), kz_str(", _keys, _vals);\n"));
     }
+#line 6160
     out = kz_add(out, kz_str("}\n\n"));
+#line 6161
     return out;
     return kz_nil();
 }
 
+#line 6167
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_requires(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 6169
     KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 6170
     KzValue out = kz_str("");
+#line 6171
     {
         KzValue _iter_target = kz_get_field(contracts, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6172
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("requires"))))) {
+#line 6173
                     KzValue cond = kaze_fn_child_at(c, kz_num((kaze_float_t)0));
+#line 6174
                     out = kz_add(kz_add(kz_add(out, kz_str("    if (!kz_is_truthy(")), kaze_fn_emit_c_expr(cond)), kz_str(")) {\n"));
+#line 6175
                     out = kz_add(kz_add(kz_add(out, kz_str("        fprintf(stderr, \"E_KAZE_CONTRACT: the requires clause at line ")), kz_get_field(c, "line")), kz_str(" is false for these arguments\\n\");\n"));
+#line 6176
                     out = kz_add(out, kz_str("        exit(70);\n"));
+#line 6177
                     out = kz_add(out, kz_str("    }\n"));
                 }
             }
         }
     }
+#line 6178
     return out;
     return kz_nil();
 }
 
+#line 6180
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_routine(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 6182
     KzValue id = kaze_fn_sanitize_c_id(kz_get_field(item, "name"));
+#line 6183
     KzValue params_node = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 6184
     KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)2));
-    KzValue out = kz_add(kz_add(kz_add(kz_add(kz_str("KZ_MAYBE_UNUSED static KzValue kaze_fn_"), id), kz_str("(")), kaze_fn_param_list(params_node)), kz_str(") {\n"));
+#line 6185
+    KzValue l_tag = kz_str("");
+#line 6186
+    if (kz_is_truthy(kz_gt(kz_get_field(item, "line"), kz_num((kaze_float_t)0)))) {
+#line 6187
+        l_tag = kz_add(kz_add(kz_str("#line "), kz_get_field(item, "line")), kz_str("\n"));
+    }
+#line 6188
+    KzValue out = kz_add(kz_add(kz_add(kz_add(kz_add(l_tag, kz_str("KZ_MAYBE_UNUSED static KzValue kaze_fn_")), id), kz_str("(")), kaze_fn_param_list(params_node)), kz_str(") {\n"));
+#line 6189
     {
         KzValue _iter_target = kz_get_field(params_node, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue prm = _iter_target.as.list->items[_i];
+#line 6190
                 out = kz_add(kz_add(kz_add(out, kz_str("    (void)")), kaze_fn_sanitize_c_id(kz_get_field(prm, "name"))), kz_str(";   /* a routine need not use every parameter */\n"));
             }
         }
     }
+#line 6191
     out = kz_add(out, kaze_fn_emit_requires(item));
+#line 6192
     {
         KzValue _iter_target = kz_get_field(body, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue s = _iter_target.as.list->items[_i];
+#line 6193
                 out = kz_add(out, kaze_fn_emit_c_stmt(s, kz_str("    "), kaze_fn_fx_plain()));
             }
         }
     }
+#line 6194
     out = kz_add(out, kz_str("    return kz_nil();\n"));
+#line 6195
     out = kz_add(out, kz_str("}\n\n"));
+#line 6196
     return out;
     return kz_nil();
 }
 
+#line 6200
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fiber_fuel(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 6201
     KzValue contracts = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 6202
     KzValue out = kz_str("0");
+#line 6203
     {
         KzValue _iter_target = kz_get_field(contracts, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6204
                 if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("FUEL")))) {
+#line 6205
                     out = kz_get_field(c, "val_str");
                 }
             }
         }
     }
+#line 6206
     return out;
     return kz_nil();
 }
 
+#line 6208
 KZ_MAYBE_UNUSED static KzValue kaze_fn_fiber_ctx(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 6209
     KzValue params = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 6210
     KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)2));
+#line 6211
     KzValue slots = kz_list_new(0);
+#line 6212
     {
         KzValue _iter_target = kz_get_field(params, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 6213
                 slots = kz_add(slots, kz_list_from(1, (KzValue[]){ kz_get_field(p, "name") }));
             }
         }
     }
+#line 6214
     slots = kaze_fn_collect_bindings(body, slots, kz_num((kaze_float_t)0));
+#line 6215
     KzValue guards = kaze_fn_collect_guards(body, kz_list_new(0), kz_num((kaze_float_t)0));
+#line 6216
     return kz_record_new_EmitFx(3, (KzValue[]){ kz_num((kaze_float_t)1), slots, guards }, (const char*[]){ "fiber", "slots", "guards" });
     return kz_nil();
 }
 
+#line 6218
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_fiber(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 6220
     KzValue id = kaze_fn_sanitize_c_id(kz_get_field(item, "name"));
+#line 6221
     KzValue fx = kaze_fn_fiber_ctx(item);
+#line 6222
     KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)2));
+#line 6223
     KzValue yields = kaze_fn_collect_yield_lines(body, kz_list_new(0), kz_num((kaze_float_t)0));
+#line 6224
     KzValue out = kz_add(kz_add(kz_str("/* fiber '"), kz_get_field(item, "name")), kz_str("': one step per turn, resuming at a yield line */\n"));
+#line 6225
     out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("static long kz_fuel_")), id), kz_str("(void) { return ")), kaze_fn_fiber_fuel(item)), kz_str("L; }\n"));
+#line 6226
     out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("static size_t kz_slots_")), id), kz_str("(void) { return ")), kz_len(kz_get_field(fx, "slots"))), kz_str("; }\n"));
+#line 6227
     out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("static size_t kz_guards_")), id), kz_str("(void) { return ")), kz_len(kz_get_field(fx, "guards"))), kz_str("; }\n"));
+#line 6228
     out = kz_add(kz_add(kz_add(out, kz_str("KZ_MAYBE_UNUSED static int kz_step_")), id), kz_str("(kz_fiber* _kz_task) {\n"));
+#line 6229
     out = kz_add(out, kz_str("    (void)_kz_task;\n"));
+#line 6230
     out = kz_add(out, kaze_fn_fx_restore(fx, kz_str("    ")));
+#line 6231
     out = kz_add(out, kaze_fn_emit_requires(item));
+#line 6232
     out = kz_add(out, kz_str("    switch (_kz_task->pc) {\n"));
+#line 6233
     {
         KzValue _iter_target = yields;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue y = _iter_target.as.list->items[_i];
+#line 6234
                 out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("        case ")), y), kz_str(": goto kz_L")), y), kz_str(";\n"));
             }
         }
     }
+#line 6235
     out = kz_add(out, kz_str("        default: break;\n"));
+#line 6236
     out = kz_add(out, kz_str("    }\n"));
+#line 6237
     {
         KzValue _iter_target = kz_get_field(body, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue s = _iter_target.as.list->items[_i];
+#line 6238
                 out = kz_add(out, kaze_fn_emit_c_stmt(s, kz_str("    "), fx));
             }
         }
     }
+#line 6239
     out = kz_add(out, kz_str("    _kz_task->ret = kz_nil();\n"));
+#line 6240
     out = kz_add(out, kz_str("    return 0;\n"));
+#line 6241
     out = kz_add(out, kz_str("}\n\n"));
+#line 6242
     return out;
     return kz_nil();
 }
 
+#line 6244
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_hook(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 6246
     KzValue body = kaze_fn_child_at(item, kz_num((kaze_float_t)1));
+#line 6247
     KzValue kind = kz_str("when");
+#line 6248
     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("EVERY")))) {
+#line 6249
         kind = kz_str("every");
     }
+#line 6250
     KzValue out = kz_add(kz_add(kz_add(kz_add(kz_str("static KzValue kz_hook_"), kind), kz_str("_")), kz_get_field(item, "line")), kz_str("(void) {\n"));
+#line 6251
     {
         KzValue _iter_target = kz_get_field(body, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue s = _iter_target.as.list->items[_i];
+#line 6252
                 out = kz_add_own(out, kaze_fn_emit_c_stmt(s, kz_str("    "), kaze_fn_fx_plain()));
             }
         }
     }
+#line 6253
     out = kz_add_own(out, kz_str("    return kz_nil();\n"));
+#line 6254
     out = kz_add_own(out, kz_str("}\n\n"));
+#line 6255
     return out;
     return kz_nil();
 }
 
+#line 6261
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_hook_driver(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 6263
     KzValue preds = kz_list_new(0);
+#line 6264
     KzValue calls = kz_list_new(0);
+#line 6265
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 6266
                 if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("WHEN")))) {
+#line 6267
                     KzValue cond = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 6268
                     preds = kz_add(preds, kz_list_from(1, (KzValue[]){ kz_add(kz_add(kz_add(kz_add(kz_str("        if (kz_is_truthy("), kaze_fn_emit_c_expr(cond)), kz_str(")) { kz_hook_when_")), kz_get_field(item, "line")), kz_str("(); }\n")) }));
                 }
+#line 6269
                 if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("EVERY")))) {
+#line 6270
                     calls = kz_add(calls, kz_list_from(1, (KzValue[]){ kz_add(kz_add(kz_str("        kz_hook_every_"), kz_get_field(item, "line")), kz_str("();\n")) }));
                 }
             }
         }
     }
+#line 6271
     KzValue out = kz_str("/* --- Hook driver --- */\n");
+#line 6272
     out = kz_add_own(out, kz_str("static int kz_ticks(int argc, char** argv) {\n"));
+#line 6273
     out = kz_add_own(out, kz_str("    for (int i = 1; i + 1 < argc; i++) {\n"));
+#line 6274
     out = kz_add_own(out, kz_str("        if (strcmp(argv[i], \"--ticks\") == 0) { long n = strtol(argv[i + 1], NULL, 10); if (n > 0) return (int)n; }\n"));
+#line 6275
     out = kz_add_own(out, kz_str("    }\n"));
+#line 6276
     out = kz_add_own(out, kz_str("    const char* env = getenv(\"KAZE_TICKS\");\n"));
+#line 6277
     out = kz_add_own(out, kz_str("    if (env && env[0]) { long n = strtol(env, NULL, 10); if (n > 0) return (int)n; }\n"));
+#line 6278
     out = kz_add_own(out, kz_str("    return 0;\n"));
+#line 6279
     out = kz_add_own(out, kz_str("}\n"));
+#line 6280
     out = kz_add_own(out, kz_str("static void kz_run_hooks(int argc, char** argv) {\n"));
+#line 6281
     out = kz_add_own(out, kz_str("    int ticks = kz_ticks(argc, argv);\n"));
+#line 6282
     out = kz_add_own(out, kz_str("    for (int t = 0; t < ticks; t++) {\n"));
+#line 6283
     {
         KzValue _iter_target = preds;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 6284
                 out = kz_add_own(out, p);
             }
         }
     }
+#line 6285
     {
         KzValue _iter_target = calls;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6286
                 out = kz_add_own(out, c);
             }
         }
     }
+#line 6287
     out = kz_add_own(out, kz_str("    }\n"));
+#line 6288
     out = kz_add_own(out, kz_str("}\n\n"));
+#line 6289
     return out;
     return kz_nil();
 }
 
+#line 6291
 KZ_MAYBE_UNUSED static KzValue kaze_fn_single_routine(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 6295
     KzValue found = kaze_fn_none_node();
+#line 6296
     KzValue count = kz_num((kaze_float_t)0);
+#line 6297
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 6298
                 if (kz_is_truthy(kz_eq(kaze_fn_is_routine(item), kz_num((kaze_float_t)1)))) {
+#line 6299
                     found = item;
+#line 6300
                     count = kz_add(count, kz_num((kaze_float_t)1));
                 }
             }
         }
     }
+#line 6301
     if (kz_is_truthy(kz_eq(count, kz_num((kaze_float_t)1)))) {
+#line 6302
         return found;
     }
+#line 6303
     return kaze_fn_none_node();
     return kz_nil();
 }
 
+#line 6306
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tasks_bound_of(KzValue config) {
     (void)config;   /* a routine need not use every parameter */
+#line 6307
     KzValue out = kz_str("0");
+#line 6308
     {
         KzValue _iter_target = config;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6309
                 if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("TASKS_BOUND")))) {
+#line 6310
                     out = kz_get_field(c, "val_str");
                 }
             }
         }
     }
+#line 6311
     return out;
     return kz_nil();
 }
 
+#line 6313
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_entry(KzValue items, KzValue config, KzValue uses_tensors) {
     (void)items;   /* a routine need not use every parameter */
     (void)config;   /* a routine need not use every parameter */
     (void)uses_tensors;   /* a routine need not use every parameter */
+#line 6315
     KzValue out = kz_str("/* --- Main Entry Point --- */\n");
+#line 6316
     out = kz_add(out, kz_str("int main(int argc, char** argv) {\n"));
+#line 6317
     out = kz_add(out, kz_str("    /* One arena for the whole run; KAZE_ARENA_BYTES overrides the default. */\n"));
+#line 6318
     out = kz_add(out, kz_str("    if (!kaze_arena_init_heap(&kz_arena, kz_arena_bytes())) { fprintf(stderr, \"E_KAZE_OOM: cannot reserve the arena\\n\"); return 70; }\n"));
+#line 6319
     out = kz_add(out, kz_str("    atexit(kz_print_alloc_sites);   /* KAZE_ARENA_STATS=1 reports by function */\n"));
+#line 6320
     out = kz_add(out, kz_str("    atexit(kz_print_switch_stats);  /* KAZE_SWITCH_STATS=1 reports task switches */\n"));
+#line 6321
     if (kz_is_truthy(kz_eq(uses_tensors, kz_num((kaze_float_t)1)))) {
+#line 6322
         out = kz_add(out, kz_str("    kz_tensor_set_argv(argc, argv);\n"));
     }
+#line 6323
     out = kz_add(kz_add(kz_add(out, kz_str("    kz_tasks_declared = ")), kaze_fn_tasks_bound_of(config)), kz_str("L;\n"));
+#line 6324
     KzValue main_item = kaze_fn_find_named(items, kz_str("main"));
+#line 6325
     if (kz_is_truthy(kz_and(kz_eq(kaze_fn_is_routine(main_item), kz_num((kaze_float_t)0)), kz_ne(kz_get_field(main_item, "kind"), kz_str("FIBER"))))) {
+#line 6326
         main_item = kaze_fn_single_routine(items);
     }
+#line 6327
     if (kz_is_truthy(kz_eq(kz_get_field(main_item, "kind"), kz_str("FIBER")))) {
+#line 6330
         out = kz_add(out, kz_str("    (void)argc; (void)argv;\n"));
+#line 6331
         out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("    KzValue res = kz_fiber_run_root(&kz_step_")), kaze_fn_sanitize_c_id(kz_get_field(main_item, "name"))), kz_str(", kz_slots_")), kaze_fn_sanitize_c_id(kz_get_field(main_item, "name"))), kz_str("(), kz_guards_")), kaze_fn_sanitize_c_id(kz_get_field(main_item, "name"))), kz_str("(), kz_fuel_")), kaze_fn_sanitize_c_id(kz_get_field(main_item, "name"))), kz_str("());\n"));
+#line 6332
         out = kz_add(out, kz_str("    if (res.kind == KZ_VAL_NUM) {\n"));
+#line 6333
         out = kz_add(out, kz_str("        char numbuf[64];\n"));
+#line 6334
         out = kz_add(out, kz_str("        kz_format_number(numbuf, sizeof numbuf, res.as.number);\n"));
+#line 6335
         out = kz_add(out, kz_str("        printf(\"%s\\n\", numbuf);\n"));
+#line 6336
         out = kz_add(out, kz_str("    } else if (res.kind == KZ_VAL_STR) {\n"));
+#line 6337
         out = kz_add(out, kz_str("        printf(\"%s\\n\", res.as.str.data ? res.as.str.data : \"\");\n"));
+#line 6338
         out = kz_add(out, kz_str("    } else if (res.kind == KZ_VAL_BOOL) {\n"));
+#line 6339
         out = kz_add(out, kz_str("        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"));
+#line 6340
         out = kz_add(out, kz_str("    }\n"));
+#line 6341
         out = kz_add(out, kz_str("    kz_run_hooks(argc, argv);\n"));
     } else {
+#line 6343
         if (kz_is_truthy(kz_eq(kaze_fn_is_routine(main_item), kz_num((kaze_float_t)0)))) {
+#line 6344
             out = kz_add(out, kz_str("    (void)argc; (void)argv;\n"));
+#line 6345
             out = kz_add(out, kz_str("    kz_run_hooks(argc, argv);\n"));
+#line 6346
             out = kz_add(out, kz_str("    printf(\"Kaze module loaded (no main entry)\\n\");\n"));
         } else {
+#line 6348
             KzValue params_node = kaze_fn_child_at(main_item, kz_num((kaze_float_t)0));
+#line 6349
             KzValue cnt = kz_len(kz_get_field(params_node, "children"));
+#line 6350
             if (kz_is_truthy(kz_eq(cnt, kz_num((kaze_float_t)0)))) {
+#line 6351
                 out = kz_add(out, kz_str("    (void)argc; (void)argv;\n"));
+#line 6352
                 out = kz_add(kz_add(kz_add(out, kz_str("    KzValue res = kaze_fn_")), kaze_fn_sanitize_c_id(kz_get_field(main_item, "name"))), kz_str("();\n"));
             } else {
+#line 6354
                 KzValue i = kz_num((kaze_float_t)0);
+#line 6355
                 KzValue call_args = kz_str("");
-                { long _kz_loop_l6347 = 0;
+#line 6356
+                { long _kz_loop_l6356 = 0;
                     while (kz_is_truthy(kz_lt(i, cnt))) {
-                        if (_kz_loop_l6347 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-                        _kz_loop_l6347 = _kz_loop_l6347 + 1;
+                        if (_kz_loop_l6356 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+                        _kz_loop_l6356 = _kz_loop_l6356 + 1;
+#line 6357
                         KzValue prm = kaze_fn_child_at(params_node, i);
+#line 6358
                         out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("    KzValue arg_")), i), kz_str(" = kz_param(")), kaze_fn_escape_c_str(kz_get_field(prm, "val_str"))), kz_str(", ")), kaze_fn_escape_c_str(kz_get_field(prm, "name"))), kz_str(", ")), kaze_fn_escape_c_str(kz_get_field(main_item, "name"))), kz_str(", kz_resolve_cli_arg(argc, argv, ")), kaze_fn_escape_c_str(kz_get_field(prm, "name"))), kz_str(", ")), i), kz_str("));\n"));
+#line 6359
                         if (kz_is_truthy(kz_gt(i, kz_num((kaze_float_t)0)))) {
+#line 6360
                             call_args = kz_add(call_args, kz_str(", "));
                         }
+#line 6361
                         call_args = kz_add(kz_add(call_args, kz_str("arg_")), i);
+#line 6362
                         i = kz_add(i, kz_num((kaze_float_t)1));
                     }
                 }
+#line 6363
                 out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("    KzValue res = kaze_fn_")), kaze_fn_sanitize_c_id(kz_get_field(main_item, "name"))), kz_str("(")), call_args), kz_str(");\n"));
             }
+#line 6364
             out = kz_add(out, kz_str("    if (res.kind == KZ_VAL_NUM) {\n"));
+#line 6365
             out = kz_add(out, kz_str("        char numbuf[64];\n"));
+#line 6366
             out = kz_add(out, kz_str("        kz_format_number(numbuf, sizeof numbuf, res.as.number);\n"));
+#line 6367
             out = kz_add(out, kz_str("        printf(\"%s\\n\", numbuf);\n"));
+#line 6368
             out = kz_add(out, kz_str("    } else if (res.kind == KZ_VAL_STR) {\n"));
+#line 6369
             out = kz_add(out, kz_str("        printf(\"%s\\n\", res.as.str.data ? res.as.str.data : \"\");\n"));
+#line 6370
             out = kz_add(out, kz_str("    } else if (res.kind == KZ_VAL_BOOL) {\n"));
+#line 6371
             out = kz_add(out, kz_str("        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"));
+#line 6372
             out = kz_add(out, kz_str("    }\n"));
+#line 6373
             out = kz_add(out, kz_str("    kz_run_hooks(argc, argv);\n"));
         }
     }
+#line 6374
     out = kz_add(out, kz_str("    return 0;\n"));
+#line 6375
     out = kz_add(out, kz_str("}\n"));
+#line 6376
     return out;
     return kz_nil();
 }
 
+#line 6391
 KZ_MAYBE_UNUSED static KzValue kaze_fn_count_ident(KzValue n, KzValue v) {
     (void)n;   /* a routine need not use every parameter */
     (void)v;   /* a routine need not use every parameter */
+#line 6393
     KzValue total = kz_num((kaze_float_t)0);
+#line 6394
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("IDENT")), kz_eq(kz_get_field(n, "name"), v)))) {
+#line 6395
         total = kz_num((kaze_float_t)1);
     }
+#line 6396
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6397
                 total = kz_add(total, kaze_fn_count_ident(c, v));
             }
         }
     }
+#line 6398
     return total;
     return kz_nil();
 }
 
+#line 6400
 KZ_MAYBE_UNUSED static KzValue kaze_fn_count_appends(KzValue n, KzValue v) {
     (void)n;   /* a routine need not use every parameter */
     (void)v;   /* a routine need not use every parameter */
+#line 6402
     KzValue total = kz_num((kaze_float_t)0);
+#line 6403
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("SET")), kz_eq(kz_get_field(n, "name"), v)))) {
+#line 6404
         KzValue rhs = kaze_fn_child_at(n, kz_num((kaze_float_t)0));
+#line 6405
         if (kz_is_truthy(kz_and(kz_eq(kz_get_field(rhs, "kind"), kz_str("BIN")), kz_eq(kz_get_field(rhs, "name"), kz_str("+"))))) {
+#line 6406
             KzValue left = kaze_fn_child_at(rhs, kz_num((kaze_float_t)0));
+#line 6409
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(left, "kind"), kz_str("IDENT")), kz_eq(kz_get_field(left, "name"), v)))) {
+#line 6410
                 total = kz_num((kaze_float_t)1);
             }
         }
     }
+#line 6411
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6412
                 total = kz_add(total, kaze_fn_count_appends(c, v));
             }
         }
     }
+#line 6413
     return total;
     return kz_nil();
 }
 
+#line 6415
 KZ_MAYBE_UNUSED static KzValue kaze_fn_count_return_reads(KzValue n, KzValue v) {
     (void)n;   /* a routine need not use every parameter */
     (void)v;   /* a routine need not use every parameter */
+#line 6417
     KzValue total = kz_num((kaze_float_t)0);
+#line 6418
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("RETURN")))) {
+#line 6419
         total = kz_add(total, kaze_fn_count_ident(n, v));
     }
+#line 6420
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6421
                 total = kz_add(total, kaze_fn_count_return_reads(c, v));
             }
         }
     }
+#line 6422
     return total;
     return kz_nil();
 }
 
+#line 6424
 KZ_MAYBE_UNUSED static KzValue kaze_fn_string_lets(KzValue n, KzValue acc) {
     (void)n;   /* a routine need not use every parameter */
     (void)acc;   /* a routine need not use every parameter */
+#line 6426
     KzValue out = acc;
+#line 6427
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("LET")))) {
+#line 6428
         KzValue rhs = kaze_fn_child_at(n, kz_num((kaze_float_t)0));
+#line 6429
         if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(rhs, "kind"), kz_str("STR")), kz_eq(kz_get_field(rhs, "kind"), kz_str("LIST"))), kz_eq(kz_get_field(rhs, "kind"), kz_str("CALL"))), kz_and(kz_eq(kz_get_field(rhs, "kind"), kz_str("BIN")), kz_eq(kz_get_field(rhs, "name"), kz_str("+")))))) {
+#line 6430
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kz_get_field(n, "name") }));
         }
     }
+#line 6431
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6432
                 out = kaze_fn_string_lets(c, out);
             }
         }
     }
+#line 6433
     return out;
     return kz_nil();
 }
 
+#line 6435
 KZ_MAYBE_UNUSED static KzValue kaze_fn_append_plan(KzValue body) {
     (void)body;   /* a routine need not use every parameter */
+#line 6439
     KzValue out = kz_list_new(0);
+#line 6440
     {
         KzValue _iter_target = kaze_fn_string_lets(body, kz_list_new(0));
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue v = _iter_target.as.list->items[_i];
+#line 6441
                 KzValue app = kaze_fn_count_appends(body, v);
+#line 6442
                 if (kz_is_truthy(kz_gt(app, kz_num((kaze_float_t)0)))) {
+#line 6443
                     KzValue occ = kaze_fn_count_ident(body, v);
+#line 6444
                     KzValue ret = kaze_fn_count_return_reads(body, v);
+#line 6445
                     if (kz_is_truthy(kz_eq(occ, kz_add(app, ret)))) {
+#line 6446
                         out = kz_add_own(out, kz_list_from(1, (KzValue[]){ v }));
                     }
                 }
             }
         }
     }
+#line 6447
     return out;
     return kz_nil();
 }
 
+#line 6449
 KZ_MAYBE_UNUSED static KzValue kaze_fn_rewrite_appends(KzValue n, KzValue plan) {
     (void)n;   /* a routine need not use every parameter */
     (void)plan;   /* a routine need not use every parameter */
+#line 6451
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("SET")), kaze_fn_has_name(plan, kz_get_field(n, "name"))))) {
+#line 6452
         KzValue rhs = kaze_fn_child_at(n, kz_num((kaze_float_t)0));
+#line 6453
         if (kz_is_truthy(kz_and(kz_eq(kz_get_field(rhs, "kind"), kz_str("BIN")), kz_eq(kz_get_field(rhs, "name"), kz_str("+"))))) {
+#line 6454
             KzValue left = kaze_fn_child_at(rhs, kz_num((kaze_float_t)0));
+#line 6455
             if (kz_is_truthy(kz_and(kz_eq(kz_get_field(left, "kind"), kz_str("IDENT")), kz_eq(kz_get_field(left, "name"), kz_get_field(n, "name"))))) {
+#line 6456
                 return kaze_fn_make_node(kz_str("APPEND_OWN"), kz_get_field(n, "name"), kz_get_field(n, "val_str"), kz_get_field(n, "val_num"), kz_list_from(1, (KzValue[]){ kaze_fn_child_at(rhs, kz_num((kaze_float_t)1)) }), kz_get_field(n, "line"));
             }
         }
     }
+#line 6457
     KzValue kids = kz_list_new(0);
+#line 6458
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6459
                 kids = kz_add_own(kids, kz_list_from(1, (KzValue[]){ kaze_fn_rewrite_appends(c, plan) }));
             }
         }
     }
+#line 6460
     return kaze_fn_make_node(kz_get_field(n, "kind"), kz_get_field(n, "name"), kz_get_field(n, "val_str"), kz_get_field(n, "val_num"), kids, kz_get_field(n, "line"));
     return kz_nil();
 }
 
+#line 6462
 KZ_MAYBE_UNUSED static KzValue kaze_fn_has_name(KzValue names, KzValue w) {
     (void)names;   /* a routine need not use every parameter */
     (void)w;   /* a routine need not use every parameter */
+#line 6464
     {
         KzValue _iter_target = names;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue n = _iter_target.as.list->items[_i];
+#line 6465
                 if (kz_is_truthy(kz_eq(n, w))) {
+#line 6466
                     return kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 6467
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 6469
 KZ_MAYBE_UNUSED static KzValue kaze_fn_collect_declared(KzValue n, KzValue acc) {
     (void)n;   /* a routine need not use every parameter */
     (void)acc;   /* a routine need not use every parameter */
+#line 6471
     KzValue out = acc;
+#line 6472
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(kz_get_field(n, "kind"), kz_str("LET")), kz_eq(kz_get_field(n, "kind"), kz_str("SET"))), kz_eq(kz_get_field(n, "kind"), kz_str("FOR_EACH"))), kz_eq(kz_get_field(n, "kind"), kz_str("PARAM"))))) {
+#line 6473
         if (kz_is_truthy(kz_and(kz_ne(kz_get_field(n, "name"), kz_str("")), kz_eq(kaze_fn_has_name(acc, kz_get_field(n, "name")), kz_num((kaze_float_t)0))))) {
+#line 6474
             out = kz_add(out, kz_list_from(1, (KzValue[]){ kz_get_field(n, "name") }));
         }
     }
+#line 6475
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6476
                 out = kaze_fn_collect_declared(c, out);
             }
         }
     }
+#line 6477
     return out;
     return kz_nil();
 }
 
+#line 6479
 KZ_MAYBE_UNUSED static KzValue kaze_fn_relabel_telemetry(KzValue n, KzValue declared) {
     (void)n;   /* a routine need not use every parameter */
     (void)declared;   /* a routine need not use every parameter */
+#line 6481
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("IDENT")))) {
+#line 6482
         if (kz_is_truthy(kz_and(kz_eq(kaze_fn_is_telemetry(kz_get_field(n, "name")), kz_num((kaze_float_t)1)), kz_eq(kaze_fn_has_name(declared, kz_get_field(n, "name")), kz_num((kaze_float_t)0))))) {
+#line 6483
             return kaze_fn_make_node(kz_str("TELEMETRY"), kz_get_field(n, "name"), kaze_fn_family_of_word(kz_get_field(n, "name")), kz_num((kaze_float_t)0), kz_list_new(0), kz_get_field(n, "line"));
         }
+#line 6484
         return n;
     }
+#line 6485
     KzValue kids = kz_list_new(0);
+#line 6486
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6487
                 kids = kz_add_own(kids, kz_list_from(1, (KzValue[]){ kaze_fn_relabel_telemetry(c, declared) }));
             }
         }
     }
+#line 6488
     return kaze_fn_make_node(kz_get_field(n, "kind"), kz_get_field(n, "name"), kz_get_field(n, "val_str"), kz_get_field(n, "val_num"), kids, kz_get_field(n, "line"));
     return kz_nil();
 }
 
+#line 6495
 KZ_MAYBE_UNUSED static KzValue kaze_fn_num_of_text(KzValue t) {
     (void)t;   /* a routine need not use every parameter */
+#line 6497
     KzValue i = kz_num((kaze_float_t)0);
+#line 6498
     KzValue n = kz_len(t);
+#line 6499
     KzValue sign = kz_num((kaze_float_t)1);
+#line 6500
     if (kz_is_truthy(kz_and(kz_gt(n, kz_num((kaze_float_t)0)), kz_eq(kz_fb_index(t, kz_num((kaze_float_t)0), kz_str("?")), kz_str("-"))))) {
+#line 6501
         sign = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
+#line 6502
         i = kz_num((kaze_float_t)1);
     }
+#line 6503
     KzValue whole = kz_num((kaze_float_t)0);
+#line 6504
     KzValue seen_dot = kz_num((kaze_float_t)0);
+#line 6505
     KzValue scale = kz_num((kaze_float_t)1);
-    { long _kz_loop_l6497 = 0;
+#line 6506
+    { long _kz_loop_l6506 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l6497 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l6497 = _kz_loop_l6497 + 1;
+            if (_kz_loop_l6506 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l6506 = _kz_loop_l6506 + 1;
+#line 6507
             KzValue c = kz_fb_index(t, i, kz_str("?"));
+#line 6508
             if (kz_is_truthy(kz_eq(c, kz_str(".")))) {
+#line 6509
                 seen_dot = kz_num((kaze_float_t)1);
             } else {
+#line 6511
                 if (kz_is_truthy(kz_and(kz_ge(c, kz_str("0")), kz_le(c, kz_str("9"))))) {
+#line 6512
                     KzValue d = kaze_fn_digit_value(c);
+#line 6513
                     if (kz_is_truthy(kz_eq(seen_dot, kz_num((kaze_float_t)1)))) {
+#line 6514
                         scale = kz_mul(scale, kz_num((kaze_float_t)10));
+#line 6515
                         whole = kz_add(whole, kz_fb_div(d, scale, kz_num((kaze_float_t)0)));
                     } else {
+#line 6517
                         whole = kz_add(kz_mul(whole, kz_num((kaze_float_t)10)), d);
                     }
                 }
             }
+#line 6518
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 6519
     return kz_mul(sign, whole);
     return kz_nil();
 }
 
+#line 6521
 KZ_MAYBE_UNUSED static KzValue kaze_fn_eval_const(KzValue n, KzValue params, KzValue values) {
     (void)n;   /* a routine need not use every parameter */
     (void)params;   /* a routine need not use every parameter */
     (void)values;   /* a routine need not use every parameter */
+#line 6524
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("NUM")))) {
+#line 6525
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kaze_fn_num_of_text(kz_get_field(n, "val_str")) });
     }
+#line 6526
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("IDENT")))) {
+#line 6527
         KzValue i = kz_num((kaze_float_t)0);
+#line 6528
         {
             KzValue _iter_target = params;
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue p = _iter_target.as.list->items[_i];
+#line 6529
                     if (kz_is_truthy(kz_and(kz_eq(p, kz_get_field(n, "name")), kz_lt(i, kz_len(values))))) {
+#line 6530
                         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_fb_index(values, i, kz_num((kaze_float_t)0)) });
                     }
+#line 6531
                     i = kz_add(i, kz_num((kaze_float_t)1));
                 }
             }
         }
+#line 6532
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
     }
+#line 6533
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("BIN")))) {
+#line 6534
         KzValue l = kaze_fn_eval_const(kaze_fn_child_at(n, kz_num((kaze_float_t)0)), params, values);
+#line 6535
         KzValue r = kaze_fn_eval_const(kaze_fn_child_at(n, kz_num((kaze_float_t)1)), params, values);
+#line 6536
         if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(l, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)), kz_eq(kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0))))) {
+#line 6537
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
         }
+#line 6538
         KzValue a = kz_fb_index(l, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 6539
         KzValue b = kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 6540
         if (kz_is_truthy(kz_eq(kz_get_field(n, "name"), kz_str(">=")))) {
+#line 6541
             if (kz_is_truthy(kz_ge(a, b))) {
+#line 6542
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 6543
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 6544
         if (kz_is_truthy(kz_eq(kz_get_field(n, "name"), kz_str("<=")))) {
+#line 6545
             if (kz_is_truthy(kz_le(a, b))) {
+#line 6546
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 6547
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 6548
         if (kz_is_truthy(kz_eq(kz_get_field(n, "name"), kz_str(">")))) {
+#line 6549
             if (kz_is_truthy(kz_gt(a, b))) {
+#line 6550
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 6551
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 6552
         if (kz_is_truthy(kz_eq(kz_get_field(n, "name"), kz_str("<")))) {
+#line 6553
             if (kz_is_truthy(kz_lt(a, b))) {
+#line 6554
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 6555
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 6556
         if (kz_is_truthy(kz_eq(kz_get_field(n, "name"), kz_str("==")))) {
+#line 6557
             if (kz_is_truthy(kz_eq(a, b))) {
+#line 6558
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 6559
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 6560
         if (kz_is_truthy(kz_eq(kz_get_field(n, "name"), kz_str("!=")))) {
+#line 6561
             if (kz_is_truthy(kz_ne(a, b))) {
+#line 6562
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 6563
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 6564
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
     }
+#line 6565
     return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
     return kz_nil();
 }
 
+#line 6567
 KZ_MAYBE_UNUSED static KzValue kaze_fn_calls_to(KzValue n, KzValue name, KzValue acc) {
     (void)n;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
     (void)acc;   /* a routine need not use every parameter */
+#line 6569
     KzValue out = acc;
+#line 6570
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("CALL")), kz_eq(kz_get_field(n, "name"), name)))) {
+#line 6571
         out = kz_add(out, kz_list_from(1, (KzValue[]){ kz_get_field(n, "children") }));
     }
+#line 6572
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6573
                 out = kaze_fn_calls_to(c, name, out);
             }
         }
     }
+#line 6574
     return out;
     return kz_nil();
 }
 
+#line 6576
 KZ_MAYBE_UNUSED static KzValue kaze_fn_routine_param_names(KzValue params) {
     (void)params;   /* a routine need not use every parameter */
+#line 6578
     KzValue out = kz_list_new(0);
+#line 6579
     {
         KzValue _iter_target = kz_get_field(params, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 6580
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_get_field(p, "name") }));
             }
         }
     }
+#line 6581
     return out;
     return kz_nil();
 }
 
+#line 6583
 KZ_MAYBE_UNUSED static KzValue kaze_fn_all_calls_proved(KzValue name, KzValue items, KzValue params, KzValue clauses) {
     (void)name;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
     (void)params;   /* a routine need not use every parameter */
     (void)clauses;   /* a routine need not use every parameter */
+#line 6585
     KzValue sites = kz_list_new(0);
+#line 6586
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue it = _iter_target.as.list->items[_i];
+#line 6587
                 sites = kaze_fn_calls_to(it, name, sites);
             }
         }
     }
+#line 6588
     if (kz_is_truthy(kz_eq(kz_len(sites), kz_num((kaze_float_t)0)))) {
+#line 6590
         return kz_num((kaze_float_t)0);
     }
+#line 6591
     {
         KzValue _iter_target = sites;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue args = _iter_target.as.list->items[_i];
+#line 6592
                 if (kz_is_truthy(kz_ne(kz_len(args), kz_len(params)))) {
+#line 6593
                     return kz_num((kaze_float_t)0);
                 }
+#line 6594
                 KzValue values = kz_list_new(0);
+#line 6595
                 {
                     KzValue _iter_target = args;
                     if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                         size_t _len = _iter_target.as.list->len;
                         for (size_t _i = 0; _i < _len; _i++) {
                             KzValue a = _iter_target.as.list->items[_i];
+#line 6596
                             KzValue v = kaze_fn_eval_const(a, kz_list_new(0), kz_list_new(0));
+#line 6597
                             if (kz_is_truthy(kz_eq(kz_fb_index(v, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)))) {
+#line 6598
                                 return kz_num((kaze_float_t)0);
                             }
+#line 6599
                             values = kz_add(values, kz_list_from(1, (KzValue[]){ kz_fb_index(v, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)) }));
                         }
                     }
                 }
+#line 6600
                 {
                     KzValue _iter_target = clauses;
                     if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                         size_t _len = _iter_target.as.list->len;
                         for (size_t _i = 0; _i < _len; _i++) {
                             KzValue cl = _iter_target.as.list->items[_i];
+#line 6601
                             KzValue c = kaze_fn_eval_const(kaze_fn_child_at(cl, kz_num((kaze_float_t)0)), params, values);
+#line 6602
                             if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(c, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)), kz_eq(kz_fb_index(c, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0))))) {
+#line 6603
                                 return kz_num((kaze_float_t)0);
                             }
                         }
@@ -11275,37 +16516,51 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_all_calls_proved(KzValue name, KzValue it
             }
         }
     }
+#line 6604
     return kz_num((kaze_float_t)1);
     return kz_nil();
 }
 
+#line 6606
 KZ_MAYBE_UNUSED static KzValue kaze_fn_elidable_names(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 6608
     KzValue out = kz_list_new(0);
+#line 6609
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue it = _iter_target.as.list->items[_i];
+#line 6610
                 if (kz_is_truthy(kz_or(kz_or(kz_eq(kz_get_field(it, "kind"), kz_str("ACTION")), kz_eq(kz_get_field(it, "kind"), kz_str("CHECK"))), kz_eq(kz_get_field(it, "kind"), kz_str("FILTER"))))) {
+#line 6611
                     KzValue params = kaze_fn_routine_param_names(kaze_fn_child_at(it, kz_num((kaze_float_t)0)));
+#line 6612
                     KzValue ctr = kaze_fn_child_at(it, kz_num((kaze_float_t)1));
+#line 6613
                     KzValue clauses = kz_list_new(0);
+#line 6614
                     {
                         KzValue _iter_target = kz_get_field(ctr, "children");
                         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                             size_t _len = _iter_target.as.list->len;
                             for (size_t _i = 0; _i < _len; _i++) {
                                 KzValue c = _iter_target.as.list->items[_i];
+#line 6615
                                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("requires"))))) {
+#line 6616
                                     clauses = kz_add(clauses, kz_list_from(1, (KzValue[]){ c }));
                                 }
                             }
                         }
                     }
+#line 6617
                     if (kz_is_truthy(kz_gt(kz_len(clauses), kz_num((kaze_float_t)0)))) {
+#line 6618
                         if (kz_is_truthy(kz_eq(kaze_fn_all_calls_proved(kz_get_field(it, "name"), items, params, clauses), kz_num((kaze_float_t)1)))) {
+#line 6619
                             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_get_field(it, "name") }));
                         }
                     }
@@ -11313,80 +16568,110 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_elidable_names(KzValue items) {
             }
         }
     }
+#line 6620
     return out;
     return kz_nil();
 }
 
+#line 6628
 KZ_MAYBE_UNUSED static KzValue kaze_fn_subst_result(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 6630
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("IDENT")), kz_eq(kz_get_field(n, "name"), kz_str("result"))))) {
+#line 6631
         return kaze_fn_make_node(kz_str("IDENT"), kz_str("_kz_ret"), kz_get_field(n, "val_str"), kz_get_field(n, "val_num"), kz_list_new(0), kz_get_field(n, "line"));
     }
+#line 6632
     KzValue kids = kz_list_new(0);
+#line 6633
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6634
                 kids = kz_add_own(kids, kz_list_from(1, (KzValue[]){ kaze_fn_subst_result(c) }));
             }
         }
     }
+#line 6635
     return kaze_fn_make_node(kz_get_field(n, "kind"), kz_get_field(n, "name"), kz_get_field(n, "val_str"), kz_get_field(n, "val_num"), kids, kz_get_field(n, "line"));
     return kz_nil();
 }
 
+#line 6637
 KZ_MAYBE_UNUSED static KzValue kaze_fn_returns_of(KzValue n, KzValue acc) {
     (void)n;   /* a routine need not use every parameter */
     (void)acc;   /* a routine need not use every parameter */
+#line 6639
     KzValue out = acc;
+#line 6640
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("RETURN")), kz_gt(kz_len(kz_get_field(n, "children")), kz_num((kaze_float_t)0))))) {
+#line 6641
         out = kz_add(out, kz_list_from(1, (KzValue[]){ kaze_fn_child_at(n, kz_num((kaze_float_t)0)) }));
     }
+#line 6642
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6643
                 out = kaze_fn_returns_of(c, out);
             }
         }
     }
+#line 6644
     return out;
     return kz_nil();
 }
 
+#line 6646
 KZ_MAYBE_UNUSED static KzValue kaze_fn_ensures_proved(KzValue clauses, KzValue body) {
     (void)clauses;   /* a routine need not use every parameter */
     (void)body;   /* a routine need not use every parameter */
+#line 6650
     if (kz_is_truthy(kz_eq(kz_len(clauses), kz_num((kaze_float_t)0)))) {
+#line 6651
         return kz_num((kaze_float_t)1);
     }
+#line 6652
     KzValue sites = kaze_fn_returns_of(body, kz_list_new(0));
+#line 6653
     if (kz_is_truthy(kz_eq(kz_len(sites), kz_num((kaze_float_t)0)))) {
+#line 6654
         return kz_num((kaze_float_t)1);
     }
+#line 6655
     {
         KzValue _iter_target = sites;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue r = _iter_target.as.list->items[_i];
+#line 6656
                 KzValue v = kaze_fn_eval_const(r, kz_list_new(0), kz_list_new(0));
+#line 6657
                 if (kz_is_truthy(kz_eq(kz_fb_index(v, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)))) {
+#line 6658
                     return kz_num((kaze_float_t)0);
                 }
+#line 6659
                 KzValue value = kz_fb_index(v, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 6660
                 {
                     KzValue _iter_target = clauses;
                     if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                         size_t _len = _iter_target.as.list->len;
                         for (size_t _i = 0; _i < _len; _i++) {
                             KzValue cl = _iter_target.as.list->items[_i];
+#line 6661
                             KzValue c = kaze_fn_eval_const(cl, kz_list_from(1, (KzValue[]){ kz_str("_kz_ret") }), kz_list_from(1, (KzValue[]){ value }));
+#line 6662
                             if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(c, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)), kz_eq(kz_fb_index(c, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0))))) {
+#line 6663
                                 return kz_num((kaze_float_t)0);
                             }
                         }
@@ -11395,3945 +16680,6095 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_ensures_proved(KzValue clauses, KzValue b
             }
         }
     }
+#line 6664
     return kz_num((kaze_float_t)1);
     return kz_nil();
 }
 
+#line 6666
 KZ_MAYBE_UNUSED static KzValue kaze_fn_drop_proved_ensures(KzValue contracts, KzValue body) {
     (void)contracts;   /* a routine need not use every parameter */
     (void)body;   /* a routine need not use every parameter */
+#line 6668
     KzValue clauses = kz_list_new(0);
+#line 6669
     {
         KzValue _iter_target = kz_get_field(contracts, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6670
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("ensures"))))) {
+#line 6671
                     clauses = kz_add(clauses, kz_list_from(1, (KzValue[]){ kaze_fn_subst_result(kaze_fn_child_at(c, kz_num((kaze_float_t)0))) }));
                 }
             }
         }
     }
+#line 6672
     if (kz_is_truthy(kz_eq(kaze_fn_ensures_proved(clauses, body), kz_num((kaze_float_t)0)))) {
+#line 6673
         return contracts;
     }
+#line 6674
     KzValue kept = kz_list_new(0);
+#line 6675
     {
         KzValue _iter_target = kz_get_field(contracts, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6676
                 KzValue proven = kz_num((kaze_float_t)0);
+#line 6677
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("ensures"))))) {
+#line 6678
                     proven = kz_num((kaze_float_t)1);
                 }
+#line 6679
                 if (kz_is_truthy(kz_eq(proven, kz_num((kaze_float_t)0)))) {
+#line 6680
                     kept = kz_add_own(kept, kz_list_from(1, (KzValue[]){ c }));
                 }
             }
         }
     }
+#line 6681
     return kaze_fn_make_node(kz_str("CONTRACTS"), kz_get_field(contracts, "name"), kz_get_field(contracts, "val_str"), kz_get_field(contracts, "val_num"), kept, kz_get_field(contracts, "line"));
     return kz_nil();
 }
 
+#line 6683
 KZ_MAYBE_UNUSED static KzValue kaze_fn_ensures_clauses(KzValue contracts) {
     (void)contracts;   /* a routine need not use every parameter */
+#line 6685
     KzValue out = kz_list_new(0);
+#line 6686
     {
         KzValue _iter_target = kz_get_field(contracts, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6687
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("ensures"))))) {
+#line 6688
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kaze_fn_subst_result(kaze_fn_child_at(c, kz_num((kaze_float_t)0))) }));
                 }
             }
         }
     }
+#line 6689
     return out;
     return kz_nil();
 }
 
+#line 6691
 KZ_MAYBE_UNUSED static KzValue kaze_fn_rewrite_returns(KzValue n, KzValue clauses) {
     (void)n;   /* a routine need not use every parameter */
     (void)clauses;   /* a routine need not use every parameter */
+#line 6693
     if (kz_is_truthy(kz_and(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("RETURN")), kz_gt(kz_len(clauses), kz_num((kaze_float_t)0))), kz_gt(kz_len(kz_get_field(n, "children")), kz_num((kaze_float_t)0))))) {
+#line 6694
         KzValue kids = kz_list_from(1, (KzValue[]){ kaze_fn_child_at(n, kz_num((kaze_float_t)0)) });
+#line 6695
         {
             KzValue _iter_target = clauses;
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue cl = _iter_target.as.list->items[_i];
+#line 6696
                     kids = kz_add_own(kids, kz_list_from(1, (KzValue[]){ cl }));
                 }
             }
         }
+#line 6697
         return kaze_fn_make_node(kz_str("RETURN_CHECKED"), kz_get_field(n, "name"), kz_get_field(n, "val_str"), kz_get_field(n, "val_num"), kids, kz_get_field(n, "line"));
     }
+#line 6698
     KzValue kids = kz_list_new(0);
+#line 6699
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6700
                 kids = kz_add_own(kids, kz_list_from(1, (KzValue[]){ kaze_fn_rewrite_returns(c, clauses) }));
             }
         }
     }
+#line 6701
     return kaze_fn_make_node(kz_get_field(n, "kind"), kz_get_field(n, "name"), kz_get_field(n, "val_str"), kz_get_field(n, "val_num"), kids, kz_get_field(n, "line"));
     return kz_nil();
 }
 
+#line 6703
 KZ_MAYBE_UNUSED static KzValue kaze_fn_drop_proved_requires(KzValue contracts, KzValue name, KzValue elided) {
     (void)contracts;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
     (void)elided;   /* a routine need not use every parameter */
+#line 6707
     if (kz_is_truthy(kz_eq(kaze_fn_has_name(elided, name), kz_num((kaze_float_t)0)))) {
+#line 6708
         return contracts;
     }
+#line 6709
     KzValue kept = kz_list_new(0);
+#line 6710
     {
         KzValue _iter_target = kz_get_field(contracts, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6711
                 KzValue proven = kz_num((kaze_float_t)0);
+#line 6712
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("requires"))))) {
+#line 6713
                     proven = kz_num((kaze_float_t)1);
                 }
+#line 6714
                 if (kz_is_truthy(kz_eq(proven, kz_num((kaze_float_t)0)))) {
+#line 6715
                     kept = kz_add_own(kept, kz_list_from(1, (KzValue[]){ c }));
                 }
             }
         }
     }
+#line 6716
     return kaze_fn_make_node(kz_str("CONTRACTS"), kz_get_field(contracts, "name"), kz_get_field(contracts, "val_str"), kz_get_field(contracts, "val_num"), kept, kz_get_field(contracts, "line"));
     return kz_nil();
 }
 
+#line 6718
 KZ_MAYBE_UNUSED static KzValue kaze_fn_mark_item(KzValue item, KzValue elided) {
     (void)item;   /* a routine need not use every parameter */
     (void)elided;   /* a routine need not use every parameter */
+#line 6720
     if (kz_is_truthy(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("WHEN")), kz_eq(kz_get_field(item, "kind"), kz_str("EVERY"))))) {
+#line 6721
         KzValue declared = kaze_fn_collect_declared(kaze_fn_child_at(item, kz_num((kaze_float_t)1)), kz_list_new(0));
+#line 6722
         KzValue cond = kaze_fn_relabel_telemetry(kaze_fn_child_at(item, kz_num((kaze_float_t)0)), declared);
+#line 6723
         KzValue body = kaze_fn_relabel_telemetry(kaze_fn_child_at(item, kz_num((kaze_float_t)1)), declared);
+#line 6724
         return kaze_fn_make_node(kz_get_field(item, "kind"), kz_get_field(item, "name"), kz_get_field(item, "val_str"), kz_get_field(item, "val_num"), kz_list_from(2, (KzValue[]){ cond, body }), kz_get_field(item, "line"));
     }
+#line 6725
     if (kz_is_truthy(kz_or(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("ACTION")), kz_eq(kz_get_field(item, "kind"), kz_str("CHECK"))), kz_eq(kz_get_field(item, "kind"), kz_str("FILTER"))))) {
+#line 6726
         KzValue params = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 6727
         KzValue declared = kaze_fn_collect_declared(params, kz_list_new(0));
+#line 6728
         declared = kaze_fn_collect_declared(kaze_fn_child_at(item, kz_num((kaze_float_t)2)), declared);
+#line 6729
         KzValue raw_contracts = kaze_fn_drop_proved_requires(kaze_fn_child_at(item, kz_num((kaze_float_t)1)), kz_get_field(item, "name"), elided);
+#line 6730
         KzValue contracts = kaze_fn_relabel_telemetry(raw_contracts, declared);
+#line 6731
         KzValue checked = kaze_fn_rewrite_returns(kaze_fn_child_at(item, kz_num((kaze_float_t)2)), kaze_fn_ensures_clauses(kaze_fn_drop_proved_ensures(raw_contracts, kaze_fn_child_at(item, kz_num((kaze_float_t)2)))));
+#line 6732
         KzValue plan = kaze_fn_append_plan(checked);
+#line 6733
         checked = kaze_fn_rewrite_appends(checked, plan);
+#line 6734
         KzValue body = kaze_fn_relabel_telemetry(checked, declared);
+#line 6735
         return kaze_fn_make_node(kz_get_field(item, "kind"), kz_get_field(item, "name"), kz_get_field(item, "val_str"), kz_get_field(item, "val_num"), kz_list_from(3, (KzValue[]){ params, contracts, body }), kz_get_field(item, "line"));
     }
+#line 6736
     return item;
     return kz_nil();
 }
 
+#line 6746
 KZ_MAYBE_UNUSED static KzValue kaze_fn_is_tensor_builtin(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 6747
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("tensor")), kz_eq(name, kz_str("zeros"))))) {
+#line 6748
         return kz_num((kaze_float_t)1);
     }
+#line 6749
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("matmul")), kz_eq(name, kz_str("matmul_t"))), kz_eq(name, kz_str("add_bias"))))) {
+#line 6750
         return kz_num((kaze_float_t)1);
     }
+#line 6751
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(name, kz_str("tensor_add")), kz_eq(name, kz_str("tensor_sub"))), kz_eq(name, kz_str("tensor_mul"))), kz_eq(name, kz_str("tensor_div"))))) {
+#line 6752
         return kz_num((kaze_float_t)1);
     }
+#line 6753
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("transpose")), kz_eq(name, kz_str("reshape"))))) {
+#line 6754
         return kz_num((kaze_float_t)1);
     }
+#line 6755
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("softmax")), kz_eq(name, kz_str("rms_norm"))), kz_eq(name, kz_str("layer_norm"))))) {
+#line 6756
         return kz_num((kaze_float_t)1);
     }
+#line 6757
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("gelu")), kz_eq(name, kz_str("silu"))), kz_eq(name, kz_str("relu"))))) {
+#line 6758
         return kz_num((kaze_float_t)1);
     }
+#line 6759
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("tensor_sum")), kz_eq(name, kz_str("tensor_mean"))))) {
+#line 6760
         return kz_num((kaze_float_t)1);
     }
+#line 6761
     if (kz_is_truthy(kz_or(kz_or(kz_eq(name, kz_str("argmax")), kz_eq(name, kz_str("tensor_get"))), kz_eq(name, kz_str("tensor_shape"))))) {
+#line 6762
         return kz_num((kaze_float_t)1);
     }
+#line 6763
     if (kz_is_truthy(kz_or(kz_eq(name, kz_str("model_open")), kz_eq(name, kz_str("model_forward"))))) {
+#line 6764
         return kz_num((kaze_float_t)1);
     }
+#line 6765
     if (kz_is_truthy(kz_eq(name, kz_str("cli_text")))) {
+#line 6766
         return kz_num((kaze_float_t)1);
     }
+#line 6767
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 6769
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tree_has_tensor_call(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 6771
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("CALL")))) {
+#line 6772
         if (kz_is_truthy(kz_eq(kaze_fn_is_tensor_builtin(kz_get_field(n, "name")), kz_num((kaze_float_t)1)))) {
+#line 6773
             return kz_num((kaze_float_t)1);
         }
     }
+#line 6774
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6775
                 if (kz_is_truthy(kz_eq(kaze_fn_tree_has_tensor_call(c), kz_num((kaze_float_t)1)))) {
+#line 6776
                     return kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 6777
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 6779
 KZ_MAYBE_UNUSED static KzValue kaze_fn_program_uses_tensors(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 6781
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 6782
                 if (kz_is_truthy(kz_eq(kaze_fn_tree_has_tensor_call(item), kz_num((kaze_float_t)1)))) {
+#line 6783
                     return kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 6784
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 6786
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tree_has_http_call(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 6788
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(n, "kind"), kz_str("CALL")), kz_eq(kz_get_field(n, "name"), kz_str("http_fetch"))))) {
+#line 6789
         return kz_num((kaze_float_t)1);
     }
+#line 6790
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 6791
                 if (kz_is_truthy(kz_eq(kaze_fn_tree_has_http_call(c), kz_num((kaze_float_t)1)))) {
+#line 6792
                     return kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 6793
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 6795
 KZ_MAYBE_UNUSED static KzValue kaze_fn_program_uses_http(KzValue items) {
     (void)items;   /* a routine need not use every parameter */
+#line 6797
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 6798
                 if (kz_is_truthy(kz_eq(kaze_fn_tree_has_http_call(item), kz_num((kaze_float_t)1)))) {
+#line 6799
                     return kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 6800
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 6802
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_unwrap(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 6804
     return kz_add(kz_add(kz_str("kz_tensor_unwrap("), kaze_fn_emit_c_expr(e)), kz_str(")"));
     return kz_nil();
 }
 
+#line 6806
 KZ_MAYBE_UNUSED static KzValue kaze_fn_tensor_float(KzValue e) {
     (void)e;   /* a routine need not use every parameter */
+#line 6808
     return kz_add(kz_add(kz_str("kz_f32("), kaze_fn_emit_c_expr(e)), kz_str(")"));
     return kz_nil();
 }
 
+#line 6814
 KZ_MAYBE_UNUSED static KzValue kaze_fn_get_c_tensor_header(void) {
+#line 6815
     KzValue h = kz_str("");
+#line 6816
     h = kz_add_own(h, kz_str("#include \"kaze_tensor.h\"\n"));
+#line 6817
     h = kz_add_own(h, kz_str("\n/* --- Phase 12 tensor bridge --- */\n"));
+#line 6818
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline const char *kz_text_cstr(KzValue v) {\n"));
+#line 6819
     h = kz_add_own(h, kz_str("    return (v.kind == KZ_VAL_STR && v.as.str.data) ? v.as.str.data : \"\";\n"));
+#line 6820
     h = kz_add_own(h, kz_str("}\n"));
+#line 6821
     h = kz_add_own(h, kz_str("static int kz_argc_g = 0;\n"));
+#line 6822
     h = kz_add_own(h, kz_str("static char **kz_argv_g = NULL;\n"));
+#line 6823
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static void kz_tensor_set_argv(int argc, char **argv) {\n"));
+#line 6824
     h = kz_add_own(h, kz_str("    kz_argc_g = argc; kz_argv_g = argv;\n"));
+#line 6825
     h = kz_add_own(h, kz_str("}\n"));
+#line 6826
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_cli_text(KzValue name, KzValue fallback) {\n"));
+#line 6827
     h = kz_add_own(h, kz_str("    const char *want = kz_text_cstr(name);\n"));
+#line 6828
     h = kz_add_own(h, kz_str("    size_t nlen = strlen(want);\n"));
+#line 6829
     h = kz_add_own(h, kz_str("    int i;\n"));
+#line 6830
     h = kz_add_own(h, kz_str("    for (i = 1; i + 1 < kz_argc_g; i++) {\n"));
+#line 6831
     h = kz_add_own(h, kz_str("        const char *a = kz_argv_g[i];\n"));
+#line 6832
     h = kz_add_own(h, kz_str("        if (strcmp(a, \"--arg\") == 0) {\n"));
+#line 6833
     h = kz_add_own(h, kz_str("            const char *v = kz_argv_g[i + 1];\n"));
+#line 6834
     h = kz_add_own(h, kz_str("            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"));
+#line 6835
     h = kz_add_own(h, kz_str("                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"));
+#line 6836
     h = kz_add_own(h, kz_str("        }\n"));
+#line 6837
     h = kz_add_own(h, kz_str("        if (strncmp(a, \"--arg=\", 6) == 0) {\n"));
+#line 6838
     h = kz_add_own(h, kz_str("            const char *v = a + 6;\n"));
+#line 6839
     h = kz_add_own(h, kz_str("            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"));
+#line 6840
     h = kz_add_own(h, kz_str("                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"));
+#line 6841
     h = kz_add_own(h, kz_str("        }\n"));
+#line 6842
     h = kz_add_own(h, kz_str("    }\n"));
+#line 6843
     h = kz_add_own(h, kz_str("    return fallback;\n"));
+#line 6844
     h = kz_add_own(h, kz_str("}\n"));
+#line 6845
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_tensor_wrap(kaze_tensor_t *t) {\n"));
+#line 6846
     h = kz_add_own(h, kz_str("    union { kaze_tensor_t *p; size_t u; } c;\n"));
+#line 6847
     h = kz_add_own(h, kz_str("    c.p = t; return kz_num((kaze_float_t)c.u);\n"));
+#line 6848
     h = kz_add_own(h, kz_str("}\n"));
+#line 6849
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline kaze_tensor_t *kz_tensor_unwrap(KzValue v) {\n"));
+#line 6850
     h = kz_add_own(h, kz_str("    union { kaze_tensor_t *p; size_t u; } c;\n"));
+#line 6851
     h = kz_add_own(h, kz_str("    c.u = (size_t)((v.kind == KZ_VAL_NUM) ? v.as.number : 0.0); return c.p;\n"));
+#line 6852
     h = kz_add_own(h, kz_str("}\n"));
+#line 6853
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline kaze_float_t kz_f32(KzValue v) {\n"));
+#line 6854
     h = kz_add_own(h, kz_str("    return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0;\n"));
+#line 6855
     h = kz_add_own(h, kz_str("}\n"));
+#line 6856
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline int64_t kz_i64(KzValue v) {\n"));
+#line 6857
     h = kz_add_own(h, kz_str("    return (int64_t)kz_f32(v);\n"));
+#line 6858
     h = kz_add_own(h, kz_str("}\n"));
+#line 6859
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static int kz_tensor_dims(KzValue shape, int64_t *dims) {\n"));
+#line 6860
     h = kz_add_own(h, kz_str("    int n, i;\n"));
+#line 6861
     h = kz_add_own(h, kz_str("    if (shape.kind != KZ_VAL_LIST || shape.as.list == NULL) return 0;\n"));
+#line 6862
     h = kz_add_own(h, kz_str("    n = (int)shape.as.list->len;\n"));
+#line 6863
     h = kz_add_own(h, kz_str("    if (n < 1 || n > KAZE_TENSOR_MAX_DIMS) return 0;\n"));
+#line 6864
     h = kz_add_own(h, kz_str("    for (i = 0; i < n; i++) {\n"));
+#line 6865
     h = kz_add_own(h, kz_str("        dims[i] = (int64_t)kz_f32(shape.as.list->items[i]);\n"));
+#line 6866
     h = kz_add_own(h, kz_str("        if (dims[i] < 1) return 0;\n"));
+#line 6867
     h = kz_add_own(h, kz_str("    }\n"));
+#line 6868
     h = kz_add_own(h, kz_str("    return n;\n"));
+#line 6869
     h = kz_add_own(h, kz_str("}\n"));
+#line 6870
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_make(KzValue values, KzValue shape) {\n"));
+#line 6871
     h = kz_add_own(h, kz_str("    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"));
+#line 6872
     h = kz_add_own(h, kz_str("    int rank = kz_tensor_dims(shape, dims);\n"));
+#line 6873
     h = kz_add_own(h, kz_str("    kaze_tensor_t *t;\n"));
+#line 6874
     h = kz_add_own(h, kz_str("    int64_t i, n;\n"));
+#line 6875
     h = kz_add_own(h, kz_str("    if (rank == 0) return NULL;\n"));
+#line 6876
     h = kz_add_own(h, kz_str("    t = kaze_tensor_alloc(&kz_arena, KAZE_DTYPE_F32, rank, dims);\n"));
+#line 6877
     h = kz_add_own(h, kz_str("    if (t == NULL) return NULL;\n"));
+#line 6878
     h = kz_add_own(h, kz_str("    n = kaze_tensor_numel(t);\n"));
+#line 6879
     h = kz_add_own(h, kz_str("    for (i = 0; i < n; i++) {\n"));
+#line 6880
     h = kz_add_own(h, kz_str("        kaze_float_t v = 0.0f;\n"));
+#line 6881
     h = kz_add_own(h, kz_str("        if (values.kind == KZ_VAL_LIST && values.as.list != NULL && (size_t)i < values.as.list->len)\n"));
+#line 6882
     h = kz_add_own(h, kz_str("            v = kz_f32(values.as.list->items[i]);\n"));
+#line 6883
     h = kz_add_own(h, kz_str("        kaze_tensor_set(t, i, v);\n"));
+#line 6884
     h = kz_add_own(h, kz_str("    }\n"));
+#line 6885
     h = kz_add_own(h, kz_str("    return t;\n"));
+#line 6886
     h = kz_add_own(h, kz_str("}\n"));
+#line 6887
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_zeros_of(KzValue shape) {\n"));
+#line 6888
     h = kz_add_own(h, kz_str("    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"));
+#line 6889
     h = kz_add_own(h, kz_str("    int rank = kz_tensor_dims(shape, dims);\n"));
+#line 6890
     h = kz_add_own(h, kz_str("    if (rank == 0) return NULL;\n"));
+#line 6891
     h = kz_add_own(h, kz_str("    return kaze_tensor_zeros(&kz_arena, KAZE_DTYPE_F32, rank, dims);\n"));
+#line 6892
     h = kz_add_own(h, kz_str("}\n"));
+#line 6893
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_reshape_of(kaze_tensor_t *t, KzValue shape) {\n"));
+#line 6894
     h = kz_add_own(h, kz_str("    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"));
+#line 6895
     h = kz_add_own(h, kz_str("    int rank = kz_tensor_dims(shape, dims);\n"));
+#line 6896
     h = kz_add_own(h, kz_str("    if (t == NULL || rank == 0) return NULL;\n"));
+#line 6897
     h = kz_add_own(h, kz_str("    return kaze_tensor_reshape(&kz_arena, t, rank, dims);\n"));
+#line 6898
     h = kz_add_own(h, kz_str("}\n"));
+#line 6899
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_tensor_shape_value(kaze_tensor_t *t) {\n"));
+#line 6900
     h = kz_add_own(h, kz_str("    KzValue items[KAZE_TENSOR_MAX_DIMS];\n"));
+#line 6901
     h = kz_add_own(h, kz_str("    int32_t i, rank = (t == NULL) ? 0 : t->rank;\n"));
+#line 6902
     h = kz_add_own(h, kz_str("    for (i = 0; i < rank; i++) items[i] = kz_num((kaze_float_t)t->shape[i]);\n"));
+#line 6903
     h = kz_add_own(h, kz_str("    return kz_list_from((size_t)rank, items);\n"));
+#line 6904
     h = kz_add_own(h, kz_str("}\n"));
+#line 6905
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline KzValue kz_model_wrap(kaze_llama_t *m) {\n"));
+#line 6906
     h = kz_add_own(h, kz_str("    union { kaze_llama_t *p; size_t u; } c;\n"));
+#line 6907
     h = kz_add_own(h, kz_str("    c.p = m; return kz_num((kaze_float_t)c.u);\n"));
+#line 6908
     h = kz_add_own(h, kz_str("}\n"));
+#line 6909
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static inline kaze_llama_t *kz_model_unwrap(KzValue v) {\n"));
+#line 6910
     h = kz_add_own(h, kz_str("    union { kaze_llama_t *p; size_t u; } c;\n"));
+#line 6911
     h = kz_add_own(h, kz_str("    c.u = (size_t)kz_f32(v); return c.p;\n"));
+#line 6912
     h = kz_add_own(h, kz_str("}\n"));
+#line 6913
     h = kz_add_own(h, kz_str("KZ_MAYBE_UNUSED static KzValue kz_model_forward_value(KzValue model, KzValue tokens) {\n"));
+#line 6914
     h = kz_add_own(h, kz_str("    kaze_llama_t *m = kz_model_unwrap(model);\n"));
+#line 6915
     h = kz_add_own(h, kz_str("    int32_t ids[512];\n"));
+#line 6916
     h = kz_add_own(h, kz_str("    size_t n = 0, i, vocab;\n"));
+#line 6917
     h = kz_add_own(h, kz_str("    float *logits;\n"));
+#line 6918
     h = kz_add_own(h, kz_str("    kaze_tensor_t *t;\n"));
+#line 6919
     h = kz_add_own(h, kz_str("    int64_t dims[2];\n"));
+#line 6920
     h = kz_add_own(h, kz_str("    if (m == NULL || tokens.kind != KZ_VAL_LIST || tokens.as.list == NULL) return kz_nil();\n"));
+#line 6921
     h = kz_add_own(h, kz_str("    for (i = 0; i < tokens.as.list->len && i < 512; i++)\n"));
+#line 6922
     h = kz_add_own(h, kz_str("        ids[n++] = (int32_t)kz_f32(tokens.as.list->items[i]);\n"));
+#line 6923
     h = kz_add_own(h, kz_str("    vocab = kaze_llama_n_vocab(m);\n"));
+#line 6924
     h = kz_add_own(h, kz_str("    logits = (float *)kmalloc(&kz_arena, vocab * sizeof(float));\n"));
+#line 6925
     h = kz_add_own(h, kz_str("    if (logits == NULL) return kz_nil();\n"));
+#line 6926
     h = kz_add_own(h, kz_str("    if (!kaze_llama_forward(m, ids, n, 0, logits)) return kz_nil();\n"));
+#line 6927
     h = kz_add_own(h, kz_str("    dims[0] = 1; dims[1] = (int64_t)vocab;\n"));
+#line 6928
     h = kz_add_own(h, kz_str("    t = kaze_tensor_alloc(&kz_arena, KAZE_DTYPE_F32, 2, dims);\n"));
+#line 6929
     h = kz_add_own(h, kz_str("    if (t == NULL) return kz_nil();\n"));
+#line 6930
     h = kz_add_own(h, kz_str("    memcpy(t->data, logits, vocab * sizeof(float));\n"));
+#line 6931
     h = kz_add_own(h, kz_str("    return kz_tensor_wrap(t);\n"));
+#line 6932
     h = kz_add_own(h, kz_str("}\n"));
+#line 6933
     h = kz_add_own(h, kz_str("\n/* --- End Phase 12 tensor bridge --- */\n"));
+#line 6934
     return h;
     return kz_nil();
 }
 
+#line 6936
 KZ_MAYBE_UNUSED static KzValue kaze_fn_emit_c_program(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 6939
     KzValue raw_items = kaze_fn_program_items(prog);
+#line 6940
     KzValue elided = kaze_fn_elidable_names(raw_items);
+#line 6941
     KzValue items = kz_list_new(0);
+#line 6942
     {
         KzValue _iter_target = raw_items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue it = _iter_target.as.list->items[_i];
+#line 6943
                 items = kz_add(items, kz_list_from(1, (KzValue[]){ kaze_fn_mark_item(it, elided) }));
             }
         }
     }
+#line 6944
     KzValue out = kaze_fn_get_c_runtime_header();
+#line 6945
     KzValue uses_tensors = kaze_fn_program_uses_tensors(items);
+#line 6946
     if (kz_is_truthy(kz_eq(uses_tensors, kz_num((kaze_float_t)1)))) {
+#line 6947
         out = kz_add(kz_add(out, kz_str("\n")), kaze_fn_get_c_tensor_header());
     }
+#line 6951
     if (kz_is_truthy(kz_eq(kaze_fn_program_uses_http(items), kz_num((kaze_float_t)1)))) {
+#line 6952
         out = kz_add(out, kz_str("\n#include \"kaze_http.h\"\n"));
     }
+#line 6955
     out = kz_add(out, kz_str("/* --- Forward Declarations --- */\n"));
+#line 6956
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 6957
                 if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("RECORD")))) {
+#line 6958
                     out = kz_add(kz_add(kz_add(out, kz_str("static inline KzValue kz_record_new_")), kaze_fn_sanitize_c_id(kz_get_field(item, "name"))), kz_str("(size_t n, KzValue* v, const char** k);\n"));
                 } else {
+#line 6960
                     if (kz_is_truthy(kz_eq(kaze_fn_is_routine(item), kz_num((kaze_float_t)1)))) {
+#line 6961
                         KzValue params_node = kaze_fn_child_at(item, kz_num((kaze_float_t)0));
+#line 6962
                         out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("KZ_MAYBE_UNUSED static KzValue kaze_fn_")), kaze_fn_sanitize_c_id(kz_get_field(item, "name"))), kz_str("(")), kaze_fn_param_list(params_node)), kz_str(");\n"));
                     }
+#line 6963
                     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("FIBER")))) {
+#line 6964
                         out = kz_add(kz_add(kz_add(out, kz_str("KZ_MAYBE_UNUSED static int kz_step_")), kaze_fn_sanitize_c_id(kz_get_field(item, "name"))), kz_str("(kz_fiber*);\n"));
+#line 6965
                         out = kz_add(kz_add(kz_add(out, kz_str("static long kz_fuel_")), kaze_fn_sanitize_c_id(kz_get_field(item, "name"))), kz_str("(void);\n"));
+#line 6966
                         out = kz_add(kz_add(kz_add(out, kz_str("static size_t kz_slots_")), kaze_fn_sanitize_c_id(kz_get_field(item, "name"))), kz_str("(void);\n"));
+#line 6967
                         out = kz_add(kz_add(kz_add(out, kz_str("static size_t kz_guards_")), kaze_fn_sanitize_c_id(kz_get_field(item, "name"))), kz_str("(void);\n"));
                     }
                 }
             }
         }
     }
+#line 6970
     out = kz_add(out, kz_str("\n/* --- Record Constructors --- */\n"));
+#line 6971
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 6972
                 if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("RECORD")))) {
+#line 6973
                     out = kz_add(out, kaze_fn_emit_record_ctor(item));
                 }
             }
         }
     }
+#line 6977
     out = kz_add(out, kz_str("/* --- Routines --- */\n"));
+#line 6978
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 6979
                 if (kz_is_truthy(kz_eq(kaze_fn_is_routine(item), kz_num((kaze_float_t)1)))) {
+#line 6980
                     out = kz_add(out, kaze_fn_emit_routine(item));
                 } else {
+#line 6982
                     if (kz_is_truthy(kz_eq(kz_get_field(item, "kind"), kz_str("FIBER")))) {
+#line 6983
                         out = kz_add(out, kaze_fn_emit_fiber(item));
                     }
+#line 6984
                     if (kz_is_truthy(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("WHEN")), kz_eq(kz_get_field(item, "kind"), kz_str("EVERY"))))) {
+#line 6985
                         out = kz_add(out, kaze_fn_emit_hook(item));
                     }
                 }
             }
         }
     }
+#line 6988
     out = kz_add(kz_add(out, kz_str("\n")), kaze_fn_emit_hook_driver(items));
+#line 6989
     out = kz_add(out, kaze_fn_emit_c_entry(items, kaze_fn_program_config(prog), uses_tensors));
+#line 6990
     return out;
     return kz_nil();
 }
 
+#line 7059
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_none_json(void) {
+#line 7060
     return kz_record_new_LspJson(4, (KzValue[]){ kz_str("none"), kz_str(""), kz_list_new(0), kz_list_new(0) }, (const char*[]){ "kind", "text", "keys", "vals" });
     return kz_nil();
 }
 
+#line 7062
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_null_json(void) {
+#line 7063
     return kz_record_new_LspJson(4, (KzValue[]){ kz_str("null"), kz_str(""), kz_list_new(0), kz_list_new(0) }, (const char*[]){ "kind", "text", "keys", "vals" });
     return kz_nil();
 }
 
+#line 7065
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_str_json(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7066
     return kz_record_new_LspJson(4, (KzValue[]){ kz_str("str"), s, kz_list_new(0), kz_list_new(0) }, (const char*[]){ "kind", "text", "keys", "vals" });
     return kz_nil();
 }
 
+#line 7068
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_obj_json(KzValue keys, KzValue vals) {
     (void)keys;   /* a routine need not use every parameter */
     (void)vals;   /* a routine need not use every parameter */
+#line 7069
     return kz_record_new_LspJson(4, (KzValue[]){ kz_str("obj"), kz_str(""), keys, vals }, (const char*[]){ "kind", "text", "keys", "vals" });
     return kz_nil();
 }
 
+#line 7071
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_arr_json(KzValue vals) {
     (void)vals;   /* a routine need not use every parameter */
+#line 7072
     return kz_record_new_LspJson(4, (KzValue[]){ kz_str("arr"), kz_str(""), kz_list_new(0), vals }, (const char*[]){ "kind", "text", "keys", "vals" });
     return kz_nil();
 }
 
+#line 7074
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_num_json(KzValue text) {
     (void)text;   /* a routine need not use every parameter */
+#line 7075
     return kz_record_new_LspJson(4, (KzValue[]){ kz_str("num"), text, kz_list_new(0), kz_list_new(0) }, (const char*[]){ "kind", "text", "keys", "vals" });
     return kz_nil();
 }
 
+#line 7077
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_bool_json(KzValue flag) {
     (void)flag;   /* a routine need not use every parameter */
+#line 7078
     KzValue text = kz_str("false");
+#line 7079
     if (kz_is_truthy(kz_eq(flag, kz_num((kaze_float_t)1)))) {
+#line 7080
         text = kz_str("true");
     }
+#line 7081
     return kz_record_new_LspJson(4, (KzValue[]){ kz_str("bool"), text, kz_list_new(0), kz_list_new(0) }, (const char*[]){ "kind", "text", "keys", "vals" });
     return kz_nil();
 }
 
+#line 7083
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_empty_decl(void) {
+#line 7084
     return kz_record_new_LspDecl(6, (KzValue[]){ kz_str(""), kz_str(""), kz_str(""), kz_str(""), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) }, (const char*[]){ "kind", "name", "params", "signature", "line", "col" });
     return kz_nil();
 }
 
+#line 7086
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_empty_doc(void) {
+#line 7087
     return kz_record_new_LspDoc(2, (KzValue[]){ kz_str(""), kz_str("") }, (const char*[]){ "uri", "text" });
     return kz_nil();
 }
 
+#line 7095
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_char(KzValue s, KzValue i) {
     (void)s;   /* a routine need not use every parameter */
     (void)i;   /* a routine need not use every parameter */
+#line 7096
     return kz_fb_index(s, i, kz_str(""));
     return kz_nil();
 }
 
+#line 7098
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_is_space(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 7099
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(c, kz_str(" ")), kz_eq(c, kz_str("\t"))), kz_eq(c, kz_str("\n"))), kz_lt(c, kz_str(" "))))) {
+#line 7100
         return kz_num((kaze_float_t)1);
     }
+#line 7101
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 7103
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_is_digit(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 7104
     if (kz_is_truthy(kz_and(kz_ge(c, kz_str("0")), kz_le(c, kz_str("9"))))) {
+#line 7105
         return kz_num((kaze_float_t)1);
     }
+#line 7106
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 7108
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_is_ident(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 7109
     if (kz_is_truthy(kz_or(kz_or(kz_and(kz_ge(c, kz_str("a")), kz_le(c, kz_str("z"))), kz_and(kz_ge(c, kz_str("A")), kz_le(c, kz_str("Z")))), kz_eq(c, kz_str("_"))))) {
+#line 7110
         return kz_num((kaze_float_t)1);
     }
+#line 7111
     if (kz_is_truthy(kz_and(kz_ge(c, kz_str("0")), kz_le(c, kz_str("9"))))) {
+#line 7112
         return kz_num((kaze_float_t)1);
     }
+#line 7113
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 7115
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_digit_value(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 7116
     if (kz_is_truthy(kz_eq(c, kz_str("0")))) {
+#line 7117
         return kz_num((kaze_float_t)0);
     }
+#line 7118
     if (kz_is_truthy(kz_eq(c, kz_str("1")))) {
+#line 7119
         return kz_num((kaze_float_t)1);
     }
+#line 7120
     if (kz_is_truthy(kz_eq(c, kz_str("2")))) {
+#line 7121
         return kz_num((kaze_float_t)2);
     }
+#line 7122
     if (kz_is_truthy(kz_eq(c, kz_str("3")))) {
+#line 7123
         return kz_num((kaze_float_t)3);
     }
+#line 7124
     if (kz_is_truthy(kz_eq(c, kz_str("4")))) {
+#line 7125
         return kz_num((kaze_float_t)4);
     }
+#line 7126
     if (kz_is_truthy(kz_eq(c, kz_str("5")))) {
+#line 7127
         return kz_num((kaze_float_t)5);
     }
+#line 7128
     if (kz_is_truthy(kz_eq(c, kz_str("6")))) {
+#line 7129
         return kz_num((kaze_float_t)6);
     }
+#line 7130
     if (kz_is_truthy(kz_eq(c, kz_str("7")))) {
+#line 7131
         return kz_num((kaze_float_t)7);
     }
+#line 7132
     if (kz_is_truthy(kz_eq(c, kz_str("8")))) {
+#line 7133
         return kz_num((kaze_float_t)8);
     }
+#line 7134
     if (kz_is_truthy(kz_eq(c, kz_str("9")))) {
+#line 7135
         return kz_num((kaze_float_t)9);
     }
+#line 7136
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 7139
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_slice(KzValue s, KzValue start, KzValue count) {
     (void)s;   /* a routine need not use every parameter */
     (void)start;   /* a routine need not use every parameter */
     (void)count;   /* a routine need not use every parameter */
+#line 7140
     KzValue n = kz_len(s);
+#line 7141
     KzValue i = start;
+#line 7142
     KzValue stop = kz_add(start, count);
+#line 7143
     if (kz_is_truthy(kz_lt(i, kz_num((kaze_float_t)0)))) {
+#line 7144
         i = kz_num((kaze_float_t)0);
     }
+#line 7145
     if (kz_is_truthy(kz_gt(stop, n))) {
+#line 7146
         stop = n;
     }
+#line 7147
     KzValue out = kz_str("");
-    { long _kz_loop_l7139 = 0;
+#line 7148
+    { long _kz_loop_l7148 = 0;
         while (kz_is_truthy(kz_lt(i, stop))) {
-            if (_kz_loop_l7139 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7139 = _kz_loop_l7139 + 1;
+            if (_kz_loop_l7148 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7148 = _kz_loop_l7148 + 1;
+#line 7149
             out = kz_add_own(out, kz_fb_index(s, i, kz_str("")));
+#line 7150
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7151
     return out;
     return kz_nil();
 }
 
+#line 7154
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_find_nl(KzValue s, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7155
     KzValue n = kz_len(s);
+#line 7156
     KzValue i = from;
+#line 7157
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l7149 = 0;
+#line 7158
+    { long _kz_loop_l7158 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_lt(found, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7149 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7149 = _kz_loop_l7149 + 1;
+            if (_kz_loop_l7158 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7158 = _kz_loop_l7158 + 1;
+#line 7159
             if (kz_is_truthy(kz_eq(kz_fb_index(s, i, kz_str("")), kz_str("\n")))) {
+#line 7160
                 found = i;
             }
+#line 7161
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7162
     if (kz_is_truthy(kz_lt(found, kz_num((kaze_float_t)0)))) {
+#line 7163
         return n;
     }
+#line 7164
     return found;
     return kz_nil();
 }
 
+#line 7169
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_trim_eol(KzValue line) {
     (void)line;   /* a routine need not use every parameter */
+#line 7170
     KzValue i = kz_len(line);
+#line 7171
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7163 = 0;
+#line 7172
+    { long _kz_loop_l7172 = 0;
         while (kz_is_truthy(kz_and(kz_gt(i, kz_num((kaze_float_t)0)), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7163 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7163 = _kz_loop_l7163 + 1;
+            if (_kz_loop_l7172 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7172 = _kz_loop_l7172 + 1;
+#line 7173
             KzValue c = kz_fb_index(line, kz_sub(i, kz_num((kaze_float_t)1)), kz_str(""));
+#line 7174
             if (kz_is_truthy(kz_or(kz_or(kz_eq(c, kz_str(" ")), kz_eq(c, kz_str("\t"))), kz_lt(c, kz_str(" "))))) {
+#line 7175
                 i = kz_sub(i, kz_num((kaze_float_t)1));
             } else {
+#line 7177
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7178
     return kaze_fn_lsp_slice(line, kz_num((kaze_float_t)0), i);
     return kz_nil();
 }
 
+#line 7180
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_alpha_index(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 7181
     KzValue upper = kz_str("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+#line 7182
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7174 = 0;
+#line 7183
+    { long _kz_loop_l7183 = 0;
         while (kz_is_truthy(kz_lt(i, kz_num((kaze_float_t)26)))) {
-            if (_kz_loop_l7174 >= 26L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7174 = _kz_loop_l7174 + 1;
+            if (_kz_loop_l7183 >= 26L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7183 = _kz_loop_l7183 + 1;
+#line 7184
             if (kz_is_truthy(kz_eq(kz_fb_index(upper, i, kz_str("")), c))) {
+#line 7185
                 return i;
             }
+#line 7186
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7187
     return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     return kz_nil();
 }
 
+#line 7189
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_lower(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 7190
     KzValue idx = kaze_fn_lsp_alpha_index(c);
+#line 7191
     if (kz_is_truthy(kz_ge(idx, kz_num((kaze_float_t)0)))) {
+#line 7192
         return kaze_fn_lsp_slice(kz_str("abcdefghijklmnopqrstuvwxyz"), idx, kz_num((kaze_float_t)1));
     }
+#line 7193
     return c;
     return kz_nil();
 }
 
+#line 7196
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_starts_with_ci(KzValue s, KzValue prefix) {
     (void)s;   /* a routine need not use every parameter */
     (void)prefix;   /* a routine need not use every parameter */
+#line 7197
     KzValue n = kz_len(prefix);
+#line 7198
     if (kz_is_truthy(kz_lt(kz_len(s), n))) {
+#line 7199
         return kz_num((kaze_float_t)0);
     }
+#line 7200
     KzValue i = kz_num((kaze_float_t)0);
+#line 7201
     KzValue ok = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7193 = 0;
+#line 7202
+    { long _kz_loop_l7202 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(ok, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7193 >= 200L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7193 = _kz_loop_l7193 + 1;
+            if (_kz_loop_l7202 >= 200L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7202 = _kz_loop_l7202 + 1;
+#line 7203
             if (kz_is_truthy(kz_ne(kaze_fn_lsp_lower(kz_fb_index(s, i, kz_str(""))), kz_fb_index(prefix, i, kz_str(""))))) {
+#line 7204
                 ok = kz_num((kaze_float_t)0);
             }
+#line 7205
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7206
     return ok;
     return kz_nil();
 }
 
+#line 7208
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_starts_at(KzValue s, KzValue from, KzValue word) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
     (void)word;   /* a routine need not use every parameter */
+#line 7209
     KzValue n = kz_len(word);
+#line 7210
     if (kz_is_truthy(kz_lt(kz_len(s), kz_add(from, n)))) {
+#line 7211
         return kz_num((kaze_float_t)0);
     }
+#line 7212
     KzValue i = kz_num((kaze_float_t)0);
+#line 7213
     KzValue ok = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7205 = 0;
+#line 7214
+    { long _kz_loop_l7214 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(ok, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7205 >= 200L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7205 = _kz_loop_l7205 + 1;
+            if (_kz_loop_l7214 >= 200L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7214 = _kz_loop_l7214 + 1;
+#line 7215
             if (kz_is_truthy(kz_ne(kz_fb_index(s, kz_add(from, i), kz_str("")), kz_fb_index(word, i, kz_str(""))))) {
+#line 7216
                 ok = kz_num((kaze_float_t)0);
             }
+#line 7217
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7218
     return ok;
     return kz_nil();
 }
 
+#line 7227
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_skip_ws(KzValue s, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7228
     KzValue n = kz_len(s);
+#line 7229
     KzValue i = from;
+#line 7230
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7222 = 0;
+#line 7231
+    { long _kz_loop_l7231 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7222 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7222 = _kz_loop_l7222 + 1;
+            if (_kz_loop_l7231 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7231 = _kz_loop_l7231 + 1;
+#line 7232
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_space(kz_fb_index(s, i, kz_str(""))), kz_num((kaze_float_t)1)))) {
+#line 7233
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 7235
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7236
     return i;
     return kz_nil();
 }
 
+#line 7238
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_hex_value(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 7239
     if (kz_is_truthy(kz_and(kz_ge(c, kz_str("0")), kz_le(c, kz_str("9"))))) {
+#line 7240
         return kaze_fn_lsp_digit_value(c);
     }
+#line 7241
     if (kz_is_truthy(kz_or(kz_eq(c, kz_str("a")), kz_eq(c, kz_str("A"))))) {
+#line 7242
         return kz_num((kaze_float_t)10);
     }
+#line 7243
     if (kz_is_truthy(kz_or(kz_eq(c, kz_str("b")), kz_eq(c, kz_str("B"))))) {
+#line 7244
         return kz_num((kaze_float_t)11);
     }
+#line 7245
     if (kz_is_truthy(kz_or(kz_eq(c, kz_str("c")), kz_eq(c, kz_str("C"))))) {
+#line 7246
         return kz_num((kaze_float_t)12);
     }
+#line 7247
     if (kz_is_truthy(kz_or(kz_eq(c, kz_str("d")), kz_eq(c, kz_str("D"))))) {
+#line 7248
         return kz_num((kaze_float_t)13);
     }
+#line 7249
     if (kz_is_truthy(kz_or(kz_eq(c, kz_str("e")), kz_eq(c, kz_str("E"))))) {
+#line 7250
         return kz_num((kaze_float_t)14);
     }
+#line 7251
     if (kz_is_truthy(kz_or(kz_eq(c, kz_str("f")), kz_eq(c, kz_str("F"))))) {
+#line 7252
         return kz_num((kaze_float_t)15);
     }
+#line 7253
     return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     return kz_nil();
 }
 
+#line 7258
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_printable(KzValue idx) {
     (void)idx;   /* a routine need not use every parameter */
+#line 7259
     KzValue low = kz_str(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_");
+#line 7260
     if (kz_is_truthy(kz_and(kz_ge(idx, kz_num((kaze_float_t)0)), kz_lt(idx, kz_num((kaze_float_t)64))))) {
+#line 7261
         return kaze_fn_lsp_slice(low, idx, kz_num((kaze_float_t)1));
     }
+#line 7262
     KzValue high = kz_str("`abcdefghijklmnopqrstuvwxyz{|}~");
+#line 7263
     if (kz_is_truthy(kz_and(kz_ge(idx, kz_num((kaze_float_t)64)), kz_lt(idx, kz_num((kaze_float_t)95))))) {
+#line 7264
         return kaze_fn_lsp_slice(high, kz_sub(idx, kz_num((kaze_float_t)64)), kz_num((kaze_float_t)1));
     }
+#line 7265
     return kz_str("?");
     return kz_nil();
 }
 
+#line 7270
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_char_from_code(KzValue code) {
     (void)code;   /* a routine need not use every parameter */
+#line 7271
     if (kz_is_truthy(kz_eq(code, kz_num((kaze_float_t)9)))) {
+#line 7272
         return kz_str("\t");
     }
+#line 7273
     if (kz_is_truthy(kz_eq(code, kz_num((kaze_float_t)10)))) {
+#line 7274
         return kz_str("\n");
     }
+#line 7275
     if (kz_is_truthy(kz_eq(code, kz_num((kaze_float_t)13)))) {
+#line 7276
         return kz_str("\n");
     }
+#line 7277
     return kaze_fn_lsp_printable(kz_sub(code, kz_num((kaze_float_t)32)));
     return kz_nil();
 }
 
+#line 7279
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_parse_hex4(KzValue s, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7280
     KzValue i = from;
+#line 7281
     KzValue value = kz_num((kaze_float_t)0);
+#line 7282
     KzValue digits = kz_num((kaze_float_t)0);
+#line 7283
     KzValue ok = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7275 = 0;
+#line 7284
+    { long _kz_loop_l7284 = 0;
         while (kz_is_truthy(kz_and(kz_and(kz_lt(i, kz_len(s)), kz_lt(digits, kz_num((kaze_float_t)4))), kz_eq(ok, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7275 >= 4L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7275 = _kz_loop_l7275 + 1;
+            if (_kz_loop_l7284 >= 4L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7284 = _kz_loop_l7284 + 1;
+#line 7285
             KzValue h = kaze_fn_lsp_hex_value(kz_fb_index(s, i, kz_str("")));
+#line 7286
             if (kz_is_truthy(kz_lt(h, kz_num((kaze_float_t)0)))) {
+#line 7287
                 ok = kz_num((kaze_float_t)0);
             } else {
+#line 7289
                 value = kz_add(kz_mul(value, kz_num((kaze_float_t)16)), h);
+#line 7290
                 digits = kz_add(digits, kz_num((kaze_float_t)1));
+#line 7291
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 7292
     return kz_list_from(2, (KzValue[]){ value, i });
     return kz_nil();
 }
 
+#line 7298
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_decode_escape(KzValue e, KzValue s, KzValue from) {
     (void)e;   /* a routine need not use every parameter */
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7299
     if (kz_is_truthy(kz_eq(e, kz_str("n")))) {
+#line 7300
         return kz_list_from(2, (KzValue[]){ kz_str("\n"), from });
     }
+#line 7301
     if (kz_is_truthy(kz_eq(e, kz_str("t")))) {
+#line 7302
         return kz_list_from(2, (KzValue[]){ kz_str("\t"), from });
     }
+#line 7303
     if (kz_is_truthy(kz_eq(e, kz_str("u")))) {
+#line 7304
         KzValue h = kaze_fn_lsp_parse_hex4(s, from);
+#line 7305
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_char_from_code(kz_fb_index(h, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0))), kz_fb_index(h, kz_num((kaze_float_t)1), from) });
     }
+#line 7306
     if (kz_is_truthy(kz_or(kz_or(kz_eq(e, kz_str("b")), kz_eq(e, kz_str("f"))), kz_eq(e, kz_str("r"))))) {
+#line 7307
         return kz_list_from(2, (KzValue[]){ kz_str(""), from });
     }
+#line 7308
     return kz_list_from(2, (KzValue[]){ e, from });
     return kz_nil();
 }
 
+#line 7310
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_jparse_string(KzValue s, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7311
     KzValue n = kz_len(s);
+#line 7312
     KzValue i = from;
+#line 7313
     KzValue out = kz_str("");
+#line 7314
     KzValue done = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7306 = 0;
+#line 7315
+    { long _kz_loop_l7315 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(done, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7306 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7306 = _kz_loop_l7306 + 1;
+            if (_kz_loop_l7315 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7315 = _kz_loop_l7315 + 1;
+#line 7316
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7317
             if (kz_is_truthy(kz_eq(c, kz_str("\"")))) {
+#line 7318
                 done = kz_num((kaze_float_t)1);
+#line 7319
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 7321
                 if (kz_is_truthy(kz_eq(c, kz_str("\\")))) {
+#line 7322
                     KzValue e = kz_fb_index(s, kz_add(i, kz_num((kaze_float_t)1)), kz_str(""));
+#line 7323
                     KzValue d = kaze_fn_lsp_decode_escape(e, s, kz_add(i, kz_num((kaze_float_t)2)));
+#line 7324
                     out = kz_add_own(out, kz_fb_index(d, kz_num((kaze_float_t)0), kz_str("")));
+#line 7325
                     i = kz_fb_index(d, kz_num((kaze_float_t)1), kz_add(i, kz_num((kaze_float_t)2)));
                 } else {
+#line 7327
                     out = kz_add_own(out, c);
+#line 7328
                     i = kz_add(i, kz_num((kaze_float_t)1));
                 }
             }
         }
     }
+#line 7329
     return kz_list_from(2, (KzValue[]){ out, i });
     return kz_nil();
 }
 
+#line 7331
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_scan_number(KzValue s, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7332
     KzValue n = kz_len(s);
+#line 7333
     KzValue i = from;
+#line 7334
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7326 = 0;
+#line 7335
+    { long _kz_loop_l7335 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7326 >= 200L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7326 = _kz_loop_l7326 + 1;
+            if (_kz_loop_l7335 >= 200L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7335 = _kz_loop_l7335 + 1;
+#line 7336
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7337
             if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(kaze_fn_lsp_is_digit(c), kz_num((kaze_float_t)1)), kz_eq(c, kz_str("-"))), kz_eq(c, kz_str("+"))), kz_eq(c, kz_str("."))), kz_eq(c, kz_str("e"))), kz_eq(c, kz_str("E"))))) {
+#line 7338
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 7340
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7341
     return i;
     return kz_nil();
 }
 
+#line 7343
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_jparse(KzValue s, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7345
     KzValue n = kz_len(s);
+#line 7346
     KzValue i = kaze_fn_lsp_skip_ws(s, from);
+#line 7347
     if (kz_is_truthy(kz_ge(i, n))) {
+#line 7348
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_none_json(), i });
     }
+#line 7349
     KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7350
     if (kz_is_truthy(kz_eq(c, kz_str("{")))) {
+#line 7351
         return kaze_fn_lsp_jparse_obj(s, kz_add(i, kz_num((kaze_float_t)1)));
     }
+#line 7352
     if (kz_is_truthy(kz_eq(c, kz_str("[")))) {
+#line 7353
         return kaze_fn_lsp_jparse_arr(s, kz_add(i, kz_num((kaze_float_t)1)));
     }
+#line 7354
     if (kz_is_truthy(kz_eq(c, kz_str("\"")))) {
+#line 7355
         KzValue r = kaze_fn_lsp_jparse_string(s, kz_add(i, kz_num((kaze_float_t)1)));
+#line 7356
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_str_json(kz_fb_index(r, kz_num((kaze_float_t)0), kz_str(""))), kz_fb_index(r, kz_num((kaze_float_t)1), i) });
     }
+#line 7357
     if (kz_is_truthy(kz_eq(kaze_fn_lsp_starts_at(s, i, kz_str("true")), kz_num((kaze_float_t)1)))) {
+#line 7358
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_bool_json(kz_num((kaze_float_t)1)), kz_add(i, kz_num((kaze_float_t)4)) });
     }
+#line 7359
     if (kz_is_truthy(kz_eq(kaze_fn_lsp_starts_at(s, i, kz_str("false")), kz_num((kaze_float_t)1)))) {
+#line 7360
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_bool_json(kz_num((kaze_float_t)0)), kz_add(i, kz_num((kaze_float_t)5)) });
     }
+#line 7361
     if (kz_is_truthy(kz_eq(kaze_fn_lsp_starts_at(s, i, kz_str("null")), kz_num((kaze_float_t)1)))) {
+#line 7362
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_null_json(), kz_add(i, kz_num((kaze_float_t)4)) });
     }
+#line 7363
     if (kz_is_truthy(kz_or(kz_eq(kaze_fn_lsp_is_digit(c), kz_num((kaze_float_t)1)), kz_eq(c, kz_str("-"))))) {
+#line 7364
         KzValue stop = kaze_fn_lsp_scan_number(s, i);
+#line 7365
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_num_json(kaze_fn_lsp_slice(s, i, kz_sub(stop, i))), stop });
     }
+#line 7366
     return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_none_json(), i });
     return kz_nil();
 }
 
+#line 7368
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_jparse_obj(KzValue s, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7370
     KzValue n = kz_len(s);
+#line 7371
     KzValue i = from;
+#line 7372
     KzValue keys = kz_list_new(0);
+#line 7373
     KzValue vals = kz_list_new(0);
+#line 7374
     KzValue done = kz_num((kaze_float_t)0);
+#line 7375
     KzValue closed = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7367 = 0;
+#line 7376
+    { long _kz_loop_l7376 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(done, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7367 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7367 = _kz_loop_l7367 + 1;
+            if (_kz_loop_l7376 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7376 = _kz_loop_l7376 + 1;
+#line 7377
             i = kaze_fn_lsp_skip_ws(s, i);
+#line 7378
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7379
             if (kz_is_truthy(kz_eq(c, kz_str("}")))) {
+#line 7380
                 i = kz_add(i, kz_num((kaze_float_t)1));
+#line 7381
                 done = kz_num((kaze_float_t)1);
+#line 7382
                 closed = kz_num((kaze_float_t)1);
             } else {
+#line 7384
                 if (kz_is_truthy(kz_eq(c, kz_str("\"")))) {
+#line 7385
                     KzValue k = kaze_fn_lsp_jparse_string(s, kz_add(i, kz_num((kaze_float_t)1)));
+#line 7386
                     KzValue key = kz_fb_index(k, kz_num((kaze_float_t)0), kz_str(""));
+#line 7387
                     i = kaze_fn_lsp_skip_ws(s, kz_fb_index(k, kz_num((kaze_float_t)1), i));
+#line 7388
                     if (kz_is_truthy(kz_eq(kz_fb_index(s, i, kz_str("")), kz_str(":")))) {
+#line 7389
                         i = kz_add(i, kz_num((kaze_float_t)1));
                     }
+#line 7390
                     KzValue v = kaze_fn_lsp_jparse(s, i);
+#line 7391
                     keys = kz_add_own(keys, kz_list_from(1, (KzValue[]){ key }));
+#line 7392
                     vals = kz_add_own(vals, kz_list_from(1, (KzValue[]){ kz_fb_index(v, kz_num((kaze_float_t)0), kaze_fn_lsp_none_json()) }));
+#line 7393
                     i = kaze_fn_lsp_skip_ws(s, kz_fb_index(v, kz_num((kaze_float_t)1), i));
+#line 7394
                     if (kz_is_truthy(kz_eq(kz_fb_index(s, i, kz_str("")), kz_str(",")))) {
+#line 7395
                         i = kz_add(i, kz_num((kaze_float_t)1));
                     }
                 } else {
+#line 7397
                     done = kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 7398
     if (kz_is_truthy(kz_eq(closed, kz_num((kaze_float_t)0)))) {
+#line 7399
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_none_json(), i });
     }
+#line 7400
     return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_obj_json(keys, vals), i });
     return kz_nil();
 }
 
+#line 7402
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_jparse_arr(KzValue s, KzValue from) {
     (void)s;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
+#line 7404
     KzValue n = kz_len(s);
+#line 7405
     KzValue i = from;
+#line 7406
     KzValue vals = kz_list_new(0);
+#line 7407
     KzValue done = kz_num((kaze_float_t)0);
+#line 7408
     KzValue closed = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7400 = 0;
+#line 7409
+    { long _kz_loop_l7409 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(done, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7400 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7400 = _kz_loop_l7400 + 1;
+            if (_kz_loop_l7409 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7409 = _kz_loop_l7409 + 1;
+#line 7410
             i = kaze_fn_lsp_skip_ws(s, i);
+#line 7411
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7412
             if (kz_is_truthy(kz_eq(c, kz_str("]")))) {
+#line 7413
                 i = kz_add(i, kz_num((kaze_float_t)1));
+#line 7414
                 done = kz_num((kaze_float_t)1);
+#line 7415
                 closed = kz_num((kaze_float_t)1);
             } else {
+#line 7417
                 if (kz_is_truthy(kz_eq(c, kz_str(",")))) {
+#line 7418
                     i = kz_add(i, kz_num((kaze_float_t)1));
                 } else {
+#line 7420
                     KzValue v = kaze_fn_lsp_jparse(s, i);
+#line 7421
                     KzValue node = kz_fb_index(v, kz_num((kaze_float_t)0), kaze_fn_lsp_none_json());
+#line 7422
                     if (kz_is_truthy(kz_eq(kz_get_field(node, "kind"), kz_str("none")))) {
+#line 7423
                         done = kz_num((kaze_float_t)1);
                     } else {
+#line 7425
                         vals = kz_add_own(vals, kz_list_from(1, (KzValue[]){ node }));
+#line 7426
                         i = kz_fb_index(v, kz_num((kaze_float_t)1), i);
                     }
                 }
             }
         }
     }
+#line 7427
     if (kz_is_truthy(kz_eq(closed, kz_num((kaze_float_t)0)))) {
+#line 7428
         return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_none_json(), i });
     }
+#line 7429
     return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_arr_json(vals), i });
     return kz_nil();
 }
 
+#line 7432
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_get(KzValue node, KzValue key) {
     (void)node;   /* a routine need not use every parameter */
     (void)key;   /* a routine need not use every parameter */
+#line 7433
     if (kz_is_truthy(kz_ne(kz_get_field(node, "kind"), kz_str("obj")))) {
+#line 7434
         return kaze_fn_lsp_none_json();
     }
+#line 7435
     KzValue keys = kz_get_field(node, "keys");
+#line 7436
     KzValue vals = kz_get_field(node, "vals");
+#line 7437
     KzValue n = kz_len(keys);
+#line 7438
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7430 = 0;
+#line 7439
+    { long _kz_loop_l7439 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l7430 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7430 = _kz_loop_l7430 + 1;
+            if (_kz_loop_l7439 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7439 = _kz_loop_l7439 + 1;
+#line 7440
             if (kz_is_truthy(kz_eq(kz_fb_index(keys, i, kz_str("")), key))) {
+#line 7441
                 return kz_fb_index(vals, i, kaze_fn_lsp_none_json());
             }
+#line 7442
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7443
     return kaze_fn_lsp_none_json();
     return kz_nil();
 }
 
+#line 7445
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_items(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 7446
     if (kz_is_truthy(kz_eq(kz_get_field(node, "kind"), kz_str("arr")))) {
+#line 7447
         return kz_get_field(node, "vals");
     }
+#line 7448
     return kz_list_new(0);
     return kz_nil();
 }
 
+#line 7450
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_first_item(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 7451
     KzValue items = kaze_fn_lsp_items(node);
+#line 7452
     if (kz_is_truthy(kz_gt(kz_len(items), kz_num((kaze_float_t)0)))) {
+#line 7453
         return kz_fb_index(items, kz_num((kaze_float_t)0), kaze_fn_lsp_none_json());
     }
+#line 7454
     return kaze_fn_lsp_none_json();
     return kz_nil();
 }
 
+#line 7456
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_as_text(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 7457
     if (kz_is_truthy(kz_eq(kz_get_field(node, "kind"), kz_str("str")))) {
+#line 7458
         return kz_get_field(node, "text");
     }
+#line 7459
     return kz_str("");
     return kz_nil();
 }
 
+#line 7461
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_as_num(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 7462
     if (kz_is_truthy(kz_eq(kz_get_field(node, "kind"), kz_str("num")))) {
+#line 7463
         return kaze_fn_text_to_num(kz_get_field(node, "text"));
     }
+#line 7464
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 7466
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_get_text(KzValue node, KzValue key) {
     (void)node;   /* a routine need not use every parameter */
     (void)key;   /* a routine need not use every parameter */
+#line 7467
     return kaze_fn_lsp_as_text(kaze_fn_lsp_get(node, key));
     return kz_nil();
 }
 
+#line 7469
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_get_num(KzValue node, KzValue key) {
     (void)node;   /* a routine need not use every parameter */
     (void)key;   /* a routine need not use every parameter */
+#line 7470
     return kaze_fn_lsp_as_num(kaze_fn_lsp_get(node, key));
     return kz_nil();
 }
 
+#line 7479
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_jstr(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7480
     KzValue n = kz_len(s);
+#line 7481
     KzValue i = kz_num((kaze_float_t)0);
+#line 7482
     KzValue out = kz_str("\"");
-    { long _kz_loop_l7474 = 0;
+#line 7483
+    { long _kz_loop_l7483 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l7474 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7474 = _kz_loop_l7474 + 1;
+            if (_kz_loop_l7483 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7483 = _kz_loop_l7483 + 1;
+#line 7484
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7485
             KzValue escaped = c;
+#line 7486
             if (kz_is_truthy(kz_eq(c, kz_str("\"")))) {
+#line 7487
                 escaped = kz_str("\\\"");
             } else {
+#line 7489
                 if (kz_is_truthy(kz_eq(c, kz_str("\\")))) {
+#line 7490
                     escaped = kz_str("\\\\");
                 } else {
+#line 7492
                     if (kz_is_truthy(kz_eq(c, kz_str("\n")))) {
+#line 7493
                         escaped = kz_str("\\n");
                     } else {
+#line 7495
                         if (kz_is_truthy(kz_eq(c, kz_str("\t")))) {
+#line 7496
                             escaped = kz_str("\\t");
                         } else {
+#line 7498
                             if (kz_is_truthy(kz_lt(c, kz_str(" ")))) {
+#line 7499
                                 escaped = kz_str("?");
                             }
                         }
                     }
                 }
             }
+#line 7500
             out = kz_add_own(out, escaped);
+#line 7501
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7502
     return kz_add(out, kz_str("\""));
     return kz_nil();
 }
 
+#line 7505
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_id_json(KzValue node) {
     (void)node;   /* a routine need not use every parameter */
+#line 7506
     if (kz_is_truthy(kz_eq(kz_get_field(node, "kind"), kz_str("str")))) {
+#line 7507
         return kaze_fn_lsp_jstr(kz_get_field(node, "text"));
     }
+#line 7508
     if (kz_is_truthy(kz_eq(kz_get_field(node, "kind"), kz_str("num")))) {
+#line 7509
         return kz_get_field(node, "text");
     }
+#line 7510
     return kz_str("null");
     return kz_nil();
 }
 
+#line 7512
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_range_json(KzValue line, KzValue c1, KzValue c2) {
     (void)line;   /* a routine need not use every parameter */
     (void)c1;   /* a routine need not use every parameter */
     (void)c2;   /* a routine need not use every parameter */
+#line 7513
     return kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("{\"start\":{\"line\":"), line), kz_str(",\"character\":")), c1), kz_str("},\"end\":{\"line\":")), line), kz_str(",\"character\":")), c2), kz_str("}}"));
     return kz_nil();
 }
 
+#line 7517
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_frame(KzValue body, KzValue eol) {
     (void)body;   /* a routine need not use every parameter */
     (void)eol;   /* a routine need not use every parameter */
+#line 7518
     return kz_add(kz_add(kz_add(kz_add(kz_str("Content-Length: "), kz_len(body)), eol), eol), body);
     return kz_nil();
 }
 
+#line 7523
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_eol_of(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7524
     KzValue n = kz_len(s);
+#line 7525
     KzValue limit = kz_num((kaze_float_t)200);
+#line 7526
     if (kz_is_truthy(kz_gt(n, limit))) {
+#line 7527
         n = limit;
     }
+#line 7528
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7520 = 0;
+#line 7529
+    { long _kz_loop_l7529 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l7520 >= 200L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7520 = _kz_loop_l7520 + 1;
+            if (_kz_loop_l7529 >= 200L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7529 = _kz_loop_l7529 + 1;
+#line 7530
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7531
             if (kz_is_truthy(kz_and(kz_and(kz_lt(c, kz_str(" ")), kz_ne(c, kz_str("\n"))), kz_ne(c, kz_str("\t"))))) {
+#line 7532
                 return kz_add(c, kz_str("\n"));
             }
+#line 7533
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7534
     return kz_str("\n");
     return kz_nil();
 }
 
+#line 7536
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_reply(KzValue id_json, KzValue result_json, KzValue eol) {
     (void)id_json;   /* a routine need not use every parameter */
     (void)result_json;   /* a routine need not use every parameter */
     (void)eol;   /* a routine need not use every parameter */
+#line 7537
     KzValue body = kz_add(kz_add(kz_add(kz_add(kz_str("{\"jsonrpc\":\"2.0\",\"id\":"), id_json), kz_str(",\"result\":")), result_json), kz_str("}"));
+#line 7538
     return kaze_fn_lsp_frame(body, eol);
     return kz_nil();
 }
 
+#line 7540
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_error_reply(KzValue id_json, KzValue code, KzValue message, KzValue eol) {
     (void)id_json;   /* a routine need not use every parameter */
     (void)code;   /* a routine need not use every parameter */
     (void)message;   /* a routine need not use every parameter */
     (void)eol;   /* a routine need not use every parameter */
+#line 7541
     KzValue body = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("{\"jsonrpc\":\"2.0\",\"id\":"), id_json), kz_str(",\"error\":{\"code\":")), code), kz_str(",\"message\":")), kaze_fn_lsp_jstr(message)), kz_str("}}"));
+#line 7542
     return kaze_fn_lsp_frame(body, eol);
     return kz_nil();
 }
 
+#line 7544
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_notify(KzValue method, KzValue params_json, KzValue eol) {
     (void)method;   /* a routine need not use every parameter */
     (void)params_json;   /* a routine need not use every parameter */
     (void)eol;   /* a routine need not use every parameter */
+#line 7545
     KzValue body = kz_add(kz_add(kz_add(kz_add(kz_str("{\"jsonrpc\":\"2.0\",\"method\":"), kaze_fn_lsp_jstr(method)), kz_str(",\"params\":")), params_json), kz_str("}"));
+#line 7546
     return kaze_fn_lsp_frame(body, eol);
     return kz_nil();
 }
 
+#line 7549
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_header_number(KzValue line) {
     (void)line;   /* a routine need not use every parameter */
+#line 7550
     KzValue n = kz_len(line);
+#line 7551
     KzValue i = kz_num((kaze_float_t)0);
+#line 7552
     KzValue seen = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7544 = 0;
+#line 7553
+    { long _kz_loop_l7553 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(seen, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7544 >= 500L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7544 = _kz_loop_l7544 + 1;
+            if (_kz_loop_l7553 >= 500L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7553 = _kz_loop_l7553 + 1;
+#line 7554
             if (kz_is_truthy(kz_eq(kz_fb_index(line, i, kz_str("")), kz_str(":")))) {
+#line 7555
                 seen = kz_num((kaze_float_t)1);
             }
+#line 7556
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7557
     if (kz_is_truthy(kz_eq(seen, kz_num((kaze_float_t)0)))) {
+#line 7558
         return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     }
+#line 7559
     KzValue value = kz_num((kaze_float_t)0);
+#line 7560
     KzValue digits = kz_num((kaze_float_t)0);
+#line 7561
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7553 = 0;
+#line 7562
+    { long _kz_loop_l7562 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7553 >= 500L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7553 = _kz_loop_l7553 + 1;
+            if (_kz_loop_l7562 >= 500L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7562 = _kz_loop_l7562 + 1;
+#line 7563
             KzValue c = kz_fb_index(line, i, kz_str(""));
+#line 7564
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_space(c), kz_num((kaze_float_t)1)))) {
+#line 7565
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 7567
                 if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_digit(c), kz_num((kaze_float_t)1)))) {
+#line 7568
                     value = kz_add(kz_mul(value, kz_num((kaze_float_t)10)), kaze_fn_lsp_digit_value(c));
+#line 7569
                     digits = kz_add(digits, kz_num((kaze_float_t)1));
+#line 7570
                     i = kz_add(i, kz_num((kaze_float_t)1));
                 } else {
+#line 7572
                     going = kz_num((kaze_float_t)0);
                 }
             }
         }
     }
+#line 7573
     if (kz_is_truthy(kz_eq(digits, kz_num((kaze_float_t)0)))) {
+#line 7574
         return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     }
+#line 7575
     return value;
     return kz_nil();
 }
 
+#line 7578
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_read_frame(KzValue s, KzValue start) {
     (void)s;   /* a routine need not use every parameter */
     (void)start;   /* a routine need not use every parameter */
+#line 7579
     KzValue n = kz_len(s);
+#line 7580
     KzValue i = start;
+#line 7581
     KzValue skipping = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7573 = 0;
+#line 7582
+    { long _kz_loop_l7582 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(skipping, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7573 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7573 = _kz_loop_l7573 + 1;
+            if (_kz_loop_l7582 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7582 = _kz_loop_l7582 + 1;
+#line 7583
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_space(kz_fb_index(s, i, kz_str(""))), kz_num((kaze_float_t)1)))) {
+#line 7584
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 7586
                 skipping = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7587
     KzValue length_ok = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
+#line 7588
     KzValue done = kz_num((kaze_float_t)0);
+#line 7589
     KzValue body_start = i;
-    { long _kz_loop_l7581 = 0;
+#line 7590
+    { long _kz_loop_l7590 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(done, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7581 >= 2000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7581 = _kz_loop_l7581 + 1;
+            if (_kz_loop_l7590 >= 2000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7590 = _kz_loop_l7590 + 1;
+#line 7591
             KzValue nl = kaze_fn_lsp_find_nl(s, i);
+#line 7592
             KzValue line = kaze_fn_lsp_trim_eol(kaze_fn_lsp_slice(s, i, kz_sub(nl, i)));
+#line 7593
             if (kz_is_truthy(kz_eq(kz_len(line), kz_num((kaze_float_t)0)))) {
+#line 7594
                 body_start = kz_add(nl, kz_num((kaze_float_t)1));
+#line 7595
                 done = kz_num((kaze_float_t)1);
             } else {
+#line 7597
                 if (kz_is_truthy(kz_eq(kaze_fn_lsp_starts_with_ci(line, kz_str("content-length:")), kz_num((kaze_float_t)1)))) {
+#line 7598
                     length_ok = kaze_fn_lsp_header_number(line);
                 }
+#line 7599
                 i = kz_add(nl, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 7600
     if (kz_is_truthy(kz_or(kz_eq(done, kz_num((kaze_float_t)0)), kz_lt(length_ok, kz_num((kaze_float_t)0))))) {
+#line 7601
         return kz_list_from(3, (KzValue[]){ kz_str(""), n, kz_num((kaze_float_t)0) });
     }
+#line 7602
     KzValue end = kz_add(body_start, length_ok);
+#line 7603
     if (kz_is_truthy(kz_gt(end, n))) {
+#line 7604
         end = n;
     }
+#line 7605
     return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_slice(s, body_start, kz_sub(end, body_start)), end, kz_num((kaze_float_t)1) });
     return kz_nil();
 }
 
+#line 7609
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_doc_index(KzValue docs, KzValue uri) {
     (void)docs;   /* a routine need not use every parameter */
     (void)uri;   /* a routine need not use every parameter */
+#line 7610
     KzValue n = kz_len(docs);
+#line 7611
     KzValue i = kz_num((kaze_float_t)0);
+#line 7612
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l7604 = 0;
+#line 7613
+    { long _kz_loop_l7613 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_lt(found, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7604 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7604 = _kz_loop_l7604 + 1;
+            if (_kz_loop_l7613 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7613 = _kz_loop_l7613 + 1;
+#line 7614
             KzValue d = kz_fb_index(docs, i, kaze_fn_lsp_empty_doc());
+#line 7615
             if (kz_is_truthy(kz_eq(kz_get_field(d, "uri"), uri))) {
+#line 7616
                 found = i;
             }
+#line 7617
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7618
     return found;
     return kz_nil();
 }
 
+#line 7620
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_doc_put(KzValue docs, KzValue uri, KzValue text) {
     (void)docs;   /* a routine need not use every parameter */
     (void)uri;   /* a routine need not use every parameter */
     (void)text;   /* a routine need not use every parameter */
+#line 7621
     KzValue idx = kaze_fn_lsp_doc_index(docs, uri);
+#line 7622
     if (kz_is_truthy(kz_lt(idx, kz_num((kaze_float_t)0)))) {
+#line 7623
         return kz_add(docs, kz_list_from(1, (KzValue[]){ kz_record_new_LspDoc(2, (KzValue[]){ uri, text }, (const char*[]){ "uri", "text" }) }));
     }
+#line 7624
     KzValue out = kz_list_new(0);
+#line 7625
     KzValue n = kz_len(docs);
+#line 7626
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7618 = 0;
+#line 7627
+    { long _kz_loop_l7627 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l7618 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7618 = _kz_loop_l7618 + 1;
+            if (_kz_loop_l7627 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7627 = _kz_loop_l7627 + 1;
+#line 7628
             KzValue d = kz_fb_index(docs, i, kaze_fn_lsp_empty_doc());
+#line 7629
             if (kz_is_truthy(kz_eq(i, idx))) {
+#line 7630
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_record_new_LspDoc(2, (KzValue[]){ kz_get_field(d, "uri"), text }, (const char*[]){ "uri", "text" }) }));
             } else {
+#line 7632
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ d }));
             }
+#line 7633
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7634
     return out;
     return kz_nil();
 }
 
+#line 7636
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_doc_text(KzValue docs, KzValue uri) {
     (void)docs;   /* a routine need not use every parameter */
     (void)uri;   /* a routine need not use every parameter */
+#line 7637
     KzValue idx = kaze_fn_lsp_doc_index(docs, uri);
+#line 7638
     if (kz_is_truthy(kz_lt(idx, kz_num((kaze_float_t)0)))) {
+#line 7639
         return kz_str("");
     }
+#line 7640
     KzValue d = kz_fb_index(docs, idx, kaze_fn_lsp_empty_doc());
+#line 7641
     return kz_get_field(d, "text");
     return kz_nil();
 }
 
+#line 7645
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_split_lines(KzValue text) {
     (void)text;   /* a routine need not use every parameter */
+#line 7646
     KzValue n = kz_len(text);
+#line 7647
     KzValue i = kz_num((kaze_float_t)0);
+#line 7648
     KzValue line = kz_str("");
+#line 7649
     KzValue out = kz_list_new(0);
-    { long _kz_loop_l7641 = 0;
+#line 7650
+    { long _kz_loop_l7650 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l7641 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7641 = _kz_loop_l7641 + 1;
+            if (_kz_loop_l7650 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7650 = _kz_loop_l7650 + 1;
+#line 7651
             KzValue c = kz_fb_index(text, i, kz_str(""));
+#line 7652
             if (kz_is_truthy(kz_eq(c, kz_str("\n")))) {
+#line 7653
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ line }));
+#line 7654
                 line = kz_str("");
             } else {
+#line 7656
                 if (kz_is_truthy(kz_or(kz_ge(c, kz_str(" ")), kz_eq(c, kz_str("\t"))))) {
+#line 7657
                     line = kz_add(line, c);
                 }
             }
+#line 7658
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7659
     return kz_add(out, kz_list_from(1, (KzValue[]){ line }));
     return kz_nil();
 }
 
+#line 7661
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_line_text(KzValue text, KzValue want) {
     (void)text;   /* a routine need not use every parameter */
     (void)want;   /* a routine need not use every parameter */
+#line 7662
     KzValue lines = kaze_fn_lsp_split_lines(text);
+#line 7663
     if (kz_is_truthy(kz_and(kz_ge(want, kz_num((kaze_float_t)0)), kz_lt(want, kz_len(lines))))) {
+#line 7664
         return kz_fb_index(lines, want, kz_str(""));
     }
+#line 7665
     return kz_str("");
     return kz_nil();
 }
 
+#line 7668
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_strip_comment(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7669
     KzValue n = kz_len(s);
+#line 7670
     KzValue i = kz_num((kaze_float_t)0);
+#line 7671
     KzValue in_string = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7663 = 0;
+#line 7672
+    { long _kz_loop_l7672 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l7663 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7663 = _kz_loop_l7663 + 1;
+            if (_kz_loop_l7672 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7672 = _kz_loop_l7672 + 1;
+#line 7673
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7674
             if (kz_is_truthy(kz_eq(c, kz_str("\"")))) {
+#line 7675
                 if (kz_is_truthy(kz_eq(in_string, kz_num((kaze_float_t)0)))) {
+#line 7676
                     in_string = kz_num((kaze_float_t)1);
                 } else {
+#line 7678
                     in_string = kz_num((kaze_float_t)0);
                 }
             } else {
+#line 7680
                 if (kz_is_truthy(kz_and(kz_eq(c, kz_str("#")), kz_eq(in_string, kz_num((kaze_float_t)0))))) {
+#line 7681
                     return kaze_fn_lsp_slice(s, kz_num((kaze_float_t)0), i);
                 }
             }
+#line 7682
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7683
     return s;
     return kz_nil();
 }
 
+#line 7686
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_ltrim(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7687
     KzValue n = kz_len(s);
+#line 7688
     KzValue i = kz_num((kaze_float_t)0);
+#line 7689
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7681 = 0;
+#line 7690
+    { long _kz_loop_l7690 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7681 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7681 = _kz_loop_l7681 + 1;
+            if (_kz_loop_l7690 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7690 = _kz_loop_l7690 + 1;
+#line 7691
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7692
             if (kz_is_truthy(kz_or(kz_or(kz_eq(c, kz_str(" ")), kz_eq(c, kz_str("\t"))), kz_lt(c, kz_str(" "))))) {
+#line 7693
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 7695
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7696
     return kz_list_from(2, (KzValue[]){ kaze_fn_lsp_slice(s, i, kz_sub(n, i)), i });
     return kz_nil();
 }
 
+#line 7698
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_rtrim(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7699
     KzValue n = kz_len(s);
+#line 7700
     KzValue i = n;
+#line 7701
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7693 = 0;
+#line 7702
+    { long _kz_loop_l7702 = 0;
         while (kz_is_truthy(kz_and(kz_gt(i, kz_num((kaze_float_t)0)), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7693 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7693 = _kz_loop_l7693 + 1;
+            if (_kz_loop_l7702 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7702 = _kz_loop_l7702 + 1;
+#line 7703
             KzValue c = kz_fb_index(s, kz_sub(i, kz_num((kaze_float_t)1)), kz_str(""));
+#line 7704
             if (kz_is_truthy(kz_or(kz_or(kz_eq(c, kz_str(" ")), kz_eq(c, kz_str("\t"))), kz_lt(c, kz_str(" "))))) {
+#line 7705
                 i = kz_sub(i, kz_num((kaze_float_t)1));
             } else {
+#line 7707
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7708
     return kaze_fn_lsp_slice(s, kz_num((kaze_float_t)0), i);
     return kz_nil();
 }
 
+#line 7710
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_first_word(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7711
     KzValue n = kz_len(s);
+#line 7712
     KzValue i = kz_num((kaze_float_t)0);
+#line 7713
     KzValue out = kz_str("");
+#line 7714
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7706 = 0;
+#line 7715
+    { long _kz_loop_l7715 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7706 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7706 = _kz_loop_l7706 + 1;
+            if (_kz_loop_l7715 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7715 = _kz_loop_l7715 + 1;
+#line 7716
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7717
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_ident(c), kz_num((kaze_float_t)1)))) {
+#line 7718
                 out = kz_add_own(out, c);
+#line 7719
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 7721
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7722
     return out;
     return kz_nil();
 }
 
+#line 7724
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_after_first_word(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7725
     KzValue n = kz_len(s);
+#line 7726
     KzValue word = kaze_fn_lsp_first_word(s);
+#line 7727
     KzValue k = kz_len(word);
-    { long _kz_loop_l7719 = 0;
+#line 7728
+    { long _kz_loop_l7728 = 0;
         while (kz_is_truthy(kz_and(kz_lt(k, n), kz_eq(kaze_fn_lsp_is_space(kz_fb_index(s, k, kz_str(""))), kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7719 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7719 = _kz_loop_l7719 + 1;
+            if (_kz_loop_l7728 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7728 = _kz_loop_l7728 + 1;
+#line 7729
             k = kz_add(k, kz_num((kaze_float_t)1));
         }
     }
+#line 7730
     return kaze_fn_lsp_slice(s, k, kz_sub(n, k));
     return kz_nil();
 }
 
+#line 7732
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_leading_ident(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7733
     KzValue n = kz_len(s);
+#line 7734
     KzValue i = kz_num((kaze_float_t)0);
+#line 7735
     KzValue out = kz_str("");
+#line 7736
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7728 = 0;
+#line 7737
+    { long _kz_loop_l7737 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7728 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7728 = _kz_loop_l7728 + 1;
+            if (_kz_loop_l7737 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7737 = _kz_loop_l7737 + 1;
+#line 7738
             KzValue c = kz_fb_index(s, i, kz_str(""));
+#line 7739
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_ident(c), kz_num((kaze_float_t)1)))) {
+#line 7740
                 out = kz_add_own(out, c);
+#line 7741
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 7743
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7744
     return out;
     return kz_nil();
 }
 
+#line 7747
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_params_of(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 7748
     KzValue n = kz_len(s);
+#line 7749
     KzValue i = kz_num((kaze_float_t)0);
+#line 7750
     KzValue open = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l7742 = 0;
+#line 7751
+    { long _kz_loop_l7751 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_lt(open, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7742 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7742 = _kz_loop_l7742 + 1;
+            if (_kz_loop_l7751 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7751 = _kz_loop_l7751 + 1;
+#line 7752
             if (kz_is_truthy(kz_eq(kz_fb_index(s, i, kz_str("")), kz_str("(")))) {
+#line 7753
                 open = i;
             }
+#line 7754
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7755
     if (kz_is_truthy(kz_lt(open, kz_num((kaze_float_t)0)))) {
+#line 7756
         return kz_str("");
     }
+#line 7757
     KzValue j = kz_add(open, kz_num((kaze_float_t)1));
+#line 7758
     KzValue close = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l7750 = 0;
+#line 7759
+    { long _kz_loop_l7759 = 0;
         while (kz_is_truthy(kz_and(kz_lt(j, n), kz_lt(close, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7750 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7750 = _kz_loop_l7750 + 1;
+            if (_kz_loop_l7759 >= 4000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7759 = _kz_loop_l7759 + 1;
+#line 7760
             if (kz_is_truthy(kz_eq(kz_fb_index(s, j, kz_str("")), kz_str(")")))) {
+#line 7761
                 close = j;
             }
+#line 7762
             j = kz_add(j, kz_num((kaze_float_t)1));
         }
     }
+#line 7763
     if (kz_is_truthy(kz_lt(close, kz_num((kaze_float_t)0)))) {
+#line 7764
         return kaze_fn_lsp_rtrim(kaze_fn_lsp_slice(s, kz_add(open, kz_num((kaze_float_t)1)), kz_sub(kz_sub(n, open), kz_num((kaze_float_t)1))));
     }
+#line 7765
     return kaze_fn_lsp_rtrim(kaze_fn_lsp_slice(s, kz_add(open, kz_num((kaze_float_t)1)), kz_sub(kz_sub(close, open), kz_num((kaze_float_t)1))));
     return kz_nil();
 }
 
+#line 7767
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_contains(KzValue s, KzValue needle) {
     (void)s;   /* a routine need not use every parameter */
     (void)needle;   /* a routine need not use every parameter */
+#line 7768
     KzValue n = kz_len(s);
+#line 7769
     KzValue m = kz_len(needle);
+#line 7770
     if (kz_is_truthy(kz_eq(m, kz_num((kaze_float_t)0)))) {
+#line 7771
         return kz_num((kaze_float_t)0);
     }
+#line 7772
     KzValue i = kz_num((kaze_float_t)0);
+#line 7773
     KzValue found = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7765 = 0;
+#line 7774
+    { long _kz_loop_l7774 = 0;
         while (kz_is_truthy(kz_and(kz_le(kz_add(i, m), n), kz_eq(found, kz_num((kaze_float_t)0))))) {
-            if (_kz_loop_l7765 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7765 = _kz_loop_l7765 + 1;
+            if (_kz_loop_l7774 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7774 = _kz_loop_l7774 + 1;
+#line 7775
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_starts_at(s, i, needle), kz_num((kaze_float_t)1)))) {
+#line 7776
                 found = kz_num((kaze_float_t)1);
             }
+#line 7777
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7778
     return found;
     return kz_nil();
 }
 
+#line 7786
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_record_fields(KzValue lines, KzValue from, KzValue base_indent) {
     (void)lines;   /* a routine need not use every parameter */
     (void)from;   /* a routine need not use every parameter */
     (void)base_indent;   /* a routine need not use every parameter */
+#line 7787
     KzValue n = kz_len(lines);
+#line 7788
     KzValue j = from;
+#line 7789
     KzValue out = kz_str("");
+#line 7790
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7782 = 0;
+#line 7791
+    { long _kz_loop_l7791 = 0;
         while (kz_is_truthy(kz_and(kz_lt(j, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7782 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7782 = _kz_loop_l7782 + 1;
+            if (_kz_loop_l7791 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7791 = _kz_loop_l7791 + 1;
+#line 7792
             KzValue clean = kaze_fn_lsp_strip_comment(kz_fb_index(lines, j, kz_str("")));
+#line 7793
             KzValue tt = kaze_fn_lsp_ltrim(clean);
+#line 7794
             KzValue t = kaze_fn_lsp_rtrim(kz_fb_index(tt, kz_num((kaze_float_t)0), kz_str("")));
+#line 7795
             KzValue indent = kz_fb_index(tt, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 7796
             if (kz_is_truthy(kz_eq(kz_len(t), kz_num((kaze_float_t)0)))) {
+#line 7797
                 j = kz_add(j, kz_num((kaze_float_t)1));
             } else {
+#line 7799
                 if (kz_is_truthy(kz_le(indent, base_indent))) {
+#line 7800
                     going = kz_num((kaze_float_t)0);
                 } else {
+#line 7802
                     if (kz_is_truthy(kz_eq(kaze_fn_lsp_contains(t, kz_str(":")), kz_num((kaze_float_t)1)))) {
+#line 7803
                         out = kz_add(kz_add(out, kz_str("\n    ")), t);
                     }
+#line 7804
                     j = kz_add(j, kz_num((kaze_float_t)1));
                 }
             }
         }
     }
+#line 7805
     return out;
     return kz_nil();
 }
 
+#line 7807
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_scan_decls(KzValue text) {
     (void)text;   /* a routine need not use every parameter */
+#line 7808
     KzValue lines = kaze_fn_lsp_split_lines(text);
+#line 7809
     KzValue n = kz_len(lines);
+#line 7810
     KzValue decls = kz_list_new(0);
+#line 7811
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7803 = 0;
+#line 7812
+    { long _kz_loop_l7812 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l7803 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7803 = _kz_loop_l7803 + 1;
+            if (_kz_loop_l7812 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7812 = _kz_loop_l7812 + 1;
+#line 7813
             KzValue clean = kaze_fn_lsp_strip_comment(kz_fb_index(lines, i, kz_str("")));
+#line 7814
             KzValue tt = kaze_fn_lsp_ltrim(clean);
+#line 7815
             KzValue t = kz_fb_index(tt, kz_num((kaze_float_t)0), kz_str(""));
+#line 7816
             KzValue indent = kz_fb_index(tt, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 7817
             KzValue word = kaze_fn_lsp_first_word(t);
+#line 7818
             if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_eq(word, kz_str("action")), kz_eq(word, kz_str("routine"))), kz_eq(word, kz_str("func"))), kz_eq(word, kz_str("check"))), kz_eq(word, kz_str("filter"))))) {
+#line 7819
                 KzValue rest = kaze_fn_lsp_after_first_word(t);
+#line 7820
                 KzValue name = kaze_fn_lsp_leading_ident(rest);
+#line 7821
                 if (kz_is_truthy(kz_gt(kz_len(name), kz_num((kaze_float_t)0)))) {
+#line 7822
                     KzValue params = kaze_fn_lsp_params_of(rest);
+#line 7823
                     KzValue signature = kz_add(kz_add(kz_add(kz_add(kz_add(word, kz_str(" ")), name), kz_str("(")), params), kz_str(")"));
+#line 7824
                     decls = kz_add_own(decls, kz_list_from(1, (KzValue[]){ kz_record_new_LspDecl(6, (KzValue[]){ word, name, params, signature, kz_add(i, kz_num((kaze_float_t)1)), kz_add(kz_add(indent, kz_len(word)), kz_num((kaze_float_t)1)) }, (const char*[]){ "kind", "name", "params", "signature", "line", "col" }) }));
                 }
             } else {
+#line 7826
                 if (kz_is_truthy(kz_eq(word, kz_str("record")))) {
+#line 7827
                     KzValue rest = kaze_fn_lsp_after_first_word(t);
+#line 7828
                     KzValue name = kaze_fn_lsp_leading_ident(rest);
+#line 7829
                     if (kz_is_truthy(kz_gt(kz_len(name), kz_num((kaze_float_t)0)))) {
+#line 7830
                         KzValue fields = kaze_fn_lsp_record_fields(lines, kz_add(i, kz_num((kaze_float_t)1)), indent);
+#line 7831
                         KzValue signature = kz_add(kz_add(kz_str("record "), name), fields);
+#line 7832
                         decls = kz_add_own(decls, kz_list_from(1, (KzValue[]){ kz_record_new_LspDecl(6, (KzValue[]){ kz_str("record"), name, kz_str(""), signature, kz_add(i, kz_num((kaze_float_t)1)), kz_add(kz_add(indent, kz_len(word)), kz_num((kaze_float_t)1)) }, (const char*[]){ "kind", "name", "params", "signature", "line", "col" }) }));
                     }
                 }
             }
+#line 7833
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7834
     return decls;
     return kz_nil();
 }
 
+#line 7836
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_find_decl(KzValue decls, KzValue name) {
     (void)decls;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 7837
     if (kz_is_truthy(kz_eq(kz_len(name), kz_num((kaze_float_t)0)))) {
+#line 7838
         return kaze_fn_lsp_empty_decl();
     }
+#line 7839
     KzValue n = kz_len(decls);
+#line 7840
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7832 = 0;
+#line 7841
+    { long _kz_loop_l7841 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l7832 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7832 = _kz_loop_l7832 + 1;
+            if (_kz_loop_l7841 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7841 = _kz_loop_l7841 + 1;
+#line 7842
             KzValue d = kz_fb_index(decls, i, kaze_fn_lsp_empty_decl());
+#line 7843
             if (kz_is_truthy(kz_eq(kz_get_field(d, "name"), name))) {
+#line 7844
                 return d;
             }
+#line 7845
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7846
     return kaze_fn_lsp_empty_decl();
     return kz_nil();
 }
 
+#line 7849
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_word_at(KzValue text, KzValue want_line, KzValue want_char) {
     (void)text;   /* a routine need not use every parameter */
     (void)want_line;   /* a routine need not use every parameter */
     (void)want_char;   /* a routine need not use every parameter */
+#line 7850
     KzValue line = kaze_fn_lsp_line_text(text, want_line);
+#line 7851
     KzValue n = kz_len(line);
+#line 7852
     KzValue c = want_char;
+#line 7853
     if (kz_is_truthy(kz_lt(c, kz_num((kaze_float_t)0)))) {
+#line 7854
         c = kz_num((kaze_float_t)0);
     }
+#line 7855
     if (kz_is_truthy(kz_gt(c, n))) {
+#line 7856
         c = n;
     }
+#line 7857
     KzValue start = c;
+#line 7858
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7850 = 0;
+#line 7859
+    { long _kz_loop_l7859 = 0;
         while (kz_is_truthy(kz_and(kz_gt(start, kz_num((kaze_float_t)0)), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7850 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7850 = _kz_loop_l7850 + 1;
+            if (_kz_loop_l7859 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7859 = _kz_loop_l7859 + 1;
+#line 7860
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_ident(kz_fb_index(line, kz_sub(start, kz_num((kaze_float_t)1)), kz_str(""))), kz_num((kaze_float_t)1)))) {
+#line 7861
                 start = kz_sub(start, kz_num((kaze_float_t)1));
             } else {
+#line 7863
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7864
     KzValue stop = c;
+#line 7865
     going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l7857 = 0;
+#line 7866
+    { long _kz_loop_l7866 = 0;
         while (kz_is_truthy(kz_and(kz_lt(stop, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l7857 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7857 = _kz_loop_l7857 + 1;
+            if (_kz_loop_l7866 >= 4000000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7866 = _kz_loop_l7866 + 1;
+#line 7867
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_ident(kz_fb_index(line, stop, kz_str(""))), kz_num((kaze_float_t)1)))) {
+#line 7868
                 stop = kz_add(stop, kz_num((kaze_float_t)1));
             } else {
+#line 7870
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 7871
     return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_slice(line, start, kz_sub(stop, start)), start, stop });
     return kz_nil();
 }
 
+#line 7880
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_parse_source(KzValue src) {
     (void)src;   /* a routine need not use every parameter */
+#line 7881
     if (kz_is_truthy(kz_eq(kaze_fn_is_machine_source(src), kz_num((kaze_float_t)1)))) {
+#line 7882
         return kaze_fn_parse_machine(src);
     }
+#line 7883
     KzValue tokens = kaze_fn_tokenize(src);
+#line 7884
     return kaze_fn_parse_program(tokens);
     return kz_nil();
 }
 
+#line 7886
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_diags_json(KzValue text) {
     (void)text;   /* a routine need not use every parameter */
+#line 7887
     KzValue program = kaze_fn_lsp_parse_source(text);
+#line 7888
     KzValue diags = kaze_fn_check_program(program);
+#line 7889
     KzValue count = kz_len(diags);
+#line 7890
     KzValue out = kz_str("[");
+#line 7891
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l7883 = 0;
+#line 7892
+    { long _kz_loop_l7892 = 0;
         while (kz_is_truthy(kz_lt(i, count))) {
-            if (_kz_loop_l7883 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l7883 = _kz_loop_l7883 + 1;
+            if (_kz_loop_l7892 >= 200000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l7892 = _kz_loop_l7892 + 1;
+#line 7893
             KzValue d = kz_fb_index(diags, i, kz_record_new_Diagnostic(3, (KzValue[]){ kz_str(""), kz_num((kaze_float_t)0), kz_str("") }, (const char*[]){ "code", "line", "msg" }));
+#line 7894
             KzValue line0 = kz_sub(kz_get_field(d, "line"), kz_num((kaze_float_t)1));
+#line 7895
             if (kz_is_truthy(kz_lt(line0, kz_num((kaze_float_t)0)))) {
+#line 7896
                 line0 = kz_num((kaze_float_t)0);
             }
+#line 7897
             KzValue width = kz_len(kaze_fn_lsp_line_text(text, line0));
+#line 7898
             if (kz_is_truthy(kz_gt(i, kz_num((kaze_float_t)0)))) {
+#line 7899
                 out = kz_add(out, kz_str(","));
             }
+#line 7900
             out = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_str("{\"range\":")), kaze_fn_lsp_range_json(line0, kz_num((kaze_float_t)0), width)), kz_str(",\"severity\":1,\"source\":\"kaze\",\"code\":")), kaze_fn_lsp_jstr(kz_get_field(d, "code"))), kz_str(",\"message\":")), kaze_fn_lsp_jstr(kz_get_field(d, "msg"))), kz_str("}"));
+#line 7901
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 7902
     return kz_add(out, kz_str("]"));
     return kz_nil();
 }
 
+#line 7904
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_publish(KzValue uri, KzValue text, KzValue eol) {
     (void)uri;   /* a routine need not use every parameter */
     (void)text;   /* a routine need not use every parameter */
     (void)eol;   /* a routine need not use every parameter */
+#line 7905
     KzValue params = kz_add(kz_add(kz_add(kz_add(kz_str("{\"uri\":"), kaze_fn_lsp_jstr(uri)), kz_str(",\"diagnostics\":")), kaze_fn_lsp_diags_json(text)), kz_str("}"));
+#line 7906
     return kaze_fn_lsp_notify(kz_str("textDocument/publishDiagnostics"), params, eol);
     return kz_nil();
 }
 
+#line 7910
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_hover_result(KzValue text, KzValue want_line, KzValue want_char, KzValue uri) {
     (void)text;   /* a routine need not use every parameter */
     (void)want_line;   /* a routine need not use every parameter */
     (void)want_char;   /* a routine need not use every parameter */
     (void)uri;   /* a routine need not use every parameter */
+#line 7911
     KzValue word = kaze_fn_lsp_word_at(text, want_line, want_char);
+#line 7912
     KzValue decls = kaze_fn_lsp_scan_decls(text);
+#line 7913
     KzValue d = kaze_fn_lsp_find_decl(decls, kz_fb_index(word, kz_num((kaze_float_t)0), kz_str("")));
+#line 7914
     if (kz_is_truthy(kz_eq(kz_len(kz_get_field(d, "name")), kz_num((kaze_float_t)0)))) {
+#line 7915
         return kz_str("null");
     }
+#line 7916
     KzValue markdown = kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("```kaze\n"), kz_get_field(d, "signature")), kz_str("\n```\n\nDeclared at line ")), kz_get_field(d, "line")), kz_str(" of ")), uri), kz_str("."));
+#line 7917
     KzValue range = kaze_fn_lsp_range_json(want_line, kz_fb_index(word, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)), kz_fb_index(word, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0)));
+#line 7918
     return kz_add(kz_add(kz_add(kz_add(kz_str("{\"contents\":{\"kind\":\"markdown\",\"value\":"), kaze_fn_lsp_jstr(markdown)), kz_str("},\"range\":")), range), kz_str("}"));
     return kz_nil();
 }
 
+#line 7920
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_definition_result(KzValue text, KzValue want_line, KzValue want_char, KzValue uri) {
     (void)text;   /* a routine need not use every parameter */
     (void)want_line;   /* a routine need not use every parameter */
     (void)want_char;   /* a routine need not use every parameter */
     (void)uri;   /* a routine need not use every parameter */
+#line 7921
     KzValue word = kaze_fn_lsp_word_at(text, want_line, want_char);
+#line 7922
     KzValue decls = kaze_fn_lsp_scan_decls(text);
+#line 7923
     KzValue d = kaze_fn_lsp_find_decl(decls, kz_fb_index(word, kz_num((kaze_float_t)0), kz_str("")));
+#line 7924
     if (kz_is_truthy(kz_eq(kz_len(kz_get_field(d, "name")), kz_num((kaze_float_t)0)))) {
+#line 7925
         return kz_str("null");
     }
+#line 7926
     KzValue line0 = kz_sub(kz_get_field(d, "line"), kz_num((kaze_float_t)1));
+#line 7927
     if (kz_is_truthy(kz_lt(line0, kz_num((kaze_float_t)0)))) {
+#line 7928
         line0 = kz_num((kaze_float_t)0);
     }
+#line 7929
     KzValue end_col = kz_add(kz_get_field(d, "col"), kz_len(kz_get_field(d, "name")));
+#line 7930
     return kz_add(kz_add(kz_add(kz_add(kz_str("{\"uri\":"), kaze_fn_lsp_jstr(uri)), kz_str(",\"range\":")), kaze_fn_lsp_range_json(line0, kz_get_field(d, "col"), end_col)), kz_str("}"));
     return kz_nil();
 }
 
+#line 7934
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_initialize_caps(void) {
+#line 7935
     return kz_str("{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true},\"serverInfo\":{\"name\":\"kaze-lsp-native\",\"version\":\"0.1.0\"}}");
     return kz_nil();
 }
 
+#line 7938
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_handle(KzValue body, KzValue docs, KzValue eol) {
     (void)body;   /* a routine need not use every parameter */
     (void)docs;   /* a routine need not use every parameter */
     (void)eol;   /* a routine need not use every parameter */
+#line 7939
     KzValue parsed = kaze_fn_lsp_jparse(body, kz_num((kaze_float_t)0));
+#line 7940
     KzValue msg = kz_fb_index(parsed, kz_num((kaze_float_t)0), kaze_fn_lsp_none_json());
+#line 7941
     if (kz_is_truthy(kz_ne(kz_get_field(msg, "kind"), kz_str("obj")))) {
+#line 7942
         return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_error_reply(kz_str("null"), kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)32700)), kz_str("Parse error"), eol), docs, kz_num((kaze_float_t)0) });
     }
+#line 7943
     KzValue method = kaze_fn_lsp_get_text(msg, kz_str("method"));
+#line 7944
     KzValue id_node = kaze_fn_lsp_get(msg, kz_str("id"));
+#line 7945
     KzValue is_request = kz_num((kaze_float_t)0);
+#line 7946
     if (kz_is_truthy(kz_ne(kz_get_field(id_node, "kind"), kz_str("none")))) {
+#line 7947
         is_request = kz_num((kaze_float_t)1);
     }
+#line 7948
     KzValue params = kaze_fn_lsp_get(msg, kz_str("params"));
+#line 7950
     if (kz_is_truthy(kz_eq(method, kz_str("initialize")))) {
+#line 7951
         if (kz_is_truthy(kz_eq(is_request, kz_num((kaze_float_t)1)))) {
+#line 7952
             return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_reply(kaze_fn_lsp_id_json(id_node), kaze_fn_lsp_initialize_caps(), eol), docs, kz_num((kaze_float_t)0) });
         }
+#line 7953
         return kz_list_from(3, (KzValue[]){ kz_str(""), docs, kz_num((kaze_float_t)0) });
     }
+#line 7955
     if (kz_is_truthy(kz_eq(method, kz_str("initialized")))) {
+#line 7956
         return kz_list_from(3, (KzValue[]){ kz_str(""), docs, kz_num((kaze_float_t)0) });
     }
+#line 7958
     if (kz_is_truthy(kz_eq(method, kz_str("textDocument/didOpen")))) {
+#line 7959
         KzValue td = kaze_fn_lsp_get(params, kz_str("textDocument"));
+#line 7960
         KzValue uri = kaze_fn_lsp_get_text(td, kz_str("uri"));
+#line 7961
         KzValue text = kaze_fn_lsp_get_text(td, kz_str("text"));
+#line 7962
         KzValue next_docs = kaze_fn_lsp_doc_put(docs, uri, text);
+#line 7963
         return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_publish(uri, text, eol), next_docs, kz_num((kaze_float_t)0) });
     }
+#line 7965
     if (kz_is_truthy(kz_eq(method, kz_str("textDocument/didChange")))) {
+#line 7966
         KzValue td = kaze_fn_lsp_get(params, kz_str("textDocument"));
+#line 7967
         KzValue uri = kaze_fn_lsp_get_text(td, kz_str("uri"));
+#line 7968
         KzValue text = kaze_fn_lsp_get_text(td, kz_str("text"));
+#line 7969
         if (kz_is_truthy(kz_eq(kz_len(text), kz_num((kaze_float_t)0)))) {
+#line 7970
             KzValue change = kaze_fn_lsp_first_item(kaze_fn_lsp_get(params, kz_str("contentChanges")));
+#line 7971
             text = kaze_fn_lsp_get_text(change, kz_str("text"));
         }
+#line 7972
         KzValue next_docs = kaze_fn_lsp_doc_put(docs, uri, text);
+#line 7973
         return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_publish(uri, text, eol), next_docs, kz_num((kaze_float_t)0) });
     }
+#line 7975
     if (kz_is_truthy(kz_or(kz_eq(method, kz_str("textDocument/hover")), kz_eq(method, kz_str("textDocument/definition"))))) {
+#line 7976
         KzValue td = kaze_fn_lsp_get(params, kz_str("textDocument"));
+#line 7977
         KzValue uri = kaze_fn_lsp_get_text(td, kz_str("uri"));
+#line 7978
         KzValue position = kaze_fn_lsp_get(params, kz_str("position"));
+#line 7979
         KzValue want_line = kaze_fn_lsp_get_num(position, kz_str("line"));
+#line 7980
         KzValue want_char = kaze_fn_lsp_get_num(position, kz_str("character"));
+#line 7981
         KzValue text = kaze_fn_lsp_doc_text(docs, uri);
+#line 7982
         KzValue result = kz_str("null");
+#line 7983
         if (kz_is_truthy(kz_eq(method, kz_str("textDocument/hover")))) {
+#line 7984
             result = kaze_fn_lsp_hover_result(text, want_line, want_char, uri);
         } else {
+#line 7986
             result = kaze_fn_lsp_definition_result(text, want_line, want_char, uri);
         }
+#line 7987
         if (kz_is_truthy(kz_eq(is_request, kz_num((kaze_float_t)1)))) {
+#line 7988
             return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_reply(kaze_fn_lsp_id_json(id_node), result, eol), docs, kz_num((kaze_float_t)0) });
         }
+#line 7989
         return kz_list_from(3, (KzValue[]){ kz_str(""), docs, kz_num((kaze_float_t)0) });
     }
+#line 7991
     if (kz_is_truthy(kz_eq(method, kz_str("shutdown")))) {
+#line 7992
         if (kz_is_truthy(kz_eq(is_request, kz_num((kaze_float_t)1)))) {
+#line 7993
             return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_reply(kaze_fn_lsp_id_json(id_node), kz_str("null"), eol), docs, kz_num((kaze_float_t)0) });
         }
+#line 7994
         return kz_list_from(3, (KzValue[]){ kz_str(""), docs, kz_num((kaze_float_t)0) });
     }
+#line 7996
     if (kz_is_truthy(kz_eq(method, kz_str("exit")))) {
+#line 7997
         return kz_list_from(3, (KzValue[]){ kz_str(""), docs, kz_num((kaze_float_t)1) });
     }
+#line 8001
     if (kz_is_truthy(kz_eq(is_request, kz_num((kaze_float_t)1)))) {
+#line 8002
         return kz_list_from(3, (KzValue[]){ kaze_fn_lsp_error_reply(kaze_fn_lsp_id_json(id_node), kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)32601)), kz_add(kz_str("Method not found: "), method), eol), docs, kz_num((kaze_float_t)0) });
     }
+#line 8003
     return kz_list_from(3, (KzValue[]){ kz_str(""), docs, kz_num((kaze_float_t)0) });
     return kz_nil();
 }
 
+#line 8010
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_serve_session(KzValue session) {
     (void)session;   /* a routine need not use every parameter */
+#line 8011
     KzValue n = kz_len(session);
+#line 8012
     KzValue i = kz_num((kaze_float_t)0);
+#line 8013
     KzValue docs = kz_list_new(0);
+#line 8014
     KzValue out = kz_str("");
+#line 8015
     KzValue eol = kaze_fn_lsp_eol_of(session);
+#line 8016
     KzValue stop = kz_num((kaze_float_t)0);
+#line 8017
     KzValue frames = kz_num((kaze_float_t)0);
-    { long _kz_loop_l8009 = 0;
+#line 8018
+    { long _kz_loop_l8018 = 0;
         while (kz_is_truthy(kz_and(kz_and(kz_lt(i, n), kz_eq(stop, kz_num((kaze_float_t)0))), kz_lt(frames, kz_num((kaze_float_t)100000))))) {
-            if (_kz_loop_l8009 >= 100002L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8009 = _kz_loop_l8009 + 1;
+            if (_kz_loop_l8018 >= 100002L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8018 = _kz_loop_l8018 + 1;
+#line 8019
             KzValue r = kaze_fn_lsp_read_frame(session, i);
+#line 8020
             KzValue body = kz_fb_index(r, kz_num((kaze_float_t)0), kz_str(""));
+#line 8021
             KzValue next = kz_fb_index(r, kz_num((kaze_float_t)1), n);
+#line 8022
             KzValue ok = kz_fb_index(r, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
+#line 8023
             if (kz_is_truthy(kz_eq(ok, kz_num((kaze_float_t)0)))) {
+#line 8024
                 i = n;
             } else {
+#line 8026
                 if (kz_is_truthy(kz_gt(kz_len(body), kz_num((kaze_float_t)0)))) {
+#line 8027
                     KzValue h = kaze_fn_lsp_handle(body, docs, eol);
+#line 8028
                     out = kz_add_own(out, kz_fb_index(h, kz_num((kaze_float_t)0), kz_str("")));
+#line 8029
                     docs = kz_fb_index(h, kz_num((kaze_float_t)1), docs);
+#line 8030
                     stop = kz_fb_index(h, kz_num((kaze_float_t)2), kz_num((kaze_float_t)0));
                 }
+#line 8031
                 i = next;
             }
+#line 8032
             frames = kz_add(frames, kz_num((kaze_float_t)1));
         }
     }
+#line 8033
     return out;
     return kz_nil();
 }
 
+#line 8041
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_has_text(KzValue v) {
     (void)v;   /* a routine need not use every parameter */
+#line 8042
     if (kz_is_truthy(kz_eq(v, kz_str("nil")))) {
+#line 8043
         return kz_num((kaze_float_t)1);
     }
+#line 8044
     KzValue as_text = kz_add(v, kz_str(""));
+#line 8045
     if (kz_is_truthy(kz_eq(as_text, kz_str("nil")))) {
+#line 8046
         return kz_num((kaze_float_t)0);
     }
+#line 8047
     return kz_num((kaze_float_t)1);
     return kz_nil();
 }
 
+#line 8050
 KZ_MAYBE_UNUSED static KzValue kaze_fn_lsp_looks_like_session(KzValue v) {
     (void)v;   /* a routine need not use every parameter */
+#line 8051
     if (kz_is_truthy(kz_eq(kaze_fn_lsp_has_text(v), kz_num((kaze_float_t)0)))) {
+#line 8052
         return kz_num((kaze_float_t)0);
     }
+#line 8053
     KzValue text = kz_add(v, kz_str(""));
+#line 8054
     KzValue n = kz_len(text);
+#line 8055
     KzValue i = kz_num((kaze_float_t)0);
+#line 8056
     KzValue going = kz_num((kaze_float_t)1);
-    { long _kz_loop_l8048 = 0;
+#line 8057
+    { long _kz_loop_l8057 = 0;
         while (kz_is_truthy(kz_and(kz_lt(i, n), kz_eq(going, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l8048 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8048 = _kz_loop_l8048 + 1;
+            if (_kz_loop_l8057 >= 1000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8057 = _kz_loop_l8057 + 1;
+#line 8058
             if (kz_is_truthy(kz_eq(kaze_fn_lsp_is_space(kz_fb_index(text, i, kz_str(""))), kz_num((kaze_float_t)1)))) {
+#line 8059
                 i = kz_add(i, kz_num((kaze_float_t)1));
             } else {
+#line 8061
                 going = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 8062
     if (kz_is_truthy(kz_eq(kaze_fn_lsp_starts_with_ci(kaze_fn_lsp_slice(text, i, kz_num((kaze_float_t)15)), kz_str("content-length:")), kz_num((kaze_float_t)1)))) {
+#line 8063
         return kz_num((kaze_float_t)1);
     }
+#line 8064
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 8098
 KZ_MAYBE_UNUSED static KzValue kaze_fn_mode_of(KzValue word) {
     (void)word;   /* a routine need not use every parameter */
+#line 8099
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(word, kz_str("check")), kz_eq(word, kz_str("emit-c"))), kz_eq(word, kz_str("to-machine"))), kz_eq(word, kz_str("to-human"))))) {
+#line 8100
         return word;
     }
+#line 8101
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(word, kz_str("fmt")), kz_eq(word, kz_str("compile"))), kz_eq(word, kz_str("lsp"))), kz_eq(word, kz_str("surface"))))) {
+#line 8102
         return word;
     }
+#line 8103
     return kz_str("");
     return kz_nil();
 }
 
+#line 8107
 KZ_MAYBE_UNUSED static KzValue kaze_fn_parse_source(KzValue src) {
     (void)src;   /* a routine need not use every parameter */
+#line 8108
     if (kz_is_truthy(kz_eq(kaze_fn_is_machine_source(src), kz_num((kaze_float_t)1)))) {
+#line 8109
         return kaze_fn_parse_machine(src);
     }
+#line 8110
     KzValue tokens = kaze_fn_tokenize(src);
+#line 8111
     return kaze_fn_parse_program(tokens);
     return kz_nil();
 }
 
+#line 8113
 KZ_MAYBE_UNUSED static KzValue kaze_fn_render_diags(KzValue diags) {
     (void)diags;   /* a routine need not use every parameter */
+#line 8114
     KzValue count = kz_len(diags);
+#line 8115
     if (kz_is_truthy(kz_eq(count, kz_num((kaze_float_t)0)))) {
+#line 8116
         return kz_str("check: ok\n");
     }
+#line 8117
     KzValue out = kz_add(kz_add(kz_str("check: "), count), kz_str(" diagnostic(s)\n"));
+#line 8118
     {
         KzValue _iter_target = diags;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue d = _iter_target.as.list->items[_i];
+#line 8119
                 out = kz_add(kz_add(out, kaze_fn_render_diag(d)), kz_str("\n"));
             }
         }
     }
+#line 8120
     return out;
     return kz_nil();
 }
 
+#line 8122
 KZ_MAYBE_UNUSED static KzValue kaze_fn_compile(KzValue src) {
     (void)src;   /* a routine need not use every parameter */
+#line 8123
     KzValue program = kaze_fn_parse_source(src);
+#line 8124
     return kaze_fn_emit_c_program(program);
     return kz_nil();
 }
 
+#line 8128
 KZ_MAYBE_UNUSED static KzValue kaze_fn_surface_text(void) {
+#line 8130
     KzValue verbs = kaze_fn_cap_verbs();
+#line 8131
     KzValue out = kz_str("");
+#line 8132
     KzValue first = kz_num((kaze_float_t)1);
+#line 8133
     {
         KzValue _iter_target = verbs;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue v = _iter_target.as.list->items[_i];
+#line 8134
                 if (kz_is_truthy(kz_eq(first, kz_num((kaze_float_t)1)))) {
+#line 8135
                     out = v;
+#line 8136
                     first = kz_num((kaze_float_t)0);
                 } else {
+#line 8138
                     out = kz_add(kz_add(out, kz_str("\n")), v);
                 }
             }
         }
     }
+#line 8139
     {
         KzValue _iter_target = kaze_fn_bc_opcodes();
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue o = _iter_target.as.list->items[_i];
+#line 8140
                 out = kz_add(kz_add(out, kz_str("\nopcode ")), o);
             }
         }
     }
+#line 8141
     return out;
     return kz_nil();
 }
 
+#line 8143
 KZ_MAYBE_UNUSED static KzValue kaze_fn__kz_main(KzValue mode, KzValue src) {
     (void)mode;   /* a routine need not use every parameter */
     (void)src;   /* a routine need not use every parameter */
+#line 8144
     KzValue selected = kaze_fn_mode_of(mode);
+#line 8145
     if (kz_is_truthy(kz_eq(selected, kz_str("lsp")))) {
+#line 8150
         if (kz_is_truthy(kz_eq(kaze_fn_lsp_has_text(src), kz_num((kaze_float_t)0)))) {
+#line 8151
             return kz_nil();
         }
+#line 8152
         if (kz_is_truthy(kz_eq(kaze_fn_lsp_looks_like_session(src), kz_num((kaze_float_t)0)))) {
+#line 8153
             return kz_nil();
         }
+#line 8154
         return kaze_fn_lsp_serve_session(src);
     }
+#line 8155
     if (kz_is_truthy(kz_eq(selected, kz_str("")))) {
+#line 8159
         if (kz_is_truthy(kz_eq(kaze_fn_lsp_looks_like_session(mode), kz_num((kaze_float_t)1)))) {
+#line 8160
             return kaze_fn_lsp_serve_session(mode);
         }
+#line 8162
         if (kz_is_truthy(kz_eq(kaze_fn_lsp_has_text(mode), kz_num((kaze_float_t)0)))) {
+#line 8163
             return kz_str("/* Kaze Compiler — No input provided */\n");
         }
+#line 8164
         if (kz_is_truthy(kz_eq(kz_len(mode), kz_num((kaze_float_t)0)))) {
+#line 8165
             return kz_str("/* Kaze Compiler — No input provided */\n");
         }
+#line 8166
         return kaze_fn_compile(mode);
     }
+#line 8167
     if (kz_is_truthy(kz_eq(selected, kz_str("check")))) {
+#line 8168
         KzValue program = kaze_fn_parse_source(src);
+#line 8169
         return kaze_fn_render_diags(kaze_fn_check_program(program));
     }
+#line 8170
     if (kz_is_truthy(kz_eq(selected, kz_str("to-machine")))) {
+#line 8171
         KzValue program = kaze_fn_parse_source(src);
+#line 8172
         return kaze_fn_emit_machine(program);
     }
+#line 8173
     if (kz_is_truthy(kz_eq(selected, kz_str("surface")))) {
+#line 8174
         return kaze_fn_surface_text();
     }
+#line 8176
     if (kz_is_truthy(kz_eq(selected, kz_str("to-human")))) {
+#line 8177
         KzValue program = kaze_fn_parse_machine(src);
+#line 8178
         return kaze_fn_emit_human(program);
     }
+#line 8179
     if (kz_is_truthy(kz_eq(selected, kz_str("fmt")))) {
+#line 8180
         KzValue program = kaze_fn_parse_source(src);
+#line 8181
         return kaze_fn_emit_human(program);
     }
+#line 8182
     if (kz_is_truthy(kz_eq(selected, kz_str("compile")))) {
+#line 8183
         return kaze_fn_compile_module(src);
     }
+#line 8184
     return kaze_fn_compile(src);
     return kz_nil();
 }
 
+#line 8238
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_floor(KzValue x) {
     (void)x;   /* a routine need not use every parameter */
+#line 8239
     if (kz_is_truthy(kz_ge(x, kz_num((kaze_float_t)0)))) {
+#line 8240
         KzValue r = kz_fb_mod(x, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 8241
         return kz_sub(x, r);
     }
+#line 8242
     KzValue r = kz_fb_mod(kz_sub(kz_num((kaze_float_t)0), x), kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 8243
     return kz_sub(kz_num((kaze_float_t)0), kz_sub(kz_sub(kz_num((kaze_float_t)0), x), r));
     return kz_nil();
 }
 
+#line 8248
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_num_of(KzValue text) {
     (void)text;   /* a routine need not use every parameter */
+#line 8249
     KzValue n = kz_len(text);
+#line 8250
     KzValue i = kz_num((kaze_float_t)0);
+#line 8251
     KzValue seen = kz_num((kaze_float_t)0);
+#line 8252
     KzValue whole = kz_num((kaze_float_t)0);
+#line 8253
     KzValue frac = kz_num((kaze_float_t)0);
+#line 8254
     KzValue scale = kz_num((kaze_float_t)1);
-    { long _kz_loop_l8246 = 0;
+#line 8255
+    { long _kz_loop_l8255 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8246 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8246 = _kz_loop_l8246 + 1;
+            if (_kz_loop_l8255 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8255 = _kz_loop_l8255 + 1;
+#line 8256
             KzValue c = kz_fb_index(text, i, kz_str("x"));
+#line 8257
             if (kz_is_truthy(kz_eq(c, kz_str(".")))) {
+#line 8258
                 seen = kz_num((kaze_float_t)1);
             } else {
+#line 8260
                 if (kz_is_truthy(kz_and(kz_ge(c, kz_str("0")), kz_le(c, kz_str("9"))))) {
+#line 8261
                     KzValue d = kaze_fn_digit_value(c);
+#line 8262
                     if (kz_is_truthy(kz_eq(seen, kz_num((kaze_float_t)1)))) {
+#line 8263
                         scale = kz_mul(scale, kz_num((kaze_float_t)10));
+#line 8264
                         frac = kz_add(kz_mul(frac, kz_num((kaze_float_t)10)), d);
                     } else {
+#line 8266
                         whole = kz_add(kz_mul(whole, kz_num((kaze_float_t)10)), d);
                     }
                 }
             }
+#line 8267
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8268
     if (kz_is_truthy(kz_eq(scale, kz_num((kaze_float_t)1)))) {
+#line 8269
         return whole;
     }
+#line 8270
     return kz_fb_div(kz_add(kz_mul(whole, scale), frac), scale, whole);
     return kz_nil();
 }
 
+#line 8276
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_bytes_of_num(KzValue x) {
     (void)x;   /* a routine need not use every parameter */
+#line 8277
     KzValue sign = kz_num((kaze_float_t)0);
+#line 8278
     KzValue v = x;
+#line 8279
     if (kz_is_truthy(kz_lt(v, kz_num((kaze_float_t)0)))) {
+#line 8280
         sign = kz_num((kaze_float_t)1);
+#line 8281
         v = kz_sub(kz_num((kaze_float_t)0), v);
     }
+#line 8282
     if (kz_is_truthy(kz_eq(v, kz_num((kaze_float_t)0)))) {
+#line 8283
         return kz_list_from(8, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
     }
+#line 8284
     KzValue e = kz_num((kaze_float_t)0);
+#line 8285
     KzValue m = v;
-    { long _kz_loop_l8277 = 0;
+#line 8286
+    { long _kz_loop_l8286 = 0;
         while (kz_is_truthy(kz_and(kz_ge(m, kz_num((kaze_float_t)2)), kz_lt(e, kz_num((kaze_float_t)1100))))) {
-            if (_kz_loop_l8277 >= 2000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8277 = _kz_loop_l8277 + 1;
+            if (_kz_loop_l8286 >= 2000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8286 = _kz_loop_l8286 + 1;
+#line 8287
             m = kz_div(m, kz_num((kaze_float_t)2));
+#line 8288
             e = kz_add(e, kz_num((kaze_float_t)1));
         }
     }
-    { long _kz_loop_l8280 = 0;
+#line 8289
+    { long _kz_loop_l8289 = 0;
         while (kz_is_truthy(kz_and(kz_lt(m, kz_num((kaze_float_t)1)), kz_gt(e, kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1100)))))) {
-            if (_kz_loop_l8280 >= 2000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8280 = _kz_loop_l8280 + 1;
+            if (_kz_loop_l8289 >= 2000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8289 = _kz_loop_l8289 + 1;
+#line 8290
             m = kz_mul(m, kz_num((kaze_float_t)2));
+#line 8291
             e = kz_sub(e, kz_num((kaze_float_t)1));
         }
     }
+#line 8292
     KzValue frac = kz_num((kaze_float_t)0);
+#line 8293
     KzValue i = kz_num((kaze_float_t)0);
+#line 8294
     m = kz_sub(m, kz_num((kaze_float_t)1));
-    { long _kz_loop_l8286 = 0;
+#line 8295
+    { long _kz_loop_l8295 = 0;
         while (kz_is_truthy(kz_lt(i, kz_num((kaze_float_t)52)))) {
-            if (_kz_loop_l8286 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8286 = _kz_loop_l8286 + 1;
+            if (_kz_loop_l8295 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8295 = _kz_loop_l8295 + 1;
+#line 8296
             m = kz_mul(m, kz_num((kaze_float_t)2));
+#line 8297
             KzValue bit = kaze_fn_bc_floor(m);
+#line 8298
             m = kz_sub(m, bit);
+#line 8299
             frac = kz_add(kz_mul(frac, kz_num((kaze_float_t)2)), bit);
+#line 8300
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8301
     KzValue ef = kz_add(e, kz_num((kaze_float_t)1023));
+#line 8302
     KzValue fhi = kaze_fn_bc_floor(kz_div(frac, kz_num((kaze_float_t)4294967296)));
+#line 8303
     KzValue flo = kz_sub(frac, kz_mul(fhi, kz_num((kaze_float_t)4294967296)));
+#line 8304
     KzValue hi = kz_add(kz_add(kz_mul(sign, kz_num((kaze_float_t)2147483648)), kz_mul(ef, kz_num((kaze_float_t)1048576))), fhi);
+#line 8305
     KzValue lo = flo;
+#line 8306
     KzValue y3 = kaze_fn_bc_floor(kz_div(lo, kz_num((kaze_float_t)16777216)));
+#line 8307
     KzValue r3 = kz_sub(lo, kz_mul(y3, kz_num((kaze_float_t)16777216)));
+#line 8308
     KzValue y2 = kaze_fn_bc_floor(kz_div(r3, kz_num((kaze_float_t)65536)));
+#line 8309
     KzValue r2 = kz_sub(r3, kz_mul(y2, kz_num((kaze_float_t)65536)));
+#line 8310
     KzValue y1 = kaze_fn_bc_floor(kz_div(r2, kz_num((kaze_float_t)256)));
+#line 8311
     KzValue y0 = kz_sub(r2, kz_mul(y1, kz_num((kaze_float_t)256)));
+#line 8312
     KzValue z3 = kaze_fn_bc_floor(kz_div(hi, kz_num((kaze_float_t)16777216)));
+#line 8313
     KzValue s3 = kz_sub(hi, kz_mul(z3, kz_num((kaze_float_t)16777216)));
+#line 8314
     KzValue z2 = kaze_fn_bc_floor(kz_div(s3, kz_num((kaze_float_t)65536)));
+#line 8315
     KzValue s2 = kz_sub(s3, kz_mul(z2, kz_num((kaze_float_t)65536)));
+#line 8316
     KzValue z1 = kaze_fn_bc_floor(kz_div(s2, kz_num((kaze_float_t)256)));
+#line 8317
     KzValue z0 = kz_sub(s2, kz_mul(z1, kz_num((kaze_float_t)256)));
+#line 8318
     return kz_list_from(8, (KzValue[]){ y0, y1, y2, y3, z0, z1, z2, z3 });
     return kz_nil();
 }
 
+#line 8322
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_u32(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 8323
     if (kz_is_truthy(kz_lt(n, kz_num((kaze_float_t)0)))) {
+#line 8324
         return kz_add(n, kz_num((kaze_float_t)4294967296));
     }
+#line 8325
     return n;
     return kz_nil();
 }
 
+#line 8327
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_u16_bytes(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 8328
     KzValue v = kaze_fn_bc_u32(n);
+#line 8329
     KzValue b0 = kz_mod(v, kz_num((kaze_float_t)256));
+#line 8330
     KzValue b1 = kz_div(kz_sub(v, b0), kz_num((kaze_float_t)256));
+#line 8331
     return kz_list_from(2, (KzValue[]){ b0, b1 });
     return kz_nil();
 }
 
+#line 8333
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_u32_bytes(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 8334
     KzValue v = kaze_fn_bc_u32(n);
+#line 8335
     KzValue b0 = kz_mod(v, kz_num((kaze_float_t)256));
+#line 8336
     KzValue r0 = kz_div(kz_sub(v, b0), kz_num((kaze_float_t)256));
+#line 8337
     KzValue b1 = kz_mod(r0, kz_num((kaze_float_t)256));
+#line 8338
     KzValue r1 = kz_div(kz_sub(r0, b1), kz_num((kaze_float_t)256));
+#line 8339
     KzValue b2 = kz_mod(r1, kz_num((kaze_float_t)256));
+#line 8340
     KzValue b3 = kz_div(kz_sub(r1, b2), kz_num((kaze_float_t)256));
+#line 8341
     return kz_list_from(4, (KzValue[]){ b0, b1, b2, b3 });
     return kz_nil();
 }
 
+#line 8345
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_byte_of(KzValue c) {
     (void)c;   /* a routine need not use every parameter */
+#line 8346
     if (kz_is_truthy(kz_eq(c, kz_str("\n")))) {
+#line 8347
         return kz_num((kaze_float_t)10);
     }
+#line 8348
     if (kz_is_truthy(kz_eq(c, kz_str("\t")))) {
+#line 8349
         return kz_num((kaze_float_t)9);
     }
+#line 8350
     KzValue table = kz_str(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~");
+#line 8351
     KzValue n = kz_len(table);
+#line 8352
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l8344 = 0;
+#line 8353
+    { long _kz_loop_l8353 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8344 >= 128L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8344 = _kz_loop_l8344 + 1;
+            if (_kz_loop_l8353 >= 128L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8353 = _kz_loop_l8353 + 1;
+#line 8354
             if (kz_is_truthy(kz_eq(kz_fb_index(table, i, kz_str("")), c))) {
+#line 8355
                 return kz_add(kz_num((kaze_float_t)32), i);
             }
+#line 8356
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8357
     return kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
     return kz_nil();
 }
 
+#line 8359
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_text_ok(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 8360
     KzValue n = kz_len(s);
+#line 8361
     KzValue i = kz_num((kaze_float_t)0);
+#line 8362
     KzValue ok = kz_num((kaze_float_t)1);
-    { long _kz_loop_l8354 = 0;
+#line 8363
+    { long _kz_loop_l8363 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8354 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8354 = _kz_loop_l8354 + 1;
+            if (_kz_loop_l8363 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8363 = _kz_loop_l8363 + 1;
+#line 8364
             if (kz_is_truthy(kz_lt(kaze_fn_bc_byte_of(kz_fb_index(s, i, kz_str("x"))), kz_num((kaze_float_t)0)))) {
+#line 8365
                 ok = kz_num((kaze_float_t)0);
             }
+#line 8366
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8367
     return ok;
     return kz_nil();
 }
 
+#line 8369
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_text_bytes(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 8370
     KzValue out = kz_list_new(0);
+#line 8371
     KzValue n = kz_len(s);
+#line 8372
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l8364 = 0;
+#line 8373
+    { long _kz_loop_l8373 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8364 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8364 = _kz_loop_l8364 + 1;
+            if (_kz_loop_l8373 >= 100000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8373 = _kz_loop_l8373 + 1;
+#line 8374
             KzValue b = kaze_fn_bc_byte_of(kz_fb_index(s, i, kz_str("x")));
+#line 8375
             if (kz_is_truthy(kz_ge(b, kz_num((kaze_float_t)0)))) {
+#line 8376
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ b }));
             }
+#line 8377
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8378
     return out;
     return kz_nil();
 }
 
+#line 8380
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_text_field(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 8381
     return kz_add(kaze_fn_bc_u32_bytes(kz_len(s)), kaze_fn_bc_text_bytes(s));
     return kz_nil();
 }
 
+#line 8386
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_num_text(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 8388
     KzValue v = kaze_fn_bc_floor(n);
+#line 8389
     if (kz_is_truthy(kz_lt(v, kz_num((kaze_float_t)0)))) {
+#line 8390
         return kz_add(kz_str("-"), kaze_fn_bc_num_text(kz_sub(kz_num((kaze_float_t)0), v)));
     }
+#line 8391
     if (kz_is_truthy(kz_eq(v, kz_num((kaze_float_t)0)))) {
+#line 8392
         return kz_str("0");
     }
+#line 8393
     KzValue digits = kz_str("0123456789");
+#line 8394
     KzValue out = kz_str("");
+#line 8395
     KzValue rest = v;
-    { long _kz_loop_l8387 = 0;
+#line 8396
+    { long _kz_loop_l8396 = 0;
         while (kz_is_truthy(kz_gt(rest, kz_num((kaze_float_t)0)))) {
-            if (_kz_loop_l8387 >= 32L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8387 = _kz_loop_l8387 + 1;
+            if (_kz_loop_l8396 >= 32L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8396 = _kz_loop_l8396 + 1;
+#line 8397
             KzValue d = kz_mod(rest, kz_num((kaze_float_t)10));
+#line 8398
             out = kz_add(kz_fb_index(digits, d, kz_str("0")), out);
+#line 8399
             rest = kz_div(kz_sub(rest, d), kz_num((kaze_float_t)10));
         }
     }
+#line 8400
     return out;
     return kz_nil();
 }
 
+#line 8402
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_hex_of(KzValue bytes) {
     (void)bytes;   /* a routine need not use every parameter */
+#line 8403
     KzValue digits = kz_str("0123456789abcdef");
+#line 8404
     KzValue out = kz_str("");
+#line 8405
     {
         KzValue _iter_target = bytes;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue b = _iter_target.as.list->items[_i];
+#line 8406
                 KzValue lo = kz_mod(b, kz_num((kaze_float_t)16));
+#line 8407
                 KzValue hi = kz_div(kz_sub(b, lo), kz_num((kaze_float_t)16));
+#line 8408
                 out = kz_add(kz_add(out, kz_fb_index(digits, hi, kz_str("0"))), kz_fb_index(digits, lo, kz_str("0")));
             }
         }
     }
+#line 8409
     return out;
     return kz_nil();
 }
 
+#line 8421
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_set_at(KzValue lst, KzValue i, KzValue v) {
     (void)lst;   /* a routine need not use every parameter */
     (void)i;   /* a routine need not use every parameter */
     (void)v;   /* a routine need not use every parameter */
+#line 8422
     KzValue out = kz_list_new(0);
+#line 8423
     KzValue k = kz_num((kaze_float_t)0);
+#line 8424
     {
         KzValue _iter_target = lst;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue x = _iter_target.as.list->items[_i];
+#line 8425
                 if (kz_is_truthy(kz_eq(k, i))) {
+#line 8426
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ v }));
                 } else {
+#line 8428
                     out = kz_add_own(out, kz_list_from(1, (KzValue[]){ x }));
                 }
+#line 8429
                 k = kz_add(k, kz_num((kaze_float_t)1));
             }
         }
     }
+#line 8430
     return out;
     return kz_nil();
 }
 
+#line 8432
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_state(KzValue item_name, KzValue items_nodes, KzValue ensures, KzValue consts, KzValue caps) {
     (void)item_name;   /* a routine need not use every parameter */
     (void)items_nodes;   /* a routine need not use every parameter */
     (void)ensures;   /* a routine need not use every parameter */
     (void)consts;   /* a routine need not use every parameter */
     (void)caps;   /* a routine need not use every parameter */
+#line 8433
     return kz_list_from(9, (KzValue[]){ kz_num((kaze_float_t)0), kz_list_from(1, (KzValue[]){ kz_list_new(0) }), kz_list_new(0), consts, caps, kz_str(""), item_name, items_nodes, ensures });
     return kz_nil();
 }
 
+#line 8435
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_fail(KzValue st, KzValue msg) {
     (void)st;   /* a routine need not use every parameter */
     (void)msg;   /* a routine need not use every parameter */
+#line 8436
     if (kz_is_truthy(kz_gt(kz_len(kz_fb_index(st, kz_num((kaze_float_t)5), kz_str(""))), kz_num((kaze_float_t)0)))) {
+#line 8437
         return st;
     }
+#line 8438
     return kaze_fn_bc_set_at(st, kz_num((kaze_float_t)5), msg);
     return kz_nil();
 }
 
+#line 8440
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_emit(KzValue st, KzValue op, KzValue a) {
     (void)st;   /* a routine need not use every parameter */
     (void)op;   /* a routine need not use every parameter */
     (void)a;   /* a routine need not use every parameter */
+#line 8441
     KzValue code = kz_fb_index(st, kz_num((kaze_float_t)2), kz_list_new(0));
+#line 8442
     return kaze_fn_bc_set_at(st, kz_num((kaze_float_t)2), kz_add(code, kz_list_from(1, (KzValue[]){ kz_add(op, kz_mul(a, kz_num((kaze_float_t)256))) })));
     return kz_nil();
 }
 
+#line 8444
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_wide(KzValue st, KzValue op, KzValue a, KzValue imm) {
     (void)st;   /* a routine need not use every parameter */
     (void)op;   /* a routine need not use every parameter */
     (void)a;   /* a routine need not use every parameter */
     (void)imm;   /* a routine need not use every parameter */
+#line 8445
     KzValue code = kz_fb_index(st, kz_num((kaze_float_t)2), kz_list_new(0));
+#line 8446
     KzValue at = kz_len(code);
+#line 8447
     return kz_list_from(2, (KzValue[]){ kaze_fn_bc_set_at(st, kz_num((kaze_float_t)2), kz_add(code, kz_list_from(2, (KzValue[]){ kz_add(op, kz_mul(a, kz_num((kaze_float_t)256))), kaze_fn_bc_u32(imm) }))), at });
     return kz_nil();
 }
 
+#line 8449
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_wide1(KzValue st, KzValue op, KzValue a, KzValue imm) {
     (void)st;   /* a routine need not use every parameter */
     (void)op;   /* a routine need not use every parameter */
     (void)a;   /* a routine need not use every parameter */
     (void)imm;   /* a routine need not use every parameter */
+#line 8450
     KzValue r = kaze_fn_bc_wide(st, op, a, imm);
+#line 8451
     return kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0));
     return kz_nil();
 }
 
+#line 8453
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_mark(KzValue st) {
     (void)st;   /* a routine need not use every parameter */
+#line 8454
     return kz_len(kz_fb_index(st, kz_num((kaze_float_t)2), kz_list_new(0)));
     return kz_nil();
 }
 
+#line 8456
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_patch(KzValue st, KzValue at) {
     (void)st;   /* a routine need not use every parameter */
     (void)at;   /* a routine need not use every parameter */
+#line 8457
     KzValue code = kz_fb_index(st, kz_num((kaze_float_t)2), kz_list_new(0));
+#line 8458
     KzValue rel = kz_sub(kz_len(code), kz_add(at, kz_num((kaze_float_t)2)));
+#line 8459
     return kaze_fn_bc_set_at(st, kz_num((kaze_float_t)2), kaze_fn_bc_set_at(code, kz_add(at, kz_num((kaze_float_t)1)), kaze_fn_bc_u32(rel)));
     return kz_nil();
 }
 
+#line 8461
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_jump_back(KzValue st, KzValue head) {
     (void)st;   /* a routine need not use every parameter */
     (void)head;   /* a routine need not use every parameter */
+#line 8462
     KzValue code = kz_fb_index(st, kz_num((kaze_float_t)2), kz_list_new(0));
+#line 8463
     KzValue at = kz_len(code);
+#line 8464
     KzValue rel = kz_sub(head, kz_add(at, kz_num((kaze_float_t)2)));
+#line 8465
     return kaze_fn_bc_set_at(st, kz_num((kaze_float_t)2), kz_add(code, kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)20), kaze_fn_bc_u32(rel) })));
     return kz_nil();
 }
 
+#line 8467
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_temp(KzValue st) {
     (void)st;   /* a routine need not use every parameter */
+#line 8468
     KzValue n = kz_fb_index(st, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8469
     if (kz_is_truthy(kz_ge(n, kz_num((kaze_float_t)255)))) {
+#line 8470
         return kz_list_from(2, (KzValue[]){ kaze_fn_bc_fail(st, kz_str("this block uses more than 255 values; split it into actions")), kz_num((kaze_float_t)0) });
     }
+#line 8471
     return kz_list_from(2, (KzValue[]){ kaze_fn_bc_set_at(st, kz_num((kaze_float_t)0), kz_add(n, kz_num((kaze_float_t)1))), n });
     return kz_nil();
 }
 
+#line 8473
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_push_scope(KzValue st) {
     (void)st;   /* a routine need not use every parameter */
+#line 8474
     return kaze_fn_bc_set_at(st, kz_num((kaze_float_t)1), kz_add(kz_fb_index(st, kz_num((kaze_float_t)1), kz_list_new(0)), kz_list_from(1, (KzValue[]){ kz_list_new(0) })));
     return kz_nil();
 }
 
+#line 8476
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_pop_scope(KzValue st) {
     (void)st;   /* a routine need not use every parameter */
+#line 8477
     KzValue scopes = kz_fb_index(st, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 8478
     KzValue n = kz_len(scopes);
+#line 8479
     if (kz_is_truthy(kz_eq(n, kz_num((kaze_float_t)0)))) {
+#line 8480
         return st;
     }
+#line 8481
     KzValue out = kz_list_new(0);
+#line 8482
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l8474 = 0;
+#line 8483
+    { long _kz_loop_l8483 = 0;
         while (kz_is_truthy(kz_lt(i, kz_sub(n, kz_num((kaze_float_t)1))))) {
-            if (_kz_loop_l8474 >= 400L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8474 = _kz_loop_l8474 + 1;
+            if (_kz_loop_l8483 >= 400L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8483 = _kz_loop_l8483 + 1;
+#line 8484
             out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_fb_index(scopes, i, kz_list_new(0)) }));
+#line 8485
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8486
     return kaze_fn_bc_set_at(st, kz_num((kaze_float_t)1), out);
     return kz_nil();
 }
 
+#line 8488
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_resolve(KzValue scopes, KzValue name) {
     (void)scopes;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 8489
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
+#line 8490
     KzValue i = kz_sub(kz_len(scopes), kz_num((kaze_float_t)1));
-    { long _kz_loop_l8482 = 0;
+#line 8491
+    { long _kz_loop_l8491 = 0;
         while (kz_is_truthy(kz_ge(i, kz_num((kaze_float_t)0)))) {
-            if (_kz_loop_l8482 >= 400L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8482 = _kz_loop_l8482 + 1;
+            if (_kz_loop_l8491 >= 400L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8491 = _kz_loop_l8491 + 1;
+#line 8492
             KzValue scope = kz_fb_index(scopes, i, kz_list_new(0));
+#line 8493
             KzValue j = kz_sub(kz_len(scope), kz_num((kaze_float_t)1));
-            { long _kz_loop_l8485 = 0;
+#line 8494
+            { long _kz_loop_l8494 = 0;
                 while (kz_is_truthy(kz_ge(j, kz_num((kaze_float_t)0)))) {
-                    if (_kz_loop_l8485 >= 400L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-                    _kz_loop_l8485 = _kz_loop_l8485 + 1;
+                    if (_kz_loop_l8494 >= 400L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+                    _kz_loop_l8494 = _kz_loop_l8494 + 1;
+#line 8495
                     KzValue pair = kz_fb_index(scope, j, kz_list_new(0));
+#line 8496
                     if (kz_is_truthy(kz_and(kz_lt(found, kz_num((kaze_float_t)0)), kz_eq(kz_fb_index(pair, kz_num((kaze_float_t)0), kz_str("")), name)))) {
+#line 8497
                         found = kz_fb_index(pair, kz_num((kaze_float_t)1), kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1)));
                     }
+#line 8498
                     j = kz_sub(j, kz_num((kaze_float_t)1));
                 }
             }
+#line 8499
             i = kz_sub(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8500
     return found;
     return kz_nil();
 }
 
+#line 8502
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_bind(KzValue st, KzValue name) {
     (void)st;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 8503
     KzValue t = kaze_fn_bc_temp(st);
+#line 8504
     KzValue st1 = kz_fb_index(t, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 8505
     KzValue slot = kz_fb_index(t, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 8506
     KzValue scopes = kz_fb_index(st1, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 8507
     KzValue n = kz_len(scopes);
+#line 8508
     if (kz_is_truthy(kz_eq(n, kz_num((kaze_float_t)0)))) {
+#line 8509
         return kz_list_from(2, (KzValue[]){ kaze_fn_bc_set_at(st1, kz_num((kaze_float_t)1), kz_list_from(1, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ name, slot }) }) })), slot });
     }
+#line 8510
     KzValue last = kz_fb_index(scopes, kz_sub(n, kz_num((kaze_float_t)1)), kz_list_new(0));
+#line 8511
     return kz_list_from(2, (KzValue[]){ kaze_fn_bc_set_at(st1, kz_num((kaze_float_t)1), kaze_fn_bc_set_at(scopes, kz_sub(n, kz_num((kaze_float_t)1)), kz_add(last, kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ name, slot }) })))), slot });
     return kz_nil();
 }
 
+#line 8514
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_bind_named(KzValue st, KzValue name, KzValue slot) {
     (void)st;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
     (void)slot;   /* a routine need not use every parameter */
+#line 8515
     KzValue scopes = kz_fb_index(st, kz_num((kaze_float_t)1), kz_list_new(0));
+#line 8516
     KzValue n = kz_len(scopes);
+#line 8517
     if (kz_is_truthy(kz_eq(n, kz_num((kaze_float_t)0)))) {
+#line 8518
         return kaze_fn_bc_set_at(st, kz_num((kaze_float_t)1), kz_list_from(1, (KzValue[]){ kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ name, slot }) }) }));
     }
+#line 8519
     KzValue last = kz_fb_index(scopes, kz_sub(n, kz_num((kaze_float_t)1)), kz_list_new(0));
+#line 8520
     return kaze_fn_bc_set_at(st, kz_num((kaze_float_t)1), kaze_fn_bc_set_at(scopes, kz_sub(n, kz_num((kaze_float_t)1)), kz_add(last, kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ name, slot }) }))));
     return kz_nil();
 }
 
+#line 8522
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_same_bytes(KzValue a, KzValue b) {
     (void)a;   /* a routine need not use every parameter */
     (void)b;   /* a routine need not use every parameter */
+#line 8523
     if (kz_is_truthy(kz_ne(kz_len(a), kz_len(b)))) {
+#line 8524
         return kz_num((kaze_float_t)0);
     }
+#line 8525
     KzValue n = kz_len(a);
+#line 8526
     KzValue i = kz_num((kaze_float_t)0);
+#line 8527
     KzValue same = kz_num((kaze_float_t)1);
-    { long _kz_loop_l8519 = 0;
+#line 8528
+    { long _kz_loop_l8528 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8519 >= 16L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8519 = _kz_loop_l8519 + 1;
+            if (_kz_loop_l8528 >= 16L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8528 = _kz_loop_l8528 + 1;
+#line 8529
             if (kz_is_truthy(kz_ne(kz_fb_index(a, i, kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1))), kz_fb_index(b, i, kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)2)))))) {
+#line 8530
                 same = kz_num((kaze_float_t)0);
             }
+#line 8531
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8532
     return same;
     return kz_nil();
 }
 
+#line 8534
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_push_num(KzValue st, KzValue val) {
     (void)st;   /* a routine need not use every parameter */
     (void)val;   /* a routine need not use every parameter */
+#line 8535
     KzValue consts = kz_fb_index(st, kz_num((kaze_float_t)3), kz_list_new(0));
+#line 8536
     KzValue n = kz_len(consts);
+#line 8537
     KzValue want = kaze_fn_bc_bytes_of_num(val);
+#line 8538
     KzValue i = kz_num((kaze_float_t)0);
+#line 8539
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l8531 = 0;
+#line 8540
+    { long _kz_loop_l8540 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8531 >= 20000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8531 = _kz_loop_l8531 + 1;
+            if (_kz_loop_l8540 >= 20000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8540 = _kz_loop_l8540 + 1;
+#line 8541
             KzValue c = kz_fb_index(consts, i, kz_record_new_BcConst(3, (KzValue[]){ kz_str(""), kz_str(""), kz_num((kaze_float_t)0) }, (const char*[]){ "kind", "text", "val" }));
+#line 8542
             if (kz_is_truthy(kz_and(kz_lt(found, kz_num((kaze_float_t)0)), kz_eq(kz_get_field(c, "kind"), kz_str("num"))))) {
+#line 8543
                 if (kz_is_truthy(kz_eq(kaze_fn_bc_same_bytes(kaze_fn_bc_bytes_of_num(kz_get_field(c, "val")), want), kz_num((kaze_float_t)1)))) {
+#line 8544
                     found = i;
                 }
             }
+#line 8545
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8546
     if (kz_is_truthy(kz_ge(found, kz_num((kaze_float_t)0)))) {
+#line 8547
         return kz_list_from(2, (KzValue[]){ st, found });
     }
+#line 8548
     return kz_list_from(2, (KzValue[]){ kaze_fn_bc_set_at(st, kz_num((kaze_float_t)3), kz_add(consts, kz_list_from(1, (KzValue[]){ kz_record_new_BcConst(3, (KzValue[]){ kz_str("num"), kz_str(""), val }, (const char*[]){ "kind", "text", "val" }) }))), n });
     return kz_nil();
 }
 
+#line 8550
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_push_text(KzValue st, KzValue text) {
     (void)st;   /* a routine need not use every parameter */
     (void)text;   /* a routine need not use every parameter */
+#line 8551
     if (kz_is_truthy(kz_eq(kaze_fn_bc_text_ok(text), kz_num((kaze_float_t)0)))) {
+#line 8552
         return kz_list_from(2, (KzValue[]){ kaze_fn_bc_fail(st, kz_str("a text constant holds a non-ASCII character; the minimal module writer has no UTF-8 encoder")), kz_num((kaze_float_t)0) });
     }
+#line 8553
     KzValue consts = kz_fb_index(st, kz_num((kaze_float_t)3), kz_list_new(0));
+#line 8554
     KzValue n = kz_len(consts);
+#line 8555
     KzValue i = kz_num((kaze_float_t)0);
+#line 8556
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l8548 = 0;
+#line 8557
+    { long _kz_loop_l8557 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8548 >= 20000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8548 = _kz_loop_l8548 + 1;
+            if (_kz_loop_l8557 >= 20000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8557 = _kz_loop_l8557 + 1;
+#line 8558
             KzValue c = kz_fb_index(consts, i, kz_record_new_BcConst(3, (KzValue[]){ kz_str(""), kz_str(""), kz_num((kaze_float_t)0) }, (const char*[]){ "kind", "text", "val" }));
+#line 8559
             if (kz_is_truthy(kz_and(kz_and(kz_lt(found, kz_num((kaze_float_t)0)), kz_eq(kz_get_field(c, "kind"), kz_str("str"))), kz_eq(kz_get_field(c, "text"), text)))) {
+#line 8560
                 found = i;
             }
+#line 8561
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8562
     if (kz_is_truthy(kz_ge(found, kz_num((kaze_float_t)0)))) {
+#line 8563
         return kz_list_from(2, (KzValue[]){ st, found });
     }
+#line 8564
     return kz_list_from(2, (KzValue[]){ kaze_fn_bc_set_at(st, kz_num((kaze_float_t)3), kz_add(consts, kz_list_from(1, (KzValue[]){ kz_record_new_BcConst(3, (KzValue[]){ kz_str("str"), text, kz_num((kaze_float_t)0) }, (const char*[]){ "kind", "text", "val" }) }))), n });
     return kz_nil();
 }
 
+#line 8566
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_push_bool(KzValue st, KzValue which) {
     (void)st;   /* a routine need not use every parameter */
     (void)which;   /* a routine need not use every parameter */
+#line 8567
     KzValue spelling = kz_str("false");
+#line 8568
     if (kz_is_truthy(kz_eq(which, kz_num((kaze_float_t)1)))) {
+#line 8569
         spelling = kz_str("true");
     }
+#line 8570
     KzValue consts = kz_fb_index(st, kz_num((kaze_float_t)3), kz_list_new(0));
+#line 8571
     KzValue n = kz_len(consts);
+#line 8572
     KzValue i = kz_num((kaze_float_t)0);
+#line 8573
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l8565 = 0;
+#line 8574
+    { long _kz_loop_l8574 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8565 >= 20000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8565 = _kz_loop_l8565 + 1;
+            if (_kz_loop_l8574 >= 20000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8574 = _kz_loop_l8574 + 1;
+#line 8575
             KzValue c = kz_fb_index(consts, i, kz_record_new_BcConst(3, (KzValue[]){ kz_str(""), kz_str(""), kz_num((kaze_float_t)0) }, (const char*[]){ "kind", "text", "val" }));
+#line 8576
             if (kz_is_truthy(kz_and(kz_and(kz_lt(found, kz_num((kaze_float_t)0)), kz_eq(kz_get_field(c, "kind"), kz_str("bool"))), kz_eq(kz_get_field(c, "text"), spelling)))) {
+#line 8577
                 found = i;
             }
+#line 8578
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8579
     if (kz_is_truthy(kz_ge(found, kz_num((kaze_float_t)0)))) {
+#line 8580
         return kz_list_from(2, (KzValue[]){ st, found });
     }
+#line 8581
     return kz_list_from(2, (KzValue[]){ kaze_fn_bc_set_at(st, kz_num((kaze_float_t)3), kz_add(consts, kz_list_from(1, (KzValue[]){ kz_record_new_BcConst(3, (KzValue[]){ kz_str("bool"), spelling, kz_num((kaze_float_t)0) }, (const char*[]){ "kind", "text", "val" }) }))), n });
     return kz_nil();
 }
 
+#line 8583
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_push_cap(KzValue st, KzValue family, KzValue op, KzValue argc) {
     (void)st;   /* a routine need not use every parameter */
     (void)family;   /* a routine need not use every parameter */
     (void)op;   /* a routine need not use every parameter */
     (void)argc;   /* a routine need not use every parameter */
+#line 8584
     KzValue caps = kz_fb_index(st, kz_num((kaze_float_t)4), kz_list_new(0));
+#line 8585
     KzValue n = kz_len(caps);
+#line 8586
     KzValue i = kz_num((kaze_float_t)0);
+#line 8587
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l8579 = 0;
+#line 8588
+    { long _kz_loop_l8588 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8579 >= 20000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8579 = _kz_loop_l8579 + 1;
+            if (_kz_loop_l8588 >= 20000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8588 = _kz_loop_l8588 + 1;
+#line 8589
             KzValue c = kz_fb_index(caps, i, kz_record_new_BcCap(3, (KzValue[]){ kz_str(""), kz_str(""), kz_num((kaze_float_t)0) }, (const char*[]){ "family", "op", "argc" }));
+#line 8590
             if (kz_is_truthy(kz_and(kz_and(kz_and(kz_lt(found, kz_num((kaze_float_t)0)), kz_eq(kz_get_field(c, "family"), family)), kz_eq(kz_get_field(c, "op"), op)), kz_eq(kz_get_field(c, "argc"), argc)))) {
+#line 8591
                 found = i;
             }
+#line 8592
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8593
     if (kz_is_truthy(kz_ge(found, kz_num((kaze_float_t)0)))) {
+#line 8594
         return kz_list_from(2, (KzValue[]){ st, found });
     }
+#line 8595
     return kz_list_from(2, (KzValue[]){ kaze_fn_bc_set_at(st, kz_num((kaze_float_t)4), kz_add(caps, kz_list_from(1, (KzValue[]){ kz_record_new_BcCap(3, (KzValue[]){ family, op, argc }, (const char*[]){ "family", "op", "argc" }) }))), n });
     return kz_nil();
 }
 
+#line 8599
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_take_chars(KzValue s, KzValue k) {
     (void)s;   /* a routine need not use every parameter */
     (void)k;   /* a routine need not use every parameter */
+#line 8600
     KzValue out = kz_str("");
+#line 8601
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l8593 = 0;
+#line 8602
+    { long _kz_loop_l8602 = 0;
         while (kz_is_truthy(kz_lt(i, k))) {
-            if (_kz_loop_l8593 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8593 = _kz_loop_l8593 + 1;
+            if (_kz_loop_l8602 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8602 = _kz_loop_l8602 + 1;
+#line 8603
             out = kz_add_own(out, kz_fb_index(s, i, kz_str("")));
+#line 8604
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8605
     return out;
     return kz_nil();
 }
 
+#line 8607
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_from_char(KzValue s, KzValue k) {
     (void)s;   /* a routine need not use every parameter */
     (void)k;   /* a routine need not use every parameter */
+#line 8608
     KzValue out = kz_str("");
+#line 8609
     KzValue n = kz_len(s);
+#line 8610
     KzValue i = k;
-    { long _kz_loop_l8602 = 0;
+#line 8611
+    { long _kz_loop_l8611 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8602 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8602 = _kz_loop_l8602 + 1;
+            if (_kz_loop_l8611 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8611 = _kz_loop_l8611 + 1;
+#line 8612
             out = kz_add_own(out, kz_fb_index(s, i, kz_str("")));
+#line 8613
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8614
     return out;
     return kz_nil();
 }
 
+#line 8616
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_head(KzValue s) {
     (void)s;   /* a routine need not use every parameter */
+#line 8617
     KzValue n = kz_len(s);
+#line 8618
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l8610 = 0;
-        while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8610 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8610 = _kz_loop_l8610 + 1;
-            if (kz_is_truthy(kz_eq(kz_fb_index(s, i, kz_str("")), kz_str(".")))) {
-                return kaze_fn_bc_take_chars(s, i);
-            }
-            i = kz_add(i, kz_num((kaze_float_t)1));
-        }
-    }
-    return s;
-    return kz_nil();
-}
-
-KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_tail(KzValue s) {
-    (void)s;   /* a routine need not use every parameter */
-    KzValue n = kz_len(s);
-    KzValue i = kz_num((kaze_float_t)0);
+#line 8619
     { long _kz_loop_l8619 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
             if (_kz_loop_l8619 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
             _kz_loop_l8619 = _kz_loop_l8619 + 1;
+#line 8620
             if (kz_is_truthy(kz_eq(kz_fb_index(s, i, kz_str("")), kz_str(".")))) {
-                return kaze_fn_bc_from_char(s, kz_add(i, kz_num((kaze_float_t)1)));
+#line 8621
+                return kaze_fn_bc_take_chars(s, i);
             }
+#line 8622
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8623
+    return s;
+    return kz_nil();
+}
+
+#line 8625
+KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_tail(KzValue s) {
+    (void)s;   /* a routine need not use every parameter */
+#line 8626
+    KzValue n = kz_len(s);
+#line 8627
+    KzValue i = kz_num((kaze_float_t)0);
+#line 8628
+    { long _kz_loop_l8628 = 0;
+        while (kz_is_truthy(kz_lt(i, n))) {
+            if (_kz_loop_l8628 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8628 = _kz_loop_l8628 + 1;
+#line 8629
+            if (kz_is_truthy(kz_eq(kz_fb_index(s, i, kz_str("")), kz_str(".")))) {
+#line 8630
+                return kaze_fn_bc_from_char(s, kz_add(i, kz_num((kaze_float_t)1)));
+            }
+#line 8631
+            i = kz_add(i, kz_num((kaze_float_t)1));
+        }
+    }
+#line 8632
     return kz_str("");
     return kz_nil();
 }
 
+#line 8634
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_item_index(KzValue items, KzValue name) {
     (void)items;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 8635
     KzValue n = kz_len(items);
+#line 8636
     KzValue i = kz_num((kaze_float_t)0);
+#line 8637
     KzValue found = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
-    { long _kz_loop_l8629 = 0;
+#line 8638
+    { long _kz_loop_l8638 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8629 >= 5000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8629 = _kz_loop_l8629 + 1;
+            if (_kz_loop_l8638 >= 5000L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8638 = _kz_loop_l8638 + 1;
+#line 8639
             KzValue it = kz_fb_index(items, i, kaze_fn_none_node());
+#line 8640
             if (kz_is_truthy(kz_and(kz_lt(found, kz_num((kaze_float_t)0)), kz_eq(kz_get_field(it, "name"), name)))) {
+#line 8641
                 found = i;
             }
+#line 8642
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8643
     return found;
     return kz_nil();
 }
 
+#line 8650
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_unit_scale(KzValue u) {
     (void)u;   /* a routine need not use every parameter */
+#line 8651
     if (kz_is_truthy(kz_eq(u, kz_str("km")))) {
+#line 8652
         return kz_num((kaze_float_t)1000);
     }
+#line 8653
     if (kz_is_truthy(kz_eq(u, kz_str("cm")))) {
+#line 8654
         return kz_num(0.01);
     }
+#line 8655
     if (kz_is_truthy(kz_eq(u, kz_str("mm")))) {
+#line 8656
         return kz_num(0.001);
     }
+#line 8657
     if (kz_is_truthy(kz_eq(u, kz_str("km/h")))) {
+#line 8658
         return kz_div(kz_num((kaze_float_t)1000), kz_num((kaze_float_t)3600));
     }
+#line 8659
     if (kz_is_truthy(kz_eq(u, kz_str("radians")))) {
+#line 8660
         return kz_div(kz_num((kaze_float_t)180), kz_num(3.141592653589793));
     }
+#line 8661
     if (kz_is_truthy(kz_eq(u, kz_str("hours")))) {
+#line 8662
         return kz_num((kaze_float_t)3600);
     }
+#line 8663
     if (kz_is_truthy(kz_eq(u, kz_str("minutes")))) {
+#line 8664
         return kz_num((kaze_float_t)60);
     }
+#line 8665
     if (kz_is_truthy(kz_eq(u, kz_str("ms")))) {
+#line 8666
         return kz_num(0.001);
     }
+#line 8667
     if (kz_is_truthy(kz_eq(u, kz_str("gram")))) {
+#line 8668
         return kz_num(0.001);
     }
+#line 8669
     if (kz_is_truthy(kz_eq(u, kz_str("mbar")))) {
+#line 8670
         return kz_num((kaze_float_t)100);
     }
+#line 8671
     if (kz_is_truthy(kz_eq(u, kz_str("hPa")))) {
+#line 8672
         return kz_num((kaze_float_t)100);
     }
+#line 8673
     return kz_num((kaze_float_t)1);
     return kz_nil();
 }
 
+#line 8676
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_unit_offset(KzValue u) {
     (void)u;   /* a routine need not use every parameter */
+#line 8677
     if (kz_is_truthy(kz_eq(u, kz_str("Celsius")))) {
+#line 8678
         return kz_num(273.15);
     }
+#line 8679
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 8683
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_bin_op(KzValue op) {
     (void)op;   /* a routine need not use every parameter */
+#line 8684
     if (kz_is_truthy(kz_eq(op, kz_str("+")))) {
+#line 8685
         return kz_num((kaze_float_t)7);
     }
+#line 8686
     if (kz_is_truthy(kz_eq(op, kz_str("-")))) {
+#line 8687
         return kz_num((kaze_float_t)8);
     }
+#line 8688
     if (kz_is_truthy(kz_eq(op, kz_str("*")))) {
+#line 8689
         return kz_num((kaze_float_t)9);
     }
+#line 8690
     if (kz_is_truthy(kz_eq(op, kz_str("/")))) {
+#line 8691
         return kz_num((kaze_float_t)10);
     }
+#line 8692
     if (kz_is_truthy(kz_eq(op, kz_str("%")))) {
+#line 8693
         return kz_num((kaze_float_t)11);
     }
+#line 8694
     if (kz_is_truthy(kz_eq(op, kz_str("<")))) {
+#line 8695
         return kz_num((kaze_float_t)13);
     }
+#line 8696
     if (kz_is_truthy(kz_eq(op, kz_str("<=")))) {
+#line 8697
         return kz_num((kaze_float_t)14);
     }
+#line 8698
     if (kz_is_truthy(kz_eq(op, kz_str(">")))) {
+#line 8699
         return kz_num((kaze_float_t)15);
     }
+#line 8700
     if (kz_is_truthy(kz_eq(op, kz_str(">=")))) {
+#line 8701
         return kz_num((kaze_float_t)16);
     }
+#line 8702
     if (kz_is_truthy(kz_eq(op, kz_str("==")))) {
+#line 8703
         return kz_num((kaze_float_t)17);
     }
+#line 8704
     if (kz_is_truthy(kz_eq(op, kz_str("!=")))) {
+#line 8705
         return kz_num((kaze_float_t)18);
     }
+#line 8706
     return kz_num((kaze_float_t)6);
     return kz_nil();
 }
 
+#line 8708
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_math_op(KzValue name) {
     (void)name;   /* a routine need not use every parameter */
+#line 8709
     if (kz_is_truthy(kz_eq(name, kz_str("sin")))) {
+#line 8710
         return kz_num((kaze_float_t)37);
     }
+#line 8711
     if (kz_is_truthy(kz_eq(name, kz_str("cos")))) {
+#line 8712
         return kz_num((kaze_float_t)38);
     }
+#line 8713
     if (kz_is_truthy(kz_eq(name, kz_str("atan2")))) {
+#line 8714
         return kz_num((kaze_float_t)39);
     }
+#line 8715
     return kz_num((kaze_float_t)40);
     return kz_nil();
 }
 
+#line 8717
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_has_named(KzValue args) {
     (void)args;   /* a routine need not use every parameter */
+#line 8718
     KzValue found = kz_num((kaze_float_t)0);
+#line 8719
     {
         KzValue _iter_target = args;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue a = _iter_target.as.list->items[_i];
+#line 8720
                 if (kz_is_truthy(kz_eq(kz_get_field(a, "kind"), kz_str("NAMED_ARG")))) {
+#line 8721
                     found = kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 8722
     return found;
     return kz_nil();
 }
 
+#line 8724
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_named_arg(KzValue args, KzValue name) {
     (void)args;   /* a routine need not use every parameter */
     (void)name;   /* a routine need not use every parameter */
+#line 8725
     KzValue out = kaze_fn_none_node();
+#line 8726
     KzValue found = kz_num((kaze_float_t)0);
+#line 8727
     {
         KzValue _iter_target = args;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue a = _iter_target.as.list->items[_i];
+#line 8728
                 if (kz_is_truthy(kz_and(kz_and(kz_eq(found, kz_num((kaze_float_t)0)), kz_eq(kz_get_field(a, "kind"), kz_str("NAMED_ARG"))), kz_eq(kz_get_field(a, "name"), name)))) {
+#line 8729
                     out = kaze_fn_bc_kid(a, kz_num((kaze_float_t)0));
+#line 8730
                     found = kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 8731
     return out;
     return kz_nil();
 }
 
+#line 8733
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_kid(KzValue n, KzValue i) {
     (void)n;   /* a routine need not use every parameter */
     (void)i;   /* a routine need not use every parameter */
+#line 8734
     return kaze_fn_child_at(n, i);
     return kz_nil();
 }
 
+#line 8736
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_expr_args(KzValue st, KzValue args) {
     (void)st;   /* a routine need not use every parameter */
     (void)args;   /* a routine need not use every parameter */
+#line 8738
     KzValue st1 = st;
+#line 8739
     {
         KzValue _iter_target = args;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue a = _iter_target.as.list->items[_i];
+#line 8740
                 if (kz_is_truthy(kz_eq(kz_get_field(a, "kind"), kz_str("NAMED_ARG")))) {
+#line 8741
                     st1 = kaze_fn_bc_expr(st1, kaze_fn_bc_kid(a, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
                 } else {
+#line 8743
                     st1 = kaze_fn_bc_expr(st1, a, kz_num((kaze_float_t)0));
                 }
             }
         }
     }
+#line 8744
     return st1;
     return kz_nil();
 }
 
+#line 8746
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_trig_args(KzValue st, KzValue args, KzValue target) {
     (void)st;   /* a routine need not use every parameter */
     (void)args;   /* a routine need not use every parameter */
     (void)target;   /* a routine need not use every parameter */
+#line 8748
     KzValue st1 = st;
+#line 8749
     KzValue i = kz_num((kaze_float_t)0);
+#line 8750
     KzValue n = kz_len(args);
-    { long _kz_loop_l8742 = 0;
+#line 8751
+    { long _kz_loop_l8751 = 0;
         while (kz_is_truthy(kz_lt(i, n))) {
-            if (_kz_loop_l8742 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l8742 = _kz_loop_l8742 + 1;
+            if (_kz_loop_l8751 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l8751 = _kz_loop_l8751 + 1;
+#line 8752
             KzValue a = kz_fb_index(args, i, kaze_fn_none_node());
+#line 8753
             st1 = kaze_fn_bc_expr(st1, a, kz_num((kaze_float_t)0));
+#line 8754
             if (kz_is_truthy(kz_and(kz_eq(i, kz_num((kaze_float_t)0)), kz_or(kz_eq(target, kz_str("sin")), kz_eq(target, kz_str("cos")))))) {
+#line 8755
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(a, "kind"), kz_str("NUM")), kz_or(kz_eq(kz_get_field(a, "name"), kz_str("degrees")), kz_eq(kz_get_field(a, "name"), kz_str("radians")))))) {
+#line 8756
                     st1 = kaze_fn_bc_emit(st1, kz_num((kaze_float_t)41), kz_num((kaze_float_t)0));
                 }
             }
+#line 8757
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 8758
     return st1;
     return kz_nil();
 }
 
+#line 8760
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_link_lost(KzValue st, KzValue e) {
     (void)st;   /* a routine need not use every parameter */
     (void)e;   /* a routine need not use every parameter */
+#line 8761
     KzValue args = kz_get_field(e, "children");
+#line 8762
     if (kz_is_truthy(kz_eq(kz_len(args), kz_num((kaze_float_t)0)))) {
+#line 8763
         return kaze_fn_bc_fail(st, kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": link lost needs a time, e.g. 'link lost for 3 seconds'")));
     }
+#line 8764
     KzValue a = kz_fb_index(args, kz_num((kaze_float_t)0), kaze_fn_none_node());
+#line 8765
     if (kz_is_truthy(kz_ne(kz_get_field(a, "kind"), kz_str("NUM")))) {
+#line 8766
         return kaze_fn_bc_fail(st, kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": link lost needs a time literal, e.g. 'link lost for 3 seconds'")));
     }
+#line 8767
     KzValue ms = kz_mul(kz_mul(kaze_fn_bc_num_of(kz_get_field(a, "val_str")), kaze_fn_bc_unit_scale(kz_get_field(a, "name"))), kz_num((kaze_float_t)1000));
+#line 8768
     if (kz_is_truthy(kz_or(kz_lt(ms, kz_num((kaze_float_t)1)), kz_gt(ms, kz_num((kaze_float_t)4294967295))))) {
+#line 8769
         return kaze_fn_bc_fail(st, kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": link lost needs at least 1 millisecond (and less than about 49 days)")));
     }
+#line 8770
     return kaze_fn_bc_wide1(st, kz_num((kaze_float_t)46), kz_num((kaze_float_t)0), kaze_fn_bc_floor(ms));
     return kz_nil();
 }
 
+#line 8772
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_record_init(KzValue st, KzValue e) {
     (void)st;   /* a routine need not use every parameter */
     (void)e;   /* a routine need not use every parameter */
+#line 8774
     KzValue items = kz_fb_index(st, kz_num((kaze_float_t)7), kz_list_new(0));
+#line 8775
     KzValue target = kaze_fn_bc_item_index(items, kz_get_field(e, "name"));
+#line 8776
     if (kz_is_truthy(kz_lt(target, kz_num((kaze_float_t)0)))) {
+#line 8777
         return kaze_fn_bc_fail(st, kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": record '")), kz_get_field(e, "name")), kz_str("' is not defined in this module")));
     }
+#line 8778
     KzValue item = kz_fb_index(items, target, kaze_fn_none_node());
+#line 8779
     if (kz_is_truthy(kz_ne(kz_get_field(item, "kind"), kz_str("RECORD")))) {
+#line 8780
         return kaze_fn_bc_fail(st, kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": '")), kz_get_field(e, "name")), kz_str("' is not a record")));
     }
+#line 8781
     KzValue fields = kz_get_field(item, "children");
+#line 8782
     KzValue st1 = st;
+#line 8783
     {
         KzValue _iter_target = fields;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue f = _iter_target.as.list->items[_i];
+#line 8784
                 KzValue arg = kaze_fn_bc_named_arg(kz_get_field(e, "children"), kz_get_field(f, "name"));
+#line 8785
                 if (kz_is_truthy(kz_eq(kz_get_field(arg, "kind"), kz_str("NONE")))) {
+#line 8786
                     st1 = kaze_fn_bc_fail(st1, kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": missing field '")), kz_get_field(f, "name")), kz_str("' in instantiation of record '")), kz_get_field(e, "name")), kz_str("'")));
                 } else {
+#line 8788
                     KzValue r = kaze_fn_bc_push_text(st1, kz_get_field(f, "name"));
+#line 8789
                     KzValue st2 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8790
                     st1 = kaze_fn_bc_expr(st2, arg, kz_num((kaze_float_t)0));
                 }
             }
         }
     }
+#line 8791
     return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)48), kz_len(fields));
     return kz_nil();
 }
 
+#line 8793
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_call(KzValue st, KzValue e, KzValue root) {
     (void)st;   /* a routine need not use every parameter */
     (void)e;   /* a routine need not use every parameter */
     (void)root;   /* a routine need not use every parameter */
+#line 8795
     KzValue target = kz_get_field(e, "name");
+#line 8796
     KzValue args = kz_get_field(e, "children");
+#line 8797
     if (kz_is_truthy(kz_gt(kz_len(args), kz_num((kaze_float_t)255)))) {
+#line 8798
         return kaze_fn_bc_fail(st, kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": '")), target), kz_str("' takes too many values")));
     }
+#line 8799
     if (kz_is_truthy(kz_eq(target, kz_str("link_lost")))) {
+#line 8800
         return kaze_fn_bc_link_lost(st, e);
     }
+#line 8801
     if (kz_is_truthy(kz_eq(target, kz_str("vector")))) {
+#line 8802
         KzValue st1 = kaze_fn_bc_expr_args(st, args);
+#line 8803
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)33), kz_len(args));
     }
+#line 8804
     if (kz_is_truthy(kz_or(kz_or(kz_or(kz_eq(target, kz_str("sin")), kz_eq(target, kz_str("cos"))), kz_eq(target, kz_str("sqrt"))), kz_eq(target, kz_str("atan2"))))) {
+#line 8805
         KzValue st1 = kaze_fn_bc_trig_args(st, args, target);
+#line 8806
         return kaze_fn_bc_emit(st1, kaze_fn_bc_math_op(target), kz_num((kaze_float_t)0));
     }
+#line 8807
     if (kz_is_truthy(kz_eq(target, kz_str("geo.distance")))) {
+#line 8808
         KzValue st1 = kaze_fn_bc_expr_args(st, args);
+#line 8809
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)34), kz_num((kaze_float_t)0));
     }
+#line 8810
     if (kz_is_truthy(kz_eq(target, kz_str("geo.slant_distance")))) {
+#line 8811
         KzValue st1 = kaze_fn_bc_expr_args(st, args);
+#line 8812
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)43), kz_num((kaze_float_t)0));
     }
+#line 8813
     if (kz_is_truthy(kz_eq(target, kz_str("geo.bearing_of")))) {
+#line 8814
         KzValue st1 = kaze_fn_bc_expr_args(st, args);
+#line 8815
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)35), kz_num((kaze_float_t)0));
     }
+#line 8816
     if (kz_is_truthy(kz_eq(target, kz_str("geo.bearing_from")))) {
+#line 8817
         KzValue st1 = kaze_fn_bc_expr_args(st, args);
+#line 8818
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)36), kz_num((kaze_float_t)0));
     }
+#line 8819
     if (kz_is_truthy(kz_gt(kz_len(kaze_fn_bc_tail(target)), kz_num((kaze_float_t)0)))) {
+#line 8820
         KzValue family = kaze_fn_family_of_word(kaze_fn_bc_head(target));
+#line 8821
         KzValue op = kaze_fn_bc_tail(target);
+#line 8822
         KzValue st1 = kaze_fn_bc_expr_args(st, args);
+#line 8823
         KzValue c = kaze_fn_bc_push_cap(st1, family, op, kz_len(args));
+#line 8824
         return kaze_fn_bc_wide1(kz_fb_index(c, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)22), kz_len(args), kz_fb_index(c, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8825
     if (kz_is_truthy(kz_eq(kaze_fn_bc_has_named(args), kz_num((kaze_float_t)1)))) {
+#line 8826
         return kaze_fn_bc_record_init(st, e);
     }
+#line 8827
     KzValue idx = kaze_fn_bc_item_index(kz_fb_index(st, kz_num((kaze_float_t)7), kz_list_new(0)), target);
+#line 8828
     if (kz_is_truthy(kz_lt(idx, kz_num((kaze_float_t)0)))) {
+#line 8829
         return kaze_fn_bc_fail(st, kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": '")), target), kz_str("' is not defined in this module")));
     }
+#line 8830
     KzValue st1 = kaze_fn_bc_expr_args(st, args);
+#line 8831
     return kaze_fn_bc_wide1(st1, kz_num((kaze_float_t)47), kz_len(args), idx);
     return kz_nil();
 }
 
+#line 8833
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_expr(KzValue st, KzValue e, KzValue root) {
     (void)st;   /* a routine need not use every parameter */
     (void)e;   /* a routine need not use every parameter */
     (void)root;   /* a routine need not use every parameter */
+#line 8835
     KzValue k = kz_get_field(e, "kind");
+#line 8836
     if (kz_is_truthy(kz_eq(k, kz_str("NUM")))) {
+#line 8837
         KzValue val = kz_add(kz_mul(kaze_fn_bc_num_of(kz_get_field(e, "val_str")), kaze_fn_bc_unit_scale(kz_get_field(e, "name"))), kaze_fn_bc_unit_offset(kz_get_field(e, "name")));
+#line 8838
         KzValue r = kaze_fn_bc_push_num(st, val);
+#line 8839
         return kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8840
     if (kz_is_truthy(kz_eq(k, kz_str("STR")))) {
+#line 8841
         KzValue r = kaze_fn_bc_push_text(st, kz_get_field(e, "val_str"));
+#line 8842
         return kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8843
     if (kz_is_truthy(kz_eq(k, kz_str("BOOL")))) {
+#line 8844
         KzValue which = kz_num((kaze_float_t)0);
+#line 8845
         if (kz_is_truthy(kz_eq(kz_get_field(e, "val_str"), kz_str("true")))) {
+#line 8846
             which = kz_num((kaze_float_t)1);
         }
+#line 8847
         KzValue r = kaze_fn_bc_push_bool(st, which);
+#line 8848
         return kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8849
     if (kz_is_truthy(kz_eq(k, kz_str("LIST")))) {
+#line 8850
         KzValue items = kz_get_field(e, "children");
+#line 8851
         KzValue n = kz_len(items);
+#line 8852
         if (kz_is_truthy(kz_gt(n, kz_num((kaze_float_t)255)))) {
+#line 8853
             return kaze_fn_bc_fail(st, kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": this list has more than 255 items")));
         }
+#line 8854
         KzValue st1 = st;
+#line 8855
         {
             KzValue _iter_target = items;
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue it = _iter_target.as.list->items[_i];
+#line 8856
                     st1 = kaze_fn_bc_expr(st1, it, kz_num((kaze_float_t)0));
                 }
             }
         }
+#line 8857
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)3), n);
     }
+#line 8858
     if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 8859
         KzValue slot = kaze_fn_bc_resolve(kz_fb_index(st, kz_num((kaze_float_t)1), kz_list_new(0)), kz_get_field(e, "name"));
+#line 8860
         if (kz_is_truthy(kz_lt(slot, kz_num((kaze_float_t)0)))) {
+#line 8861
             return kaze_fn_bc_fail(st, kz_add(kz_add(kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": '")), kz_get_field(e, "name")), kz_str("' is not defined in '")), kz_fb_index(st, kz_num((kaze_float_t)6), kz_str(""))), kz_str("'")));
         }
+#line 8862
         return kaze_fn_bc_emit(st, kz_num((kaze_float_t)1), slot);
     }
+#line 8863
     if (kz_is_truthy(kz_eq(k, kz_str("LEN")))) {
+#line 8864
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8865
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)5), kz_num((kaze_float_t)0));
     }
+#line 8866
     if (kz_is_truthy(kz_eq(k, kz_str("LEN_LIT")))) {
+#line 8867
         KzValue r = kaze_fn_bc_push_num(st, kz_get_field(e, "val_num"));
+#line 8868
         return kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8869
     if (kz_is_truthy(kz_eq(k, kz_str("INDEX")))) {
+#line 8870
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8871
         KzValue st2 = kaze_fn_bc_expr(st1, kaze_fn_bc_kid(e, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0));
+#line 8872
         return kaze_fn_bc_emit(st2, kz_num((kaze_float_t)4), kz_num((kaze_float_t)0));
     }
+#line 8873
     if (kz_is_truthy(kz_eq(k, kz_str("FIELD")))) {
+#line 8874
         KzValue base = kaze_fn_bc_kid(e, kz_num((kaze_float_t)0));
+#line 8875
         if (kz_is_truthy(kz_ne(kz_get_field(base, "kind"), kz_str("IDENT")))) {
+#line 8876
             return kaze_fn_bc_fail(st, kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": a field is read from a name, not from another expression")));
         }
+#line 8877
         KzValue slot = kaze_fn_bc_resolve(kz_fb_index(st, kz_num((kaze_float_t)1), kz_list_new(0)), kz_get_field(base, "name"));
+#line 8878
         if (kz_is_truthy(kz_lt(slot, kz_num((kaze_float_t)0)))) {
+#line 8879
             return kaze_fn_bc_fail(st, kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": '")), kz_get_field(base, "name")), kz_str("' is not a value here")));
         }
+#line 8880
         KzValue st1 = kaze_fn_bc_emit(st, kz_num((kaze_float_t)1), slot);
+#line 8881
         KzValue r = kaze_fn_bc_push_text(st1, kz_get_field(e, "name"));
+#line 8882
         KzValue st2 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8883
         return kaze_fn_bc_emit(st2, kz_num((kaze_float_t)30), kz_num((kaze_float_t)0));
     }
+#line 8884
     if (kz_is_truthy(kz_eq(k, kz_str("BIN")))) {
+#line 8885
         return kaze_fn_bc_bin(st, e, root);
     }
+#line 8886
     if (kz_is_truthy(kz_eq(k, kz_str("FALLBACK")))) {
+#line 8887
         return kaze_fn_bc_fallback(st, kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), kaze_fn_bc_kid(e, kz_num((kaze_float_t)1)), kz_get_field(e, "line"), root);
     }
+#line 8888
     if (kz_is_truthy(kz_eq(k, kz_str("IN_UNIT")))) {
+#line 8889
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8890
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("radians")))) {
+#line 8891
             return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)41), kz_num((kaze_float_t)0));
         }
+#line 8892
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)42), kz_num((kaze_float_t)0));
     }
+#line 8893
     if (kz_is_truthy(kz_eq(k, kz_str("CALL")))) {
+#line 8894
         return kaze_fn_bc_call(st, e, root);
     }
+#line 8895
     return kaze_fn_bc_fail(st, kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(e, "line"))), kz_str(": the parser could not read this expression")));
     return kz_nil();
 }
 
+#line 8897
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_bin(KzValue st, KzValue e, KzValue root) {
     (void)st;   /* a routine need not use every parameter */
     (void)e;   /* a routine need not use every parameter */
     (void)root;   /* a routine need not use every parameter */
+#line 8899
     KzValue op = kz_get_field(e, "name");
+#line 8900
     if (kz_is_truthy(kz_eq(op, kz_str("not")))) {
+#line 8901
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8902
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)19), kz_num((kaze_float_t)0));
     }
+#line 8903
     if (kz_is_truthy(kz_eq(op, kz_str("and")))) {
+#line 8904
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8905
         KzValue to_false = kaze_fn_bc_wide(st1, kz_num((kaze_float_t)21), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8906
         KzValue st2 = kaze_fn_bc_expr(kz_fb_index(to_false, kz_num((kaze_float_t)0), kz_list_new(0)), kaze_fn_bc_kid(e, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0));
+#line 8907
         KzValue to_end = kaze_fn_bc_wide(st2, kz_num((kaze_float_t)20), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8908
         KzValue st3 = kaze_fn_bc_patch(kz_fb_index(to_end, kz_num((kaze_float_t)0), kz_list_new(0)), kz_fb_index(to_false, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8909
         KzValue r = kaze_fn_bc_push_bool(st3, kz_num((kaze_float_t)0));
+#line 8910
         KzValue st4 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8911
         return kaze_fn_bc_patch(st4, kz_fb_index(to_end, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8912
     if (kz_is_truthy(kz_eq(op, kz_str("or")))) {
+#line 8913
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8914
         KzValue to_rhs = kaze_fn_bc_wide(st1, kz_num((kaze_float_t)21), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8915
         KzValue r = kaze_fn_bc_push_bool(kz_fb_index(to_rhs, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)1));
+#line 8916
         KzValue st2 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8917
         KzValue to_end = kaze_fn_bc_wide(st2, kz_num((kaze_float_t)20), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8918
         KzValue st3 = kaze_fn_bc_patch(kz_fb_index(to_end, kz_num((kaze_float_t)0), kz_list_new(0)), kz_fb_index(to_rhs, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8919
         KzValue st4 = kaze_fn_bc_expr(st3, kaze_fn_bc_kid(e, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0));
+#line 8920
         return kaze_fn_bc_patch(st4, kz_fb_index(to_end, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8921
     KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8922
     KzValue st2 = kaze_fn_bc_expr(st1, kaze_fn_bc_kid(e, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0));
+#line 8923
     return kaze_fn_bc_emit(st2, kaze_fn_bc_bin_op(op), kz_num((kaze_float_t)0));
     return kz_nil();
 }
 
+#line 8928
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_fallback(KzValue st, KzValue inner, KzValue fb, KzValue line, KzValue root) {
     (void)st;   /* a routine need not use every parameter */
     (void)inner;   /* a routine need not use every parameter */
     (void)fb;   /* a routine need not use every parameter */
     (void)line;   /* a routine need not use every parameter */
     (void)root;   /* a routine need not use every parameter */
+#line 8930
     KzValue k = kz_get_field(inner, "kind");
+#line 8931
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("BIN")), kz_or(kz_eq(kz_get_field(inner, "name"), kz_str("/")), kz_eq(kz_get_field(inner, "name"), kz_str("%")))))) {
+#line 8932
         KzValue right = kaze_fn_bc_kid(inner, kz_num((kaze_float_t)1));
+#line 8933
         if (kz_is_truthy(kz_and(kz_eq(kz_get_field(right, "kind"), kz_str("NUM")), kz_ne(kaze_fn_bc_num_of(kz_get_field(right, "val_str")), kz_num((kaze_float_t)0))))) {
+#line 8934
             return kaze_fn_bc_expr(st, inner, root);
         }
+#line 8935
         KzValue t = kaze_fn_bc_temp(st);
+#line 8936
         KzValue st1 = kaze_fn_bc_expr(kz_fb_index(t, kz_num((kaze_float_t)0), kz_list_new(0)), right, kz_num((kaze_float_t)0));
+#line 8937
         KzValue divisor = kz_fb_index(t, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 8938
         KzValue st2 = kaze_fn_bc_emit(st1, kz_num((kaze_float_t)2), divisor);
+#line 8939
         KzValue st3 = kaze_fn_bc_emit(st2, kz_num((kaze_float_t)1), divisor);
+#line 8940
         KzValue r = kaze_fn_bc_push_num(st3, kz_num((kaze_float_t)0));
+#line 8941
         KzValue st4 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8942
         KzValue to_fb = kaze_fn_bc_wide(st4, kz_num((kaze_float_t)31), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8943
         KzValue st5 = kaze_fn_bc_expr(kz_fb_index(to_fb, kz_num((kaze_float_t)0), kz_list_new(0)), kaze_fn_bc_kid(inner, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8944
         KzValue st6 = kaze_fn_bc_emit(st5, kz_num((kaze_float_t)1), divisor);
+#line 8945
         KzValue op = kz_num((kaze_float_t)10);
+#line 8946
         if (kz_is_truthy(kz_eq(kz_get_field(inner, "name"), kz_str("%")))) {
+#line 8947
             op = kz_num((kaze_float_t)11);
         }
+#line 8948
         KzValue st7 = kaze_fn_bc_emit(st6, op, kz_num((kaze_float_t)0));
+#line 8949
         KzValue to_end = kaze_fn_bc_wide(st7, kz_num((kaze_float_t)20), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8950
         KzValue st8 = kaze_fn_bc_patch(kz_fb_index(to_end, kz_num((kaze_float_t)0), kz_list_new(0)), kz_fb_index(to_fb, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8951
         KzValue st9 = kaze_fn_bc_expr(st8, fb, kz_num((kaze_float_t)0));
+#line 8952
         return kaze_fn_bc_patch(st9, kz_fb_index(to_end, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8953
     if (kz_is_truthy(kz_eq(k, kz_str("INDEX")))) {
+#line 8954
         KzValue c = kaze_fn_bc_temp(st);
+#line 8955
         KzValue i = kaze_fn_bc_temp(kz_fb_index(c, kz_num((kaze_float_t)0), kz_list_new(0)));
+#line 8956
         KzValue coll_slot = kz_fb_index(c, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 8957
         KzValue idx_slot = kz_fb_index(i, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 8958
         KzValue st1 = kaze_fn_bc_expr(kz_fb_index(i, kz_num((kaze_float_t)0), kz_list_new(0)), kaze_fn_bc_kid(inner, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8959
         KzValue st2 = kaze_fn_bc_emit(st1, kz_num((kaze_float_t)2), coll_slot);
+#line 8960
         KzValue st3 = kaze_fn_bc_expr(st2, kaze_fn_bc_kid(inner, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0));
+#line 8961
         KzValue st4 = kaze_fn_bc_emit(st3, kz_num((kaze_float_t)2), idx_slot);
+#line 8962
         KzValue st5 = kaze_fn_bc_emit(st4, kz_num((kaze_float_t)1), idx_slot);
+#line 8963
         KzValue r = kaze_fn_bc_push_num(st5, kz_num((kaze_float_t)0));
+#line 8964
         KzValue st6 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8965
         KzValue st7 = kaze_fn_bc_emit(st6, kz_num((kaze_float_t)13), kz_num((kaze_float_t)0));
+#line 8966
         KzValue too_low = kaze_fn_bc_wide(st7, kz_num((kaze_float_t)29), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8967
         KzValue st8 = kaze_fn_bc_emit(kz_fb_index(too_low, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)1), idx_slot);
+#line 8968
         KzValue st9 = kaze_fn_bc_emit(st8, kz_num((kaze_float_t)1), coll_slot);
+#line 8969
         KzValue st10 = kaze_fn_bc_emit(st9, kz_num((kaze_float_t)5), kz_num((kaze_float_t)0));
+#line 8970
         KzValue st11 = kaze_fn_bc_emit(st10, kz_num((kaze_float_t)16), kz_num((kaze_float_t)0));
+#line 8971
         KzValue too_high = kaze_fn_bc_wide(st11, kz_num((kaze_float_t)29), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8972
         KzValue st12 = kaze_fn_bc_emit(kz_fb_index(too_high, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)1), coll_slot);
+#line 8973
         KzValue st13 = kaze_fn_bc_emit(st12, kz_num((kaze_float_t)1), idx_slot);
+#line 8974
         KzValue st14 = kaze_fn_bc_emit(st13, kz_num((kaze_float_t)4), kz_num((kaze_float_t)0));
+#line 8975
         KzValue to_end = kaze_fn_bc_wide(st14, kz_num((kaze_float_t)20), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8976
         KzValue st15 = kaze_fn_bc_patch(kz_fb_index(to_end, kz_num((kaze_float_t)0), kz_list_new(0)), kz_fb_index(too_low, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8977
         KzValue st16 = kaze_fn_bc_patch(st15, kz_fb_index(too_high, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8978
         KzValue st17 = kaze_fn_bc_expr(st16, fb, kz_num((kaze_float_t)0));
+#line 8979
         return kaze_fn_bc_patch(st17, kz_fb_index(to_end, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8980
     if (kz_is_truthy(kz_eq(k, kz_str("CALL")))) {
+#line 8981
         if (kz_is_truthy(kz_eq(root, kz_num((kaze_float_t)0)))) {
+#line 8982
             return kaze_fn_bc_fail(st, kz_add(kz_add(kz_str("line "), line), kz_str(": a capability fallback must be the whole value of its statement; give it a 'let' of its own (or wrap the statement in 'try:')")));
         }
+#line 8983
         KzValue h = kaze_fn_bc_wide(st, kz_num((kaze_float_t)44), kz_num((kaze_float_t)255), kz_num((kaze_float_t)0));
+#line 8984
         KzValue st1 = kaze_fn_bc_expr(kz_fb_index(h, kz_num((kaze_float_t)0), kz_list_new(0)), inner, kz_num((kaze_float_t)0));
+#line 8985
         KzValue st2 = kaze_fn_bc_emit(st1, kz_num((kaze_float_t)45), kz_num((kaze_float_t)0));
+#line 8986
         KzValue to_end = kaze_fn_bc_wide(st2, kz_num((kaze_float_t)20), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 8987
         KzValue st3 = kaze_fn_bc_patch(kz_fb_index(to_end, kz_num((kaze_float_t)0), kz_list_new(0)), kz_fb_index(h, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 8988
         KzValue st4 = kaze_fn_bc_expr(st3, fb, kz_num((kaze_float_t)0));
+#line 8989
         return kaze_fn_bc_patch(st4, kz_fb_index(to_end, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 8990
     return kaze_fn_bc_expr(st, inner, root);
     return kz_nil();
 }
 
+#line 8994
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_jump_if_false(KzValue st, KzValue cond) {
     (void)st;   /* a routine need not use every parameter */
     (void)cond;   /* a routine need not use every parameter */
+#line 8995
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(cond, "kind"), kz_str("BIN")), kz_eq(kz_get_field(cond, "name"), kz_str("=="))))) {
+#line 8996
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(cond, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 8997
         KzValue st2 = kaze_fn_bc_expr(st1, kaze_fn_bc_kid(cond, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0));
+#line 8998
         return kaze_fn_bc_wide(st2, kz_num((kaze_float_t)32), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
     }
+#line 8999
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(cond, "kind"), kz_str("BIN")), kz_eq(kz_get_field(cond, "name"), kz_str("!="))))) {
+#line 9000
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(cond, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 9001
         KzValue st2 = kaze_fn_bc_expr(st1, kaze_fn_bc_kid(cond, kz_num((kaze_float_t)1)), kz_num((kaze_float_t)0));
+#line 9002
         return kaze_fn_bc_wide(st2, kz_num((kaze_float_t)31), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
     }
+#line 9003
     KzValue st3 = kaze_fn_bc_expr(st, cond, kz_num((kaze_float_t)1));
+#line 9004
     return kaze_fn_bc_wide(st3, kz_num((kaze_float_t)21), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
     return kz_nil();
 }
 
+#line 9008
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_stmts(KzValue st, KzValue block) {
     (void)st;   /* a routine need not use every parameter */
     (void)block;   /* a routine need not use every parameter */
+#line 9010
     KzValue st1 = kaze_fn_bc_push_scope(st);
+#line 9011
     KzValue st2 = st1;
+#line 9012
     {
         KzValue _iter_target = kz_get_field(block, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue s = _iter_target.as.list->items[_i];
+#line 9013
                 st2 = kaze_fn_bc_stmt(st2, s);
             }
         }
     }
+#line 9014
     return kaze_fn_bc_pop_scope(st2);
     return kz_nil();
 }
 
+#line 9016
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_stmt(KzValue st, KzValue s) {
     (void)st;   /* a routine need not use every parameter */
     (void)s;   /* a routine need not use every parameter */
+#line 9018
     KzValue k = kz_get_field(s, "kind");
+#line 9019
     if (kz_is_truthy(kz_eq(k, kz_str("LET")))) {
+#line 9020
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(s, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)1));
+#line 9021
         KzValue b = kaze_fn_bc_bind(st1, kz_get_field(s, "name"));
+#line 9022
         return kaze_fn_bc_emit(kz_fb_index(b, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)2), kz_fb_index(b, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 9023
     if (kz_is_truthy(kz_eq(k, kz_str("SET")))) {
+#line 9024
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(s, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)1));
+#line 9025
         KzValue slot = kaze_fn_bc_resolve(kz_fb_index(st1, kz_num((kaze_float_t)1), kz_list_new(0)), kz_get_field(s, "name"));
+#line 9026
         if (kz_is_truthy(kz_lt(slot, kz_num((kaze_float_t)0)))) {
+#line 9027
             return kaze_fn_bc_fail(st1, kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(s, "line"))), kz_str(": '")), kz_get_field(s, "name")), kz_str("' is not defined")));
         }
+#line 9028
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)2), slot);
     }
+#line 9029
     if (kz_is_truthy(kz_eq(k, kz_str("EXPR")))) {
+#line 9030
         KzValue e = kaze_fn_bc_kid(s, kz_num((kaze_float_t)0));
+#line 9031
         KzValue st1 = kaze_fn_bc_expr(st, e, kz_num((kaze_float_t)1));
+#line 9032
         if (kz_is_truthy(kz_and(kz_eq(kz_get_field(e, "kind"), kz_str("CALL")), kz_or(kz_eq(kz_get_field(e, "name"), kz_str("policy.allow")), kz_eq(kz_get_field(e, "name"), kz_str("policy.reject")))))) {
+#line 9033
             return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)23), kz_num((kaze_float_t)0));
         }
+#line 9034
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)6), kz_num((kaze_float_t)0));
     }
+#line 9035
     if (kz_is_truthy(kz_eq(k, kz_str("IF")))) {
+#line 9036
         KzValue j = kaze_fn_bc_jump_if_false(st, kaze_fn_bc_kid(s, kz_num((kaze_float_t)0)));
+#line 9037
         KzValue st1 = kaze_fn_bc_stmts(kz_fb_index(j, kz_num((kaze_float_t)0), kz_list_new(0)), kaze_fn_bc_kid(s, kz_num((kaze_float_t)1)));
+#line 9038
         KzValue other = kaze_fn_bc_kid(s, kz_num((kaze_float_t)2));
+#line 9039
         if (kz_is_truthy(kz_eq(kz_len(kz_get_field(other, "children")), kz_num((kaze_float_t)0)))) {
+#line 9040
             return kaze_fn_bc_patch(st1, kz_fb_index(j, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
         }
+#line 9041
         KzValue to_end = kaze_fn_bc_wide(st1, kz_num((kaze_float_t)20), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9042
         KzValue st2 = kaze_fn_bc_patch(kz_fb_index(to_end, kz_num((kaze_float_t)0), kz_list_new(0)), kz_fb_index(j, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9043
         KzValue st3 = kaze_fn_bc_stmts(st2, other);
+#line 9044
         return kaze_fn_bc_patch(st3, kz_fb_index(to_end, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 9045
     if (kz_is_truthy(kz_eq(k, kz_str("WHILE")))) {
+#line 9046
         return kaze_fn_bc_while(st, s);
     }
+#line 9047
     if (kz_is_truthy(kz_eq(k, kz_str("FOR_EACH")))) {
+#line 9048
         return kaze_fn_bc_for_each(st, s);
     }
+#line 9049
     if (kz_is_truthy(kz_eq(k, kz_str("TRY")))) {
+#line 9050
         return kaze_fn_bc_try(st, s);
     }
+#line 9051
     if (kz_is_truthy(kz_eq(k, kz_str("GUARD")))) {
+#line 9052
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(s, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)1));
+#line 9053
         KzValue held = kaze_fn_bc_wide(st1, kz_num((kaze_float_t)29), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9054
         KzValue r = kaze_fn_bc_push_text(kz_fb_index(held, kz_num((kaze_float_t)0), kz_list_new(0)), kz_add(kz_add(kz_str("E_KAZE_GUARD: the invariant at line "), kaze_fn_bc_num_text(kz_get_field(s, "line"))), kz_str(" is false")));
+#line 9055
         KzValue st2 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)27), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9056
         return kaze_fn_bc_patch(st2, kz_fb_index(held, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     }
+#line 9057
     if (kz_is_truthy(kz_eq(k, kz_str("RETURN")))) {
+#line 9058
         return kaze_fn_bc_return(st, s);
     }
+#line 9059
     return kaze_fn_bc_fail(st, kz_add(kz_add(kz_add(kz_add(kz_str("line "), kaze_fn_bc_num_text(kz_get_field(s, "line"))), kz_str(": ")), k), kz_str(" is not lowered by the minimal bytecode writer")));
     return kz_nil();
 }
 
+#line 9061
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_while(KzValue st, KzValue s) {
     (void)st;   /* a routine need not use every parameter */
     (void)s;   /* a routine need not use every parameter */
+#line 9063
     KzValue cond = kaze_fn_bc_kid(s, kz_num((kaze_float_t)0));
+#line 9064
     KzValue body = kaze_fn_bc_kid(s, kz_num((kaze_float_t)1));
+#line 9065
     KzValue bound_node = kaze_fn_bc_kid(s, kz_num((kaze_float_t)2));
+#line 9066
     KzValue bound_text = kz_get_field(bound_node, "val_str");
+#line 9067
     KzValue limited = kz_num((kaze_float_t)1);
+#line 9068
     if (kz_is_truthy(kz_or(kz_eq(bound_text, kz_str("")), kz_eq(bound_text, kz_str("?"))))) {
+#line 9069
         limited = kz_num((kaze_float_t)0);
     }
+#line 9070
     KzValue st1 = st;
+#line 9071
     KzValue counter = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
+#line 9072
     if (kz_is_truthy(kz_eq(limited, kz_num((kaze_float_t)1)))) {
+#line 9073
         KzValue t = kaze_fn_bc_temp(st1);
+#line 9074
         st1 = kz_fb_index(t, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 9075
         counter = kz_fb_index(t, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9076
         KzValue r = kaze_fn_bc_push_num(st1, kz_num((kaze_float_t)0));
+#line 9077
         KzValue st2 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9078
         st1 = kaze_fn_bc_emit(st2, kz_num((kaze_float_t)2), counter);
     }
+#line 9079
     KzValue head = kaze_fn_bc_mark(st1);
+#line 9080
     st1 = kaze_fn_bc_wide1(st1, kz_num((kaze_float_t)26), kz_num((kaze_float_t)0), kz_get_field(s, "line"));
+#line 9081
     KzValue to_trap = kz_sub(kz_num((kaze_float_t)0), kz_num((kaze_float_t)1));
+#line 9082
     if (kz_is_truthy(kz_eq(limited, kz_num((kaze_float_t)1)))) {
+#line 9083
         KzValue st2 = kaze_fn_bc_emit(st1, kz_num((kaze_float_t)1), counter);
+#line 9084
         KzValue r = kaze_fn_bc_push_num(st2, kaze_fn_bc_num_of(bound_text));
+#line 9085
         KzValue st3 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9086
         KzValue st4 = kaze_fn_bc_emit(st3, kz_num((kaze_float_t)16), kz_num((kaze_float_t)0));
+#line 9087
         KzValue j = kaze_fn_bc_wide(st4, kz_num((kaze_float_t)29), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9088
         st1 = kz_fb_index(j, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 9089
         to_trap = kz_fb_index(j, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
     }
+#line 9090
     KzValue jf = kaze_fn_bc_jump_if_false(st1, cond);
+#line 9091
     KzValue to_end = kz_fb_index(jf, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9092
     KzValue st5 = kz_fb_index(jf, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 9093
     {
         KzValue _iter_target = kz_get_field(body, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue b = _iter_target.as.list->items[_i];
+#line 9094
                 st5 = kaze_fn_bc_stmt(st5, b);
             }
         }
     }
+#line 9095
     KzValue st6 = st5;
+#line 9096
     if (kz_is_truthy(kz_eq(limited, kz_num((kaze_float_t)1)))) {
+#line 9097
         KzValue st7 = kaze_fn_bc_emit(st6, kz_num((kaze_float_t)1), counter);
+#line 9098
         KzValue r = kaze_fn_bc_push_num(st7, kz_num((kaze_float_t)1));
+#line 9099
         KzValue st8 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9100
         KzValue st9 = kaze_fn_bc_emit(st8, kz_num((kaze_float_t)7), kz_num((kaze_float_t)0));
+#line 9101
         st6 = kaze_fn_bc_emit(st9, kz_num((kaze_float_t)2), counter);
     }
+#line 9102
     KzValue st10 = kaze_fn_bc_jump_back(st6, head);
+#line 9103
     if (kz_is_truthy(kz_eq(limited, kz_num((kaze_float_t)0)))) {
+#line 9104
         return kaze_fn_bc_patch(st10, to_end);
     }
+#line 9105
     KzValue over = kaze_fn_bc_wide(st10, kz_num((kaze_float_t)20), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9106
     KzValue st11 = kaze_fn_bc_patch(kz_fb_index(over, kz_num((kaze_float_t)0), kz_list_new(0)), to_trap);
+#line 9107
     KzValue r = kaze_fn_bc_push_text(st11, kz_add(kz_add(kz_add(kz_add(kz_str("E_KAZE_LOOP_BOUND: the loop at line "), kaze_fn_bc_num_text(kz_get_field(s, "line"))), kz_str(" ran past its declared bound of ")), bound_text), kz_str(" iterations")));
+#line 9108
     KzValue st12 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)27), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9109
     KzValue st13 = kaze_fn_bc_emit(st12, kz_num((kaze_float_t)25), kz_num((kaze_float_t)0));
+#line 9110
     KzValue st14 = kaze_fn_bc_patch(st13, kz_fb_index(over, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9111
     return kaze_fn_bc_patch(st14, to_end);
     return kz_nil();
 }
 
+#line 9113
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_for_each(KzValue st, KzValue s) {
     (void)st;   /* a routine need not use every parameter */
     (void)s;   /* a routine need not use every parameter */
+#line 9115
     KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(s, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 9116
     KzValue t1 = kaze_fn_bc_temp(st1);
+#line 9117
     KzValue list_slot = kz_fb_index(t1, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9118
     KzValue st2 = kaze_fn_bc_emit(kz_fb_index(t1, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)2), list_slot);
+#line 9119
     KzValue r0 = kaze_fn_bc_push_num(st2, kz_num((kaze_float_t)0));
+#line 9120
     KzValue st3 = kaze_fn_bc_wide1(kz_fb_index(r0, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r0, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9121
     KzValue t2 = kaze_fn_bc_temp(st3);
+#line 9122
     KzValue idx_slot = kz_fb_index(t2, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9123
     KzValue st4 = kaze_fn_bc_emit(kz_fb_index(t2, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)2), idx_slot);
+#line 9124
     KzValue head = kaze_fn_bc_mark(st4);
+#line 9125
     KzValue st5 = kaze_fn_bc_wide1(st4, kz_num((kaze_float_t)26), kz_num((kaze_float_t)0), kz_get_field(s, "line"));
+#line 9126
     KzValue st6 = kaze_fn_bc_emit(st5, kz_num((kaze_float_t)1), list_slot);
+#line 9127
     KzValue st7 = kaze_fn_bc_emit(st6, kz_num((kaze_float_t)5), kz_num((kaze_float_t)0));
+#line 9128
     KzValue st8 = kaze_fn_bc_emit(st7, kz_num((kaze_float_t)1), idx_slot);
+#line 9129
     KzValue st9 = kaze_fn_bc_emit(st8, kz_num((kaze_float_t)14), kz_num((kaze_float_t)0));
+#line 9130
     KzValue j = kaze_fn_bc_wide(st9, kz_num((kaze_float_t)29), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9131
     KzValue st10 = kaze_fn_bc_push_scope(kz_fb_index(j, kz_num((kaze_float_t)0), kz_list_new(0)));
+#line 9132
     KzValue b = kaze_fn_bc_bind(st10, kz_get_field(s, "name"));
+#line 9133
     KzValue st11 = kaze_fn_bc_emit(kz_fb_index(b, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)1), list_slot);
+#line 9134
     KzValue st12 = kaze_fn_bc_emit(st11, kz_num((kaze_float_t)1), idx_slot);
+#line 9135
     KzValue st13 = kaze_fn_bc_emit(st12, kz_num((kaze_float_t)4), kz_num((kaze_float_t)0));
+#line 9136
     KzValue st14 = kaze_fn_bc_emit(st13, kz_num((kaze_float_t)2), kz_fb_index(b, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9137
     KzValue st15 = st14;
+#line 9138
     KzValue body_block = kaze_fn_bc_kid(s, kz_num((kaze_float_t)1));
+#line 9139
     {
         KzValue _iter_target = kz_get_field(body_block, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue x = _iter_target.as.list->items[_i];
+#line 9140
                 st15 = kaze_fn_bc_stmt(st15, x);
             }
         }
     }
+#line 9141
     KzValue st16 = kaze_fn_bc_pop_scope(st15);
+#line 9142
     KzValue st17 = kaze_fn_bc_emit(st16, kz_num((kaze_float_t)1), idx_slot);
+#line 9143
     KzValue r1 = kaze_fn_bc_push_num(st17, kz_num((kaze_float_t)1));
+#line 9144
     KzValue st18 = kaze_fn_bc_wide1(kz_fb_index(r1, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r1, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9145
     KzValue st19 = kaze_fn_bc_emit(st18, kz_num((kaze_float_t)7), kz_num((kaze_float_t)0));
+#line 9146
     KzValue st20 = kaze_fn_bc_emit(st19, kz_num((kaze_float_t)2), idx_slot);
+#line 9147
     KzValue st21 = kaze_fn_bc_jump_back(st20, head);
+#line 9148
     return kaze_fn_bc_patch(st21, kz_fb_index(j, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     return kz_nil();
 }
 
+#line 9150
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_try(KzValue st, KzValue s) {
     (void)st;   /* a routine need not use every parameter */
     (void)s;   /* a routine need not use every parameter */
+#line 9152
     KzValue err = kz_get_field(s, "name");
+#line 9153
     KzValue st1 = st;
+#line 9154
     KzValue slot = kz_num((kaze_float_t)255);
+#line 9155
     if (kz_is_truthy(kz_gt(kz_len(err), kz_num((kaze_float_t)0)))) {
+#line 9156
         KzValue t = kaze_fn_bc_temp(st1);
+#line 9157
         st1 = kz_fb_index(t, kz_num((kaze_float_t)0), kz_list_new(0));
+#line 9158
         slot = kz_fb_index(t, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
     }
+#line 9159
     KzValue h = kaze_fn_bc_wide(st1, kz_num((kaze_float_t)44), slot, kz_num((kaze_float_t)0));
+#line 9160
     KzValue st2 = kaze_fn_bc_stmts(kz_fb_index(h, kz_num((kaze_float_t)0), kz_list_new(0)), kaze_fn_bc_kid(s, kz_num((kaze_float_t)0)));
+#line 9161
     KzValue st3 = kaze_fn_bc_emit(st2, kz_num((kaze_float_t)45), kz_num((kaze_float_t)0));
+#line 9162
     KzValue to_end = kaze_fn_bc_wide(st3, kz_num((kaze_float_t)20), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9163
     KzValue st4 = kaze_fn_bc_patch(kz_fb_index(to_end, kz_num((kaze_float_t)0), kz_list_new(0)), kz_fb_index(h, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9164
     KzValue st5 = kaze_fn_bc_push_scope(st4);
+#line 9165
     KzValue st6 = st5;
+#line 9166
     if (kz_is_truthy(kz_gt(kz_len(err), kz_num((kaze_float_t)0)))) {
+#line 9167
         st6 = kaze_fn_bc_bind_named(st5, err, slot);
     }
+#line 9168
     KzValue st7 = kaze_fn_bc_stmts(st6, kaze_fn_bc_kid(s, kz_num((kaze_float_t)1)));
+#line 9169
     KzValue st8 = kaze_fn_bc_pop_scope(st7);
+#line 9170
     return kaze_fn_bc_patch(st8, kz_fb_index(to_end, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
     return kz_nil();
 }
 
+#line 9172
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_return(KzValue st, KzValue s) {
     (void)st;   /* a routine need not use every parameter */
     (void)s;   /* a routine need not use every parameter */
+#line 9173
     if (kz_is_truthy(kz_eq(kz_len(kz_get_field(s, "children")), kz_num((kaze_float_t)0)))) {
+#line 9174
         return kaze_fn_bc_emit(st, kz_num((kaze_float_t)25), kz_num((kaze_float_t)0));
     }
+#line 9175
     KzValue t = kaze_fn_bc_temp(st);
+#line 9176
     KzValue st1 = kaze_fn_bc_expr(kz_fb_index(t, kz_num((kaze_float_t)0), kz_list_new(0)), kaze_fn_bc_kid(s, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)1));
+#line 9177
     KzValue slot = kz_fb_index(t, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9178
     KzValue st2 = kaze_fn_bc_emit(st1, kz_num((kaze_float_t)2), slot);
+#line 9179
     KzValue st3 = kaze_fn_bc_exit_assertions(st2, slot);
+#line 9180
     KzValue st4 = kaze_fn_bc_emit(st3, kz_num((kaze_float_t)1), slot);
+#line 9181
     return kaze_fn_bc_emit(st4, kz_num((kaze_float_t)24), kz_num((kaze_float_t)0));
     return kz_nil();
 }
 
+#line 9183
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_entry_assertions(KzValue st, KzValue contracts) {
     (void)st;   /* a routine need not use every parameter */
     (void)contracts;   /* a routine need not use every parameter */
+#line 9184
     KzValue st1 = st;
+#line 9185
     {
         KzValue _iter_target = contracts;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9186
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("requires"))))) {
+#line 9187
                     KzValue st2 = kaze_fn_bc_expr(st1, kaze_fn_bc_kid(c, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)1));
+#line 9188
                     KzValue held = kaze_fn_bc_wide(st2, kz_num((kaze_float_t)29), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9189
                     KzValue r = kaze_fn_bc_push_text(kz_fb_index(held, kz_num((kaze_float_t)0), kz_list_new(0)), kz_add(kz_add(kz_str("E_KAZE_CONTRACT: the requires clause at line "), kaze_fn_bc_num_text(kz_get_field(c, "line"))), kz_str(" is false for these arguments")));
+#line 9190
                     KzValue st3 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)27), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9191
                     st1 = kaze_fn_bc_patch(st3, kz_fb_index(held, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
                 }
             }
         }
     }
+#line 9192
     return st1;
     return kz_nil();
 }
 
+#line 9194
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_exit_assertions(KzValue st, KzValue slot) {
     (void)st;   /* a routine need not use every parameter */
     (void)slot;   /* a routine need not use every parameter */
+#line 9195
     KzValue st1 = st;
+#line 9196
     {
         KzValue _iter_target = kz_fb_index(st, kz_num((kaze_float_t)8), kz_list_new(0));
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9197
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("ensures"))))) {
+#line 9198
                     KzValue st2 = kaze_fn_bc_push_scope(st1);
+#line 9199
                     KzValue st3 = kaze_fn_bc_bind_named(st2, kz_str("result"), slot);
+#line 9200
                     KzValue st4 = kaze_fn_bc_expr(st3, kaze_fn_bc_kid(c, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)1));
+#line 9201
                     KzValue st5 = kaze_fn_bc_pop_scope(st4);
+#line 9202
                     KzValue held = kaze_fn_bc_wide(st5, kz_num((kaze_float_t)29), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9203
                     KzValue r = kaze_fn_bc_push_text(kz_fb_index(held, kz_num((kaze_float_t)0), kz_list_new(0)), kz_add(kz_add(kz_str("E_KAZE_CONTRACT: the ensures clause at line "), kaze_fn_bc_num_text(kz_get_field(c, "line"))), kz_str(" is false for this result")));
+#line 9204
                     KzValue st6 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)27), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9205
                     st1 = kaze_fn_bc_patch(st6, kz_fb_index(held, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
                 }
             }
         }
     }
+#line 9206
     return st1;
     return kz_nil();
 }
 
+#line 9212
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_hook_name(KzValue kind, KzValue serial) {
     (void)kind;   /* a routine need not use every parameter */
     (void)serial;   /* a routine need not use every parameter */
+#line 9213
     if (kz_is_truthy(kz_eq(kind, kz_str("WHEN")))) {
+#line 9214
         return kz_add(kz_str("when-"), kaze_fn_bc_num_text(serial));
     }
+#line 9215
     return kz_add(kz_str("every-"), kaze_fn_bc_num_text(serial));
     return kz_nil();
 }
 
+#line 9217
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_tag_of(KzValue kind) {
     (void)kind;   /* a routine need not use every parameter */
+#line 9218
     if (kz_is_truthy(kz_eq(kind, kz_str("CHECK")))) {
+#line 9219
         return kz_num((kaze_float_t)1);
     }
+#line 9220
     if (kz_is_truthy(kz_eq(kind, kz_str("FILTER")))) {
+#line 9221
         return kz_num((kaze_float_t)2);
     }
+#line 9222
     if (kz_is_truthy(kz_eq(kind, kz_str("WHEN")))) {
+#line 9223
         return kz_num((kaze_float_t)3);
     }
+#line 9224
     if (kz_is_truthy(kz_eq(kind, kz_str("EVERY")))) {
+#line 9225
         return kz_num((kaze_float_t)4);
     }
+#line 9226
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 9228
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_period_of(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 9229
     if (kz_is_truthy(kz_ne(kz_get_field(item, "kind"), kz_str("EVERY")))) {
+#line 9230
         return kz_num((kaze_float_t)0);
     }
+#line 9231
     KzValue d = kaze_fn_bc_kid(item, kz_num((kaze_float_t)0));
+#line 9232
     if (kz_is_truthy(kz_ne(kz_get_field(d, "kind"), kz_str("NUM")))) {
+#line 9233
         return kz_num((kaze_float_t)0);
     }
+#line 9234
     return kz_mul(kz_mul(kaze_fn_bc_num_of(kz_get_field(d, "val_str")), kaze_fn_bc_unit_scale(kz_get_field(d, "name"))), kz_num((kaze_float_t)1000));
     return kz_nil();
 }
 
+#line 9236
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_is_routine_kind(KzValue kind) {
     (void)kind;   /* a routine need not use every parameter */
+#line 9237
     if (kz_is_truthy(kz_or(kz_or(kz_eq(kind, kz_str("ACTION")), kz_eq(kind, kz_str("CHECK"))), kz_eq(kind, kz_str("FILTER"))))) {
+#line 9238
         return kz_num((kaze_float_t)1);
     }
+#line 9239
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 9248
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_eval_num(KzValue e, KzValue env) {
     (void)e;   /* a routine need not use every parameter */
     (void)env;   /* a routine need not use every parameter */
+#line 9250
     KzValue k = kz_get_field(e, "kind");
+#line 9251
     if (kz_is_truthy(kz_eq(k, kz_str("NUM")))) {
+#line 9252
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_add(kz_mul(kaze_fn_bc_num_of(kz_get_field(e, "val_str")), kaze_fn_bc_unit_scale(kz_get_field(e, "name"))), kaze_fn_bc_unit_offset(kz_get_field(e, "name"))) });
     }
+#line 9253
     if (kz_is_truthy(kz_eq(k, kz_str("IDENT")))) {
+#line 9254
         KzValue i = kz_num((kaze_float_t)0);
+#line 9255
         KzValue n = kz_len(env);
-        { long _kz_loop_l9247 = 0;
+#line 9256
+        { long _kz_loop_l9256 = 0;
             while (kz_is_truthy(kz_lt(i, n))) {
-                if (_kz_loop_l9247 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-                _kz_loop_l9247 = _kz_loop_l9247 + 1;
+                if (_kz_loop_l9256 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+                _kz_loop_l9256 = _kz_loop_l9256 + 1;
+#line 9257
                 KzValue pair = kz_fb_index(env, i, kz_list_from(2, (KzValue[]){ kz_str(""), kz_num((kaze_float_t)0) }));
+#line 9258
                 if (kz_is_truthy(kz_eq(kz_fb_index(pair, kz_num((kaze_float_t)0), kz_str("")), kz_get_field(e, "name")))) {
+#line 9259
                     return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_fb_index(pair, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)) });
                 }
+#line 9260
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
+#line 9261
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
     }
+#line 9262
     if (kz_is_truthy(kz_eq(k, kz_str("BIN")))) {
+#line 9263
         KzValue op = kz_get_field(e, "name");
+#line 9264
         if (kz_is_truthy(kz_or(kz_or(kz_or(kz_or(kz_eq(op, kz_str("+")), kz_eq(op, kz_str("-"))), kz_eq(op, kz_str("*"))), kz_eq(op, kz_str("/"))), kz_eq(op, kz_str("%"))))) {
+#line 9265
             KzValue l = kaze_fn_bc_eval_num(kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), env);
+#line 9266
             KzValue r = kaze_fn_bc_eval_num(kaze_fn_bc_kid(e, kz_num((kaze_float_t)1)), env);
+#line 9267
             if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(l, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)), kz_eq(kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0))))) {
+#line 9268
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
             }
+#line 9269
             KzValue a = kz_fb_index(l, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9270
             KzValue b = kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9271
             if (kz_is_truthy(kz_eq(op, kz_str("+")))) {
+#line 9272
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_add(a, b) });
             }
+#line 9273
             if (kz_is_truthy(kz_eq(op, kz_str("-")))) {
+#line 9274
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_sub(a, b) });
             }
+#line 9275
             if (kz_is_truthy(kz_eq(op, kz_str("*")))) {
+#line 9276
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_mul(a, b) });
             }
+#line 9277
             if (kz_is_truthy(kz_eq(b, kz_num((kaze_float_t)0)))) {
+#line 9278
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
             }
+#line 9279
             if (kz_is_truthy(kz_eq(op, kz_str("/")))) {
+#line 9280
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_fb_div(a, b, kz_num((kaze_float_t)0)) });
             }
+#line 9281
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_fb_mod(a, b, kz_num((kaze_float_t)0)) });
         }
     }
+#line 9282
     return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
     return kz_nil();
 }
 
+#line 9284
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_eval_clause(KzValue e, KzValue env) {
     (void)e;   /* a routine need not use every parameter */
     (void)env;   /* a routine need not use every parameter */
+#line 9286
     KzValue k = kz_get_field(e, "kind");
+#line 9287
     if (kz_is_truthy(kz_eq(k, kz_str("BOOL")))) {
+#line 9288
         KzValue v = kz_num((kaze_float_t)0);
+#line 9289
         if (kz_is_truthy(kz_eq(kz_get_field(e, "val_str"), kz_str("true")))) {
+#line 9290
             v = kz_num((kaze_float_t)1);
         }
+#line 9291
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), v });
     }
+#line 9292
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("BIN")), kz_eq(kz_get_field(e, "name"), kz_str("not"))))) {
+#line 9293
         KzValue r = kaze_fn_bc_eval_clause(kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), env);
+#line 9294
         if (kz_is_truthy(kz_eq(kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)))) {
+#line 9295
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
         }
+#line 9296
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_sub(kz_num((kaze_float_t)1), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0))) });
     }
+#line 9297
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("BIN")), kz_or(kz_eq(kz_get_field(e, "name"), kz_str("and")), kz_eq(kz_get_field(e, "name"), kz_str("or")))))) {
+#line 9298
         KzValue l = kaze_fn_bc_eval_clause(kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), env);
+#line 9299
         KzValue r = kaze_fn_bc_eval_clause(kaze_fn_bc_kid(e, kz_num((kaze_float_t)1)), env);
+#line 9300
         if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(l, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)), kz_eq(kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0))))) {
+#line 9301
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
         }
+#line 9302
         KzValue a = kz_fb_index(l, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9303
         KzValue b = kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9304
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("and")))) {
+#line 9305
             if (kz_is_truthy(kz_and(kz_eq(a, kz_num((kaze_float_t)1)), kz_eq(b, kz_num((kaze_float_t)1))))) {
+#line 9306
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 9307
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 9308
         if (kz_is_truthy(kz_or(kz_eq(a, kz_num((kaze_float_t)1)), kz_eq(b, kz_num((kaze_float_t)1))))) {
+#line 9309
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
         }
+#line 9310
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
     }
+#line 9311
     if (kz_is_truthy(kz_and(kz_eq(k, kz_str("BIN")), kz_or(kz_or(kz_or(kz_or(kz_or(kz_eq(kz_get_field(e, "name"), kz_str("<")), kz_eq(kz_get_field(e, "name"), kz_str("<="))), kz_eq(kz_get_field(e, "name"), kz_str(">"))), kz_eq(kz_get_field(e, "name"), kz_str(">="))), kz_eq(kz_get_field(e, "name"), kz_str("=="))), kz_eq(kz_get_field(e, "name"), kz_str("!=")))))) {
+#line 9312
         KzValue l = kaze_fn_bc_eval_num(kaze_fn_bc_kid(e, kz_num((kaze_float_t)0)), env);
+#line 9313
         KzValue r = kaze_fn_bc_eval_num(kaze_fn_bc_kid(e, kz_num((kaze_float_t)1)), env);
+#line 9314
         if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(l, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)), kz_eq(kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0))))) {
+#line 9315
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
         }
+#line 9316
         KzValue a = kz_fb_index(l, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9317
         KzValue b = kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0));
+#line 9318
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("<")))) {
+#line 9319
             if (kz_is_truthy(kz_lt(a, b))) {
+#line 9320
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 9321
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 9322
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("<=")))) {
+#line 9323
             if (kz_is_truthy(kz_le(a, b))) {
+#line 9324
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 9325
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 9326
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str(">")))) {
+#line 9327
             if (kz_is_truthy(kz_gt(a, b))) {
+#line 9328
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 9329
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 9330
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str(">=")))) {
+#line 9331
             if (kz_is_truthy(kz_ge(a, b))) {
+#line 9332
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 9333
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 9334
         if (kz_is_truthy(kz_eq(kz_get_field(e, "name"), kz_str("==")))) {
+#line 9335
             if (kz_is_truthy(kz_eq(a, b))) {
+#line 9336
                 return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
             }
+#line 9337
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
         }
+#line 9338
         if (kz_is_truthy(kz_ne(a, b))) {
+#line 9339
             return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)1) });
         }
+#line 9340
         return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)1), kz_num((kaze_float_t)0) });
     }
+#line 9341
     return kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)0), kz_num((kaze_float_t)0) });
     return kz_nil();
 }
 
+#line 9344
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_proves_call(KzValue callee, KzValue args) {
     (void)callee;   /* a routine need not use every parameter */
     (void)args;   /* a routine need not use every parameter */
+#line 9345
     KzValue params_node = kaze_fn_bc_kid(callee, kz_num((kaze_float_t)0));
+#line 9346
     KzValue params = kz_get_field(params_node, "children");
+#line 9347
     if (kz_is_truthy(kz_ne(kz_len(params), kz_len(args)))) {
+#line 9348
         return kz_num((kaze_float_t)0);
     }
+#line 9349
     KzValue env = kz_list_new(0);
+#line 9350
     KzValue i = kz_num((kaze_float_t)0);
-    { long _kz_loop_l9342 = 0;
+#line 9351
+    { long _kz_loop_l9351 = 0;
         while (kz_is_truthy(kz_lt(i, kz_len(params)))) {
-            if (_kz_loop_l9342 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-            _kz_loop_l9342 = _kz_loop_l9342 + 1;
+            if (_kz_loop_l9351 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+            _kz_loop_l9351 = _kz_loop_l9351 + 1;
+#line 9352
             KzValue p = kz_fb_index(params, i, kaze_fn_none_node());
+#line 9353
             KzValue a = kz_fb_index(args, i, kaze_fn_none_node());
+#line 9354
             if (kz_is_truthy(kz_ne(kz_get_field(a, "kind"), kz_str("NUM")))) {
+#line 9355
                 return kz_num((kaze_float_t)0);
             }
+#line 9356
             env = kz_add(env, kz_list_from(1, (KzValue[]){ kz_list_from(2, (KzValue[]){ kz_get_field(p, "name"), kz_add(kz_mul(kaze_fn_bc_num_of(kz_get_field(a, "val_str")), kaze_fn_bc_unit_scale(kz_get_field(a, "name"))), kaze_fn_bc_unit_offset(kz_get_field(a, "name"))) }) }));
+#line 9357
             i = kz_add(i, kz_num((kaze_float_t)1));
         }
     }
+#line 9358
     KzValue cnode = kaze_fn_bc_kid(callee, kz_num((kaze_float_t)1));
+#line 9359
     {
         KzValue _iter_target = kz_get_field(cnode, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9360
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("requires"))))) {
+#line 9361
                     KzValue r = kaze_fn_bc_eval_clause(kaze_fn_bc_kid(c, kz_num((kaze_float_t)0)), env);
+#line 9362
                     if (kz_is_truthy(kz_or(kz_eq(kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0)), kz_ne(kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)), kz_num((kaze_float_t)1))))) {
+#line 9363
                         return kz_num((kaze_float_t)0);
                     }
                 }
             }
         }
     }
+#line 9364
     return kz_num((kaze_float_t)1);
     return kz_nil();
 }
 
+#line 9366
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_walk_calls_expr(KzValue e, KzValue callee, KzValue sites, KzValue proved) {
     (void)e;   /* a routine need not use every parameter */
     (void)callee;   /* a routine need not use every parameter */
     (void)sites;   /* a routine need not use every parameter */
     (void)proved;   /* a routine need not use every parameter */
+#line 9368
     KzValue s = sites;
+#line 9369
     KzValue p = proved;
+#line 9370
     if (kz_is_truthy(kz_and(kz_eq(kz_get_field(e, "kind"), kz_str("CALL")), kz_eq(kaze_fn_bc_has_named(kz_get_field(e, "children")), kz_num((kaze_float_t)0))))) {
+#line 9371
         if (kz_is_truthy(kz_and(kz_eq(kz_len(kaze_fn_bc_tail(kz_get_field(e, "name"))), kz_num((kaze_float_t)0)), kz_eq(kz_get_field(e, "name"), kz_get_field(callee, "name"))))) {
+#line 9372
             s = kz_add(s, kz_num((kaze_float_t)1));
+#line 9373
             if (kz_is_truthy(kz_eq(kaze_fn_bc_proves_call(callee, kz_get_field(e, "children")), kz_num((kaze_float_t)0)))) {
+#line 9374
                 p = kz_num((kaze_float_t)0);
             }
         }
     }
+#line 9375
     {
         KzValue _iter_target = kz_get_field(e, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9376
                 KzValue r = kaze_fn_bc_walk_calls_expr(c, callee, s, p);
+#line 9377
                 s = kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9378
                 p = kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)1));
             }
         }
     }
+#line 9379
     return kz_list_from(2, (KzValue[]){ s, p });
     return kz_nil();
 }
 
+#line 9381
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_walk_calls(KzValue stmts, KzValue callee, KzValue sites, KzValue proved) {
     (void)stmts;   /* a routine need not use every parameter */
     (void)callee;   /* a routine need not use every parameter */
     (void)sites;   /* a routine need not use every parameter */
     (void)proved;   /* a routine need not use every parameter */
+#line 9383
     KzValue s = sites;
+#line 9384
     KzValue p = proved;
+#line 9385
     {
         KzValue _iter_target = stmts;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue st = _iter_target.as.list->items[_i];
+#line 9386
                 {
                     KzValue _iter_target = kz_get_field(st, "children");
                     if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                         size_t _len = _iter_target.as.list->len;
                         for (size_t _i = 0; _i < _len; _i++) {
                             KzValue c = _iter_target.as.list->items[_i];
+#line 9387
                             if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("BLOCK")))) {
+#line 9388
                                 KzValue r = kaze_fn_bc_walk_calls(kz_get_field(c, "children"), callee, s, p);
+#line 9389
                                 s = kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9390
                                 p = kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)1));
                             } else {
+#line 9392
                                 KzValue r2 = kaze_fn_bc_walk_calls_expr(c, callee, s, p);
+#line 9393
                                 s = kz_fb_index(r2, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9394
                                 p = kz_fb_index(r2, kz_num((kaze_float_t)1), kz_num((kaze_float_t)1));
                             }
                         }
@@ -15342,301 +22777,442 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_walk_calls(KzValue stmts, KzValue call
             }
         }
     }
+#line 9395
     return kz_list_from(2, (KzValue[]){ s, p });
     return kz_nil();
 }
 
+#line 9397
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_body_of(KzValue item) {
     (void)item;   /* a routine need not use every parameter */
+#line 9398
     if (kz_is_truthy(kz_eq(kaze_fn_bc_is_routine_kind(kz_get_field(item, "kind")), kz_num((kaze_float_t)1)))) {
+#line 9399
         KzValue body = kaze_fn_bc_kid(item, kz_num((kaze_float_t)2));
+#line 9400
         return kz_get_field(body, "children");
     }
+#line 9401
     if (kz_is_truthy(kz_or(kz_eq(kz_get_field(item, "kind"), kz_str("WHEN")), kz_eq(kz_get_field(item, "kind"), kz_str("EVERY"))))) {
+#line 9402
         KzValue hook_body = kaze_fn_bc_kid(item, kz_num((kaze_float_t)1));
+#line 9403
         return kz_get_field(hook_body, "children");
     }
+#line 9404
     return kz_list_new(0);
     return kz_nil();
 }
 
+#line 9406
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_requires_proved(KzValue items, KzValue item) {
     (void)items;   /* a routine need not use every parameter */
     (void)item;   /* a routine need not use every parameter */
+#line 9407
     KzValue cnode = kaze_fn_bc_kid(item, kz_num((kaze_float_t)1));
+#line 9408
     KzValue asked = kz_num((kaze_float_t)0);
+#line 9409
     {
         KzValue _iter_target = kz_get_field(cnode, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9410
                 if (kz_is_truthy(kz_and(kz_eq(kz_get_field(c, "kind"), kz_str("CONTRACT")), kz_eq(kz_get_field(c, "name"), kz_str("requires"))))) {
+#line 9411
                     asked = kz_num((kaze_float_t)1);
                 }
             }
         }
     }
+#line 9412
     if (kz_is_truthy(kz_eq(asked, kz_num((kaze_float_t)0)))) {
+#line 9413
         return kz_num((kaze_float_t)1);
     }
+#line 9414
     KzValue s = kz_num((kaze_float_t)0);
+#line 9415
     KzValue p = kz_num((kaze_float_t)1);
+#line 9416
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue caller = _iter_target.as.list->items[_i];
+#line 9417
                 KzValue body = kaze_fn_bc_body_of(caller);
+#line 9418
                 KzValue r = kaze_fn_bc_walk_calls(body, item, s, p);
+#line 9419
                 s = kz_fb_index(r, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9420
                 p = kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)1));
             }
         }
     }
+#line 9421
     if (kz_is_truthy(kz_and(kz_gt(s, kz_num((kaze_float_t)0)), kz_eq(p, kz_num((kaze_float_t)1))))) {
+#line 9422
         return kz_num((kaze_float_t)1);
     }
+#line 9423
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 9425
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_item(KzValue st, KzValue item, KzValue items_nodes) {
     (void)st;   /* a routine need not use every parameter */
     (void)item;   /* a routine need not use every parameter */
     (void)items_nodes;   /* a routine need not use every parameter */
+#line 9426
     KzValue kind = kz_get_field(item, "kind");
+#line 9427
     if (kz_is_truthy(kz_eq(kind, kz_str("RECORD")))) {
+#line 9428
         KzValue fields = kz_get_field(item, "children");
+#line 9429
         KzValue st1 = st;
+#line 9430
         KzValue i = kz_num((kaze_float_t)0);
-        { long _kz_loop_l9422 = 0;
+#line 9431
+        { long _kz_loop_l9431 = 0;
             while (kz_is_truthy(kz_lt(i, kz_len(fields)))) {
-                if (_kz_loop_l9422 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-                _kz_loop_l9422 = _kz_loop_l9422 + 1;
+                if (_kz_loop_l9431 >= 256L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+                _kz_loop_l9431 = _kz_loop_l9431 + 1;
+#line 9432
                 KzValue f = kz_fb_index(fields, i, kaze_fn_none_node());
+#line 9433
                 KzValue r = kaze_fn_bc_push_text(st1, kz_get_field(f, "name"));
+#line 9434
                 KzValue st2 = kaze_fn_bc_wide1(kz_fb_index(r, kz_num((kaze_float_t)0), kz_list_new(0)), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0), kz_fb_index(r, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9435
                 st1 = kaze_fn_bc_emit(st2, kz_num((kaze_float_t)1), i);
+#line 9436
                 i = kz_add(i, kz_num((kaze_float_t)1));
             }
         }
+#line 9437
         KzValue st3 = kaze_fn_bc_emit(st1, kz_num((kaze_float_t)48), kz_len(fields));
+#line 9438
         return kaze_fn_bc_emit(st3, kz_num((kaze_float_t)24), kz_num((kaze_float_t)0));
     }
+#line 9439
     if (kz_is_truthy(kz_eq(kind, kz_str("WHEN")))) {
+#line 9440
         KzValue st1 = kaze_fn_bc_expr(st, kaze_fn_bc_kid(item, kz_num((kaze_float_t)0)), kz_num((kaze_float_t)0));
+#line 9441
         KzValue skip = kaze_fn_bc_wide(st1, kz_num((kaze_float_t)21), kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9442
         KzValue st2 = kaze_fn_bc_stmts(kz_fb_index(skip, kz_num((kaze_float_t)0), kz_list_new(0)), kaze_fn_bc_kid(item, kz_num((kaze_float_t)1)));
+#line 9443
         KzValue st3 = kaze_fn_bc_emit(st2, kz_num((kaze_float_t)25), kz_num((kaze_float_t)0));
+#line 9444
         KzValue st4 = kaze_fn_bc_patch(st3, kz_fb_index(skip, kz_num((kaze_float_t)1), kz_num((kaze_float_t)0)));
+#line 9445
         return kaze_fn_bc_emit(st4, kz_num((kaze_float_t)25), kz_num((kaze_float_t)0));
     }
+#line 9446
     if (kz_is_truthy(kz_eq(kind, kz_str("EVERY")))) {
+#line 9447
         KzValue st1 = kaze_fn_bc_stmts(st, kaze_fn_bc_kid(item, kz_num((kaze_float_t)1)));
+#line 9448
         return kaze_fn_bc_emit(st1, kz_num((kaze_float_t)25), kz_num((kaze_float_t)0));
     }
+#line 9449
     KzValue st1 = st;
+#line 9450
     KzValue params_node = kaze_fn_bc_kid(item, kz_num((kaze_float_t)0));
+#line 9451
     {
         KzValue _iter_target = kz_get_field(params_node, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue p = _iter_target.as.list->items[_i];
+#line 9452
                 KzValue b = kaze_fn_bc_bind(st1, kz_get_field(p, "name"));
+#line 9453
                 st1 = kz_fb_index(b, kz_num((kaze_float_t)0), kz_list_new(0));
             }
         }
     }
+#line 9454
     KzValue cnode = kaze_fn_bc_kid(item, kz_num((kaze_float_t)1));
+#line 9455
     KzValue st2 = st1;
+#line 9456
     if (kz_is_truthy(kz_eq(kaze_fn_bc_requires_proved(kz_fb_index(st1, kz_num((kaze_float_t)7), kz_list_new(0)), item), kz_num((kaze_float_t)0)))) {
+#line 9457
         st2 = kaze_fn_bc_entry_assertions(st1, kz_get_field(cnode, "children"));
     }
+#line 9458
     KzValue st3 = kaze_fn_bc_stmts(st2, kaze_fn_bc_kid(item, kz_num((kaze_float_t)2)));
+#line 9459
     return kaze_fn_bc_emit(st3, kz_num((kaze_float_t)25), kz_num((kaze_float_t)0));
     return kz_nil();
 }
 
+#line 9463
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_module(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 9464
     KzValue uses = kaze_fn_program_uses(prog);
+#line 9465
     if (kz_is_truthy(kz_gt(kz_len(kz_get_field(uses, "children")), kz_num((kaze_float_t)0)))) {
+#line 9466
         return kz_list_from(2, (KzValue[]){ kz_str("this file imports another module with 'use'; the pure-Kaze writer compiles one file — inline the import or leave the module to the reference engine"), kz_list_new(0) });
     }
+#line 9467
     KzValue needs = kz_list_new(0);
+#line 9468
     KzValue needs_node = kaze_fn_program_needs(prog);
+#line 9469
     {
         KzValue _iter_target = kz_get_field(needs_node, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue nd = _iter_target.as.list->items[_i];
+#line 9470
                 needs = kz_add_own(needs, kz_list_from(1, (KzValue[]){ kz_get_field(nd, "name") }));
             }
         }
     }
+#line 9471
     KzValue items_nodes = kaze_fn_program_items(prog);
+#line 9472
     KzValue consts = kz_list_new(0);
+#line 9473
     KzValue caps = kz_list_new(0);
+#line 9474
     KzValue out = kz_list_new(0);
+#line 9475
     KzValue hooks = kz_num((kaze_float_t)0);
+#line 9476
     {
         KzValue _iter_target = items_nodes;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue item = _iter_target.as.list->items[_i];
+#line 9477
                 KzValue kind = kz_get_field(item, "kind");
+#line 9478
                 KzValue contracts = kz_list_new(0);
+#line 9479
                 KzValue params = kz_list_new(0);
+#line 9480
                 if (kz_is_truthy(kz_eq(kind, kz_str("RECORD")))) {
+#line 9481
                     {
                         KzValue _iter_target = kz_get_field(item, "children");
                         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                             size_t _len = _iter_target.as.list->len;
                             for (size_t _i = 0; _i < _len; _i++) {
                                 KzValue f = _iter_target.as.list->items[_i];
+#line 9482
                                 params = kz_add(params, kz_list_from(1, (KzValue[]){ kz_get_field(f, "name") }));
                             }
                         }
                     }
                 }
+#line 9483
                 if (kz_is_truthy(kz_eq(kaze_fn_bc_is_routine_kind(kind), kz_num((kaze_float_t)1)))) {
+#line 9484
                     KzValue cnode = kaze_fn_bc_kid(item, kz_num((kaze_float_t)1));
+#line 9485
                     contracts = kz_get_field(cnode, "children");
+#line 9486
                     KzValue params_node = kaze_fn_bc_kid(item, kz_num((kaze_float_t)0));
+#line 9487
                     {
                         KzValue _iter_target = kz_get_field(params_node, "children");
                         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                             size_t _len = _iter_target.as.list->len;
                             for (size_t _i = 0; _i < _len; _i++) {
                                 KzValue p = _iter_target.as.list->items[_i];
+#line 9488
                                 params = kz_add(params, kz_list_from(1, (KzValue[]){ kz_get_field(p, "name") }));
                             }
                         }
                     }
                 }
+#line 9489
                 KzValue st = kaze_fn_bc_state(kz_get_field(item, "name"), items_nodes, contracts, consts, caps);
+#line 9490
                 KzValue st1 = kaze_fn_bc_item(st, item, items_nodes);
+#line 9491
                 if (kz_is_truthy(kz_gt(kz_len(kz_fb_index(st1, kz_num((kaze_float_t)5), kz_str(""))), kz_num((kaze_float_t)0)))) {
+#line 9492
                     return kz_list_from(2, (KzValue[]){ kz_fb_index(st1, kz_num((kaze_float_t)5), kz_str("")), kz_list_new(0) });
                 }
+#line 9493
                 consts = kz_fb_index(st1, kz_num((kaze_float_t)3), kz_list_new(0));
+#line 9494
                 caps = kz_fb_index(st1, kz_num((kaze_float_t)4), kz_list_new(0));
+#line 9495
                 KzValue slots = kz_fb_index(st1, kz_num((kaze_float_t)0), kz_num((kaze_float_t)0));
+#line 9496
                 if (kz_is_truthy(kz_gt(kz_len(params), slots))) {
+#line 9497
                     slots = kz_len(params);
                 }
+#line 9498
                 KzValue bound = kz_num((kaze_float_t)0);
+#line 9499
                 KzValue i = kz_num((kaze_float_t)0);
-                { long _kz_loop_l9491 = 0;
+#line 9500
+                { long _kz_loop_l9500 = 0;
                     while (kz_is_truthy(kz_lt(i, kz_len(contracts)))) {
-                        if (_kz_loop_l9491 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
-                        _kz_loop_l9491 = _kz_loop_l9491 + 1;
+                        if (_kz_loop_l9500 >= 64L) { fprintf(stderr, "E_KAZE_LOOP_BOUND: loop exceeded its declared bound\n"); return kz_nil(); }
+                        _kz_loop_l9500 = _kz_loop_l9500 + 1;
+#line 9501
                         KzValue c = kz_fb_index(contracts, i, kaze_fn_none_node());
+#line 9502
                         if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("RECURSION_BOUND")))) {
+#line 9503
                             bound = kaze_fn_bc_num_of(kz_get_field(c, "val_str"));
                         }
+#line 9504
                         i = kz_add(i, kz_num((kaze_float_t)1));
                     }
                 }
+#line 9505
                 KzValue code = kz_fb_index(st1, kz_num((kaze_float_t)2), kz_list_new(0));
+#line 9506
                 KzValue label = kz_get_field(item, "name");
+#line 9507
                 if (kz_is_truthy(kz_or(kz_eq(kind, kz_str("WHEN")), kz_eq(kind, kz_str("EVERY"))))) {
+#line 9508
                     hooks = kz_add(hooks, kz_num((kaze_float_t)1));
+#line 9509
                     label = kaze_fn_bc_hook_name(kind, hooks);
                 }
+#line 9510
                 out = kz_add_own(out, kz_list_from(1, (KzValue[]){ kz_record_new_BcItem(8, (KzValue[]){ label, kaze_fn_bc_tag_of(kind), params, code, kz_get_field(item, "line"), kaze_fn_bc_period_of(item), slots, bound }, (const char*[]){ "name", "tag", "params", "code", "line", "period", "slots", "bound" }) }));
             }
         }
     }
+#line 9511
     return kz_list_from(2, (KzValue[]){ kz_str(""), kaze_fn_bc_serialize(needs, consts, caps, out) });
     return kz_nil();
 }
 
+#line 9513
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_serialize(KzValue needs, KzValue consts, KzValue caps, KzValue items) {
     (void)needs;   /* a routine need not use every parameter */
     (void)consts;   /* a routine need not use every parameter */
     (void)caps;   /* a routine need not use every parameter */
     (void)items;   /* a routine need not use every parameter */
+#line 9514
     KzValue out = kz_list_from(8, (KzValue[]){ kz_num((kaze_float_t)75), kz_num((kaze_float_t)65), kz_num((kaze_float_t)90), kz_num((kaze_float_t)69), kz_num((kaze_float_t)66), kz_num((kaze_float_t)67), kz_num((kaze_float_t)49), kz_num((kaze_float_t)0) });
+#line 9515
     out = kz_add(out, kaze_fn_bc_u16_bytes(kz_num((kaze_float_t)5)));
+#line 9516
     out = kz_add(out, kaze_fn_bc_text_field(kz_str("")));
+#line 9517
     out = kz_add(out, kaze_fn_bc_u32_bytes(kz_len(needs)));
+#line 9518
     {
         KzValue _iter_target = needs;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue nm = _iter_target.as.list->items[_i];
+#line 9519
                 out = kz_add(out, kaze_fn_bc_text_field(nm));
             }
         }
     }
+#line 9520
     out = kz_add(out, kaze_fn_bc_u32_bytes(kz_len(consts)));
+#line 9521
     {
         KzValue _iter_target = consts;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9522
                 if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("num")))) {
+#line 9523
                     out = kz_add(kz_add(out, kz_list_from(1, (KzValue[]){ kz_num((kaze_float_t)0) })), kaze_fn_bc_bytes_of_num(kz_get_field(c, "val")));
                 } else {
+#line 9525
                     if (kz_is_truthy(kz_eq(kz_get_field(c, "kind"), kz_str("str")))) {
+#line 9526
                         out = kz_add(kz_add(out, kz_list_from(1, (KzValue[]){ kz_num((kaze_float_t)1) })), kaze_fn_bc_text_field(kz_get_field(c, "text")));
                     } else {
+#line 9528
                         KzValue bv = kz_num((kaze_float_t)0);
+#line 9529
                         if (kz_is_truthy(kz_eq(kz_get_field(c, "text"), kz_str("true")))) {
+#line 9530
                             bv = kz_num((kaze_float_t)1);
                         }
+#line 9531
                         out = kz_add(out, kz_list_from(2, (KzValue[]){ kz_num((kaze_float_t)2), bv }));
                     }
                 }
             }
         }
     }
+#line 9532
     out = kz_add(out, kaze_fn_bc_u32_bytes(kz_len(caps)));
+#line 9533
     {
         KzValue _iter_target = caps;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9534
                 out = kz_add(kz_add(kz_add(out, kaze_fn_bc_text_field(kz_get_field(c, "family"))), kaze_fn_bc_text_field(kz_get_field(c, "op"))), kz_list_from(1, (KzValue[]){ kz_get_field(c, "argc") }));
             }
         }
     }
+#line 9535
     out = kz_add(out, kaze_fn_bc_u32_bytes(kz_len(items)));
+#line 9536
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue it = _iter_target.as.list->items[_i];
+#line 9537
                 out = kz_add(kz_add(kz_add(kz_add(kz_add(out, kz_list_from(1, (KzValue[]){ kz_get_field(it, "tag") })), kaze_fn_bc_bytes_of_num(kz_get_field(it, "period"))), kaze_fn_bc_u32_bytes(kz_get_field(it, "line"))), kz_list_from(1, (KzValue[]){ kz_get_field(it, "slots") })), kaze_fn_bc_u16_bytes(kz_get_field(it, "bound")));
+#line 9538
                 out = kz_add(kz_add(out, kaze_fn_bc_text_field(kz_get_field(it, "name"))), kaze_fn_bc_text_field(kz_str("")));
+#line 9539
                 out = kz_add(out, kaze_fn_bc_u32_bytes(kz_len(kz_get_field(it, "params"))));
+#line 9540
                 {
                     KzValue _iter_target = kz_get_field(it, "params");
                     if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                         size_t _len = _iter_target.as.list->len;
                         for (size_t _i = 0; _i < _len; _i++) {
                             KzValue p = _iter_target.as.list->items[_i];
+#line 9541
                             out = kz_add(out, kaze_fn_bc_text_field(p));
                         }
                     }
                 }
+#line 9542
                 out = kz_add(out, kaze_fn_bc_u32_bytes(kz_len(kz_get_field(it, "code"))));
+#line 9543
                 {
                     KzValue _iter_target = kz_get_field(it, "code");
                     if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                         size_t _len = _iter_target.as.list->len;
                         for (size_t _i = 0; _i < _len; _i++) {
                             KzValue w = _iter_target.as.list->items[_i];
+#line 9544
                             out = kz_add(out, kaze_fn_bc_u32_bytes(w));
                         }
                     }
@@ -15644,111 +23220,157 @@ KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_serialize(KzValue needs, KzValue const
             }
         }
     }
+#line 9545
     return out;
     return kz_nil();
 }
 
+#line 9550
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_first_unknown(KzValue n) {
     (void)n;   /* a routine need not use every parameter */
+#line 9552
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), kz_str("UNKNOWN")))) {
+#line 9553
         return kaze_fn_bc_num_text(kz_get_field(n, "line"));
     }
+#line 9554
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9555
                 KzValue r = kaze_fn_bc_first_unknown(c);
+#line 9556
                 if (kz_is_truthy(kz_gt(kz_len(r), kz_num((kaze_float_t)0)))) {
+#line 9557
                     return r;
                 }
             }
         }
     }
+#line 9558
     return kz_str("");
     return kz_nil();
 }
 
+#line 9564
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_concurrency_line(KzValue prog) {
     (void)prog;   /* a routine need not use every parameter */
+#line 9565
     KzValue items = kaze_fn_program_items(prog);
+#line 9566
     {
         KzValue _iter_target = items;
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue it = _iter_target.as.list->items[_i];
+#line 9567
                 if (kz_is_truthy(kz_eq(kz_get_field(it, "kind"), kz_str("FIBER")))) {
+#line 9568
                     return kz_get_field(it, "line");
                 }
+#line 9569
                 KzValue hits = kaze_fn_bc_nodes_of(kaze_fn_child_at(it, kz_num((kaze_float_t)2)), kz_str("YIELD"), kz_list_new(0));
+#line 9570
                 if (kz_is_truthy(kz_gt(kz_len(hits), kz_num((kaze_float_t)0)))) {
+#line 9571
                     return kz_get_field(kz_fb_index(hits, kz_num((kaze_float_t)0), it), "line");
                 }
+#line 9572
                 KzValue spawns = kaze_fn_bc_nodes_of(kaze_fn_child_at(it, kz_num((kaze_float_t)2)), kz_str("SPAWN"), kz_list_new(0));
+#line 9573
                 if (kz_is_truthy(kz_gt(kz_len(spawns), kz_num((kaze_float_t)0)))) {
+#line 9574
                     return kz_get_field(kz_fb_index(spawns, kz_num((kaze_float_t)0), it), "line");
                 }
             }
         }
     }
+#line 9575
     return kz_num((kaze_float_t)0);
     return kz_nil();
 }
 
+#line 9577
 KZ_MAYBE_UNUSED static KzValue kaze_fn_bc_nodes_of(KzValue n, KzValue want, KzValue out) {
     (void)n;   /* a routine need not use every parameter */
     (void)want;   /* a routine need not use every parameter */
     (void)out;   /* a routine need not use every parameter */
+#line 9579
     KzValue acc = out;
+#line 9580
     if (kz_is_truthy(kz_eq(kz_get_field(n, "kind"), want))) {
+#line 9581
         acc = kz_add(acc, kz_list_from(1, (KzValue[]){ n }));
     }
+#line 9582
     {
         KzValue _iter_target = kz_get_field(n, "children");
         if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
             size_t _len = _iter_target.as.list->len;
             for (size_t _i = 0; _i < _len; _i++) {
                 KzValue c = _iter_target.as.list->items[_i];
+#line 9583
                 acc = kaze_fn_bc_nodes_of(c, want, acc);
             }
         }
     }
+#line 9584
     return acc;
     return kz_nil();
 }
 
+#line 9586
 KZ_MAYBE_UNUSED static KzValue kaze_fn_compile_module(KzValue src) {
     (void)src;   /* a routine need not use every parameter */
+#line 9587
     KzValue program = kaze_fn_parse_source(src);
+#line 9588
     KzValue conc = kaze_fn_bc_concurrency_line(program);
+#line 9589
     if (kz_is_truthy(kz_gt(conc, kz_num((kaze_float_t)0)))) {
+#line 9590
         return kz_add(kz_add(kz_str("compile: E_KAZE_FIBER_BYTECODE at line "), conc), kz_str(": a fiber suspends, and module format 5 has no suspension point; emit the program as C (emit-c) to run it\n"));
     }
+#line 9591
     KzValue unread = kaze_fn_bc_first_unknown(program);
+#line 9592
     if (kz_is_truthy(kz_gt(kz_len(unread), kz_num((kaze_float_t)0)))) {
+#line 9593
         return kz_add(kz_add(kz_str("compile: the parser could not read this source (line "), unread), kz_str("); no module written\n"));
     }
+#line 9594
     KzValue diags = kaze_fn_check_program(program);
+#line 9595
     if (kz_is_truthy(kz_gt(kz_len(diags), kz_num((kaze_float_t)0)))) {
+#line 9596
         KzValue out = kz_add(kz_add(kz_str("compile: "), kaze_fn_bc_num_text(kz_len(diags))), kz_str(" diagnostic(s); no module written\n"));
+#line 9597
         {
             KzValue _iter_target = diags;
             if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {
                 size_t _len = _iter_target.as.list->len;
                 for (size_t _i = 0; _i < _len; _i++) {
                     KzValue d = _iter_target.as.list->items[_i];
+#line 9598
                     out = kz_add(kz_add(out, kaze_fn_render_diag(d)), kz_str("\n"));
                 }
             }
         }
+#line 9599
         return out;
     }
+#line 9600
     KzValue r = kaze_fn_bc_module(program);
+#line 9601
     if (kz_is_truthy(kz_gt(kz_len(kz_fb_index(r, kz_num((kaze_float_t)0), kz_str(""))), kz_num((kaze_float_t)0)))) {
+#line 9602
         return kz_add(kz_add(kz_str("compile: "), kz_fb_index(r, kz_num((kaze_float_t)0), kz_str(""))), kz_str("\n"));
     }
+#line 9603
     return kaze_fn_bc_hex_of(kz_fb_index(r, kz_num((kaze_float_t)1), kz_list_new(0)));
     return kz_nil();
 }

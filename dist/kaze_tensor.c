@@ -13,6 +13,8 @@
 
 #include <math.h>
 #include <string.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
 #include <arm_neon.h>
@@ -643,15 +645,26 @@ static float dot_f32(const float *x, const float *y, int64_t n)
     return acc;
 }
 
+typedef struct {
+    const float *a;
+    const float *b;
+    float *c;
+    int64_t i_start;
+    int64_t i_end;
+    int64_t n;
+    int64_t k;
+} gemm_thread_slice_t;
+
 /* C[M,N] = A[M,K] * B[K,N], row-major. A 4x4 register microkernel over k; the
  * B panel is read in n-contiguous vectors, which is what the cache wants. */
-static void gemm_f32_impl(const float *a, const float *b,
-                          float *c, int64_t m, int64_t n, int64_t k)
+static void gemm_f32_tile_range(const float *a, const float *b,
+                                float *c, int64_t i_start, int64_t i_end,
+                                int64_t n, int64_t k)
 {
     int64_t i0, j0;
 
-    for (i0 = 0; i0 < m; i0 += 4) {
-        int64_t imax = (i0 + 4 < m) ? i0 + 4 : m;
+    for (i0 = i_start; i0 < i_end; i0 += 4) {
+        int64_t imax = (i0 + 4 < i_end) ? i0 + 4 : i_end;
         for (j0 = 0; j0 < n; j0 += 4) {
             int64_t jmax = (j0 + 4 < n) ? j0 + 4 : n;
 #if KAZE_HAVE_NEON
@@ -688,6 +701,66 @@ static void gemm_f32_impl(const float *a, const float *b,
                 }
             }
         }
+    }
+}
+
+static void *gemm_worker(void *arg)
+{
+    gemm_thread_slice_t *s = (gemm_thread_slice_t *)arg;
+    gemm_f32_tile_range(s->a, s->b, s->c, s->i_start, s->i_end, s->n, s->k);
+    return NULL;
+}
+
+static void gemm_f32_impl(const float *a, const float *b,
+                          float *c, int64_t m, int64_t n, int64_t k)
+{
+    int num_cores;
+    int64_t tiles;
+    int64_t tiles_per_thread;
+    pthread_t tids[8];
+    gemm_thread_slice_t slices[8];
+    int t;
+
+    /* For small matrices (under 64 rows or under 64k flops), sequential is faster than thread spawn */
+    if (m < 64 || (m * n * k) < 65536) {
+        gemm_f32_tile_range(a, b, c, 0, m, n, k);
+        return;
+    }
+
+    num_cores = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (num_cores <= 1) {
+        gemm_f32_tile_range(a, b, c, 0, m, n, k);
+        return;
+    }
+    if (num_cores > 8) {
+        num_cores = 8;
+    }
+    tiles = (m + 3) / 4;
+    if (tiles < num_cores) {
+        num_cores = (int)tiles;
+    }
+    if (num_cores <= 1) {
+        gemm_f32_tile_range(a, b, c, 0, m, n, k);
+        return;
+    }
+
+    tiles_per_thread = (tiles + num_cores - 1) / num_cores;
+    for (t = 0; t < num_cores; t++) {
+        int64_t i0 = t * tiles_per_thread * 4;
+        int64_t i1 = i0 + tiles_per_thread * 4;
+        if (i0 > m) i0 = m;
+        if (i1 > m) i1 = m;
+        slices[t].a = a;
+        slices[t].b = b;
+        slices[t].c = c;
+        slices[t].i_start = i0;
+        slices[t].i_end = i1;
+        slices[t].n = n;
+        slices[t].k = k;
+        pthread_create(&tids[t], NULL, gemm_worker, &slices[t]);
+    }
+    for (t = 0; t < num_cores; t++) {
+        pthread_join(tids[t], NULL);
     }
 }
 

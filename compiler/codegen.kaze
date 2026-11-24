@@ -1305,6 +1305,12 @@ action fx_spill(fx: EmitFx, ind) -> string:
 # ── statements ──────────────────────────────────────────────────────────
 
 action emit_c_stmt(stmt: AstNode, ind, fx: EmitFx):
+    let body = emit_c_stmt_inner(stmt, ind, fx)
+    if stmt.line > 0:
+        return "#line " + stmt.line + "\n" + body
+    return body
+
+action emit_c_stmt_inner(stmt: AstNode, ind, fx: EmitFx):
     recursion bounded 200
     let k = stmt.kind
 
@@ -1569,7 +1575,10 @@ action emit_routine(item: AstNode):
     let id = sanitize_c_id(item.name)
     let params_node = child_at(item, 0)
     let body = child_at(item, 2)
-    let out = "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + id + "(" + param_list(params_node) + ") {\n"
+    let l_tag = ""
+    if item.line > 0:
+        set l_tag = "#line " + item.line + "\n"
+    let out = l_tag + "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + id + "(" + param_list(params_node) + ") {\n"
     for each prm in params_node.children:
         set out to out + "    (void)" + sanitize_c_id(prm.name) + ";   /* a routine need not use every parameter */\n"
     set out to out + emit_requires(item)

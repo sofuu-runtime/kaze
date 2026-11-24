@@ -57,10 +57,10 @@ action duty_check(duty: percent) -> bool:
 
 - **Pure Self-Hosted Compiler**: The Kaze compiler is written in pure Kaze (`compiler/kaze_self.kaze`) and bootstraps into C99 (`dist/kaze.c`), verified via exact Stage 2 == Stage 3 SHA-256 fixed-point verification.
 - **Zero-Heap Standard Library**: Arena-backed linear collections (`lib/vector.kaze`, `lib/map.kaze`, `lib/text.kaze`, `lib/ring.kaze`), RFC 8259 JSON parser, binary wire protocols (Protobuf, MAVLink, CRC), and cryptographic suites (SHA-256, SHA-512, HMAC, Ed25519).
-- **Bounded Text and Authorized Network**: A byte-oriented regular-expression engine (`lib/regex.kaze`) with a typed step budget, and an HTTP/HTTPS client (`lib/http.kaze`) over an explicit host grant, destination allowlist, body ceiling, and verified TLS.
-- **Native AI Tensors & GGUF Runtime**: Zero-copy mmap ingestion of GGUF and SafeTensors model weights, quantized matrix math (Q4_K, Q8_0), LLaMA forward pass achieving strict parity with `llama.cpp` (logit abs diff < 1e-4), reverse-mode autograd tape, and Apple Silicon Metal MSL GPU shaders.
+- **Bounded Text & Secure Network**: A non-backtracking regular-expression engine (`lib/regex.kaze`) with capture groups `(...)`, group extraction APIs, `$0`..`$9` replacement, Unicode escapes (`\uHHHH`, `\u{...}`), and step budget protection; and an HTTP/HTTPS client (`lib/http.kaze`) over explicit host grants, destination allowlists, pre-DNS and post-connect IP validation against SSRF / DNS rebinding, structured header mapping, and verified TLS.
+- **Native AI Tensors & Multicore GGUF Runtime**: Zero-copy mmap ingestion of GGUF and SafeTensors model weights, quantized matrix math (Q4_K, Q8_0), multicore row-partitioned parallel GEMM (`dist/kaze_tensor.c`), LLaMA forward pass achieving strict parity with `llama.cpp` (logit abs diff < 1e-4), reverse-mode autograd tape, and Apple Silicon Metal MSL GPU shaders.
 - **Deterministic Concurrency**: Single-threaded cooperative fibers, bounded tasks, and channel synchronization with sub-50ns context switching and zero data races.
-- **Developer Tooling**: Full Language Server Protocol (LSP) daemon, interactive REPL, step debugger, and instruction fuel profiler.
+- **Developer Tooling**: Full Language Server Protocol (LSP) daemon, interactive REPL, step debugger with source-line mapping (`#line`) and line breakpoints, and instruction fuel profiler.
 
 ## Design
 

@@ -44,6 +44,11 @@
 #  if __has_include(<curl/curl.h>)
 #    include <curl/curl.h>
 #    define KZ_HTTP_HAVE_CURL 1
+#    include <sys/types.h>
+#    include <sys/socket.h>
+#    include <netdb.h>
+#    include <arpa/inet.h>
+#    include <netinet/in.h>
 #  endif
 #endif
 
@@ -237,6 +242,101 @@ KZ_MAYBE_UNUSED static inline int kz_http_host_of(const char* url, char* out, si
     return 1;
 }
 
+KZ_MAYBE_UNUSED static int kz_http_is_private_ip(const char* ip) {
+    unsigned int a, b, c, d;
+    if (ip == NULL || ip[0] == 0) return 0;
+    if (strcmp(ip, "::1") == 0 || strcmp(ip, "0:0:0:0:0:0:0:1") == 0) return 1;
+    if (strncmp(ip, "fc", 2) == 0 || strncmp(ip, "fd", 2) == 0 ||
+        strncmp(ip, "FC", 2) == 0 || strncmp(ip, "FD", 2) == 0 ||
+        strncmp(ip, "fe80", 4) == 0 || strncmp(ip, "FE80", 4) == 0) return 1;
+    if (sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+        if (a == 127) return 1;                         /* 127.0.0.0/8 loopback */
+        if (a == 10) return 1;                          /* 10.0.0.0/8 private */
+        if (a == 172 && (b >= 16 && b <= 31)) return 1; /* 172.16.0.0/12 private */
+        if (a == 192 && b == 168) return 1;             /* 192.168.0.0/16 private */
+        if (a == 169 && b == 254) return 1;             /* 169.254.0.0/16 link-local */
+        if (a == 0) return 1;                           /* 0.0.0.0/8 */
+    }
+    return 0;
+}
+
+KZ_MAYBE_UNUSED static int kz_http_ip_port_allowed(const char* ip, const char* port) {
+    char ip_with_port[256];
+    const char* allow_priv = getenv("KAZE_HTTP_ALLOW_PRIVATE");
+    if (allow_priv != NULL && strcmp(allow_priv, "1") == 0) return 1;
+    if (!kz_http_is_private_ip(ip)) return 1;
+    if (port != NULL && port[0] != 0) {
+        snprintf(ip_with_port, sizeof ip_with_port, "%s:%s", ip, port);
+        if (kz_http_allowed(ip_with_port)) return 1;
+    }
+    return kz_http_allowed(ip);
+}
+
+KZ_MAYBE_UNUSED static int kz_http_check_host_dns(const char* host_str, char* err_ip, size_t err_ip_cap) {
+    char bare[256];
+    char port_buf[32] = {0};
+    size_t len;
+    struct addrinfo hints, *res = NULL, *p;
+    const char* allow_priv = getenv("KAZE_HTTP_ALLOW_PRIVATE");
+    if (allow_priv != NULL && strcmp(allow_priv, "1") == 0) return 1;
+
+    len = strlen(host_str);
+    if (len >= sizeof bare) len = sizeof(bare) - 1;
+    memcpy(bare, host_str, len);
+    bare[len] = 0;
+
+    if (bare[0] == '[') {
+        char* bracket = strchr(bare, ']');
+        if (bracket != NULL) {
+            *bracket = 0;
+            if (bracket[1] == ':') {
+                snprintf(port_buf, sizeof port_buf, "%s", bracket + 2);
+            }
+            memmove(bare, bare + 1, strlen(bare));
+        }
+    } else {
+        char* colon = strchr(bare, ':');
+        if (colon != NULL) {
+            *colon = 0;
+            snprintf(port_buf, sizeof port_buf, "%s", colon + 1);
+        }
+    }
+
+    if (kz_http_is_private_ip(bare)) {
+        if (!kz_http_ip_port_allowed(bare, port_buf)) {
+            snprintf(err_ip, err_ip_cap, "%s", bare);
+            return 0;
+        }
+        return 1;
+    }
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(bare, NULL, &hints, &res) != 0 || res == NULL) {
+        return 1;
+    }
+    for (p = res; p != NULL; p = p->ai_next) {
+        char ip_str[INET6_ADDRSTRLEN] = {0};
+        if (p->ai_family == AF_INET) {
+            struct sockaddr_in* s = (struct sockaddr_in*)p->ai_addr;
+            inet_ntop(AF_INET, &s->sin_addr, ip_str, sizeof ip_str);
+        } else if (p->ai_family == AF_INET6) {
+            struct sockaddr_in6* s = (struct sockaddr_in6*)p->ai_addr;
+            inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof ip_str);
+        }
+        if (ip_str[0] != 0 && kz_http_is_private_ip(ip_str)) {
+            if (!kz_http_ip_port_allowed(ip_str, port_buf)) {
+                snprintf(err_ip, err_ip_cap, "%s", ip_str);
+                freeaddrinfo(res);
+                return 0;
+            }
+        }
+    }
+    freeaddrinfo(res);
+    return 1;
+}
+
 KZ_MAYBE_UNUSED static inline const char* kz_http_error(CURLcode rc, int too_large) {
     if (too_large) return "E_HTTP_TOO_LARGE: response exceeds KAZE_HTTP_MAX_BYTES";
     switch (rc) {
@@ -284,6 +384,13 @@ KZ_MAYBE_UNUSED static inline KzValue kz_http_request(KzValue method_v, KzValue 
     if (!kz_http_allowed(host)) {
         snprintf(error, sizeof error, "E_HTTP_DENIED: %s is not in KAZE_HTTP_ALLOW", host);
         return kz_http_result(0, 0, "", "", error);
+    }
+    {
+        char bad_ip[64] = {0};
+        if (!kz_http_check_host_dns(host, bad_ip, sizeof bad_ip)) {
+            snprintf(error, sizeof error, "E_HTTP_DENIED: %s resolves to prohibited private IP %s", host, bad_ip);
+            return kz_http_result(0, 0, "", "", error);
+        }
     }
     if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) {
         return kz_http_result(0, 0, "", "", "E_HTTP_SCHEME: only http and https are supported");
@@ -358,6 +465,23 @@ KZ_MAYBE_UNUSED static inline KzValue kz_http_request(KzValue method_v, KzValue 
     }
 
     rc = curl_easy_perform(curl);
+    {
+        char* primary_ip = NULL;
+        curl_easy_getinfo(curl, CURLINFO_PRIMARY_IP, &primary_ip);
+        if (primary_ip != NULL && primary_ip[0] != 0) {
+            char port_str[32] = {0};
+            char* col = strchr(host, ':');
+            if (col != NULL) snprintf(port_str, sizeof port_str, "%s", col + 1);
+            if (kz_http_is_private_ip(primary_ip) && !kz_http_ip_port_allowed(primary_ip, port_str)) {
+                curl_easy_cleanup(curl);
+                curl_slist_free_all(headers);
+                free(response.data);
+                free(response_headers.data);
+                snprintf(error, sizeof error, "E_HTTP_DENIED: connected to prohibited private IP %s", primary_ip);
+                return kz_http_result(0, 0, "", "", error);
+            }
+        }
+    }
     too_large = response.overflow || response_headers.overflow;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(curl);

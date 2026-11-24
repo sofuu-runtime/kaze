@@ -157,6 +157,60 @@ action main() -> num:
     let huge = regex_full_match(huge_pattern, "a")
     set failures to check("a pattern over the 1024-byte ceiling is refused", not huge.ok and text_starts_with(huge.error, "E_REGEX_PATTERN_TOO_LARGE"), failures)
 
+    # ---- capture groups and extraction -----------------------------------
+    let pair = regex_search("([a-z]+)=([0-9]+)", "key=42; other")
+    set failures to check("pair matches", pair.ok and pair.matched, failures)
+    set failures to check("pair group count", regex_group_count(pair) == 2, failures)
+    set failures to check("pair group 0 (full match)", regex_group(pair, 0) == "key=42", failures)
+    set failures to check("pair group 1", regex_group(pair, 1) == "key", failures)
+    set failures to check("pair group 2", regex_group(pair, 2) == "42", failures)
+    set failures to check("pair group span 1", span_is(pair.groups, 1, 0, 3), failures)
+    set failures to check("pair group span 2", span_is(pair.groups, 2, 4, 6), failures)
+    set failures to check("pair invalid group index returns empty", regex_group(pair, 99) == "", failures)
+
+    # Nested groups: ((foo)(bar))
+    let nested = regex_search("((foo)(bar))", "foobar")
+    set failures to check("nested matches", nested.ok and nested.matched, failures)
+    set failures to check("nested count", regex_group_count(nested) == 3, failures)
+    set failures to check("nested outer group 1", regex_group(nested, 1) == "foobar", failures)
+    set failures to check("nested group 2", regex_group(nested, 2) == "foo", failures)
+    set failures to check("nested group 3", regex_group(nested, 3) == "bar", failures)
+
+    # Non-capturing groups: (?:...)
+    let non_cap = regex_search("(?:foo)(bar)", "foobar")
+    set failures to check("non-capturing group matches", non_cap.ok and non_cap.matched, failures)
+    set failures to check("non-capturing group count", regex_group_count(non_cap) == 1, failures)
+    set failures to check("non-capturing group 1", regex_group(non_cap, 1) == "bar", failures)
+
+    # Alternation untaken group: (a)|(b)
+    let alt_grp = regex_search("(cat)|(dog)", "cat")
+    set failures to check("alt group 1 taken", regex_group(alt_grp, 1) == "cat", failures)
+    set failures to check("alt group 2 untaken is empty", regex_group(alt_grp, 2) == "", failures)
+
+    # ---- capture group replacement ($1, $2, \1, \2, $$) -------------------
+    let swapped = regex_replace("([a-z]+) ([a-z]+)", "hello world", "$2 $1")
+    set failures to check("replace with $2 $1", swapped == "world hello", failures)
+    let swapped_bs = regex_replace("([a-z]+) ([a-z]+)", "hello world", "\\2 \\1")
+    set failures to check("replace with \\2 \\1", swapped_bs == "world hello", failures)
+    let escaped_dollar = regex_replace("([0-9]+)", "100", "$$$1")
+    set failures to check("replace with $$ escape", escaped_dollar == "$100", failures)
+    let full_rep = regex_replace("([0-9]+)", "42", "[$0]")
+    set failures to check("replace with $0", full_rep == "[42]", failures)
+
+    # ---- unicode escapes and utf8 boundary -------------------------------
+    let hex_m = regex_search("\\x41\\x42", "ABC")
+    set failures to check("hex escape matches AB", hex_m.ok and hex_m.matched and regex_group(hex_m, 0) == "AB", failures)
+    let u4_m = regex_search("\\u0041\\u0042", "ABC")
+    set failures to check("unicode 4-digit escape matches AB", u4_m.ok and u4_m.matched and regex_group(u4_m, 0) == "AB", failures)
+    let ue_m = regex_search("\\u00e9", "café")
+    set failures to check("unicode 4-digit escape matches e-acute", ue_m.ok and ue_m.matched and regex_group(ue_m, 0) == "é", failures)
+    let ub_m = regex_search("\\u{00e9}", "café")
+    set failures to check("unicode braced escape matches e-acute", ub_m.ok and ub_m.matched and regex_group(ub_m, 0) == "é", failures)
+
+    set failures to check("utf8 boundary at 0", regex_is_utf8_boundary("café", 0), failures)
+    set failures to check("utf8 boundary at 3", regex_is_utf8_boundary("café", 3), failures)
+    set failures to check("utf8 continuation byte is not boundary", not regex_is_utf8_boundary("café", 4), failures)
+
     if failures == 0:
-        log.info("OK regex: 63 checks")
+        log.info("OK regex: 90 checks")
     return failures

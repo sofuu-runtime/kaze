@@ -82,6 +82,17 @@ action http_has_header(r: HttpResponse, name: text) -> bool:
                 return true
     return false
 
+action http_header_map(r: HttpResponse) -> list:
+    let lines = http_split_lines(r.headers)
+    let out = []
+    for each line in lines:
+        let colon = http_find_char(line, ":")
+        if colon >= 0:
+            let key = http_lower(http_slice(line, 0, colon))
+            let value = http_trim(http_slice(line, colon + 1, length of line))
+            set out to out + [[key, value]]
+    return out
+
 action http_status(r: HttpResponse) -> number:
     return r.status
 

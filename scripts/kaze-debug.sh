@@ -73,11 +73,14 @@ cfile="$tmp/program.c"
 bin="$tmp/program"
 cmd="$tmp/lldb.cmd"
 
+abs_src=$(cd "$(dirname "$src")" && pwd)/$(basename "$src")
+
 if ! "$KAZE" emit-c "$src" > "$cfile" 2>"$tmp/emit.err"; then
     echo "kaze-debug: emit-c failed" >&2
     head -5 "$tmp/emit.err" >&2
     exit 1
 fi
+sed -i '' -e "s|^/\* --- Routines --- \*/|#line 1 \"$abs_src\"\n/* --- Routines --- */|" "$cfile"
 if ! "$CC" -std=c99 -g -O0 -w -I "$ROOT/dist" "$cfile" "$ROOT/dist/kaze_rt.c" -lm -o "$bin" 2>"$tmp/cc.err"; then
     echo "kaze-debug: the emitted C did not build" >&2
     head -10 "$tmp/cc.err" >&2
@@ -116,8 +119,16 @@ else
         echo 'breakpoint set --name kaze_fn__kz_main' >> "$cmd"
     else
         for b in ${breaks[@]+"${breaks[@]}"}; do
-            if [ "$b" = "main" ]; then b="_kz_main"; fi
-            echo "breakpoint set --name kaze_fn_$b" >> "$cmd"
+            if [[ "$b" =~ ^[0-9]+$ ]]; then
+                echo "breakpoint set --file \"$abs_src\" --line $b" >> "$cmd"
+            elif [[ "$b" =~ :[0-9]+$ ]]; then
+                bfile=$(echo "$b" | cut -d: -f1)
+                bline=$(echo "$b" | cut -d: -f2)
+                echo "breakpoint set --file \"$bfile\" --line $bline" >> "$cmd"
+            else
+                if [ "$b" = "main" ]; then b="_kz_main"; fi
+                echo "breakpoint set --name kaze_fn_$b" >> "$cmd"
+            fi
         done
     fi
 fi

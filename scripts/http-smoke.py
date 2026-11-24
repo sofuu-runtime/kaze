@@ -7,11 +7,11 @@ tests/http/http_test.kaze twice. The TLS run passes the generated certificate
 as KAZE_HTTP_CAINFO, so peer and hostname verification are actually exercised;
 it does not turn verification off.
 
-Also checks seven refusal paths: an unavailable backend, an untrusted
+Also checks eight refusal paths: an unavailable backend, an untrusted
 certificate, no grant, a grant that is not exactly 1, a destination outside the
-allowlist, an allowlist entry whose port does not match, and a redirect to a
-host outside the allowlist. A pass here is local integration evidence, not a
-public-network or production-TLS guarantee.
+allowlist, an allowlist entry whose port does not match, a redirect to a
+host outside the allowlist, and a private IP outside the allowlist. A pass here
+is local integration evidence, not a public-network or production-TLS guarantee.
 """
 import http.server
 import os
@@ -226,6 +226,10 @@ def main():
             "http://127.0.0.1:%d" % http_port,
             {"KAZE_HTTP": "1", "KAZE_HTTP_ALLOW": "example.com"},
             "E_HTTP_DENIED", "a destination outside the allowlist is refused", failures, True)
+        failures = run_case(
+            "http://127.0.0.2:%d" % http_port,
+            {"KAZE_HTTP": "1", "KAZE_HTTP_ALLOW": "127.0.0.1:%d" % http_port},
+            "E_HTTP_DENIED", "private IP 127.0.0.2 is refused when not in allowlist", failures, True)
         failures = run_no_backend_case(tmp, failures)
         failures = run_emission_case(failures)
     finally:
@@ -234,7 +238,7 @@ def main():
         shutil.rmtree(tmp, ignore_errors=True)
 
     if failures == 0:
-        print("http-smoke: 9 of 9 cases passed")
+        print("http-smoke: 10 of 10 cases passed")
         return 0
     print("http-smoke: %d case(s) failed" % failures)
     return 1

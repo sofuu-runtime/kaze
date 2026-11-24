@@ -32,22 +32,29 @@ here.
 | `lib/sha512.kaze` | `sha512`, `sha512_hex` | 64-bit words as `[hi, lo]` pairs |
 | `lib/hmac.kaze` | `hmac_sha256`, `hmac_sha256_hex` | RFC 2104, 64-byte block |
 | `lib/ed25519.kaze` | `ed25519_verify`, `ed25519_verify_bytes` | RFC 8032 verification only |
-| `lib/regex.kaze` | `regex_full_match`, `regex_search`, `regex_find_all`, `regex_replace` | bounded subset; see limits below |
-| `lib/http.kaze` | `http_get`, `http_post`, `http_head`, `http_header`, `HttpResponse` | C path only; needs `KAZE_HTTP=1` |
+| `lib/regex.kaze` | `regex_full_match`, `regex_search`, `regex_find_all`, `regex_replace`, `regex_group*` | bounded subset with capture groups, extraction & replacement |
+| `lib/http.kaze` | `http_get`, `http_post`, `http_head`, `http_header`, `http_header_map`, `HttpResponse` | C path only; needs `KAZE_HTTP=1` and allowlist |
 
-`lib/regex.kaze` matches bytes, not code points. It has literals, `.`, classes,
-`\d \w \s` and their negations, grouping, alternation, `* + ?`, `^` and `$`;
-counted repetition, lookaround, backreferences and lazy quantifiers are syntax
-errors, not silently different matches. Work is bounded by a step budget
-(`E_REGEX_BUDGET`), a 1024-byte pattern limit and a 1 MiB text limit.
+`lib/regex.kaze` evaluates reachable state sets without backtracking. It supports
+literals, `.`, classes (`[a-z]`, `[^...]`), `\d \w \s \D \W \S \n \t \r`, hex
+and Unicode escapes (`\xHH`, `\uHHHH`, `\u{...}`), capture groups `(...)` and
+non-capturing groups `(?:...)`, group extraction (`regex_group`, `regex_group_span`,
+`regex_group_count`), group replacement (`$0`..`$9`, `\0`..`\9`, `$$`), alternation,
+quantifiers `* + ?`, and anchors `^` and `$`. Code points are handled via Unicode
+escapes and `regex_is_utf8_boundary`. Counted repetition, lookaround, and backreferences
+are typed syntax errors. Work is bounded by a step budget (`E_REGEX_BUDGET`), a
+1024-byte pattern ceiling, and a 1 MiB text ceiling.
 
 `lib/http.kaze` is a wrapper over the host's `http_fetch` builtin, so a program
 that uses it must be run as C (`emit-c` / `kaze-host run`); `compile` refuses it
 because format 5 has no HTTP opcode. The host grants the network explicitly:
 `KAZE_HTTP=1`, an allowlist in `KAZE_HTTP_ALLOW`, a body ceiling in
-`KAZE_HTTP_MAX_BYTES`, and an optional `KAZE_HTTP_CAINFO` bundle. A `use` line
-grants no authority, and an HTTP error status is data (`ok` is true, `status` is
-404), not a transport failure.
+`KAZE_HTTP_MAX_BYTES`, and an optional `KAZE_HTTP_CAINFO` bundle. Hostnames are
+resolved and validated via `getaddrinfo` and `CURLINFO_PRIMARY_IP` to block
+private/reserved IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+169.254.0.0/16, ::1) preventing SSRF and DNS rebinding attacks unless explicitly
+granted. Structured response headers are accessible via `http_header_map`. An HTTP
+error status is data (`ok` is true, `status` is 404), not a transport failure.
 
 ## Compose a mission
 
