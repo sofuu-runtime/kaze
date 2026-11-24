@@ -1,0 +1,5 @@
+# contract invariance failure: the post-condition does not follow
+action clamp_bad(x) -> num:
+    requires x >= 0
+    ensures result >= 1
+    return x - 1

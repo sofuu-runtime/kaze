@@ -1,0 +1,1266 @@
+# verify.kaze — Phase 16 formal verifier core.
+#
+# Parses Kaze source with the compiler's own front end and builds proof
+# obligations for the linear fragment:
+#
+#   * every loop declares an iteration ceiling and terminates by it
+#   * every index and division either has an explicit fallback or is inside the
+#     bounds that contracts and guards establish
+#   * routine contracts: requires implies ensures
+#
+# Obligations print as SMT-LIB2 for the Z3 bridge; an embedded Fourier-Motzkin
+# linear prover discharges the common cases without a solver process. The
+# certification report is the proof-carrying artifact (one line per routine).
+#
+# All names are vf_-prefixed: this module is compiled together with the parser.
+
+record VfObl:
+    kind: str
+    line: num
+    routine: str
+    context: list
+    goal: list
+    status: str
+
+record VfState:
+    env: list
+    facts: list
+    obls: list
+    loops: num
+    bounded: num
+    ensures: list
+
+# Safe list accessors: this module is itself compiled under the strict rules, so
+# every list read states a defined fallback.
+
+action vf_s(xs: list, i: num) -> str:
+    return xs[i] otherwise ""
+
+action vf_n(xs: list, i: num) -> num:
+    return xs[i] otherwise 0
+
+action vf_l(xs: list, i: num) -> list:
+    return xs[i] otherwise []
+
+# ── linear forms ───────────────────────────────────────────────────────
+# [constant, [coefficient, atom], ...]; atoms are names or length terms.
+
+action vf_terms_of(a: list) -> list:
+    let out = []
+    let i = 1
+    while i < (length of a) bounded 1000:
+        set out to out + [vf_l(a, i)]
+        set i to i + 1
+    return out
+
+action vf_lin_from(c: num, terms: list) -> list:
+    return [c] + terms
+
+action vf_lin_const(c: num) -> list:
+    return [c]
+
+action vf_lin_atom(a: str) -> list:
+    return [0, [1, a]]
+
+action vf_has_atom(atoms: list, a: str) -> num:
+    for each x in atoms:
+        if x == a:
+            return 1
+    return 0
+
+action vf_merge_terms(terms: list) -> list:
+    recursion bounded 256
+    let atoms = []
+    for each t in terms:
+        if vf_has_atom(atoms, vf_s(t, 1)) == 0:
+            set atoms to atoms + [vf_s(t, 1)]
+    let out = []
+    for each a in atoms:
+        let coef = 0
+        for each t in terms:
+            if vf_s(t, 1) == a:
+                set coef to coef + vf_n(t, 0)
+        if coef != 0:
+            set out to out + [[coef, a]]
+    return out
+
+action vf_lin_add(a: list, b: list) -> list:
+    return vf_lin_from(vf_n(a, 0) + vf_n(b, 0),
+                       vf_merge_terms(vf_terms_of(a) + vf_terms_of(b)))
+
+action vf_scale_terms(terms: list, k: num) -> list:
+    recursion bounded 256
+    let out = []
+    for each t in terms:
+        set out to out + [[vf_n(t, 0) * k, vf_s(t, 1)]]
+    return out
+
+action vf_lin_scale(a: list, k: num) -> list:
+    return vf_lin_from(vf_n(a, 0) * k, vf_scale_terms(vf_terms_of(a), k))
+
+action vf_lin_neg(a: list) -> list:
+    return vf_lin_scale(a, 0 - 1)
+
+action vf_lin_sub(a: list, b: list) -> list:
+    return vf_lin_add(a, vf_lin_neg(b))
+
+action vf_const_lin(a: list) -> list:
+    if (length of a) == 1:
+        return a
+    return []
+
+# ── formulas ───────────────────────────────────────────────────────────
+# ["cmp", op, lin, lin], ["and", f, f], ["or", f, f], ["not", f],
+# ["true"], ["false"], ["unknown", text]
+
+action vf_true() -> list:
+    return ["true"]
+
+action vf_false() -> list:
+    return ["false"]
+
+action vf_unknown(why: str) -> list:
+    return ["unknown", why]
+
+action vf_and(a: list, b: list) -> list:
+    if vf_s(a, 0) == "true":
+        return b
+    if vf_s(b, 0) == "true":
+        return a
+    if vf_s(a, 0) == "false" or vf_s(b, 0) == "false":
+        return vf_false()
+    return ["and", a, b]
+
+action vf_or(a: list, b: list) -> list:
+    if vf_s(a, 0) == "false":
+        return b
+    if vf_s(b, 0) == "false":
+        return a
+    if vf_s(a, 0) == "true" or vf_s(b, 0) == "true":
+        return vf_true()
+    return ["or", a, b]
+
+action vf_neg_cmp(op: str) -> str:
+    if op == "<":
+        return ">="
+    if op == "<=":
+        return ">"
+    if op == ">=":
+        return "<"
+    if op == ">":
+        return "<="
+    if op == "==":
+        return "!="
+    if op == "!=":
+        return "=="
+    return op
+
+action vf_not(a: list) -> list:
+    let kind = vf_s(a, 0)
+    if kind == "true":
+        return vf_false()
+    if kind == "false":
+        return vf_true()
+    if kind == "not":
+        return vf_l(a, 1)
+    if kind == "cmp":
+        return vf_cmp(vf_neg_cmp(vf_s(a, 1)), vf_l(a, 2), vf_l(a, 3))
+    if kind == "and":
+        return vf_or(vf_not(vf_l(a, 1)), vf_not(vf_l(a, 2)))
+    if kind == "or":
+        return vf_and(vf_not(vf_l(a, 1)), vf_not(vf_l(a, 2)))
+    return ["not", a]
+
+action vf_cmp(op: str, a: list, b: list) -> list:
+    return ["cmp", op, a, b]
+
+# ── expression to linear form ─────────────────────────────────────────
+
+action vf_env_get(env: list, name: str) -> list:
+    let i = (length of env) - 1
+    while i >= 0 bounded 10000:
+        let e = vf_l(env, i)
+        if vf_s(e, 0) == name:
+            return vf_l(e, 1)
+        set i to i - 1
+    return []
+
+action vf_env_set(env: list, name: str, lin: list) -> list:
+    return env + [[name, lin]]
+
+action vf_fresh_atom(name: str, line: num) -> str:
+    return name + "#" + vf_num_text(line)
+
+action vf_single_atom(a: list) -> str:
+    let ts = vf_terms_of(a)
+    if (length of ts) == 1 and (length of a) == 2 and vf_n(vf_l(ts, 0), 0) == 1:
+        return vf_s(vf_l(ts, 0), 1)
+    return ""
+
+action vf_merge_env(then_st: VfState, else_st: VfState, names: list, line: num, env: list) -> list:
+    # [env, facts]: after a conditional whose branches both continue, the value
+    # of an assigned variable is a fresh atom bounded by the union of the two
+    # branch intervals. This is the sound replacement for reusing one atom name
+    # for two different values.
+    let out_env = env
+    let facts = []
+    for each name in names:
+        let at = vf_single_atom(vf_env_get(then_st.env, name))
+        let ae = vf_single_atom(vf_env_get(else_st.env, name))
+        if at == "" or ae == "":
+            set out_env to vf_env_set(out_env, name, [])
+        otherwise:
+            let newatom = vf_fresh_atom(name + "#merge", line)
+            let bt = vf_interval_of(then_st.facts, at)
+            let be = vf_interval_of(else_st.facts, ae)
+            let lo = vf_n(bt, 0)
+            if vf_n(be, 0) < lo:
+                set lo to vf_n(be, 0)
+            let hi = vf_n(bt, 1)
+            if vf_n(be, 1) > hi:
+                set hi to vf_n(be, 1)
+            set out_env to vf_env_set(out_env, name, vf_lin_atom(newatom))
+            if lo > 0 - 1000000000:
+                set facts to facts + [vf_cmp(">=", vf_lin_atom(newatom), vf_lin_const(lo))]
+            if hi < 1000000000:
+                set facts to facts + [vf_cmp("<=", vf_lin_atom(newatom), vf_lin_const(hi))]
+    return [out_env, facts]
+
+action vf_text_has_char(t: str, ch: str) -> num:
+    let i = 0
+    while i < (length of t) bounded 1000:
+        if (t[i] otherwise "") == ch:
+            return 1
+        set i to i + 1
+    return 0
+
+action vf_lin_of_num_text(t: str) -> list:
+    # Only integer constants enter the linear fragment: the SMT encoding prints
+    # integers, so accepting a fractional constant would silently truncate it.
+    if vf_text_has_char(t, ".") or vf_text_has_char(t, "e") or vf_text_has_char(t, "E"):
+        return []
+    return [text_to_num(t)]
+
+action vf_lin_of(e: AstNode, env: list) -> list:
+    recursion bounded 128
+    let k = e.kind
+    if k == "NUM":
+        return vf_lin_of_num_text(e.val_str)
+    if k == "IDENT":
+        return vf_env_get(env, e.name)
+    if k == "LEN":
+        let inner = child_at(e, 0)
+        if inner.kind == "LIST":
+            return vf_lin_const(length of inner.children)
+        if inner.kind == "STR":
+            return vf_lin_const(length of inner.val_str)
+        if inner.kind == "IDENT":
+            return vf_lin_atom("len(" + inner.name + ")")
+        return []
+    if k == "LEN_LIT":
+        return vf_lin_const(e.val_num)
+    if k == "FALLBACK":
+        return vf_lin_of(child_at(e, 0), env)
+    if k == "BIN":
+        let op = e.name
+        let a = vf_lin_of(child_at(e, 0), env)
+        let b = vf_lin_of(child_at(e, 1), env)
+        if op == "+" and (length of a) > 0 and (length of b) > 0:
+            return vf_lin_add(a, b)
+        if op == "-" and (length of a) > 0 and (length of b) > 0:
+            return vf_lin_sub(a, b)
+        if op == "*":
+            let ca = vf_const_lin(a)
+            let cb = vf_const_lin(b)
+            if (length of ca) > 0 and (length of b) > 0:
+                return vf_lin_scale(b, vf_n(ca, 0))
+            if (length of cb) > 0 and (length of a) > 0:
+                return vf_lin_scale(a, vf_n(cb, 0))
+            return []
+        return []
+        return []
+    return []
+
+action vf_formula_of(e: AstNode, env: list) -> list:
+    recursion bounded 128
+    let k = e.kind
+    if k == "BOOL":
+        if e.val_str == "true":
+            return vf_true()
+        return vf_false()
+    if k == "FALLBACK":
+        return vf_formula_of(child_at(e, 0), env)
+    if k == "BIN":
+        let op = e.name
+        if op == "and":
+            return vf_and(vf_formula_of(child_at(e, 0), env), vf_formula_of(child_at(e, 1), env))
+        if op == "or":
+            return vf_or(vf_formula_of(child_at(e, 0), env), vf_formula_of(child_at(e, 1), env))
+        if op == "not":
+            return vf_not(vf_formula_of(child_at(e, 0), env))
+        let a = vf_lin_of(child_at(e, 0), env)
+        let b = vf_lin_of(child_at(e, 1), env)
+        if (length of a) == 0 or (length of b) == 0:
+            return vf_unknown("non-linear condition")
+        if op == "<" or op == "<=":
+            return vf_cmp(op, a, b)
+        if op == ">":
+            return vf_cmp("<", b, a)
+        if op == ">=":
+            return vf_cmp("<=", b, a)
+        if op == "==":
+            return vf_cmp("==", a, b)
+        if op == "!=":
+            return vf_cmp("!=", a, b)
+        return vf_unknown("unsupported condition")
+    return vf_unknown("unsupported condition")
+
+action vf_facts_formula(facts: list) -> list:
+    let out = vf_true()
+    for each f in facts:
+        set out to vf_and(out, f)
+    return out
+
+# ── SMT-LIB2 printing ─────────────────────────────────────────────────
+
+action vf_sym(a: str) -> str:
+    let out = ""
+    let i = 0
+    while i < (length of a) bounded 1000:
+        let c = a[i] otherwise "_"
+        if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_":
+            set out to out + c
+        otherwise:
+            set out to out + "_"
+        set i to i + 1
+    return "v_" + out
+
+action vf_atom_exists(atoms: list, a: str) -> num:
+    for each x in atoms:
+        if x == a:
+            return 1
+    return 0
+
+action vf_atoms_of_lin(a: list) -> list:
+    let out = []
+    for each t in vf_terms_of(a):
+        let atom = vf_s(t, 1)
+        if vf_atom_exists(out, atom) == 0:
+            set out to out + [atom]
+    return out
+
+action vf_atoms_of_formula(f: list) -> list:
+    recursion bounded 128
+    let kind = vf_s(f, 0)
+    if kind == "cmp":
+        return vf_atoms_of_lin(vf_l(f, 2)) + vf_atoms_of_lin(vf_l(f, 3))
+    if kind == "and" or kind == "or":
+        return vf_atoms_of_formula(vf_l(f, 1)) + vf_atoms_of_formula(vf_l(f, 2))
+    if kind == "not":
+        return vf_atoms_of_formula(vf_l(f, 1))
+    return []
+
+action vf_digit(d: num) -> str:
+    if d == 0:
+        return "0"
+    if d == 1:
+        return "1"
+    if d == 2:
+        return "2"
+    if d == 3:
+        return "3"
+    if d == 4:
+        return "4"
+    if d == 5:
+        return "5"
+    if d == 6:
+        return "6"
+    if d == 7:
+        return "7"
+    if d == 8:
+        return "8"
+    return "9"
+
+action vf_num_text(x: num) -> str:
+    # Decimal text for an integer-valued double. Base-10 extraction uses the
+    # remainder and an exact division of an integer, so no digit loop can run
+    # more than nine times.
+    let neg = ""
+    let n = x
+    if n < 0:
+        set neg to "-"
+        set n to 0 - n
+    let whole = n
+    let digits = ""
+    while whole > 0 bounded 20:
+        let rem = (whole % 10) otherwise 0
+        set digits to vf_digit(rem) + digits
+        set whole to ((whole - rem) / 10) otherwise 0
+    if digits == "":
+        return "0"
+    return neg + digits
+
+action vf_smt_lin(a: list) -> str:
+    let parts = []
+    for each t in vf_terms_of(a):
+        set parts to parts + ["(* " + vf_num_text(vf_n(t, 0)) + " " + vf_sym(vf_s(t, 1)) + ")"]
+    if (length of parts) == 0:
+        return vf_num_text(vf_n(a, 0))
+    let out = "(+ " + vf_num_text(vf_n(a, 0))
+    for each p in parts:
+        set out to out + " " + p
+    return out + ")"
+
+action vf_smt_cmp(op: str, a: list, b: list) -> str:
+    if op == "<":
+        return "(< " + vf_smt_lin(a) + " " + vf_smt_lin(b) + ")"
+    if op == "<=":
+        return "(<= " + vf_smt_lin(a) + " " + vf_smt_lin(b) + ")"
+    if op == ">=":
+        return "(>= " + vf_smt_lin(a) + " " + vf_smt_lin(b) + ")"
+    if op == ">":
+        return "(> " + vf_smt_lin(a) + " " + vf_smt_lin(b) + ")"
+    if op == "==":
+        return "(= " + vf_smt_lin(a) + " " + vf_smt_lin(b) + ")"
+    if op == "!=":
+        return "(not (= " + vf_smt_lin(a) + " " + vf_smt_lin(b) + "))"
+    return "true"
+
+action vf_smt_formula(f: list) -> str:
+    recursion bounded 128
+    let kind = vf_s(f, 0)
+    if kind == "true":
+        return "true"
+    if kind == "false":
+        return "false"
+    if kind == "cmp":
+        return vf_smt_cmp(vf_s(f, 1), vf_l(f, 2), vf_l(f, 3))
+    if kind == "and":
+        return "(and " + vf_smt_formula(vf_l(f, 1)) + " " + vf_smt_formula(vf_l(f, 2)) + ")"
+    if kind == "or":
+        return "(or " + vf_smt_formula(vf_l(f, 1)) + " " + vf_smt_formula(vf_l(f, 2)) + ")"
+    if kind == "not":
+        return "(not " + vf_smt_formula(vf_l(f, 1)) + ")"
+    return "true"
+
+action vf_smt_declares(atoms: list) -> str:
+    let out = ""
+    for each a in atoms:
+        set out to out + "(declare-const " + vf_sym(a) + " Real)\n"
+    return out
+
+action vf_obls_of(states: list) -> list:
+    let out = []
+    for each st in states:
+        set out to out + st.obls
+    return out
+
+action vf_atoms_of_obls(obls: list) -> list:
+    let atoms = []
+    for each o in obls:
+        for each f in o.context:
+            for each a in vf_atoms_of_formula(f):
+                if vf_atom_exists(atoms, a) == 0:
+                    set atoms to atoms + [a]
+        for each a2 in vf_atoms_of_formula(o.goal):
+            if vf_atom_exists(atoms, a2) == 0:
+                set atoms to atoms + [a2]
+    return atoms
+
+# ── state updates (records are immutable) ─────────────────────────────
+
+action vf_state(env: list, facts: list, obls: list, loops: num, bounded: num, ensures: list) -> VfState:
+    return VfState(env: env, facts: facts, obls: obls, loops: loops,
+                   bounded: bounded, ensures: ensures)
+
+action vf_st_env(st: VfState, env: list) -> VfState:
+    return vf_state(env, st.facts, st.obls, st.loops, st.bounded, st.ensures)
+
+action vf_st_facts(st: VfState, facts: list) -> VfState:
+    return vf_state(st.env, facts, st.obls, st.loops, st.bounded, st.ensures)
+
+action vf_st_obl(st: VfState, ob: VfObl) -> VfState:
+    return vf_state(st.env, st.facts, st.obls + [ob], st.loops, st.bounded, st.ensures)
+
+action vf_obligation(kind: str, line: num, routine: str, ctx: list, goal: list) -> VfObl:
+    return VfObl(kind: kind, line: line, routine: routine, context: ctx, goal: goal, status: "pending")
+
+# ── proof goals ────────────────────────────────────────────────────────
+
+action vf_len_lin_of(e: AstNode, env: list) -> list:
+    if e.kind == "LIST":
+        return vf_lin_const(length of e.children)
+    if e.kind == "STR":
+        return vf_lin_const(length of e.val_str)
+    if e.kind == "IDENT":
+        return vf_lin_atom("len(" + e.name + ")")
+    return []
+
+action vf_index_goal(coll: AstNode, idx: AstNode, env: list) -> list:
+    let il = vf_lin_of(idx, env)
+    let ll = vf_len_lin_of(coll, env)
+    if (length of il) == 0 or (length of ll) == 0:
+        return vf_unknown("index expression is not linear")
+    return vf_and(vf_cmp("<=", vf_lin_const(0), il), vf_cmp("<", il, ll))
+
+action vf_div_goal(divisor: AstNode, env: list) -> list:
+    let dl = vf_lin_of(divisor, env)
+    if (length of dl) == 0:
+        return vf_unknown("divisor is not linear")
+    if (length of dl) == 1:
+        if vf_n(dl, 0) != 0:
+            return vf_true()
+        return vf_false()
+    return vf_cmp("!=", dl, vf_lin_const(0))
+
+# ── expression scan ────────────────────────────────────────────────────
+
+action vf_scan_expr(e: AstNode, st: VfState, routine: str) -> VfState:
+    recursion bounded 200
+    let cur = st
+    if e.kind == "FALLBACK":
+        let inner = child_at(e, 0)
+        if inner.kind == "INDEX":
+            set cur to vf_scan_expr(child_at(inner, 1), cur, routine)
+            set cur to vf_scan_expr(child_at(e, 1), cur, routine)
+            return vf_st_obl(cur, vf_obligation("fallback-index", e.line, routine,
+                cur.facts, vf_index_goal(child_at(inner, 0), child_at(inner, 1), cur.env)))
+        if inner.kind == "BIN" and (inner.name == "/" or inner.name == "%"):
+            set cur to vf_scan_expr(child_at(inner, 0), cur, routine)
+            set cur to vf_scan_expr(child_at(inner, 1), cur, routine)
+            set cur to vf_scan_expr(child_at(e, 1), cur, routine)
+            return vf_st_obl(cur, vf_obligation("fallback-div", e.line, routine,
+                cur.facts, vf_div_goal(child_at(inner, 1), cur.env)))
+        set cur to vf_scan_expr(inner, cur, routine)
+        set cur to vf_scan_expr(child_at(e, 1), cur, routine)
+        return cur
+    if e.kind == "INDEX":
+        for each c in e.children:
+            set cur to vf_scan_expr(c, cur, routine)
+        return vf_st_obl(cur, vf_obligation("index", e.line, routine,
+            cur.facts, vf_index_goal(child_at(e, 0), child_at(e, 1), cur.env)))
+    if e.kind == "BIN" and (e.name == "/" or e.name == "%"):
+        for each c in e.children:
+            set cur to vf_scan_expr(c, cur, routine)
+        return vf_st_obl(cur, vf_obligation("div", e.line, routine,
+            cur.facts, vf_div_goal(child_at(e, 1), cur.env)))
+    for each c in e.children:
+        set cur to vf_scan_expr(c, cur, routine)
+    return cur
+
+# ── statement scan ─────────────────────────────────────────────────────
+
+action vf_block_exits(block: AstNode) -> num:
+    recursion bounded 64
+    let stmts = block.children
+    if (length of stmts) == 0:
+        return 0
+    let last = child_at(block, length of stmts - 1)
+    if last.kind == "RETURN":
+        return 1
+    if last.kind == "IF":
+        if vf_block_exits(child_at(last, 1)) == 1 and vf_block_exits(child_at(last, 2)) == 1:
+            return 1
+    return 0
+
+action vf_contracts(want: str, contracts: AstNode) -> list:
+    let out = []
+    for each c in contracts.children:
+        if c.kind == "CONTRACT" and c.name == want:
+            set out to out + [c]
+    return out
+
+action vf_mark_written_unknown(block: AstNode, env: list) -> list:
+    let out = env
+    for each s in block.children:
+        if s.kind == "SET":
+            set out to vf_env_set(out, s.name, [])
+        if s.kind == "IF":
+            set out to vf_mark_written_unknown(child_at(s, 1), out)
+            set out to vf_mark_written_unknown(child_at(s, 2), out)
+    return out
+
+action vf_collect_set_names(block: AstNode, out: list) -> list:
+    recursion bounded 64
+    let acc = out
+    for each s in block.children:
+        if s.kind == "SET":
+            if vf_has_atom(acc, s.name) == 0:
+                set acc to acc + [s.name]
+        if s.kind == "IF":
+            set acc to vf_collect_set_names(child_at(s, 1), acc)
+            set acc to vf_collect_set_names(child_at(s, 2), acc)
+    return acc
+
+action vf_env_with_atoms(env: list, names: list, line: num) -> list:
+    let out = env
+    for each n in names:
+        set out to vf_env_set(out, n, vf_lin_atom(vf_fresh_atom(n + "#loop", line)))
+    return out
+
+action vf_counter_step(block: AstNode, name: str) -> list:
+    # [found, step] when the body has exactly one assignment of the form
+    # name = name (+|-) constant.
+    let step = 0
+    let found = 0
+    for each s in block.children:
+        if s.kind == "SET" and s.name == name:
+            let rhs = child_at(s, 0)
+            if rhs.kind == "BIN":
+                let a = child_at(rhs, 0)
+                let b = child_at(rhs, 1)
+                if rhs.name == "+" and a.kind == "IDENT" and a.name == name and b.kind == "NUM":
+                    set step to text_to_num(b.val_str)
+                    set found to 1
+                if rhs.name == "-" and a.kind == "IDENT" and a.name == name and b.kind == "NUM":
+                    set step to 0 - text_to_num(b.val_str)
+                    set found to 1
+    return [found, step]
+
+action vf_scan_stmt(s: AstNode, st: VfState, routine: str) -> VfState:
+    recursion bounded 200
+    let k = s.kind
+    if k == "LET" or k == "SET":
+        let rhs = child_at(s, 0)
+        let st2 = vf_scan_expr(rhs, st, routine)
+        let lin = vf_lin_of(rhs, st2.env)
+        let atom = vf_fresh_atom(s.name, s.line)
+        let fact = vf_true()
+        if (length of lin) > 0:
+            set fact to vf_cmp("==", vf_lin_atom(atom), lin)
+        let st3 = vf_st_facts(st2, st2.facts + [fact])
+        return vf_st_env(st3, vf_env_set(st3.env, s.name, vf_lin_atom(atom)))
+    if k == "EXPR":
+        return vf_scan_expr(child_at(s, 0), st, routine)
+    if k == "GUARD":
+        let st2 = vf_scan_expr(child_at(s, 0), st, routine)
+        return vf_st_facts(st2, st2.facts + [vf_formula_of(child_at(s, 0), st2.env)])
+    if k == "RETURN":
+        let ret = make_unknown(s.line)
+        let cur = st
+        if (length of s.children) > 0:
+            set ret to child_at(s, 0)
+            set cur to vf_scan_expr(ret, cur, routine)
+        if (length of cur.ensures) > 0:
+            let env2 = vf_env_set(cur.env, "result", vf_lin_of(ret, cur.env))
+            let goal = vf_true()
+            let line = s.line
+            for each c in cur.ensures:
+                set goal to vf_and(goal, vf_formula_of(child_at(c, 0), env2))
+                set line to c.line
+            set cur to vf_st_obl(cur, vf_obligation("ensures", line, routine, cur.facts, goal))
+        return cur
+    if k == "IF":
+        let cond = child_at(s, 0)
+        let st2 = vf_scan_expr(cond, st, routine)
+        let cf = vf_formula_of(cond, st2.env)
+        let then_st = vf_scan_stmts(kids_of(child_at(s, 1)),
+            vf_state(st2.env, st2.facts + [cf], [], st2.loops, st2.bounded, st2.ensures), routine)
+        let else_st = vf_scan_stmts(kids_of(child_at(s, 2)),
+            vf_state(st2.env, st2.facts + [vf_not(cf)], [], st2.loops, st2.bounded, st2.ensures), routine)
+        let then_exits = vf_block_exits(child_at(s, 1))
+        let else_exits = vf_block_exits(child_at(s, 2))
+        let after = st2.facts
+        if then_exits == 1 and else_exits == 0:
+            set after to after + [vf_not(cf)]
+        if else_exits == 1 and then_exits == 0:
+            set after to after + [cf]
+        let after_env = st2.env
+        if then_exits == 0 and else_exits == 0:
+            let names = vf_union_names(vf_collect_set_names(child_at(s, 1), []),
+                                       vf_collect_set_names(child_at(s, 2), []))
+            let merged = vf_merge_env(then_st, else_st, names, s.line, st2.env)
+            set after_env to vf_l(merged, 0)
+            set after to after + vf_l(merged, 1)
+        return vf_state(after_env, after, st2.obls + then_st.obls + else_st.obls,
+                        st2.loops + (then_st.loops - st2.loops) + (else_st.loops - st2.loops),
+                        st2.bounded + (then_st.bounded - st2.bounded) + (else_st.bounded - st2.bounded),
+                        st2.ensures)
+    if k == "WHILE":
+        let cond = child_at(s, 0)
+        let bound = child_at(s, 2)
+        let n = text_to_num(bound.val_str)
+        let body = child_at(s, 1)
+        let assigned = vf_collect_set_names(body, [])
+        # Inside the loop every assigned variable is a fresh integer atom; using
+        # its entry value would prove facts that may not hold on later iterations.
+        let env_loop = vf_env_with_atoms(st.env, assigned, s.line)
+        let cf = vf_formula_of(cond, env_loop)
+        let facts_loop = st.facts + [cf]
+        for each name in assigned:
+            let c0 = vf_env_get(st.env, name)
+            let cs = vf_counter_step(body, name)
+            if vf_n(cs, 0) == 1 and (length of c0) > 0:
+                let step = vf_n(cs, 1)
+                let cl = vf_env_get(env_loop, name)
+                if step > 0:
+                    set facts_loop to facts_loop + [vf_cmp(">=", cl, c0)]
+                if step < 0:
+                    set facts_loop to facts_loop + [vf_cmp("<=", cl, c0)]
+        let st2 = vf_scan_expr(cond, st, routine)
+        let inner = vf_scan_stmts(kids_of(body),
+            vf_state(env_loop, facts_loop, [], st2.loops + 1, st2.bounded, st2.ensures), routine)
+        let bounded2 = inner.bounded
+        let cur = st2
+        let valid = 0
+        if bound.val_str != "" and bound.val_str != "?" and n >= 1:
+            set valid to 1
+            set bounded2 to bounded2 + 1
+        let loop_goal = vf_false()
+        if valid == 1:
+            set loop_goal to vf_true()
+        set cur to vf_state(st2.env, st2.facts, st2.obls + [vf_obligation("loop", s.line, routine, [], loop_goal)] + inner.obls, inner.loops, bounded2, st2.ensures)
+        # A bounded loop can exit through its ceiling, so no post-loop guard fact
+        # is assumed. Variables the body writes become unknown values.
+        return vf_state(vf_mark_written_unknown(body, st2.env), st2.facts,
+                        cur.obls, cur.loops, cur.bounded, st2.ensures)
+    if k == "FOR_EACH":
+        let st2 = vf_scan_expr(child_at(s, 0), st, routine)
+        let inner_env = vf_env_set(st2.env, s.name, [])
+        let inner = vf_scan_stmts(kids_of(child_at(s, 1)),
+            vf_state(inner_env, st2.facts, [], st2.loops, st2.bounded, st2.ensures), routine)
+        return vf_state(vf_mark_written_unknown(child_at(s, 1), st2.env), st2.facts,
+                        st2.obls + inner.obls, inner.loops, inner.bounded, st2.ensures)
+    if k == "TRY":
+        let inner_env = st.env
+        if s.name != "":
+            set inner_env to vf_env_set(st.env, s.name, [])
+        let body_st = vf_scan_stmts(kids_of(child_at(s, 0)),
+            vf_state(inner_env, st.facts, [], st.loops, st.bounded, st.ensures), routine)
+        let other_st = vf_scan_stmts(kids_of(child_at(s, 1)),
+            vf_state(inner_env, st.facts, [], st.loops, st.bounded, st.ensures), routine)
+        return vf_state(st.env, st.facts, st.obls + body_st.obls + other_st.obls,
+                        st.loops + (body_st.loops - st.loops) + (other_st.loops - st.loops),
+                        st.bounded + (body_st.bounded - st.bounded) + (other_st.bounded - st.bounded),
+                        st.ensures)
+    let cur = st
+    for each c in s.children:
+        set cur to vf_scan_expr(c, cur, routine)
+    return cur
+
+action vf_scan_stmts(stmts: list, st: VfState, routine: str) -> VfState:
+    recursion bounded 200
+    let cur = st
+    for each s in stmts:
+        set cur to vf_scan_stmt(s, cur, routine)
+    return cur
+
+# ── routine analysis ──────────────────────────────────────────────────
+
+record VfResult:
+    name: str
+    obls: list
+    loops: num
+    bounded: num
+
+action vf_is_routine(item: AstNode) -> num:
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
+        return 1
+    return 0
+
+action vf_seed_env(params: AstNode) -> list:
+    let env = []
+    for each p in params.children:
+        set env to vf_env_set(env, p.name, vf_lin_atom(p.name))
+    return env
+
+action vf_analyze_item(item: AstNode) -> VfState:
+    recursion bounded 64
+    let params = child_at(item, 0)
+    let contracts = child_at(item, 1)
+    let body = child_at(item, 2)
+    let env = vf_seed_env(params)
+    let reqs = vf_contracts("requires", contracts)
+    let ensures = vf_contracts("ensures", contracts)
+    let facts = []
+    for each c in reqs:
+        set facts to facts + [vf_formula_of(child_at(c, 0), env)]
+    return vf_scan_stmts(body.children,
+        vf_state(env, facts, [], 0, 0, ensures), item.name)
+
+action vf_analyze_all(items: list) -> list:
+    let out = []
+    for each item in items:
+        if vf_is_routine(item) == 1:
+            let st = vf_analyze_item(item)
+            set out to out + [VfResult(name: item.name, obls: st.obls, loops: st.loops, bounded: st.bounded)]
+    return out
+
+action vf_all_obls(results: list) -> list:
+    let out = []
+    for each r in results:
+        set out to out + r.obls
+    return out
+
+# ── embedded linear prover (Fourier-Motzkin over rationals) ────────────
+#
+# Sound direction only: a contradiction found after eliminating every variable
+# over the reals proves the integer constraints contradictory too, so "proven"
+# is never a false positive. A satisfiable real relaxation means "unproven"
+# (Z3 may still decide the integer case; the gate uses Z3 as the authority).
+
+action vf_cmp_constraints(op: str, a: list, b: list) -> list:
+    let diff = vf_lin_sub(a, b)
+    let rdiff = vf_lin_sub(b, a)
+    if op == "<":
+        return [[["<", diff]]]
+    if op == "<=":
+        return [[["<=", diff]]]
+    if op == ">":
+        return [[["<", rdiff]]]
+    if op == ">=":
+        return [[["<=", rdiff]]]
+    if op == "==":
+        return [[["<=", diff], ["<=", rdiff]]]
+    if op == "!=":
+        return [[["<", diff]], [["<", rdiff]]]
+    return [[["unknown", [0]]]]
+
+action vf_cross(a: list, b: list) -> list:
+    recursion bounded 64
+    let out = []
+    if (length of a) > 64 or (length of b) > 64:
+        return [[["unknown", [0]]]]
+    for each x in a:
+        for each y in b:
+            if (length of out) < 128:
+                set out to out + [x + y]
+    return out
+
+action vf_dnf(f: list) -> list:
+    recursion bounded 128
+    let kind = vf_s(f, 0)
+    if kind == "true":
+        return [[]]
+    if kind == "false":
+        return []
+    if kind == "cmp":
+        return vf_cmp_constraints(vf_s(f, 1), vf_l(f, 2), vf_l(f, 3))
+    if kind == "not":
+        let inner = vf_l(f, 1)
+        if vf_s(inner, 0) == "unknown":
+            return [[["unknown", [0]]]]
+        return vf_dnf(vf_not(inner))
+    if kind == "and":
+        return vf_cross(vf_dnf(vf_l(f, 1)), vf_dnf(vf_l(f, 2)))
+    if kind == "or":
+        return vf_dnf(vf_l(f, 1)) + vf_dnf(vf_l(f, 2))
+    return [[["unknown", [0]]]]
+
+action vf_lin_coef(a: list, atom: str) -> num:
+    for each t in vf_terms_of(a):
+        if vf_s(t, 1) == atom:
+            return vf_n(t, 0)
+    return 0
+
+action vf_lin_rest(a: list, atom: str) -> list:
+    let out = vf_lin_const(vf_n(a, 0))
+    for each t in vf_terms_of(a):
+        if vf_s(t, 1) != atom:
+            set out to vf_lin_from(vf_n(out, 0), vf_terms_of(out) + [[vf_n(t, 0), vf_s(t, 1)]])
+    return out
+
+action vf_const_contradiction(cons: list) -> num:
+    for each c in cons:
+        let lin = vf_l(c, 1)
+        if (length of lin) == 1:
+            let v = vf_n(lin, 0)
+            if vf_s(c, 0) == "<=":
+                if v > 0:
+                    return 1
+            if vf_s(c, 0) == "<":
+                if v >= 0:
+                    return 1
+        if vf_s(c, 0) == "unknown":
+            return 0 - 1
+    return 0
+
+action vf_fm(cons: list, depth: num) -> num:
+    recursion bounded 64
+    if depth > 24 or (length of cons) > 512:
+        return 0 - 1
+    let atoms = []
+    for each c in cons:
+        if vf_s(c, 0) == "unknown":
+            return 0 - 1
+        for each t in vf_terms_of(vf_l(c, 1)):
+            if vf_has_atom(atoms, vf_s(t, 1)) == 0:
+                set atoms to atoms + [vf_s(t, 1)]
+    if (length of atoms) == 0:
+        let contra = vf_const_contradiction(cons)
+        if contra == 1:
+            return 1
+        if contra == 0 - 1:
+            return 0 - 1
+        return 0
+    let x = vf_s(atoms, 0)
+    let low = []
+    let high = []
+    let keep = []
+    for each c in cons:
+        let a = vf_lin_coef(vf_l(c, 1), x)
+        if a > 0:
+            set low to low + [c]
+        otherwise:
+            if a < 0:
+                set high to high + [c]
+            otherwise:
+                set keep to keep + [c]
+    if (length of low) > 64 or (length of high) > 64:
+        return 0 - 1
+    let combined = keep
+    for each l in low:
+        for each h in high:
+            let al = vf_lin_coef(vf_l(l, 1), x)
+            let ah = vf_lin_coef(vf_l(h, 1), x)
+            let rl = vf_lin_rest(vf_l(l, 1), x)
+            let rh = vf_lin_rest(vf_l(h, 1), x)
+            # L: al*x + rl <= 0 ; U: ah*x + rh <= 0 with ah < 0
+            # multiply L by (-ah) > 0 and U by al > 0, then add:
+            let comb = vf_lin_add(vf_lin_scale(rl, 0 - ah), vf_lin_scale(rh, al))
+            let strict = vf_s(l, 0) == "<" or vf_s(h, 0) == "<"
+            if strict:
+                set combined to combined + [["<", comb]]
+            otherwise:
+                set combined to combined + [["<=", comb]]
+            if (length of combined) > 512:
+                return 0 - 1
+    return vf_fm(combined, depth + 1)
+
+action vf_prove(ctx: list, goal: list) -> str:
+    # Unknown facts are dropped (weakened to true): a proof that survives losing
+    # assumptions is still sound under the real context.
+    let facts = []
+    for each c in ctx:
+        set facts to facts + [vf_sanitize_fact(c)]
+    let f = vf_and(vf_facts_formula(facts), vf_not(goal))
+    let disj = vf_dnf(f)
+    if (length of disj) == 0:
+        return "proven"
+    if (length of disj) > 64:
+        return "unknown"
+    for each conj in disj:
+        let r = vf_fm(conj, 0)
+        if r != 1:
+            return "unproven"
+    return "proven"
+
+action vf_apply_prover(obls: list) -> list:
+    let out = []
+    for each o in obls:
+        set out to out + [VfObl(kind: o.kind, line: o.line, routine: o.routine,
+                                context: o.context, goal: o.goal,
+                                status: vf_prove(o.context, o.goal))]
+    return out
+
+action vf_apply_results(results: list) -> list:
+    let out = []
+    for each r in results:
+        set out to out + [VfResult(name: r.name, obls: vf_apply_prover(r.obls),
+                                   loops: r.loops, bounded: r.bounded)]
+    return out
+
+# ── summaries, report, JSON, SMT-LIB2 ─────────────────────────────────
+
+action vf_count_kind(obls: list, kind: str) -> num:
+    let n = 0
+    for each o in obls:
+        if o.kind == kind:
+            set n to n + 1
+    return n
+
+action vf_count_status(obls: list, status: str) -> num:
+    let n = 0
+    for each o in obls:
+        if o.status == status:
+            set n to n + 1
+    return n
+
+action vf_count_nonfallback_unproven(obls: list) -> num:
+    let n = 0
+    for each o in obls:
+        if o.status != "proven":
+            if o.kind != "fallback-index" and o.kind != "fallback-div":
+                set n to n + 1
+    return n
+
+action vf_count_fallback_proven(obls: list) -> num:
+    let n = 0
+    for each o in obls:
+        if o.status == "proven":
+            if o.kind == "fallback-index" or o.kind == "fallback-div":
+                set n to n + 1
+    return n
+
+action vf_count_fallback(obls: list) -> num:
+    return vf_count_kind(obls, "fallback-index") + vf_count_kind(obls, "fallback-div")
+
+action vf_routine_certified(r: VfResult) -> num:
+    if vf_count_nonfallback_unproven(r.obls) > 0:
+        return 0
+    if r.loops != r.bounded:
+        return 0
+    return 1
+
+action vf_totals(results: list) -> list:
+    let total = 0
+    let proven = 0
+    let bad = 0
+    let fb = 0
+    let fb_proven = 0
+    let loops = 0
+    let bounded = 0
+    let certified = 0
+    for each r in results:
+        set total to total + (length of r.obls)
+        set proven to proven + vf_count_status(r.obls, "proven")
+        set bad to bad + vf_count_nonfallback_unproven(r.obls)
+        set fb to fb + vf_count_fallback(r.obls)
+        set fb_proven to fb_proven + vf_count_fallback_proven(r.obls)
+        set loops to loops + r.loops
+        set bounded to bounded + r.bounded
+        set certified to certified + vf_routine_certified(r)
+    return [total, proven, bad, fb, fb_proven, loops, bounded, certified,
+            length of results]
+
+action vf_report(results: list) -> str:
+    let t = vf_totals(results)
+    let out = "kaze-verify: " + (vf_n(t,8)) + " routine(s), " + (vf_n(t,0)) + " obligation(s)\n"
+    set out to out + "  proven: " + (vf_n(t,1)) + "   unproven: " + (vf_n(t,2)) + "\n"
+    set out to out + "  loops: " + (vf_n(t,5)) + " bounded: " + (vf_n(t,6)) + "\n"
+    set out to out + "  fallbacks: " + (vf_n(t,3)) + " proven redundant: " + (vf_n(t,4)) + "\n"
+    set out to out + "  certified routines: " + (vf_n(t,7)) + "/" + (vf_n(t,8)) + "\n"
+    for each r in results:
+        let cert = "NOT-CERTIFIED"
+        if vf_routine_certified(r) == 1:
+            set cert to "certified"
+        set out to out + "  " + r.name + ": " + cert + "  obls=" + (length of r.obls) + " proven=" + (vf_count_status(r.obls, "proven")) + " unproven=" + (vf_count_nonfallback_unproven(r.obls)) + " loops=" + r.loops + "/" + r.bounded + "\n"
+        for each o in r.obls:
+            if o.status != "proven":
+                set out to out + "    unproven " + o.kind + " at line " + o.line + "\n"
+    return out
+
+action vf_json(results: list) -> str:
+    let t = vf_totals(results)
+    let out = "{\"routines\":" + (vf_n(t,8)) + ",\"obligations\":" + (vf_n(t,0)) + ",\"proven\":" + (vf_n(t,1)) + ",\"unproven\":" + (vf_n(t,2)) + ",\"fallbacks\":" + (vf_n(t,3)) + ",\"fallbacks_proven\":" + (vf_n(t,4)) + ",\"loops\":" + (vf_n(t,5)) + ",\"loops_bounded\":" + (vf_n(t,6)) + ",\"certified\":" + (vf_n(t,7)) + ",\"routines_detail\":["
+    let first = 1
+    for each r in results:
+        if first == 0:
+            set out to out + ","
+        set first to 0
+        set out to out + "{\"name\":\"" + r.name + "\",\"certified\":" + (vf_routine_certified(r)) + ",\"obligations\":" + (length of r.obls) + ",\"proven\":" + (vf_count_status(r.obls, "proven")) + ",\"loops\":" + r.loops + ",\"bounded\":" + r.bounded + "}"
+    return out + "]}\n"
+
+action vf_smt2_all(results: list) -> str:
+    let obls = vf_all_obls(results)
+    let atoms = vf_atoms_of_obls(obls)
+    # Real arithmetic: a proof over the reals is a sound proof for the machines'
+    # integer indices and lengths; an integer-only proof would not be.
+    let out = "; generated by kaze-verify (Phase 16)\n(set-logic QF_LRA)\n"
+    set out to out + vf_smt_declares(atoms)
+    let idx = 0
+    for each o in obls:
+        set out to out + "; OBLIGATION " + idx + " " + o.kind + " " + o.routine + " " + o.line + " " + o.status + "\n"
+        set out to out + "(echo \"OBLIGATION " + idx + " " + o.kind + " " + o.routine + " " + o.line + " " + o.status + "\")\n"
+        set out to out + "(push 1)\n"
+        for each f in o.context:
+            set out to out + "(assert " + vf_smt_formula(f) + ")\n"
+        if vf_s(o.goal, 0) == "unknown":
+            # no negation is asserted: the query stays satisfiable for a goal the
+            # verifier could not linearise, so Z3 cannot certify it by accident
+            set out to out + "(assert true)\n"
+        otherwise:
+            set out to out + "(assert (not " + vf_smt_formula(o.goal) + "))\n"
+        set out to out + "(check-sat)\n(pop 1)\n"
+        set idx to idx + 1
+    return out
+
+# ── interval merge for path-sensitive proves ───────────────────────────
+# A conditional whose branches both continue is replaced by the tightest bounds
+# that hold on both paths. This recovers the common stdlib idiom
+
+#     if start < 0: set start to 0
+#     if start >= n: return ""
+#     ... t[start + i] ...
+
+# where the guarded assignment, not a branch exit, establishes the invariant.
+
+action vf_sanitize_fact(f: list) -> list:
+    recursion bounded 64
+    let kind = vf_s(f, 0)
+    if kind == "unknown":
+        return vf_true()
+    if kind == "not":
+        let inner = vf_l(f, 1)
+        if vf_s(inner, 0) == "unknown":
+            return vf_true()
+        return vf_not(vf_sanitize_fact(inner))
+    if kind == "and":
+        return vf_and(vf_sanitize_fact(vf_l(f, 1)), vf_sanitize_fact(vf_l(f, 2)))
+    if kind == "or":
+        return vf_or(vf_sanitize_fact(vf_l(f, 1)), vf_sanitize_fact(vf_l(f, 2)))
+    return f
+
+action vf_assignment_fact(name: str, lin: list) -> list:
+    if (length of lin) == 0:
+        return vf_true()
+    return vf_cmp("==", vf_lin_atom(name), lin)
+
+action vf_bound(f: list, name: str) -> list:
+    # [lo, hi] from one formula; 1e9 sentinel means "no bound".
+    recursion bounded 64
+    let kind = vf_s(f, 0)
+    if kind == "and":
+        let a = vf_bound(vf_l(f, 1), name)
+        let b = vf_bound(vf_l(f, 2), name)
+        let lo = vf_n(a, 0)
+        if vf_n(b, 0) > lo:
+            set lo to vf_n(b, 0)
+        let hi = vf_n(a, 1)
+        if vf_n(b, 1) < hi:
+            set hi to vf_n(b, 1)
+        return [lo, hi]
+    if kind == "not":
+        let inner = vf_l(f, 1)
+        if vf_s(inner, 0) == "unknown":
+            return [0 - 1000000000, 1000000000]
+        let nf = vf_not(inner)
+        if vf_s(nf, 0) == "not":
+            return [0 - 1000000000, 1000000000]
+        return vf_bound(nf, name)
+    if kind == "cmp":
+        let op = vf_s(f, 1)
+        let diff = vf_lin_sub(vf_l(f, 2), vf_l(f, 3))
+        let coef = vf_lin_coef(diff, name)
+        let rest = vf_lin_rest(diff, name)
+        if (length of rest) > 1 or coef == 0:
+            return [0 - 1000000000, 1000000000]
+        let c = vf_n(rest, 0)
+        if coef == 1:
+            if op == "<=":
+                return [0 - 1000000000, 0 - c]
+            if op == "<":
+                return [0 - 1000000000, 0 - c - 1]
+            if op == "==":
+                return [0 - c, 0 - c]
+        if coef == 0 - 1:
+            if op == "<=":
+                return [c, 1000000000]
+            if op == "<":
+                return [c + 1, 1000000000]
+            if op == "==":
+                return [c, c]
+        return [0 - 1000000000, 1000000000]
+    return [0 - 1000000000, 1000000000]
+
+action vf_interval_of(facts: list, name: str) -> list:
+    let lo = 0 - 1000000000
+    let hi = 1000000000
+    for each f in facts:
+        let b = vf_bound(f, name)
+        if vf_n(b, 0) > lo:
+            set lo to vf_n(b, 0)
+        if vf_n(b, 1) < hi:
+            set hi to vf_n(b, 1)
+    return [lo, hi]
+
+action vf_union_names(a: list, b: list) -> list:
+    let out = a
+    for each x in b:
+        if vf_has_atom(out, x) == 0:
+            set out to out + [x]
+    return out
+
+# ── proof-carrying certificate ─────────────────────────────────────────
+# A small digest binds the certificate to the source that was analysed; the
+# SMT-LIB2 file is the machine-checkable part and this header is the summary a
+# build pipeline records next to the compiled module.
+
+action vf_digest(source: text) -> num:
+    # A 16-bit FNV-style fold: exact in a double (h*131+c stays below 2^53) and
+    # fast enough for a module-sized source. Weaker than SHA, but it binds the
+    # certificate header to the text the verifier actually read.
+    let h = 5381
+    let i = 0
+    let n = length of source
+    while i < n bounded 10000000:
+        let c = code(source[i]) otherwise 0
+        set h to h * 131 + c
+        while h >= 65521 bounded 100000:
+            set h to h - 65521
+        set i to i + 1
+    return h
+
+action vf_proof(results: list, source: text) -> str:
+    let t = vf_totals(results)
+    let out = "kaze-proof 1\n"
+    set out to out + "digest " + vf_num_text(vf_digest(source)) + "\n"
+    set out to out + "routines " + vf_num_text(vf_n(t,8)) + "\n"
+    set out to out + "obligations " + vf_num_text(vf_n(t,0)) + "\n"
+    set out to out + "proven " + vf_num_text(vf_n(t,1)) + "\n"
+    set out to out + "unproven " + vf_num_text(vf_n(t,2)) + "\n"
+    set out to out + "fallbacks " + vf_num_text(vf_n(t,3)) + "\n"
+    set out to out + "fallbacks_proven " + vf_num_text(vf_n(t,4)) + "\n"
+    set out to out + "loops " + vf_num_text(vf_n(t,5)) + "\n"
+    set out to out + "loops_bounded " + vf_num_text(vf_n(t,6)) + "\n"
+    set out to out + "certified " + vf_num_text(vf_n(t,7)) + "\n"
+    let idx = 0
+    for each r in results:
+        for each o in r.obls:
+            set out to out + "obligation " + vf_num_text(idx) + " " + o.kind + " " + o.routine + " " + vf_num_text(o.line) + " " + o.status + "\n"
+            set idx to idx + 1
+    return out
+
+# ── Horn-clause certificate ────────────────────────────────────────────
+# Every obligation is an implication: a conjunction of contract/guard facts
+# entails a safety atom. Printed as definite clauses, the same generated set the
+# SMT negates is the input of the static Horn-clause prover.
+
+action vf_horn_atoms(f: list) -> list:
+    recursion bounded 64
+    let kind = vf_s(f, 0)
+    if kind == "cmp":
+        return ["(" + vf_s(f, 1) + " " + vf_smt_lin(vf_l(f, 2)) + " " + vf_smt_lin(vf_l(f, 3)) + ")"]
+    if kind == "and":
+        return vf_horn_atoms(vf_l(f, 1)) + vf_horn_atoms(vf_l(f, 2))
+    if kind == "or":
+        return ["(or " + vf_smt_formula(f) + ")"]
+    if kind == "not":
+        return ["(not " + vf_smt_formula(f) + ")"]
+    if kind == "true":
+        return []
+    return ["unknown"]
+
+action vf_horn_body(ctx: list) -> str:
+    let lits = []
+    for each f in ctx:
+        for each a in vf_horn_atoms(vf_sanitize_fact(f)):
+            set lits to lits + [a]
+    if (length of lits) == 0:
+        return "true"
+    let out = vf_s(lits, 0)
+    let i = 1
+    while i < (length of lits) bounded 1000:
+        set out to out + " & " + vf_s(lits, i)
+        set i to i + 1
+    return out
+
+action vf_horn_all(results: list) -> str:
+    let out = "; kaze-horn 1\n"
+    let idx = 0
+    let clauses = 0
+    for each r in results:
+        for each o in r.obls:
+            let body = vf_horn_body(o.context)
+            let goals = vf_horn_atoms(o.goal)
+            if (length of goals) == 0:
+                # A trivially-true obligation (a certified loop bound) still gets
+                # one nullary Horn fact so every obligation has a clause.
+                set goals to ["safety_" + o.kind + "_" + vf_num_text(idx)]
+            let j = 0
+            for each g in goals:
+                set out to out + "goal_" + vf_num_text(idx) + "_" + vf_num_text(j) + " :- " + body + ".  ; " + o.kind + " " + o.routine + ":" + vf_num_text(o.line) + " " + o.status + "\n"
+                set j to j + 1
+                set clauses to clauses + 1
+            set idx to idx + 1
+    return out + "; clauses " + vf_num_text(clauses) + "\n"

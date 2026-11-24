@@ -44,12 +44,14 @@ run 'batch LSP' python3 scripts/lsp-smoke.py
 run 'standard library suites' bash scripts/stdlib-test.sh
 run 'arena-only allocation' bash scripts/alloc-audit.sh
 run 'json vs cpython (rfc 8259)' python3 scripts/json-conformance-diff.py
+run 'hardware buses (phase 14)' bash scripts/phase14-gates.sh
 run 'formatter' bash scripts/fmt-check.sh
 run 'phase 7 strict gates' bash scripts/phase7-gates.sh
 run 'concurrency (phase 13)' bash scripts/phase13-gates.sh
 run 'tooling' bash scripts/tooling-smoke.sh
 run 'http' python3 scripts/http-smoke.py
 run 'parallel' bash scripts/phase7-bench.sh
+run 'sitl (phase 15)' bash scripts/phase15-gates.sh
 run 'dist regenerates itself' bash scripts/regen-dist.sh
 
 echo

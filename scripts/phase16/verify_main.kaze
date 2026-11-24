@@ -1,0 +1,30 @@
+# verify_main.kaze — CLI for the Phase 16 verifier.
+#
+#   kaze-verify --arg source=<path> --arg mode=report   human certification
+#   kaze-verify --arg source=<path> --arg mode=json     machine summary
+#   kaze-verify --arg source=<path> --arg mode=smt2     SMT-LIB2 obligations
+#   kaze-verify --arg source=<path> --arg mode=horn     Horn-clause certificate
+#   kaze-verify --arg source=<path> --arg mode=proof    proof-carrying certificate
+
+action vf_mode(word: str) -> str:
+    if word == "smt2" or word == "json" or word == "report" or word == "proof" or word == "horn":
+        return word
+    return "report"
+
+action main(source: text, mode: text):
+    let selected = vf_mode(mode)
+    if (length of source) == 0:
+        return "kaze-verify: no source given\n"
+    let tokens = tokenize(source)
+    let program = parse_program(tokens)
+    let items = program_items(program)
+    let results = vf_apply_results(vf_analyze_all(items))
+    if selected == "json":
+        return vf_json(results)
+    if selected == "smt2":
+        return vf_smt2_all(results)
+    if selected == "horn":
+        return vf_horn_all(results)
+    if selected == "proof":
+        return vf_proof(results, source)
+    return vf_report(results)

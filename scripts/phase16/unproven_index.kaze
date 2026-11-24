@@ -1,0 +1,4 @@
+# a bare index with no fallback and no dominating guard: the verifier must not
+# certify it, even though the compiler would reject the source on its own.
+action first(xs) -> num:
+    return xs[0]

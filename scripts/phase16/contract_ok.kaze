@@ -1,0 +1,5 @@
+# contract invariance: requires x >= 0 implies ensures result >= 0
+action clamp(x) -> num:
+    requires x >= 0
+    ensures result >= 1
+    return x + 1
