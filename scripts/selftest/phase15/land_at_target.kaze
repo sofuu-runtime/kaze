@@ -1,0 +1,10 @@
+# Fly one leg out and land on the target: the landing-accuracy gate measures the
+# touchdown point against it and requires 0.5 m or better.
+needs: drone, log
+
+action main():
+    log "phase 15 landing accuracy"
+    arm drone
+    takeoff to 12 meters
+    fly to vector(47.6004, 8.5, 12) at 12 meters
+    land

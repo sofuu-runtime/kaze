@@ -10,3 +10,7 @@ dist/kaze_parallel_bench
 /RELEASE-1.0.0-PREP.md
 /kaze-map.md
 /docs/
+
+# python caches from the sitl harness
+__pycache__/
+*.pyc

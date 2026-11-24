@@ -1,0 +1,20 @@
+# Exercises the telemetry surface the twin publishes: satellites, hdop, mode and
+# altitude, read as values a program can branch on.
+needs: drone, log
+
+action main():
+    log "phase 15 telemetry"
+    arm drone
+    takeoff to 10 meters
+    let sats = drone.telemetry("satellites")
+    let hdop = drone.telemetry("hdop")
+    let mode = drone.telemetry("mode")
+    log mode
+    if sats >= 4 and hdop <= 5:
+        fly to vector(47.6002, 8.5, 10) at 10 meters
+    otherwise:
+        log "no usable fix; holding"
+        hold
+    let alt = drone.telemetry("altitude")
+    log alt
+    return to launch

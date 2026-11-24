@@ -1,0 +1,11 @@
+# A long leg with a failure injected while it is in progress. The vehicle's
+# failsafe returns to launch; the program's leg cannot finish, and the bridge
+# reports E_SAFETY_VIOLATION instead of pretending the leg completed.
+needs: drone, log
+
+action main():
+    log "phase 15 failsafe leg"
+    arm drone
+    takeoff to 20 meters
+    fly to vector(47.6020, 8.5020, 20) at 20 meters
+    return to launch

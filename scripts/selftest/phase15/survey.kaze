@@ -1,0 +1,20 @@
+# Eight waypoints, then home. The survey the Phase 15 gate measures:
+#   8 legs commanded, 8 arrived, zero flight violations, landing within 0.5 m.
+needs: drone, log
+
+action main():
+    log "phase 15 survey"
+    arm drone
+    takeoff to 15 meters
+    for each point in [
+        vector(47.6, 8.5, 15),
+        vector(47.6002, 8.5, 15),
+        vector(47.6002, 8.5002, 15),
+        vector(47.6, 8.5002, 15),
+        vector(47.6, 8.5004, 15),
+        vector(47.6002, 8.5004, 15),
+        vector(47.6004, 8.5004, 15),
+        vector(47.6004, 8.5002, 15)
+    ]:
+        fly to point at 15 meters
+    return to launch

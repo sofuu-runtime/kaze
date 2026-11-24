@@ -1,54 +1,84 @@
 #!/usr/bin/env bash
-# Eight-waypoint mission against ArduCopter SITL.
+# eight_waypoints.sh -- the Phase 15 acceptance gate: fly the eight-waypoint
+# survey headless and require zero flight violations.
 #
-# This is the SITL half of the v0.8 mission benchmark. It starts a local
-# ArduCopter, waits for it to settle, runs the mission over UDP, and checks that
-# eight position targets left the script. If ArduPilot is not installed the
-# script reports a skip (exit 0): a missing simulator is not a Red test, but it
-# is not evidence either.
+# The vehicle is whichever one KAZE_SITL_VEHICLE names:
+#
+#   twin        (default) scripts/sitl/kaze_sitl.py, the in-repo digital twin
+#   ardupilot   a running ArduCopter/PX4 SITL on udp:127.0.0.1:$KAZE_SITL_PORT
+#
+# Both speak MAVLink 2 to the same client, so the mission binary is identical.
+# The twin path is exercised by CI here; the ArduPilot path needs an ArduPilot
+# checkout on the machine and is reported, not assumed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-SITL="${ARDUPILOT_SITL:-$HOME/ardupilot/build/SITL/bin/arducopter}"
-PORT="${KAZE_SITL_PORT:-14550}"
-WAIT="${KAZE_SITL_WAIT:-20}"
-LOG="${KAZE_SITL_LOG:-/tmp/kaze-sitl.log}"
-TRACE="${KAZE_SITL_TRACE:-/tmp/kaze-eight-waypoints.trace}"
+MISSION="${KAZE_P15_MISSION:-$ROOT/scripts/selftest/phase15/survey.kaze}"
+VEHICLE="${KAZE_SITL_VEHICLE:-twin}"
+SEED="${KAZE_SITL_SEED:-7}"
 
-if [ ! -x "$SITL" ]; then
-    echo "sitl: no ArduCopter SITL at $SITL" >&2
-    echo "sitl: set ARDUPILOT_SITL=/path/to/arducopter to run this benchmark" >&2
-    echo "sitl: SKIPPED (hardware-dependent)" >&2
-    exit 0
+if [ ! -x bin/kaze ]; then
+    echo "sitl: bin/kaze is missing; run 'make kaze-build' first" >&2
+    exit 2
 fi
 
-echo "sitl: starting $SITL on udp:127.0.0.1:$PORT"
-"$SITL" --model quad -I 0 \
-    --home 47.6000,8.5000,500,0 \
-    --serial0 "udpclient:127.0.0.1:$PORT" >"$LOG" 2>&1 &
-SITL_PID=$!
-trap 'kill "$SITL_PID" 2>/dev/null || true' EXIT
-
-echo "sitl: waiting ${WAIT}s for the vehicle to initialise"
-sleep "$WAIT"
-
-set +e
-cargo run --release --bin kaze -- run examples/missions/eight_waypoints.kaze \
-    --cap "drone=udp:127.0.0.1:$PORT" --plain | tee "$TRACE"
-STATUS=${PIPESTATUS[0]}
-set -e
-
-GOTOS=$(grep -c 'drone.goto' "$TRACE" || true)
-echo "sitl: exit $STATUS, $GOTOS waypoint commands"
-
-if [ "$STATUS" -ne 0 ]; then
-    echo "sitl: FAIL — the mission did not finish; see $TRACE and $LOG" >&2
-    exit 1
+if [ "$VEHICLE" = "ardupilot" ]; then
+    PORT="${KAZE_SITL_PORT:-14550}"
+    echo "sitl: vehicle=ardupilot udp:127.0.0.1:$PORT (external process; not started here)"
+    KAZE_HARNESS_PORT="$PORT" python3 - "$MISSION" "$PORT" <<'PY'
+import os, pathlib, subprocess, sys
+sys.path.insert(0, os.path.join(os.getcwd(), "scripts", "sitl"))
+import harness
+mission = pathlib.Path(sys.argv[1]); port = int(sys.argv[2])
+binary, log = harness.prepare(mission)
+if log:
+    print("sitl: FAIL -- " + log[:400], file=sys.stderr); sys.exit(1)
+env = dict(os.environ, KAZE_SITL="udp:127.0.0.1:%d" % port, KAZE_SITL_TIMEOUT_MS="60000")
+result = subprocess.run([str(binary)], capture_output=True, env=env)
+print("sitl: mission exit %d" % result.returncode)
+print(result.stderr.decode("utf-8", "replace").strip())
+sys.exit(0 if result.returncode == 0 else 1)
+PY
+    exit $?
 fi
-if [ "$GOTOS" -ne 8 ]; then
-    echo "sitl: FAIL — expected 8 waypoint commands, saw $GOTOS" >&2
-    exit 1
-fi
-echo "sitl: PASS — eight-waypoint mission completed against SITL"
+
+python3 - "$MISSION" "$SEED" <<'PY'
+import json, os, pathlib, sys
+sys.path.insert(0, os.path.join(os.getcwd(), "scripts", "sitl"))
+import harness
+
+mission = pathlib.Path(sys.argv[1])
+seed = int(sys.argv[2])
+result = harness.fly(mission, seed=seed, speed=float(os.environ.get("KAZE_SITL_SPEED", "20")))
+report = result.get("report") or {}
+if not result.get("build_ok"):
+    print("sitl: FAIL -- the mission did not build: " + (result.get("build_log") or "")[:400],
+          file=sys.stderr)
+    sys.exit(1)
+problems = []
+if result.get("exit") != 0:
+    problems.append("mission exit %s, stderr %s" % (result.get("exit"), result.get("stderr")))
+if report.get("goto_commands") != 8:
+    problems.append("expected 8 commanded legs, saw %s" % report.get("goto_commands"))
+if report.get("waypoints_reached") != 8:
+    problems.append("expected 8 arrivals, saw %s" % report.get("waypoints_reached"))
+if report.get("violations"):
+    problems.append("flight violations: %s" % report.get("violations")[:4])
+if not report.get("rtl_fired"):
+    problems.append("the mission never returned to launch")
+landing = report.get("landing_error_m")
+# 0.0 is a real touchdown error; only a missing field counts as "no landing".
+if landing is None:
+    problems.append("the twin reported no touchdown point")
+elif landing > 0.5:
+    problems.append("landing error %.3f m exceeds 0.5 m" % landing)
+print("sitl: vehicle=twin seed=%d legs=%s arrivals=%s landing=%.3f m violations=%d" % (
+    seed, report.get("goto_commands"), report.get("waypoints_reached"),
+    report.get("landing_error_m") or 0.0, len(report.get("violations") or [])))
+if problems:
+    print("sitl: FAIL -- " + "; ".join(problems), file=sys.stderr)
+    sys.exit(1)
+print("sitl: PASS -- eight-waypoint mission completed headless with zero flight violations")
+PY
