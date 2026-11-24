@@ -1,0 +1,8 @@
+# Phase 12 shape gate: symbolic tensor shapes unify through a matmul.
+action project(x: tensor<f32, [B, D]>, w: tensor<f32, [D, H]>) -> tensor<f32, [B, H]>:
+    return matmul(x, w)
+
+action main() -> tensor<f32, [2, 2]>:
+    let a = tensor([1, 2, 3, 4, 5, 6], [2, 3])
+    let b = tensor([1, 2, 3, 4, 5, 6], [3, 2])
+    return matmul(a, b)

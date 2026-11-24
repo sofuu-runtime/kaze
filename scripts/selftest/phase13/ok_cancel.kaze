@@ -1,0 +1,28 @@
+# A cancelled task never resumes, and a task's exit cancels what it left running.
+fiber kid(q):
+    let n = 0
+    while n < 10 bounded 20:
+        send 1 to q
+        set n to n + 1
+        yield
+
+fiber boss(q) -> int:
+    spawn kid(q) as k
+    yield
+    cancel k
+    yield
+    return 1
+
+action main():
+    let q = channel(64)
+    spawn boss(q) as b
+    join b
+    let seen = 0
+    let more = 1
+    while more == 1 bounded 64:
+        let v = receive from q otherwise 0
+        if v == 0:
+            set more to 0
+        otherwise:
+            set seen to seen + 1
+    return seen

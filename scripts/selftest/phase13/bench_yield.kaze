@@ -1,0 +1,8 @@
+fiber main() -> int:
+    let i = 0
+    let acc = 0
+    while i < 2000000 bounded 2000001:
+        set acc to acc + i
+        set i to i + 1
+        yield
+    return acc

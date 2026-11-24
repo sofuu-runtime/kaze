@@ -1,0 +1,135 @@
+# lib/map.kaze -- linear-probing hash maps over arena-backed lists.
+#
+# A map is a record holding a flat entry list: no pointers, no indirection, no heap.
+# Slots are found by open addressing with linear probing, so the whole structure lives
+# in one contiguous list and iteration order is deterministic. Records are rebuilt
+# rather than mutated, which keeps every operation pure and lets the compiler keep
+# values in the arena.
+#
+# Keys are text. Absent keys read as 0 and map_has distinguishes 0 from missing.
+
+record MapEntry:
+    used: bool
+    key: text
+    value: number
+
+record Table:
+    cap: number
+    entries: list
+    count: number
+
+action map_hash(t: text) -> num:
+    # FNV-1a over the bytes, kept in 32 bits with the bitwise operators.
+    let h = 2166136261
+    let i = 0
+    let n = length of t
+    while i < n bounded 1000000:
+        set h to (((h ^ code(t[i])) * 16777619) & 4294967295)
+        set i to i + 1
+    return h
+
+action map_empty_entry() -> MapEntry:
+    return MapEntry(used: false, key: "", value: 0)
+
+action map_blank(cap: number) -> list:
+    let out = []
+    let i = 0
+    while i < cap bounded 1000000:
+        set out to out + [map_empty_entry()]
+        set i to i + 1
+    return out
+
+action map_new() -> Table:
+    return Table(cap: 8, entries: map_blank(8), count: 0)
+
+# A copy of entries with position i replaced.
+action map_put_at(entries: list, i: number, entry: MapEntry) -> list:
+    let out = []
+    let k = 0
+    for each e in entries:
+        if k == i:
+            set out to out + [entry]
+        otherwise:
+            set out to out + [e]
+        set k to k + 1
+    return out
+
+action map_rehash(m: Table) -> Table:
+    let cap = m.cap * 2
+    let fresh = Table(cap: cap, entries: map_blank(cap), count: 0)
+    let out = fresh
+    for each e in m.entries:
+        if e.used:
+            set out to map_insert_into(out, e.key, e.value)
+    return out
+
+# Insert into a table that is known to have room, so no rehash can recurse.
+action map_insert_into(m: Table, k: text, v: number) -> Table:
+    let slot = (map_hash(k) % m.cap) otherwise 0
+    let probes = 0
+    while probes < m.cap bounded 1000000:
+        let e = m.entries[slot] otherwise map_empty_entry()
+        if e.used == false:
+            let entries = map_put_at(m.entries, slot, MapEntry(used: true, key: k, value: v))
+            return Table(cap: m.cap, entries: entries, count: m.count + 1)
+        if e.key == k:
+            let entries = map_put_at(m.entries, slot, MapEntry(used: true, key: k, value: v))
+            return Table(cap: m.cap, entries: entries, count: m.count)
+        set slot to ((slot + 1) % m.cap) otherwise 0
+        set probes to probes + 1
+    return m
+
+action map_set(m: Table, k: text, v: number) -> Table:
+    let out = map_insert_into(m, k, v)
+    if (out.count * 2) >= out.cap:
+        return map_rehash(out)
+    return out
+
+action map_get(m: Table, k: text) -> num:
+    let slot = (map_hash(k) % m.cap) otherwise 0
+    let probes = 0
+    while probes < m.cap bounded 1000000:
+        let e = m.entries[slot] otherwise map_empty_entry()
+        if e.used == false:
+            return 0
+        if e.key == k:
+            return e.value
+        set slot to ((slot + 1) % m.cap) otherwise 0
+        set probes to probes + 1
+    return 0
+
+action map_has(m: Table, k: text) -> num:
+    let slot = (map_hash(k) % m.cap) otherwise 0
+    let probes = 0
+    while probes < m.cap bounded 1000000:
+        let e = m.entries[slot] otherwise map_empty_entry()
+        if e.used == false:
+            return 0
+        if e.key == k:
+            return 1
+        set slot to ((slot + 1) % m.cap) otherwise 0
+        set probes to probes + 1
+    return 0
+
+# Remove by rebuilding the table without the key. Linear probing needs the rebuild:
+# leaving a hole would break the probe chains of later entries.
+action map_delete(m: Table, k: text) -> Table:
+    let out = Table(cap: m.cap, entries: map_blank(m.cap), count: 0)
+    let next = out
+    for each e in m.entries:
+        if e.used and e.key != k:
+            set next to map_insert_into(next, e.key, e.value)
+    return next
+
+action map_size(m: Table) -> num:
+    return m.count
+
+action map_capacity(m: Table) -> num:
+    return m.cap
+
+action map_keys(m: Table) -> list:
+    let out = []
+    for each e in m.entries:
+        if e.used:
+            set out to out + [e.key]
+    return out

@@ -161,6 +161,48 @@ action make_for_each(var, list_expr, body, l):
 action make_try(err_name, body, other_block, l):
     return make_node("TRY", err_name, "", 0, [body, other_block], l)
 
+# ── phase 13: deterministic concurrency ─────────────────────────────────
+#
+# Four statement shapes and one expression shape, all lowering to the
+# cooperative scheduler in the native runtime:
+#
+#   spawn worker(1) as w1     a child fiber task; the name holds its handle
+#   yield                     an explicit cooperative suspension point
+#   join w1                   drive the scheduler until w1 finishes, yield its value
+#   cancel w1                 cancel w1 and its children; it never resumes
+#   send v to q               ring-buffer send; false when the channel is full
+#                             (children are [value, channel], in written order)
+#   receive from q            ring-buffer receive; needs an otherwise fallback
+#
+# A fiber is a routine that may suspend, so it is neither an action nor a
+# hook: it is entered by spawning it, never by calling it.
+action make_spawn(routine_name, args, task_name, l):
+    return make_node("SPAWN", routine_name, task_name, 0, args, l)
+
+action make_yield(l):
+    return make_node("YIELD", "", "", 0, [], l)
+
+action make_join(task, l):
+    return make_node("JOIN", "", "", 0, [task], l)
+
+action make_cancel(task, l):
+    return make_node("CANCEL", "", "", 0, [task], l)
+
+action make_send(value, chan, l):
+    return make_node("SEND", "", "", 0, [value, chan], l)
+
+action make_receive(chan, l):
+    return make_node("RECEIVE", "", "", 0, [chan], l)
+
+# Fuel units a fiber may burn: each scheduling step and each suspended step
+# costs one, so a program's concurrency budget is a number, not a hope.
+action make_fuel(text, l):
+    return make_node("FUEL", "", text, 0, [], l)
+
+# The module-level task ceiling: tasks bounded <n>.
+action make_tasks_bound(text, l):
+    return make_node("TASKS_BOUND", "", text, 0, [], l)
+
 # ── items ───────────────────────────────────────────────────────────────
 
 action make_param(name, ty, defaults, l):
@@ -177,6 +219,8 @@ action make_item(kind_word, name, params, contracts, result, body, l):
         set kind to "CHECK"
     if kind_word == "filter":
         set kind to "FILTER"
+    if kind_word == "fiber":
+        set kind to "FIBER"
     return make_node(kind, name, result, 0, [params, contracts, body], l)
 
 action make_record_item(name, fields, l):
@@ -197,11 +241,12 @@ action make_when(cond, body, l):
 action make_every(duration, body, l):
     return make_node("EVERY", "", "", 0, [duration, body], l)
 
-action make_program(uses, needs, items):
+action make_program(uses, needs, items, config):
     let uses_node = make_node("USES", "", "", 0, uses, 0)
     let needs_node = make_node("NEEDS", "", "", 0, needs, 0)
     let items_node = make_node("ITEMS", "", "", 0, items, 0)
-    return make_node("PROGRAM", "", "", 0, [uses_node, needs_node, items_node], 0)
+    let config_node = make_node("CONFIG", "", "", 0, config, 0)
+    return make_node("PROGRAM", "", "", 0, [uses_node, needs_node, items_node, config_node], 0)
 
 action program_uses(prog: AstNode):
     return child_at(prog, 0)
@@ -212,6 +257,19 @@ action program_needs(prog: AstNode):
 action program_items(prog: AstNode):
     let items_node = child_at(prog, 2)
     return items_node.children
+
+# Module-level configuration (phase 13): the task ceiling and nothing else so
+# far. Absent means the runtime default from KAZE_MAX_TASKS.
+action program_config(prog: AstNode):
+    let config_node = child_at(prog, 3)
+    return config_node.children
+
+action config_tasks_bound(prog: AstNode) -> string:
+    let out = ""
+    for each c in program_config(prog):
+        if c.kind == "TASKS_BOUND":
+            set out to c.val_str
+    return out
 
 # ── vocabulary shared by the parser and the checker ─────────────────────
 
@@ -536,7 +594,7 @@ action tokenize(src):
                                 if i + 1 < len:
                                     let next_c = src[i + 1] otherwise ""
                                     let two_s = c + next_c
-                                    if two_s == "==" or two_s == "!=" or two_s == "<=" or two_s == ">=":
+                                    if two_s == "==" or two_s == "!=" or two_s == "<=" or two_s == ">=" or two_s == "<<" or two_s == ">>":
                                         let tok = make_token("OP", two_s, line, col, i)
                                         let acc7 = push_tok(chunks, chunk, chunk_len, tok)
                                         set chunks to acc7[0] otherwise []
@@ -719,7 +777,46 @@ action parse_or(tokens, pos):
             set done to 1
     return [node, p]
 
-action parse_and(tokens, pos):
+# Bitwise operators, in C precedence: | lowest, then ^, then &, all looser than the
+# relational tests, with the shifts binding tighter than additive. Kaze numbers are
+# doubles, so these truncate to the runtime's integer type; they exist because hash maps,
+# CRC-16, SHA-256 and the binary codecs in the standard library cannot be written without
+# them.
+action parse_bitor(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let r = parse_bitxor(tokens, pos)
+    let node = r[0]
+    let p = r[1]
+    let done = 0
+    while done == 0 bounded 1000000:
+        let t = tok(tokens, p)
+        if t.kind == "SYM" and t.text == "|":
+            let rr = parse_bitxor(tokens, p + 1)
+            set node to make_bin("|", node, rr[0], t.line)
+            set p to rr[1]
+        otherwise:
+            set done to 1
+    return [node, p]
+
+action parse_bitxor(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let r = parse_bitand(tokens, pos)
+    let node = r[0]
+    let p = r[1]
+    let done = 0
+    while done == 0 bounded 1000000:
+        let t = tok(tokens, p)
+        if t.kind == "SYM" and t.text == "^":
+            let rr = parse_bitand(tokens, p + 1)
+            set node to make_bin("^", node, rr[0], t.line)
+            set p to rr[1]
+        otherwise:
+            set done to 1
+    return [node, p]
+
+action parse_bitand(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
     let r = parse_relational(tokens, pos)
@@ -727,8 +824,25 @@ action parse_and(tokens, pos):
     let p = r[1]
     let done = 0
     while done == 0 bounded 1000000:
-        if is_word(tokens, p, "and"):
+        let t = tok(tokens, p)
+        if t.kind == "SYM" and t.text == "&":
             let rr = parse_relational(tokens, p + 1)
+            set node to make_bin("&", node, rr[0], t.line)
+            set p to rr[1]
+        otherwise:
+            set done to 1
+    return [node, p]
+
+action parse_and(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let r = parse_bitor(tokens, pos)
+    let node = r[0]
+    let p = r[1]
+    let done = 0
+    while done == 0 bounded 1000000:
+        if is_word(tokens, p, "and"):
+            let rr = parse_bitor(tokens, p + 1)
             set node to make_bin("and", node, rr[0], tok_line(tokens, p))
             set p to rr[1]
         otherwise:
@@ -738,7 +852,7 @@ action parse_and(tokens, pos):
 action parse_relational(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
-    let r = parse_additive(tokens, pos)
+    let r = parse_shift(tokens, pos)
     let node = r[0]
     let p = r[1]
     let done = 0
@@ -750,6 +864,23 @@ action parse_relational(tokens, pos):
         if t.kind == "SYM" and (t.text == "<" or t.text == ">"):
             set is_rel to 1
         if is_rel == 1:
+            let rr = parse_shift(tokens, p + 1)
+            set node to make_bin(t.text, node, rr[0], t.line)
+            set p to rr[1]
+        otherwise:
+            set done to 1
+    return [node, p]
+
+action parse_shift(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let r = parse_additive(tokens, pos)
+    let node = r[0]
+    let p = r[1]
+    let done = 0
+    while done == 0 bounded 1000000:
+        let t = tok(tokens, p)
+        if t.kind == "OP" and (t.text == "<<" or t.text == ">>"):
             let rr = parse_additive(tokens, p + 1)
             set node to make_bin(t.text, node, rr[0], t.line)
             set p to rr[1]
@@ -797,6 +928,11 @@ action parse_multiplicative(tokens, pos):
 action parse_unary(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
+    if is_sym(tokens, pos, "~"):
+        # ~x is x ^ -1 for integers, so the complement needs no node kind of its own
+        let r = parse_unary(tokens, pos + 1)
+        let l = tok_line(tokens, pos)
+        return [make_bin("^", r[0], make_num("-1", l), l), r[1]]
     if is_word(tokens, pos, "not"):
         let r = parse_unary(tokens, pos + 1)
         return [make_bin("not", r[0], make_num("0", tok_line(tokens, pos)), tok_line(tokens, pos)), r[1]]
@@ -940,6 +1076,18 @@ action parse_primary(tokens, pos):
                 set args to [a[0]]
                 set q to a[1]
             return [make_call("link_lost", args, l), q]
+
+    # 9b. phase 13: two expressions that read a task.
+    #   receive from <channel>   a ring-buffer read that fails when empty, so the
+    #                            checker demands an otherwise fallback
+    #   join <task>              the value the task returned
+    if k == "IDENT" and w == "receive":
+        if is_word(tokens, p + 1, "from"):
+            let a = parse_or(tokens, p + 2)
+            return [make_receive(a[0], l), a[1]]
+    if k == "IDENT" and w == "join":
+        let jr = parse_or(tokens, p + 1)
+        return [make_join(jr[0], l), jr[1]]
 
     # 10. Booleans, calls and names.
     if k == "IDENT":
@@ -1162,6 +1310,44 @@ action parse_stmt(tokens, pos):
                 set q2 to ob[1]
             return [make_try(err, b[0], other, l), q2]
 
+        # spawn worker(1) as w1 — a child fiber task.
+        if w == "spawn":
+            if is_kind(tokens, p + 1, "IDENT"):
+                let target = tok_text(tokens, p + 1)
+                let q = p + 2
+                let args = []
+                if is_sym(tokens, q, "("):
+                    let ar = parse_call_args(tokens, q + 1)
+                    set args to ar[0]
+                    set q to ar[1]
+                let task = target
+                if is_word(tokens, q, "as") and is_kind(tokens, q + 1, "IDENT"):
+                    set task to tok_text(tokens, q + 1)
+                    set q to q + 2
+                return [make_spawn(target, args, task, l), q]
+            return [make_unknown(l), p + 1]
+
+        # yield — an explicit cooperative suspension point.
+        if w == "yield":
+            return [make_yield(l), p + 1]
+
+        # join w1 / cancel w1 — a task handle, not a capability call.
+        if w == "join":
+            let r = parse_or(tokens, p + 1)
+            return [make_join(r[0], l), r[1]]
+        if w == "cancel":
+            let r = parse_or(tokens, p + 1)
+            return [make_cancel(r[0], l), r[1]]
+
+        # send <value> to <channel>. "send alert ..." stays the capability verb.
+        if w == "send":
+            if is_word(tokens, p + 1, "alert") == 0:
+                let v = parse_or(tokens, p + 1)
+                if is_word(tokens, v[1], "to"):
+                    let c = parse_or(tokens, v[1] + 1)
+                    return [make_send(v[0], c[0], l), c[1]]
+                return [make_unknown(l), p + 1]
+
         # log / arm / takeoff / fly / stop / turn / drive / pulse / send /
         # reject / allow / remember / recall
         let v = parse_verb(tokens, p)
@@ -1353,18 +1539,26 @@ action parse_routine_body(tokens, pos):
                                 set contracts to contracts + [make_recursion_bound("?", bt.line)]
                             set p to q + 1
                         otherwise:
-                            if seen == 0 and k == "IDENT" and w == "needs":
-                                let nr = parse_cap_list(tokens, p + 1)
-                                set contracts to contracts + nr[0]
-                                set p to nr[1]
-                            otherwise:
-                                set seen to 1
-                                let r = parse_stmt(tokens, p)
-                                set stmts to stmts + [r[0]]
-                                if r[1] > p:
-                                    set p to r[1]
+                            if seen == 0 and k == "IDENT" and w == "fuel":
+                                let ft = tok(tokens, p + 1)
+                                if ft.kind == "NUM":
+                                    set contracts to contracts + [make_fuel(ft.text, ft.line)]
+                                    set p to p + 2
                                 otherwise:
                                     set p to p + 1
+                            otherwise:
+                                if seen == 0 and k == "IDENT" and w == "needs":
+                                    let nr = parse_cap_list(tokens, p + 1)
+                                    set contracts to contracts + nr[0]
+                                    set p to nr[1]
+                                otherwise:
+                                    set seen to 1
+                                    let r = parse_stmt(tokens, p)
+                                    set stmts to stmts + [r[0]]
+                                    if r[1] > p:
+                                        set p to r[1]
+                                    otherwise:
+                                        set p to p + 1
     return [contracts, make_block("body", stmts, l), p]
 
 # The capability list of a routine's own needs: line.
@@ -1401,6 +1595,80 @@ action parse_cap_list(tokens, pos):
             set done to 1
     return [out, p]
 
+# ── type references ─────────────────────────────────────────────────────
+#
+# A type reference is an identifier optionally followed by a generic argument
+# list. Tensor types use it: tensor<f32,[2,3]> and symbolic tensor<f32,[B,D]>.
+# untrusted<number> keeps working through the same path. The canonical text is
+# what the AST stores (a param's val_str), so the machine-syntax emitter and
+# reader carry types through without a second representation.
+
+action parse_type_arg(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let p = pos
+    if is_sym(tokens, p, "["):
+        let out = ""
+        let first = 1
+        set p to p + 1
+        let done = 0
+        while done == 0 bounded 10000:
+            if at_end(tokens, p) == 1:
+                set done to 1
+            otherwise:
+                if is_sym(tokens, p, "]"):
+                    set p to p + 1
+                    set done to 1
+                otherwise:
+                    let t = tok(tokens, p)
+                    if t.kind == "IDENT" or t.kind == "NUM":
+                        if first == 0:
+                            set out to out + ","
+                        set out to out + t.text
+                        set first to 0
+                        set p to p + 1
+                    otherwise:
+                        if is_sym(tokens, p, ","):
+                            set p to p + 1
+                        otherwise:
+                            set done to 1
+        return ["[" + out + "]", p]
+    return parse_type_ref(tokens, p)
+
+action parse_type_ref(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let t = tok(tokens, pos)
+    if t.kind != "IDENT":
+        return ["", pos + 1]
+    let name = t.text
+    let p = pos + 1
+    if is_sym(tokens, p, "<"):
+        let inner = ""
+        let first = 1
+        set p to p + 1
+        let done = 0
+        while done == 0 bounded 10000:
+            if at_end(tokens, p) == 1:
+                set done to 1
+            otherwise:
+                if is_sym(tokens, p, ">"):
+                    set p to p + 1
+                    set done to 1
+                otherwise:
+                    let r = parse_type_arg(tokens, p)
+                    if r[0] != "":
+                        if first == 0:
+                            set inner to inner + ","
+                        set inner to inner + r[0]
+                        set first to 0
+                    if r[1] > p:
+                        set p to r[1]
+                    otherwise:
+                        set done to 1
+        return [name + "<" + inner + ">", p]
+    return [name, p]
+
 action parse_params(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
@@ -1422,17 +1690,9 @@ action parse_params(tokens, pos):
                     let ty = ""
                     let q = p + 1
                     if is_sym(tokens, q, ":"):
-                        set ty to tok_text(tokens, q + 1)
-                        set q to q + 2
-                        if ty == "untrusted" and is_sym(tokens, q, "<"):
-                            let depth = 1
-                            set q to q + 1
-                            while depth > 0 and at_end(tokens, q) == 0 bounded 1000:
-                                if is_sym(tokens, q, "<"):
-                                    set depth to depth + 1
-                                if is_sym(tokens, q, ">"):
-                                    set depth to depth - 1
-                                set q to q + 1
+                        let tyref = parse_type_ref(tokens, q + 1)
+                        set ty to tyref[0]
+                        set q to tyref[1]
                     let defaults = []
                     if is_sym(tokens, q, "="):
                         let r = parse_expr(tokens, q + 1)
@@ -1460,8 +1720,9 @@ action parse_routine(tokens, pos):
         set p to pr[1]
     let result = ""
     if is_sym(tokens, p, "-") and is_sym(tokens, p + 1, ">"):
-        set result to tok_text(tokens, p + 2)
-        set p to p + 3
+        let rref = parse_type_ref(tokens, p + 2)
+        set result to rref[0]
+        set p to rref[1]
     if is_sym(tokens, p, ":"):
         set p to p + 1
     let br = parse_routine_body(tokens, p)
@@ -1497,8 +1758,9 @@ action parse_record(tokens, pos):
                         let fty = "any"
                         let q = p + 1
                         if is_sym(tokens, q, ":"):
-                            set fty to tok_text(tokens, q + 1)
-                            set q to q + 2
+                            let fref = parse_type_ref(tokens, q + 1)
+                            set fty to fref[0]
+                            set q to fref[1]
                         set fields to fields + [make_field_def(fname, fty, tok_line(tokens, p))]
                         set p to q
                     otherwise:
@@ -1571,6 +1833,7 @@ action parse_program(tokens):
     let uses = []
     let needs = []
     let items = []
+    let config = []
     let p = 0
     let len = length of tokens
     let done = 0
@@ -1600,7 +1863,7 @@ action parse_program(tokens):
                             set items to items + [r[0]]
                             set p to r[1]
                         otherwise:
-                            if k == "IDENT" and (w == "action" or w == "routine" or w == "func" or w == "check" or w == "filter"):
+                            if k == "IDENT" and (w == "action" or w == "routine" or w == "func" or w == "check" or w == "filter" or w == "fiber"):
                                 let r = parse_routine(tokens, p)
                                 set items to items + [r[0]]
                                 set p to r[1]
@@ -1615,8 +1878,19 @@ action parse_program(tokens):
                                         set items to items + [r[0]]
                                         set p to r[1]
                                     otherwise:
-                                        set p to p + 1
-    return make_program(uses, needs, items)
+                                        if k == "IDENT" and w == "tasks":
+                                            let q = p + 1
+                                            if is_word(tokens, q, "bounded"):
+                                                set q to q + 1
+                                            let bt = tok(tokens, q)
+                                            if bt.kind == "NUM":
+                                                set config to config + [make_tasks_bound(bt.text, bt.line)]
+                                                set p to q + 1
+                                            otherwise:
+                                                set p to p + 1
+                                        otherwise:
+                                            set p to p + 1
+    return make_program(uses, needs, items, config)
 
 # checker.kaze — the pure-Kaze semantic checker.
 #
@@ -1770,11 +2044,42 @@ action op_known(family, op):
     return list_has(cap_verbs(), family + "." + op)
 
 action pure_builtin(name):
+    if name == "code" or name == "character":
+        return 1
     if name == "sin" or name == "cos" or name == "tan" or name == "sqrt" or name == "atan2":
         return 1
     if name == "abs" or name == "min" or name == "max" or name == "floor" or name == "ceil" or name == "round":
         return 1
     if name == "vector" or name == "link_lost" or name == "length":
+        return 1
+    if name == "channel":
+        return 1
+    # Phase 3 of the libraries/tooling plan: an explicit, host-granted HTTP
+    # fetch. The builtin is standalone-only; the embedded engine has its own
+    # capability registry and does not claim it.
+    if name == "http_fetch":
+        return 1
+    # Phase 12 tensor builtins. The names are namespaced (tensor_add, tensor_sum)
+    # so a program routine may still be called add or sum.
+    if name == "tensor" or name == "zeros":
+        return 1
+    if name == "matmul" or name == "matmul_t" or name == "add_bias":
+        return 1
+    if name == "tensor_add" or name == "tensor_sub" or name == "tensor_mul" or name == "tensor_div":
+        return 1
+    if name == "transpose" or name == "reshape":
+        return 1
+    if name == "softmax" or name == "rms_norm" or name == "layer_norm":
+        return 1
+    if name == "gelu" or name == "silu" or name == "relu":
+        return 1
+    if name == "tensor_sum" or name == "tensor_mean":
+        return 1
+    if name == "argmax" or name == "tensor_get" or name == "tensor_shape":
+        return 1
+    if name == "model_open" or name == "model_forward":
+        return 1
+    if name == "cli_text":
         return 1
     return 0
 
@@ -2110,6 +2415,15 @@ action check_expr_g(e: AstNode, names, facts, items, needs, open, diags, guard):
 
     if k == "CALL":
         return check_call(e, names, facts, items, needs, open, diags, guard)
+
+    # receive from <channel> fails when the ring buffer is empty, so it is a
+    # fallible read: the checker asks for the same otherwise fallback a dynamic
+    # index or a device read needs.
+    if k == "RECEIVE":
+        let out = check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
+        if guard == 0:
+            set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this 'receive from' fails when the channel is empty and has no fallback; write 'receive from <channel> otherwise <fallback>'")]
+        return out
 
     return diags
 
@@ -2454,6 +2768,140 @@ action ends_with_verdict(stmts):
             return 1
     return 0
 
+# Names the emitter generates for its own bookkeeping (a resume label's guard,
+# a frame slot, a return binding) all start with _kz_. A program that used that
+# prefix could collide with one, so the prefix is reserved.
+action reserved_name(w: string) -> num:
+    if (length of w) < 4:
+        return 0
+    if w == "_kz_":
+        return 1
+    let i = 0
+    let prefix = ""
+    while i < 4 bounded 8:
+        set prefix to prefix + (w[i] otherwise " ")
+        set i to i + 1
+    if prefix == "_kz_":
+        return 1
+    return 0
+
+action reserved_diags(n: AstNode, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        let nm = ""
+        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH":
+            set nm to n.name
+        if n.kind == "SPAWN":
+            set nm to n.val_str
+        if n.kind == "PARAM":
+            set nm to n.name
+        if nm != "" and reserved_name(nm) == 1:
+            set acc to acc + [diag("E_KAZE_RESERVED", n.line, "'" + nm + "' starts with _kz_, which the compiler reserves for its own bookkeeping")]
+        for each c in n.children:
+            set acc to reserved_diags(c, acc, depth + 1)
+    return acc
+
+# ── phase 13: deterministic concurrency ────────────────────────────────
+#
+# Three rules, all from the AST:
+#
+#   a. yield only inside a fiber body                 E_KAZE_YIELD
+#   b. a fiber is spawned, never called               E_KAZE_FIBER_CALL
+#   c. a fiber may not reach a capability             E_KAZE_FIBER_EFFECT
+#
+# Rule (c) is what makes the concurrency model race-free by construction: only
+# the serialized root task can touch hardware, so two fibers can never race for
+# an effector, and a fiber never holds a device while it is suspended.
+
+action name_is_capability(name) -> num:
+    if has_dot(name) == 0:
+        return 0
+    if head_words(name) == "geo":
+        return 0
+    return cap_name_known(head_words(name))
+
+action call_names_of(nodes) -> list:
+    let out = []
+    for each n in nodes:
+        set out to out + [n.name]
+    return out
+
+action calls_reach_capability(call_names, items, depth) -> num:
+    recursion bounded 12
+    if depth > 8:
+        return 0
+    for each nm in call_names:
+        if name_is_capability(nm) == 1:
+            return 1
+        let callee = routine_named(items, nm)
+        if callee.kind != "NONE" and callee.kind != "RECORD":
+            let inner = call_names_of(collect_kind(child_at(callee, 2), "CALL", [], 0))
+            if calls_reach_capability(inner, items, depth + 1) == 1:
+                return 1
+    return 0
+
+# Every node of a given kind inside an item body, wherever it sits.
+action collect_kind(n: AstNode, want, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        if n.kind == want:
+            set acc to acc + [n]
+        for each c in n.children:
+            set acc to collect_kind(c, want, acc, depth + 1)
+    return acc
+
+action fiber_declared(items, name) -> num:
+    let it = routine_named(items, name)
+    if it.kind == "FIBER":
+        return 1
+    return 0
+
+action body_of(item: AstNode) -> AstNode:
+    if item.kind == "WHEN" or item.kind == "EVERY":
+        return child_at(item, 1)
+    return child_at(item, 2)
+
+action concurrency_diags_item(item: AstNode, items) -> list:
+    recursion bounded 64
+    let out = []
+    let body = body_of(item)
+    let yields = collect_kind(body, "YIELD", [], 0)
+    let spawns = collect_kind(body, "SPAWN", [], 0)
+    # every call in the body, dotted capability calls included
+    let calls = call_names_of(collect_kind(body, "CALL", [], 0))
+
+    # (a) a yield suspends the fiber that owns it; nothing else can suspend.
+    if item.kind != "FIBER":
+        for each y in yields:
+            set out to out + [diag("E_KAZE_YIELD", y.line, "'yield' is only legal inside a fiber body; a routine an action calls cannot suspend")]
+    otherwise:
+        # a fiber may not declare capabilities, and may not reach one
+        if (length of routine_needs(item)) > 0:
+            set out to out + [diag("E_KAZE_FIBER_EFFECT", item.line, "fiber '" + item.name + "' declares 'needs:'; a fiber is pure by construction, so hardware calls stay in the root task")]
+        if calls_reach_capability(calls, items, 0) == 1:
+            set out to out + [diag("E_KAZE_FIBER_EFFECT", item.line, "fiber '" + item.name + "' reaches a capability call; spawn a pure routine instead so no two tasks can race for a device")]
+
+    # (b) a fiber is a task, not a callable routine
+    for each nm in calls:
+        if fiber_declared(items, nm) == 1:
+            set out to out + [diag("E_KAZE_FIBER_CALL", item.line, "'" + nm + "' is a fiber; write 'spawn " + nm + "(...) as <task>' instead of calling it")]
+
+    # a spawn target must be a fiber declared in this file
+    for each sp in spawns:
+        if fiber_declared(items, sp.name) == 0:
+            set out to out + [diag("E_KAZE_FIBER_TARGET", sp.line, "'" + sp.name + "' is not a fiber declared in this file; declare it with 'fiber " + sp.name + "(...)'")]
+    return out
+
+action concurrency_diags(items) -> list:
+    recursion bounded 64
+    let out = []
+    for each item in items:
+        if item.kind == "FIBER" or item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "WHEN" or item.kind == "EVERY":
+            set out to out + concurrency_diags_item(item, items)
+    return out
+
 # ── items ──────────────────────────────────────────────────────────────
 
 action param_names(item: AstNode):
@@ -2501,6 +2949,10 @@ action contract_diags(item: AstNode):
             let n = text_to_num(c.val_str)
             if n < 1 or n > 256:
                 set out to out + [diag("E_KAZE_PARSE", c.line, "'recursion bounded' needs a whole number of frames from 1 to 256")]
+        if c.kind == "FUEL":
+            let f = text_to_num(c.val_str)
+            if f < 1 or f > 10000000:
+                set out to out + [diag("E_KAZE_PARSE", c.line, "'fuel' needs a whole number of scheduler steps from 1 to 10000000")]
         set i to i + 1
     return out
 
@@ -2571,6 +3023,670 @@ action declared_families(need_list):
         set out to out + [family_of_word(n)]
     return out
 
+# ── Phase 12: tensor shape algebra ─────────────────────────────────────
+#
+# Tensor shape checking is a second, additive pass: it does not re-run the
+# strictness rules above, it infers a shape for every expression that can have
+# one and refuses a program whose shapes cannot be unified. The representation is
+# plain lists so the pass needs no new record types:
+#
+#   spec   ["tensor", d0, d1, ...]   a tensor shape (dims are text)
+#          ["num"] ["bool"] ["text"] ["list"] ["model"] ["?"]
+#   env    [[name, spec], ...]
+#   binds  [[symbol, dim], ...]      symbolic dimension unification bindings
+#
+# Shapes are canonical text in the type annotation (tensor<f32,[2,3]>). Parsing
+# that text here keeps the AST, the machine syntax and the human syntax on one
+# representation.
+
+action ts_char(s: string, i: num) -> string:
+    if i >= 0 and i < (length of s):
+        return (s[i] otherwise "")
+    return ""
+
+action ts_find(s: string, want: string, from: num) -> num:
+    let i = from
+    let n = length of s
+    let found = 0 - 1
+    while i < n bounded 100000:
+        if ts_char(s, i) == want:
+            set found to i
+            set i to n
+        otherwise:
+            set i to i + 1
+    return found
+
+action ts_starts(s: string, pre: string) -> num:
+    if (length of pre) > (length of s):
+        return 0
+    let i = 0
+    let ok = 1
+    while i < (length of pre) bounded 10000:
+        if ts_char(s, i) != ts_char(pre, i):
+            set ok to 0
+            set i to length of pre
+        otherwise:
+            set i to i + 1
+    return ok
+
+action is_num_text(s: string) -> num:
+    if (length of s) == 0:
+        return 0
+    let i = 0
+    let ok = 1
+    while i < (length of s) bounded 10000:
+        let c = ts_char(s, i)
+        if c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9":
+            set i to i + 1
+        otherwise:
+            set ok to 0
+            set i to length of s
+    return ok
+
+action num_text_of(i: num) -> string:
+    # Small non-negative integers only (ranks, literal dims, error text). Kaze
+    # numbers are floats, so //-style truncation is done by repeated subtraction.
+    if i <= 0:
+        return "0"
+    let n = i
+    let out = ""
+    let guard = 0
+    while n > 0 bounded 1000:
+        let q = 0
+        let rem = n
+        while rem >= 10 bounded 1000:
+            set rem to rem - 10
+            set q to q + 1
+        let ch = ts_char("0123456789", rem)
+        set out to ch + out
+        set n to q
+        set guard to guard + 1
+    return out
+
+# Parses "tensor<f32,[2,3]>" / "tensor<f16,[B,D]>" into ["tensor","2","3"].
+# Anything that is not a tensor annotation yields [].
+action tensor_spec_of_type(ty: string) -> list:
+    if ts_starts(ty, "tensor<") == 0:
+        return []
+    let n = length of ty
+    let comma = ts_find(ty, ",", 7)
+    if comma < 0:
+        return []
+    let p = comma + 1
+    if ts_char(ty, p) != "[":
+        return []
+    set p to p + 1
+    let dims = []
+    let cur = ""
+    let done = 0
+    while done == 0 bounded 10000:
+        let c = ts_char(ty, p)
+        if c == "" or c == "]":
+            if cur != "":
+                set dims to dims + [cur]
+            set done to 1
+        otherwise:
+            if c == ",":
+                if cur != "":
+                    set dims to dims + [cur]
+                set cur to ""
+            otherwise:
+                set cur to cur + c
+        set p to p + 1
+    if (length of dims) == 0:
+        return []
+    return ["tensor"] + dims
+
+action rank_of(spec: list) -> num:
+    if (length of spec) == 0:
+        return 0
+    if (spec[0] otherwise "") != "tensor":
+        return 0
+    return (length of spec) - 1
+
+action dim_of(spec: list, i: num) -> string:
+    if i >= 0 and i < rank_of(spec):
+        return (spec[i + 1] otherwise "")
+    return ""
+
+action spec_equal(a: list, b: list) -> num:
+    if (length of a) != (length of b):
+        return 0
+    let i = 0
+    let ok = 1
+    while i < (length of a) bounded 10000:
+        if (a[i] otherwise "") != (b[i] otherwise ""):
+            set ok to 0
+            set i to length of a
+        otherwise:
+            set i to i + 1
+    return ok
+
+action render_spec(spec: list) -> string:
+    if (length of spec) == 0:
+        return "nothing"
+    if (spec[0] otherwise "") != "tensor":
+        return (spec[0] otherwise "")
+    let out = "["
+    let i = 0
+    while i < rank_of(spec) bounded 1000:
+        if i > 0:
+            set out to out + ","
+        set out to out + dim_of(spec, i)
+        set i to i + 1
+    return out + "]"
+
+action resolve_dim(dim: string, binds: list) -> string:
+    let cur = dim
+    let guard = 0
+    while guard < 128 bounded 128:
+        let next = ""
+        for each b in binds:
+            if (b[0] otherwise "") == cur:
+                set next to (b[1] otherwise "")
+        if next == "" or next == cur:
+            return cur
+        set cur to next
+        set guard to guard + 1
+    return cur
+
+# Unify one dimension. Returns [ok, binds]; ok is "1" or "0".
+action bind_dim(x: string, y: string, binds: list) -> list:
+    let rx = resolve_dim(x, binds)
+    let ry = resolve_dim(y, binds)
+    if rx == ry:
+        return ["1", binds]
+    if is_num_text(rx) == 1 and is_num_text(ry) == 1:
+        return ["0", binds]
+    if is_num_text(rx) == 1:
+        return ["1", binds + [[ry, rx]]]
+    if is_num_text(ry) == 1:
+        return ["1", binds + [[rx, ry]]]
+    return ["1", binds + [[ry, rx]]]
+
+# Unify two shapes dimension by dimension. Returns [ok, binds].
+action unify_shape(a: list, b: list, binds: list) -> list:
+    if rank_of(a) != rank_of(b):
+        return ["0", binds]
+    let cur = binds
+    let i = 0
+    let ok = 1
+    while i < rank_of(a) bounded 1000:
+        let r = bind_dim(dim_of(a, i), dim_of(b, i), cur)
+        if (r[0] otherwise "") == "0":
+            set ok to 0
+            set i to rank_of(a)
+        otherwise:
+            set cur to (r[1] otherwise "")
+            set i to i + 1
+    return [num_text_of(ok), cur]
+
+action env_get(env: list, name: string) -> list:
+    let i = (length of env) - 1
+    while i >= 0 bounded 10000:
+        let e = (env[i] otherwise "")
+        if (e[0] otherwise "") == name:
+            return (e[1] otherwise "")
+        set i to i - 1
+    return ["?"]
+
+action env_set(env: list, name: string, spec: list) -> list:
+    return env + [[name, spec]]
+
+action unify_specs(a: list, b: list, binds: list) -> list:
+    # Only tensor shapes are this pass's contract. A number used where text sits
+    # is not a shape error, and treating it as one made every string-building
+    # fallback in the standard library a false positive.
+    if (length of a) == 0 or (length of b) == 0:
+        return ["1", binds]
+    if (a[0] otherwise "") == "?" or (b[0] otherwise "") == "?":
+        return ["1", binds]
+    if (a[0] otherwise "") == "tensor" and (b[0] otherwise "") == "tensor":
+        return unify_shape(a, b, binds)
+    return ["1", binds]
+
+action specs_compatible(a: list, b: list) -> num:
+    if (length of a) == 0 or (length of b) == 0:
+        return 1
+    if (a[0] otherwise "") == "?" or (b[0] otherwise "") == "?":
+        return 1
+    if (a[0] otherwise "") != (b[0] otherwise ""):
+        return 0
+    if (a[0] otherwise "") != "tensor":
+        return 1
+    if rank_of(a) != rank_of(b):
+        return 0
+    let i = 0
+    let ok = 1
+    while i < rank_of(a) bounded 1000:
+        let x = dim_of(a, i)
+        let y = dim_of(b, i)
+        if is_num_text(x) == 1 and is_num_text(y) == 1 and x != y:
+            set ok to 0
+            set i to rank_of(a)
+        otherwise:
+            set i to i + 1
+    return ok
+
+action shape_error(diags: list, line: num, msg: string) -> list:
+    return diags + [diag("E_KAZE_SHAPE_MISMATCH", line, msg)]
+
+action dims_product(spec: list) -> num:
+    if rank_of(spec) == 0:
+        return 0 - 1
+    let p = 1
+    let i = 0
+    let known = 1
+    while i < rank_of(spec) bounded 1000:
+        let d = dim_of(spec, i)
+        if is_num_text(d) == 1:
+            set p to p * text_to_num(d)
+            set i to i + 1
+        otherwise:
+            set known to 0
+            set i to rank_of(spec)
+    if known == 0:
+        return 0 - 1
+    return p
+
+action spec_with_last_one(spec: list) -> list:
+    if rank_of(spec) == 0:
+        return spec
+    let out = ["tensor"]
+    let i = 0
+    while i < rank_of(spec) bounded 1000:
+        if i + 1 == rank_of(spec):
+            set out to out + ["1"]
+        otherwise:
+            set out to out + [dim_of(spec, i)]
+        set i to i + 1
+    return out
+
+action spec_swap_last2(spec: list) -> list:
+    if rank_of(spec) != 2:
+        return spec
+    return ["tensor", dim_of(spec, 1), dim_of(spec, 0)]
+
+action spec_matmul_result(a: list, b: list, transpose_right: num) -> list:
+    # a's leading dims, then b's trailing dims (or leading dims when b is
+    # contracted transposed). Both leading/trailing parts exclude the contracted
+    # dimension itself.
+    let out = ["tensor"]
+    let i = 0
+    while i < rank_of(a) - 1 bounded 1000:
+        set out to out + [dim_of(a, i)]
+        set i to i + 1
+    if transpose_right == 1:
+        set i to 0
+        while i < rank_of(b) - 1 bounded 1000:
+            set out to out + [dim_of(b, i)]
+            set i to i + 1
+    otherwise:
+        set i to 1
+        while i < rank_of(b) bounded 1000:
+            set out to out + [dim_of(b, i)]
+            set i to i + 1
+    return out
+
+action spec_of_list_dims(e: AstNode) -> list:
+    # A shape literal such as [2, 3] gives a tensor shape; anything else is
+    # unknown and is not guessed.
+    if e.kind != "LIST":
+        return []
+    let dims = ["tensor"]
+    for each c in e.children:
+        if c.kind == "NUM":
+            set dims to dims + [c.val_str]
+        otherwise:
+            return []
+    if (length of dims) < 2:
+        return []
+    return dims
+
+action infer_expr(e: AstNode, env: list, binds: list, items: list, diags: list) -> list:
+    recursion bounded 200
+    let k = e.kind
+    if k == "IDENT":
+        return [env_get(env, e.name), binds, diags]
+    if k == "NUM":
+        return [["num"], binds, diags]
+    if k == "STR":
+        return [["text"], binds, diags]
+    if k == "BOOL":
+        return [["bool"], binds, diags]
+    if k == "LIST":
+        return [["list"], binds, diags]
+    if k == "LEN" or k == "LEN_LIT":
+        return [["num"], binds, diags]
+    if k == "BIN" or k == "INDEX" or k == "IN_UNIT":
+        return [["num"], binds, diags]
+    if k == "FIELD":
+        return [["?"], binds, diags]
+    if k == "FALLBACK":
+        let ri = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rf = infer_expr(child_at(e, 1), env, (ri[1] otherwise ""), items, (ri[2] otherwise ""))
+        let u = unify_specs((ri[0] otherwise ""), (rf[0] otherwise ""), (rf[1] otherwise ""))
+        let out = (rf[2] otherwise "")
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, "the two sides of otherwise have different shapes: " + render_spec((ri[0] otherwise "")) + " and " + render_spec((rf[0] otherwise "")))
+        return [(ri[0] otherwise ""), (u[1] otherwise ""), out]
+    if k == "CALL":
+        return infer_call(e, env, binds, items, diags)
+    return [["?"], binds, diags]
+
+action infer_call(e: AstNode, env: list, binds: list, items: list, diags: list) -> list:
+    recursion bounded 200
+    let name = e.name
+    let cnt = length of e.children
+
+    if name == "tensor":
+        if cnt < 2:
+            return [["?"], binds, diags]
+        let vals = child_at(e, 0)
+        let spec = spec_of_list_dims(child_at(e, 1))
+        let out = diags
+        if (length of spec) == 0:
+            set out to shape_error(out, e.line, "tensor(...) needs a literal shape list such as [2, 3]")
+            return [["?"], binds, out]
+        if vals.kind == "LIST":
+            let want = dims_product(spec)
+            if want >= 0 and (length of vals.children) != want:
+                set out to shape_error(out, e.line, "tensor(...) shape " + render_spec(spec) + " needs " + num_text_of(want) + " values, the list has " + num_text_of(length of vals.children))
+                return [["?"], binds, out]
+        return [spec, binds, out]
+
+    if name == "zeros":
+        let spec = spec_of_list_dims(child_at(e, 0))
+        if (length of spec) == 0:
+            return [["?"], binds, shape_error(diags, e.line, "zeros(...) needs a literal shape list such as [2, 3]")]
+        return [spec, binds, diags]
+
+    if name == "matmul" or name == "matmul_t":
+        let ra = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rb = infer_expr(child_at(e, 1), env, (ra[1] otherwise ""), items, (ra[2] otherwise ""))
+        let a = (ra[0] otherwise "")
+        let b = (rb[0] otherwise "")
+        let out = (rb[2] otherwise "")
+        if rank_of(a) < 2 or rank_of(b) < 2:
+            set out to shape_error(out, e.line, name + " needs two matrices; got " + render_spec(a) + " and " + render_spec(b))
+            return [["?"], (rb[1] otherwise ""), out]
+        let xdim = dim_of(a, rank_of(a) - 1)
+        let ydim = dim_of(b, 0)
+        if name == "matmul_t":
+            set ydim to dim_of(b, rank_of(b) - 1)
+        let u = bind_dim(xdim, ydim, (rb[1] otherwise ""))
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, name + " inner dimensions do not match: " + render_spec(a) + " and " + render_spec(b))
+            return [["?"], (rb[1] otherwise ""), out]
+        let tx = 0
+        if name == "matmul_t":
+            set tx to 1
+        return [spec_matmul_result(a, b, tx), (u[1] otherwise ""), out]
+
+    if name == "tensor_add" or name == "tensor_sub" or name == "tensor_mul" or name == "tensor_div":
+        let ra = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rb = infer_expr(child_at(e, 1), env, (ra[1] otherwise ""), items, (ra[2] otherwise ""))
+        let a = (ra[0] otherwise "")
+        let b = (rb[0] otherwise "")
+        let out = (rb[2] otherwise "")
+        if rank_of(a) > 0 and rank_of(b) > 0:
+            let u = unify_shape(a, b, (rb[1] otherwise ""))
+            if (u[0] otherwise "") == "0":
+                set out to shape_error(out, e.line, name + " needs equal shapes; got " + render_spec(a) + " and " + render_spec(b))
+                return [["?"], (rb[1] otherwise ""), out]
+            return [a, (u[1] otherwise ""), out]
+        if rank_of(a) > 0:
+            return [a, (rb[1] otherwise ""), out]
+        if rank_of(b) > 0:
+            return [b, (rb[1] otherwise ""), out]
+        if (a[0] otherwise "") == "num" and (b[0] otherwise "") == "num":
+            return [["num"], (rb[1] otherwise ""), out]
+        return [["?"], (rb[1] otherwise ""), out]
+
+    if name == "add_bias":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rb = infer_expr(child_at(e, 1), env, (rx[1] otherwise ""), items, (rx[2] otherwise ""))
+        let x = (rx[0] otherwise "")
+        let b = (rb[0] otherwise "")
+        let out = (rb[2] otherwise "")
+        if rank_of(x) < 1 or rank_of(b) != 1:
+            set out to shape_error(out, e.line, "add_bias needs a tensor and a rank-1 bias; got " + render_spec(x) + " and " + render_spec(b))
+            return [["?"], (rb[1] otherwise ""), out]
+        let u = bind_dim(dim_of(x, rank_of(x) - 1), dim_of(b, 0), (rb[1] otherwise ""))
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, "add_bias bias width does not match the last dimension: " + render_spec(x) + " and " + render_spec(b))
+            return [["?"], (rb[1] otherwise ""), out]
+        return [x, (u[1] otherwise ""), out]
+
+    if name == "transpose":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        if rank_of((rx[0] otherwise "")) != 2:
+            return [["?"], (rx[1] otherwise ""), shape_error((rx[2] otherwise ""), e.line, "transpose here needs a rank-2 tensor; got " + render_spec((rx[0] otherwise "")))]
+        return [spec_swap_last2((rx[0] otherwise "")), (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "reshape":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let spec = spec_of_list_dims(child_at(e, 1))
+        let out = (rx[2] otherwise "")
+        if (length of spec) == 0:
+            return [["?"], (rx[1] otherwise ""), shape_error(out, e.line, "reshape needs a literal target shape such as [2, 3]")]
+        let from_n = dims_product((rx[0] otherwise ""))
+        let to_n = dims_product(spec)
+        if from_n >= 0 and to_n >= 0 and from_n != to_n:
+            set out to shape_error(out, e.line, "reshape changes the element count: " + render_spec((rx[0] otherwise "")) + " -> " + render_spec(spec))
+            return [["?"], (rx[1] otherwise ""), out]
+        return [spec, (rx[1] otherwise ""), out]
+
+    if name == "softmax" or name == "gelu" or name == "silu" or name == "relu":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [(rx[0] otherwise ""), (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "rms_norm":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rw = infer_expr(child_at(e, 1), env, (rx[1] otherwise ""), items, (rx[2] otherwise ""))
+        let out = (rw[2] otherwise "")
+        if rank_of((rx[0] otherwise "")) < 1 or rank_of((rw[0] otherwise "")) != 1:
+            set out to shape_error(out, e.line, "rms_norm needs a tensor and a rank-1 weight")
+            return [["?"], (rw[1] otherwise ""), out]
+        let u = bind_dim(dim_of((rx[0] otherwise ""), rank_of((rx[0] otherwise "")) - 1), dim_of((rw[0] otherwise ""), 0), (rw[1] otherwise ""))
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, "rms_norm weight width does not match the last dimension")
+            return [["?"], (rw[1] otherwise ""), out]
+        return [(rx[0] otherwise ""), (u[1] otherwise ""), out]
+
+    if name == "layer_norm":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rw = infer_expr(child_at(e, 1), env, (rx[1] otherwise ""), items, (rx[2] otherwise ""))
+        let out = (rw[2] otherwise "")
+        if rank_of((rx[0] otherwise "")) < 1 or rank_of((rw[0] otherwise "")) != 1:
+            set out to shape_error(out, e.line, "layer_norm needs a tensor and a rank-1 weight")
+            return [["?"], (rw[1] otherwise ""), out]
+        let u = bind_dim(dim_of((rx[0] otherwise ""), rank_of((rx[0] otherwise "")) - 1), dim_of((rw[0] otherwise ""), 0), (rw[1] otherwise ""))
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, "layer_norm weight width does not match the last dimension")
+            return [["?"], (rw[1] otherwise ""), out]
+        let outb = out
+        if cnt > 2:
+            let rbb = infer_expr(child_at(e, 2), env, (u[1] otherwise ""), items, outb)
+            set out to (rbb[2] otherwise "")
+            if rank_of((rbb[0] otherwise "")) == 1:
+                let u2 = bind_dim(dim_of((rx[0] otherwise ""), rank_of((rx[0] otherwise "")) - 1), dim_of((rbb[0] otherwise ""), 0), (rbb[1] otherwise ""))
+                if (u2[0] otherwise "") == "0":
+                    set out to shape_error(out, e.line, "layer_norm bias width does not match the last dimension")
+        return [(rx[0] otherwise ""), (u[1] otherwise ""), out]
+
+    if name == "tensor_sum" or name == "tensor_mean":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [spec_with_last_one((rx[0] otherwise "")), (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "argmax" or name == "tensor_argmax":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [["num"], (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "tensor_get":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [["num"], (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "tensor_shape":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [["list"], (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "cli_text":
+        return [["text"], binds, diags]
+
+    if name == "model_open":
+        return [["model"], binds, diags]
+
+    if name == "model_forward":
+        let rm = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let out = (rm[2] otherwise "")
+        let rms = (rm[0] otherwise [])
+        if (rms[0] otherwise "") != "model" and (rms[0] otherwise "") != "?":
+            set out to shape_error(out, e.line, "model_forward needs the value model_open returned")
+        if cnt < 2:
+            return [["?"], (rm[1] otherwise ""), shape_error(out, e.line, "model_forward needs a token list")]
+        let rt = infer_expr(child_at(e, 1), env, (rm[1] otherwise ""), items, out)
+        return [["tensor", "1", "V"], (rt[1] otherwise ""), (rt[2] otherwise "")]
+
+    let callee = routine_named(items, name)
+    if callee.kind != "NONE" and cnt == (length of child_at(callee, 0).children):
+        let params = child_at(callee, 0)
+        let cur = binds
+        let out = diags
+        let i = 0
+        while i < cnt bounded 1000:
+            let ra = infer_expr(child_at(e, i), env, cur, items, out)
+            let ps = tensor_spec_of_type(child_at(params, i).val_str)
+            set out to (ra[2] otherwise "")
+            if (length of ps) > 0 and rank_of((ra[0] otherwise "")) > 0:
+                let u = unify_shape((ra[0] otherwise ""), ps, (ra[1] otherwise ""))
+                if (u[0] otherwise "") == "0":
+                    set out to shape_error(out, e.line, "argument " + num_text_of(i + 1) + " of " + name + " has shape " + render_spec((ra[0] otherwise "")) + ", the parameter declares " + render_spec(ps))
+                otherwise:
+                    set cur to (u[1] otherwise "")
+            otherwise:
+                set cur to (ra[1] otherwise "")
+            set i to i + 1
+        let rs = tensor_spec_of_type(callee.val_str)
+        if (length of rs) > 0:
+            return [rs, cur, out]
+        return [["?"], cur, out]
+
+    if pure_builtin(name) == 1:
+        return [["num"], binds, diags]
+    return [["?"], binds, diags]
+
+action tensor_stmt(s: AstNode, env: list, result_spec: list, items: list, binds: list, diags: list) -> list:
+    recursion bounded 200
+    let k = s.kind
+    if k == "LET":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        return [env_set(env, s.name, (r[0] otherwise "")), (r[1] otherwise ""), (r[2] otherwise "")]
+    if k == "SET":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let old = env_get(env, s.name)
+        let u = unify_specs(old, (r[0] otherwise ""), (r[1] otherwise ""))
+        let out = (r[2] otherwise "")
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, s.line, "'" + s.name + "' has shape " + render_spec(old) + " but this assignment gives " + render_spec((r[0] otherwise "")))
+        return [env, (u[1] otherwise ""), out]
+    if k == "RETURN":
+        if (length of s.children) == 0:
+            return [env, binds, diags]
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let u = unify_specs(result_spec, (r[0] otherwise ""), (r[1] otherwise ""))
+        let out = (r[2] otherwise "")
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, s.line, "this routine declares shape " + render_spec(result_spec) + " but returns " + render_spec((r[0] otherwise "")))
+        return [env, (u[1] otherwise ""), out]
+    if k == "EXPR" or k == "GUARD":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        return [env, (r[1] otherwise ""), (r[2] otherwise "")]
+    if k == "IF":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let t = tensor_stmts(kids_of(child_at(s, 1)), (r[0] otherwise ""), result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
+        let e = tensor_stmts(kids_of(child_at(s, 2)), (t[0] otherwise ""), result_spec, items, (t[1] otherwise ""), (t[2] otherwise ""))
+        return [(e[0] otherwise ""), (e[1] otherwise ""), (e[2] otherwise "")]
+    if k == "WHILE":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let b = tensor_stmts(kids_of(child_at(s, 1)), (r[0] otherwise ""), result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
+        return [(b[0] otherwise ""), (b[1] otherwise ""), (b[2] otherwise "")]
+    if k == "FOR_EACH":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let inner = env_set((r[0] otherwise ""), s.name, ["num"])
+        let b = tensor_stmts(kids_of(child_at(s, 1)), inner, result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
+        return [env, (b[1] otherwise ""), (b[2] otherwise "")]
+    if k == "TRY":
+        let inner = env
+        if s.name != "":
+            set inner to env_set(env, s.name, ["?"])
+        let b = tensor_stmts(kids_of(child_at(s, 0)), inner, result_spec, items, binds, diags)
+        let e = tensor_stmts(kids_of(child_at(s, 1)), (b[0] otherwise ""), result_spec, items, (b[1] otherwise ""), (b[2] otherwise ""))
+        return [env, (e[1] otherwise ""), (e[2] otherwise "")]
+    if k == "SPAWN" or k == "JOIN" or k == "SEND" or k == "RECEIVE" or k == "RETURN_VALUE":
+        let cur = binds
+        let out = diags
+        for each c in s.children:
+            let r = infer_expr(c, env, cur, items, out)
+            set cur to (r[1] otherwise "")
+            set out to (r[2] otherwise "")
+        return [env, cur, out]
+    return [env, binds, diags]
+
+action tensor_stmts(stmts, env: list, result_spec: list, items: list, binds: list, diags: list) -> list:
+    recursion bounded 200
+    let cur_env = env
+    let cur_binds = binds
+    let out = diags
+    for each s in stmts:
+        let r = tensor_stmt(s, cur_env, result_spec, items, cur_binds, out)
+        set cur_env to (r[0] otherwise "")
+        set cur_binds to (r[1] otherwise "")
+        set out to (r[2] otherwise "")
+    return [cur_env, cur_binds, out]
+
+action tensor_item_diags(item: AstNode, items: list) -> list:
+    recursion bounded 200
+    if item.kind != "ACTION" and item.kind != "CHECK" and item.kind != "FILTER" and item.kind != "FIBER":
+        return []
+    let params = child_at(item, 0)
+    let env = []
+    for each p in params.children:
+        let spec = tensor_spec_of_type(p.val_str)
+        if (length of spec) > 0:
+            set env to env_set(env, p.name, spec)
+    let result_spec = tensor_spec_of_type(item.val_str)
+    let body = child_at(item, 2)
+    let r = tensor_stmts(body.children, env, result_spec, items, [], [])
+    return (r[2] otherwise "")
+
+action tensor_diags(items: list, need_list: list) -> list:
+    recursion bounded 64
+    let out = []
+    for each item in items:
+        set out to out + tensor_item_diags(item, items)
+    # Host-resource rule: opening a model file reads the host filesystem, so the
+    # file must declare the memory family. A missing declaration is the same
+    # class of refusal as a missing capability anywhere else.
+    let calls = []
+    for each item in items:
+        set calls to calls + collect_kind(item, "CALL", [], 0)
+    let names = call_names_of(calls)
+    let needs_mem = 0
+    for each nm in names:
+        if nm == "model_open" or nm == "model_forward":
+            set needs_mem to 1
+    if needs_mem == 1:
+        let declared = 0
+        for each n in need_list:
+            if family_of_word(n) == "memory":
+                set declared to 1
+        if declared == 0:
+            set out to out + [diag("E_CAP_UNDECLARED", 1, "model_open reads the host filesystem but this file does not declare it; add 'memory' to the needs: line")]
+    return out
+
+
+
 action check_program(prog: AstNode):
     recursion bounded 200
     let out = []
@@ -2597,14 +3713,33 @@ action check_program(prog: AstNode):
     set i to 0
     while i < (length of items) bounded 1000000:
         let item = node_at(items, i)
-        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
             set out to out + check_item(item, declared, items, names_all, froms, tos, open)
+        if item.kind == "RECORD" and (length of item.children) == 0:
+            # A record written on one line ('record P: a: number') parses as a record with
+            # no fields, and every field read of it then yields nil without a word. Refuse
+            # it here instead: the indented form is the only form the reader accepts.
+            set out to out + [diag("E_KAZE_RECORD_NO_FIELDS", item.line, "record '" + item.name + "' declares no fields; indent each 'name: type' line under it")]
         if item.kind == "UNKNOWN_ITEM":
             set out to out + [diag("E_KAZE_PARSE", item.line, "the machine reader does not know the form '" + item.name + "'")]
         if item.kind == "WHEN" or item.kind == "EVERY":
             let body = child_at(item, 1)
             set out to check_stmts(body.children, [], [], items, declared, open, out)
         set i to i + 1
+    # 2b. A callable may not reuse a builtin's name. The emitter resolves builder
+    #     names before program routines, so a routine called 'code' would leave every
+    #     code(...) call compiled to the builtin and silently return the wrong value.
+    for each item in items:
+        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
+            if pure_builtin(item.name) == 1:
+                set out to out + [diag("E_KAZE_RESERVED_NAME", item.line, "'" + item.name + "' is a builtin; a routine may not reuse the name")]
+    # 3. the phase 13 rules: yield placement, fiber calls, fiber effects.
+    set out to out + concurrency_diags(items)
+    # 3b. the phase 12 tensor shape algebra.
+    set out to out + tensor_diags(items, need_list)
+    # 4. the _kz_ prefix is the compiler's, in every body and every parameter list.
+    for each item in items:
+        set out to out + reserved_diags(item, [], 0)
     return out
 
 # The bytecode opcode set, transcribed from the frozen ISA (product:
@@ -2804,6 +3939,10 @@ action emit_expr_machine(e: AstNode):
         return "(call " + quoted(e.name) + parts + ")"
     if k == "NAMED_ARG":
         return "(named " + quoted(e.name) + " " + emit_expr_machine(child_at(e, 0)) + ")"
+    if k == "RECEIVE":
+        return "(receive " + emit_expr_machine(child_at(e, 0)) + ")"
+    if k == "JOIN":
+        return "(join " + emit_expr_machine(child_at(e, 0)) + ")"
     return "(unsupported " + quoted(k) + ")"
 
 action emit_stmts_machine(stmts):
@@ -2843,6 +3982,20 @@ action emit_stmt_machine(s: AstNode):
         if s.name != "":
             set with_part to " (with " + quoted(s.name) + ")"
         return "(try (body" + emit_stmts_machine(kids_of(child_at(s, 0))) + ") (otherwise" + with_part + emit_stmts_machine(kids_of(child_at(s, 1))) + "))"
+    # phase 13: the concurrency statements
+    if k == "SPAWN":
+        let parts = ""
+        for each a in s.children:
+            set parts to parts + " " + emit_expr_machine(a)
+        return "(spawn " + quoted(s.name) + " (args" + parts + ") " + quoted(s.val_str) + ")"
+    if k == "YIELD":
+        return "(yield)"
+    if k == "JOIN":
+        return "(join " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "CANCEL":
+        return "(cancel " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "SEND":
+        return "(send " + emit_expr_machine(child_at(s, 0)) + " " + emit_expr_machine(child_at(s, 1)) + ")"
     return "(unsupported_stmt " + quoted(k) + ")"
 
 action emit_params_machine(item: AstNode):
@@ -2867,6 +4020,8 @@ action emit_contracts_machine(item: AstNode):
             otherwise:
                 if c.kind == "ROUTINE_NEED":
                     set parts to parts + " (needs " + quoted(c.name) + ")"
+                if c.kind == "FUEL":
+                    set parts to parts + " (fuel " + c.val_str + ")"
                 otherwise:
                     set parts to parts + " (unsupported_contract " + quoted(c.kind) + ")"
     return "(contracts" + parts + ")"
@@ -2876,6 +4031,8 @@ action item_keyword(item: AstNode):
         return "check"
     if item.kind == "FILTER":
         return "filter"
+    if item.kind == "FIBER":
+        return "fiber"
     return "action"
 
 action emit_item_machine(item: AstNode, depth):
@@ -2887,7 +4044,7 @@ action emit_item_machine(item: AstNode, depth):
         for each f in item.children:
             set fields to fields + " (" + f.name + " " + f.val_str + ")"
         return ind + "(record " + quoted(item.name) + "\n" + ind + "  (fields" + fields + "))\n"
-    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
         let body = child_at(item, 2)
         set out to ind + "(" + item_keyword(item) + " " + quoted(item.name) + "\n"
         set out to out + ind + "  " + emit_params_machine(item) + "\n"
@@ -2913,6 +4070,9 @@ action emit_machine(prog: AstNode):
         for each n in needs_node.children:
             set parts to parts + " " + quoted(n.name)
         set out to out + "  (needs" + parts + ")\n"
+    for each c in program_config(prog):
+        if c.kind == "TASKS_BOUND":
+            set out to out + "  (tasks " + c.val_str + ")\n"
     for each item in program_items(prog):
         set out to out + emit_item_machine(item, 1)
     set out to out + ")\n"
@@ -2991,6 +4151,10 @@ action lower_expr(form: AstNode):
         return make_call(m_text(m_arg(form, 0)), args, form.line)
     if h == "named":
         return make_named_arg(m_text(m_arg(form, 0)), lower_expr(m_arg(form, 1)), form.line)
+    if h == "receive":
+        return make_receive(lower_expr(m_arg(form, 0)), form.line)
+    if h == "join":
+        return make_join(lower_expr(m_arg(form, 0)), form.line)
     return make_unknown(form.line)
 
 action lower_stmts(forms):
@@ -3050,6 +4214,21 @@ action lower_stmt(form: AstNode):
                 set body_forms to drop_first(inner)
         let other = make_block("otherwise", lower_stmts(body_forms), form.line)
         return make_try(err, body, other, form.line)
+    if h == "spawn":
+        let args = []
+        let args_form = m_arg(form, 1)
+        if m_head(args_form) == "args":
+            for each c in drop_first(args_form.children):
+                set args to args + [lower_expr(c)]
+        return make_spawn(m_text(m_arg(form, 0)), args, m_text(m_arg(form, 2)), form.line)
+    if h == "yield":
+        return make_yield(form.line)
+    if h == "join":
+        return make_join(lower_expr(m_arg(form, 0)), form.line)
+    if h == "cancel":
+        return make_cancel(lower_expr(m_arg(form, 0)), form.line)
+    if h == "send":
+        return make_send(lower_expr(m_arg(form, 0)), lower_expr(m_arg(form, 1)), form.line)
     return make_unknown(form.line)
 
 action lower_params(form: AstNode):
@@ -3074,6 +4253,8 @@ action lower_contracts(form: AstNode):
             otherwise:
                 if h == "needs":
                     set out to out + [make_routine_need(m_text(m_arg(c, 0)), c.line)]
+            if h == "fuel":
+                set out to out + [make_fuel(m_text(m_arg(c, 0)), c.line)]
     return out
 
 action lower_item(form: AstNode):
@@ -3089,7 +4270,7 @@ action lower_item(form: AstNode):
                 otherwise:
                     set fields to fields + [make_field_def(m_text(f), "any", f.line)]
         return make_record_item(m_text(m_arg(form, 0)), fields, form.line)
-    if h == "action" or h == "check" or h == "filter":
+    if h == "action" or h == "check" or h == "filter" or h == "fiber":
         let params_form = none_node()
         let contracts_form = none_node()
         let body_form = none_node()
@@ -3125,8 +4306,9 @@ action lower_program(root: AstNode):
     let uses = []
     let needs = []
     let items = []
+    let config = []
     if root.kind != "L":
-        return make_program(uses, needs, items)
+        return make_program(uses, needs, items, config)
     for each form in root.children:
         let h = m_head(form)
         if form.kind != "L":
@@ -3138,9 +4320,12 @@ action lower_program(root: AstNode):
                 for each c in drop_first(form.children):
                     set needs to needs + [make_node("NEED", m_text(c), "", 0, [], form.line)]
             otherwise:
-                if h != "kaze" and h != "format":
-                    set items to items + [lower_item(form)]
-    return make_program(uses, needs, items)
+                if h == "tasks":
+                    set config to config + [make_tasks_bound(m_text(m_arg(form, 0)), form.line)]
+                otherwise:
+                    if h != "kaze" and h != "format":
+                        set items to items + [lower_item(form)]
+    return make_program(uses, needs, items, config)
 
 # Read the canonical machine form back into a PROGRAM node.
 action parse_machine(src):
@@ -3242,6 +4427,10 @@ action emit_expr_human(e: AstNode):
         return e.name + "(" + parts + ")"
     if k == "NAMED_ARG":
         return e.name + ": " + emit_expr_human(child_at(e, 0))
+    if k == "RECEIVE":
+        return "receive from " + emit_expr_human(child_at(e, 0))
+    if k == "JOIN":
+        return "join " + emit_expr_human(child_at(e, 0))
     if k == "UNKNOWN":
         return "# the machine reader could not lower an expression here\n    guard false"
     return "0"
@@ -3302,6 +4491,26 @@ action emit_stmt_human(s: AstNode, depth):
         set out to out + ":\n"
         set out to out + emit_block_human(child_at(s, 1), depth + 1)
         return out
+    if k == "SPAWN":
+        let args = ""
+        let first = 1
+        for each a in s.children:
+            if first == 0:
+                set args to args + ", "
+            set args to args + emit_expr_human(a)
+            set first to 0
+        let out = ind + "spawn " + s.name + "(" + args + ")"
+        if s.val_str != "":
+            set out to out + " as " + s.val_str
+        return out + "\n"
+    if k == "YIELD":
+        return ind + "yield\n"
+    if k == "JOIN":
+        return ind + "join " + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "CANCEL":
+        return ind + "cancel " + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "SEND":
+        return ind + "send " + emit_expr_human(child_at(s, 0)) + " to " + emit_expr_human(child_at(s, 1)) + "\n"
     if k == "UNKNOWN":
         return ind + "# unreadable statement\n" + ind + "guard false\n"
     return ind + "guard false\n"
@@ -3329,7 +4538,7 @@ action emit_item_human(item: AstNode, depth):
         for each f in item.children:
             set out to out + ind + "    " + f.name + ": " + f.val_str + "\n"
         return out
-    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
         let head = ind + item_keyword(item) + " " + item.name + "(" + emit_params_human(item) + ")"
         if item.val_str != "":
             set head to head + " -> " + item.val_str
@@ -3341,6 +4550,8 @@ action emit_item_human(item: AstNode, depth):
             otherwise:
                 if c.kind == "RECURSION_BOUND":
                     set out to out + ind + "    recursion bounded " + c.val_str + "\n"
+                if c.kind == "FUEL":
+                    set out to out + ind + "    fuel " + c.val_str + "\n"
                 otherwise:
                     if c.kind == "ROUTINE_NEED":
                         set out to out + ind + "    needs: " + c.name + "\n"
@@ -3367,6 +4578,9 @@ action emit_human(prog: AstNode):
             set parts to parts + n.name
             set first to 0
         set out to out + "needs: " + parts + "\n"
+    for each c in program_config(prog):
+        if c.kind == "TASKS_BOUND":
+            set out to out + "tasks bounded " + c.val_str + "\n"
     for each item in program_items(prog):
         set out to out + "\n" + emit_item_human(item, 0)
     return out
@@ -3467,7 +4681,7 @@ action get_c_runtime_header():
     set h to h + "            fprintf(stderr, \"kaze-alloc:   %-12s %12zu bytes %10zu calls\\n\", kz_site_name[i], kz_site_bytes[i], kz_site_calls[i]);\n"
     set h to h + "    }\n"
     set h to h + "}\n"
-    set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD, KZ_VAL_POINT } KzValKind;\n"
+    set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD, KZ_VAL_POINT, KZ_VAL_CHAN, KZ_VAL_FIBER } KzValKind;\n"
     set h to h + "struct KzValue;\n"
     set h to h + "typedef struct { size_t len; size_t cap; struct KzValue* items; } KzList;\n"
     set h to h + "typedef struct { const char* type_name; size_t field_count; const char** keys; struct KzValue* values; } KzRecord;\n"
@@ -3475,7 +4689,7 @@ action get_c_runtime_header():
     set h to h + "typedef struct { kaze_float_t x, y, z; } KzPoint;\n"
     set h to h + "typedef struct KzValue {\n"
     set h to h + "    KzValKind kind;\n"
-    set h to h + "    union { bool boolean; kaze_float_t number; KzStr str; KzList* list; KzRecord* record; KzPoint point; } as;\n"
+    set h to h + "    union { bool boolean; kaze_float_t number; KzStr str; KzList* list; KzRecord* record; KzPoint point; void* ptr; } as;\n"
     set h to h + "} KzValue;\n\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"
@@ -3495,6 +4709,8 @@ action get_c_runtime_header():
     set h to h + "        case KZ_VAL_STR: return v.as.str.data && v.as.str.data[0] != '\\0';\n"
     set h to h + "        case KZ_VAL_LIST: return v.as.list && v.as.list->len > 0;\n"
     set h to h + "        case KZ_VAL_RECORD: return true;\n"
+    set h to h + "        case KZ_VAL_CHAN: return v.as.ptr != NULL;\n"
+    set h to h + "        case KZ_VAL_FIBER: return v.as.ptr != NULL;\n"
     set h to h + "        default: return false;\n"
     set h to h + "    }\n"
     set h to h + "}\n\n"
@@ -3602,6 +4818,226 @@ action get_c_runtime_header():
     set h to h + "    if (v.kind == KZ_VAL_LIST) return \"list\";\n"
     set h to h + "    return \"\";\n"
     set h to h + "}\n\n"
+    set h to h + "/* --- phase 13: deterministic cooperative concurrency ------------------- */\n"
+    set h to h + "/* One OS thread, one linear arena, one run. Tasks switch only where the\n"
+    set h to h + " * program says yield, in round-robin spawn order, so a run is a deterministic\n"
+    set h to h + " * sequence of steps: no wall clock, no scheduler tick, and no two tasks\n"
+    set h to h + " * executing at once. Channels are bounded ring buffers of KzValue: a send\n"
+    set h to h + " * moves the value header and never the data it points at, and a full or empty\n"
+    set h to h + " * channel is a value (false / a fallback), never a block, so a program cannot\n"
+    set h to h + " * deadlock on one. */\n"
+    set h to h + "#define KZ_CHAN_MAX 64\n"
+    set h to h + "#define KZ_TASKS_DEFAULT 8\n"
+    set h to h + "#define KZ_FUEL_DEFAULT 10000\n"
+    set h to h + "#define KZ_FRAME_SLOTS 32\n"
+    set h to h + "#define KZ_FRAME_GUARDS 16\n"
+    set h to h + "\n"
+    set h to h + "typedef struct kz_chan { KzValue* buf; size_t cap, head, tail, len; } kz_chan;\n"
+    set h to h + "typedef struct kz_fiber kz_fiber;\n"
+    set h to h + "struct kz_fiber {\n"
+    set h to h + "    kz_fiber* parent;\n"
+    set h to h + "    kz_fiber* next;\n"
+    set h to h + "    int (*step)(kz_fiber*);\n"
+    set h to h + "    KzValue* slots;\n"
+    set h to h + "    size_t slot_count;\n"
+    set h to h + "    long* guards;\n"
+    set h to h + "    size_t guard_count;\n"
+    set h to h + "    KzValue args;\n"
+    set h to h + "    KzValue ret;\n"
+    set h to h + "    long fuel;\n"
+    set h to h + "    int pc;\n"
+    set h to h + "    int done;\n"
+    set h to h + "    int cancelled;\n"
+    set h to h + "    const char* name;\n"
+    set h to h + "};\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_tasks_head = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_tasks_tail = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_rr_cursor = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_current = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_switch_count = 0;\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_env_num(const char* name, long dflt) {\n"
+    set h to h + "    const char* env = getenv(name);\n"
+    set h to h + "    if (env == NULL || env[0] == '\\0') return dflt;\n"
+    set h to h + "    long v = strtol(env, NULL, 10);\n"
+    set h to h + "    if (v <= 0) return dflt;\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_conc_fail(const char* code, const char* detail) {\n"
+    set h to h + "    fprintf(stderr, \"%s: %s\\n\", code, detail);\n"
+    set h to h + "    exit(70);\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_tasks_declared = 0;   /* the module's tasks bounded */\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_task_ceiling(void) {\n"
+    set h to h + "    long v = kz_tasks_declared;\n"
+    set h to h + "    if (v <= 0) v = kz_env_num(\"KAZE_MAX_TASKS\", KZ_TASKS_DEFAULT);\n"
+    set h to h + "    return v > 256 ? 256 : v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_live_tasks(void) {\n"
+    set h to h + "    long n = 0;\n"
+    set h to h + "    kz_fiber* f;\n"
+    set h to h + "    for (f = kz_tasks_head; f != NULL; f = f->next)\n"
+    set h to h + "        if (!f->done && !f->cancelled) n += 1;\n"
+    set h to h + "    return n;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_fiber_value(kz_fiber* f) {\n"
+    set h to h + "    KzValue v; v.kind = KZ_VAL_FIBER; v.as.ptr = (void*)f; return v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_fiber_spawn(int (*step)(kz_fiber*), KzValue args, size_t slot_count, size_t guard_count, const char* name, long declared_fuel) {\n"
+    set h to h + "    kz_fiber* f;\n"
+    set h to h + "    size_t i;\n"
+    set h to h + "    if (kz_live_tasks() >= kz_task_ceiling())\n"
+    set h to h + "        kz_conc_fail(\"E_KAZE_TASK_BOUND\", \"the task ceiling is reached; raise KAZE_MAX_TASKS or spawn fewer tasks\");\n"
+    set h to h + "    f = (kz_fiber*)kz_alloc(sizeof(kz_fiber));\n"
+    set h to h + "    f->parent = kz_current;\n"
+    set h to h + "    f->next = NULL;\n"
+    set h to h + "    f->step = step;\n"
+    set h to h + "    f->slot_count = slot_count;\n"
+    set h to h + "    f->slots = (KzValue*)kz_alloc(sizeof(KzValue) * (slot_count ? slot_count : 1));\n"
+    set h to h + "    for (i = 0; i < slot_count; i++) f->slots[i] = kz_nil();\n"
+    set h to h + "    f->guard_count = guard_count;\n"
+    set h to h + "    f->guards = (long*)kz_alloc(sizeof(long) * (guard_count ? guard_count : 1));\n"
+    set h to h + "    for (i = 0; i < guard_count; i++) f->guards[i] = 0;\n"
+    set h to h + "    f->args = args;\n"
+    set h to h + "    if (args.kind == KZ_VAL_LIST && args.as.list != NULL) {\n"
+    set h to h + "        size_t n = args.as.list->len;\n"
+    set h to h + "        if (n > slot_count) n = slot_count;\n"
+    set h to h + "        for (i = 0; i < n; i++) f->slots[i] = args.as.list->items[i];\n"
+    set h to h + "    }\n"
+    set h to h + "    f->ret = kz_nil();\n"
+    set h to h + "    f->fuel = declared_fuel > 0 ? declared_fuel : kz_env_num(\"KAZE_FUEL\", KZ_FUEL_DEFAULT);\n"
+    set h to h + "    if (kz_current != NULL) {\n"
+    set h to h + "        /* A child spends from the parent's budget, never more than half of\n"
+    set h to h + "         * it, so a spawn cannot starve the spawner. */\n"
+    set h to h + "        long share = kz_current->fuel / 2;\n"
+    set h to h + "        if (share < 1) share = 1;\n"
+    set h to h + "        if (f->fuel > share) f->fuel = share;\n"
+    set h to h + "        kz_current->fuel -= f->fuel;\n"
+    set h to h + "    }\n"
+    set h to h + "    f->pc = 0; f->done = 0; f->cancelled = 0; f->name = name;\n"
+    set h to h + "    if (kz_tasks_tail == NULL) { kz_tasks_head = f; kz_tasks_tail = f; }\n"
+    set h to h + "    else { kz_tasks_tail->next = f; kz_tasks_tail = f; }\n"
+    set h to h + "    return kz_fiber_value(f);\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_task_after(kz_fiber* from) {\n"
+    set h to h + "    kz_fiber* f = (from != NULL) ? from->next : kz_tasks_head;\n"
+    set h to h + "    while (f != NULL) { if (!f->done && !f->cancelled) return f; f = f->next; }\n"
+    set h to h + "    f = kz_tasks_head;\n"
+    set h to h + "    while (f != NULL && f != from) { if (!f->done && !f->cancelled) return f; f = f->next; }\n"
+    set h to h + "    if (from != NULL && !from->done && !from->cancelled) return from;\n"
+    set h to h + "    return NULL;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_task_step(kz_fiber* f) {\n"
+    set h to h + "    kz_fiber* prev;\n"
+    set h to h + "    kz_fiber* g;\n"
+    set h to h + "    int st;\n"
+    set h to h + "    if (f->done || f->cancelled) return;\n"
+    set h to h + "    if (f->fuel <= 0) kz_conc_fail(\"E_KAZE_FUEL_EXHAUSTED\", \"a task spent its whole fuel budget\");\n"
+    set h to h + "    f->fuel -= 1;\n"
+    set h to h + "    prev = kz_current;\n"
+    set h to h + "    kz_current = f;\n"
+    set h to h + "    kz_switch_count += 1;\n"
+    set h to h + "    st = f->step(f);\n"
+    set h to h + "    kz_current = prev;\n"
+    set h to h + "    if (st == 0) f->done = 1;\n"
+    set h to h + "    if (f->done) {\n"
+    set h to h + "        /* A parent's exit cancels the children it left running: nothing\n"
+    set h to h + "         * outlives the task that owns it. */\n"
+    set h to h + "        for (g = kz_tasks_head; g != NULL; g = g->next)\n"
+    set h to h + "            if (g->parent == f && !g->done) g->cancelled = 1;\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_sched_drive(kz_fiber* target) {\n"
+    set h to h + "    for (;;) {\n"
+    set h to h + "        kz_fiber* next;\n"
+    set h to h + "        if (target != NULL && (target->done || target->cancelled)) return;\n"
+    set h to h + "        next = kz_task_after(kz_rr_cursor);\n"
+    set h to h + "        if (next == NULL) return;\n"
+    set h to h + "        if (next == kz_current) return;\n"
+    set h to h + "        kz_rr_cursor = next;\n"
+    set h to h + "        kz_task_step(next);\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_fiber_join(KzValue v) {\n"
+    set h to h + "    kz_fiber* f;\n"
+    set h to h + "    if (v.kind != KZ_VAL_FIBER || v.as.ptr == NULL) return kz_nil();\n"
+    set h to h + "    f = (kz_fiber*)v.as.ptr;\n"
+    set h to h + "    kz_sched_drive(f);\n"
+    set h to h + "    return f->ret;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_fiber_cancel_value(KzValue v) {\n"
+    set h to h + "    kz_fiber* f;\n"
+    set h to h + "    kz_fiber* g;\n"
+    set h to h + "    if (v.kind != KZ_VAL_FIBER || v.as.ptr == NULL) return;\n"
+    set h to h + "    f = (kz_fiber*)v.as.ptr;\n"
+    set h to h + "    for (g = kz_tasks_head; g != NULL; g = g->next)\n"
+    set h to h + "        if (g->parent == f) g->cancelled = 1;\n"
+    set h to h + "    f->cancelled = 1;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_fiber_run_root(int (*step)(kz_fiber*), size_t slot_count, size_t guard_count, long declared_fuel) {\n"
+    set h to h + "    KzValue v = kz_fiber_spawn(step, kz_nil(), slot_count, guard_count, \"main\", declared_fuel);\n"
+    set h to h + "    return kz_fiber_join(v);\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_chan_new(KzValue depth) {\n"
+    set h to h + "    kz_chan* c;\n"
+    set h to h + "    size_t cap;\n"
+    set h to h + "    KzValue v;\n"
+    set h to h + "    double d = (depth.kind == KZ_VAL_NUM) ? depth.as.number : 0.0;\n"
+    set h to h + "    if (d < 1 || d > KZ_CHAN_MAX) kz_conc_fail(\"E_KAZE_CHANNEL_DEPTH\", \"a channel holds from 1 to 64 values\");\n"
+    set h to h + "    cap = (size_t)d;\n"
+    set h to h + "    c = (kz_chan*)kz_alloc(sizeof(kz_chan));\n"
+    set h to h + "    c->buf = (KzValue*)kz_alloc(sizeof(KzValue) * cap);\n"
+    set h to h + "    c->cap = cap; c->head = 0; c->tail = 0; c->len = 0;\n"
+    set h to h + "    v.kind = KZ_VAL_CHAN; v.as.ptr = (void*)c;\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static bool kz_chan_send(KzValue ch, KzValue v) {\n"
+    set h to h + "    kz_chan* c;\n"
+    set h to h + "    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return false;\n"
+    set h to h + "    c = (kz_chan*)ch.as.ptr;\n"
+    set h to h + "    if (c->len >= c->cap) return false;\n"
+    set h to h + "    c->buf[c->tail] = v;\n"
+    set h to h + "    c->tail = (c->tail + 1) % c->cap;\n"
+    set h to h + "    c->len += 1;\n"
+    set h to h + "    return true;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_chan_recv_or(KzValue ch, KzValue fallback) {\n"
+    set h to h + "    kz_chan* c;\n"
+    set h to h + "    KzValue v;\n"
+    set h to h + "    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return fallback;\n"
+    set h to h + "    c = (kz_chan*)ch.as.ptr;\n"
+    set h to h + "    if (c->len == 0) return fallback;\n"
+    set h to h + "    v = c->buf[c->head];\n"
+    set h to h + "    c->head = (c->head + 1) % c->cap;\n"
+    set h to h + "    c->len -= 1;\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_chan_len(KzValue ch) {\n"
+    set h to h + "    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return kz_num(0);\n"
+    set h to h + "    return kz_num((double)((kz_chan*)ch.as.ptr)->len);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_print_switch_stats(void) {\n"
+    set h to h + "    const char* env = getenv(\"KAZE_SWITCH_STATS\");\n"
+    set h to h + "    if (env == NULL || env[0] == 0 || env[0] == 48) return;\n"
+    set h to h + "    fprintf(stderr, \"kaze-switch: %ld task switches\\n\", kz_switch_count);\n"
+    set h to h + "}\n"
+    set h to h + "\n"
     set h to h + "/* Make room for `need` items. A list may start with no buffer at all, so every\n"
     set h to h + "   reader that indexes items must come through here (or check len first). */\n"
     set h to h + "KZ_MAYBE_UNUSED static inline void kz_list_reserve(KzList* l, size_t need) {\n"
@@ -3673,6 +5109,27 @@ action get_c_runtime_header():
     set h to h + "    }\n"
     set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST) return kz_list_concat(a, b);\n"
     set h to h + "    return kz_nil();\n"
+    set h to h + "}\n"
+    set h to h + "/* Bitwise operators: Kaze numbers are doubles, so each operand is truncated to\n"
+    set h to h + " * the runtime integer type, and a shift count is masked to 0..63 so no shift is\n"
+    set h to h + " * undefined behaviour. Right shift is logical, which is what hashing and CRCs\n"
+    set h to h + " * want. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_band(KzValue a, KzValue b) {\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) & (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bor(KzValue a, KzValue b) {\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) | (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bxor(KzValue a, KzValue b) {\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) ^ (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_shl(KzValue a, KzValue b) {\n"
+    set h to h + "    kaze_int_t n = (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0) & 63;\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) << n));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_shr(KzValue a, KzValue b) {\n"
+    set h to h + "    kaze_int_t n = (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0) & 63;\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_uint_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) >> n));\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_sub(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_POINT) return kz_point(kz_num(a.as.point.x - b.as.point.x), kz_num(a.as.point.y - b.as.point.y), kz_num(a.as.point.z - b.as.point.z));\n"
@@ -3888,6 +5345,25 @@ action get_c_runtime_header():
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"
+    set h to h + "/* Character codes. Kaze text is bytes with a length and indexing yields a\n"
+    set h to h + " * one-character text, so a program had no way to see a byte - which blocks every\n"
+    set h to h + " * hash, every JSON escape and every binary codec. code(c) returns the byte and\n"
+    set h to h + " * character(n) turns one back into text; n is clamped to a byte range so the pair\n"
+    set h to h + " * is total and needs no fallback at the call site. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_code(KzValue v) {\n"
+    set h to h + "    if (v.kind != KZ_VAL_STR || v.as.str.data == NULL || v.as.str.len == 0) return kz_num(0);\n"
+    set h to h + "    return kz_num((kaze_float_t)(unsigned char)v.as.str.data[0]);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_character(KzValue n) {\n"
+    set h to h + "    kaze_int_t c = (kaze_int_t)kz_to_num(n);\n"
+    set h to h + "    if (c < 0 || c > 255) return kz_str(\"\");\n"
+    set h to h + "    char one[2];\n"
+    set h to h + "    one[0] = (char)c;\n"
+    set h to h + "    one[1] = 0;\n"
+    set h to h + "    /* kz_str wraps a pointer without copying and `one` is a stack buffer,\n"
+    set h to h + "     * so the byte is copied into the arena before it escapes. */\n"
+    set h to h + "    return kz_str(kz_str_concat_n(one, 1, \"\", 0));\n"
+    set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
@@ -4048,6 +5524,16 @@ action emit_bin_op(op, l, r):
         return "kz_mul(" + l + ", " + r + ")"
     if op == "/":
         return "kz_div(" + l + ", " + r + ")"
+    if op == "&":
+        return "kz_band(" + l + ", " + r + ")"
+    if op == "|":
+        return "kz_bor(" + l + ", " + r + ")"
+    if op == "^":
+        return "kz_bxor(" + l + ", " + r + ")"
+    if op == "<<":
+        return "kz_shl(" + l + ", " + r + ")"
+    if op == ">>":
+        return "kz_shr(" + l + ", " + r + ")"
     if op == "%":
         return "kz_mod(" + l + ", " + r + ")"
     if op == "==":
@@ -4085,6 +5571,10 @@ action emit_c_fallback(node: AstNode):
             return "kz_fb_mod(" + emit_c_expr(child_at(inner, 0)) + ", " + emit_c_expr(child_at(inner, 1)) + ", " + fb_s + ")"
     if inner.kind == "INDEX":
         return "kz_fb_index(" + emit_c_expr(child_at(inner, 0)) + ", " + emit_c_expr(child_at(inner, 1)) + ", " + fb_s + ")"
+    # An empty ring buffer is the receive's failure: the fallback is the value
+    # the program named, and it is the only value read when the channel is empty.
+    if inner.kind == "RECEIVE":
+        return "kz_chan_recv_or(" + emit_c_expr(child_at(inner, 0)) + ", " + fb_s + ")"
     return emit_c_expr(inner)
 
 action emit_c_args(args):
@@ -4166,9 +5656,19 @@ action emit_c_call(node: AstNode):
             set arr to "(KzValue[]){ " + arg_str + " }"
         return "kz_cap_call(" + escape_c_str(head) + ", " + escape_c_str(tail) + ", " + cnt + ", " + arr + ")"
 
-    # 3. Pure builtins.
+    # 3. Phase 13: a bounded channel, and a task handle join.
+    if name == "channel":
+        return "kz_chan_new(" + nth_arg(args, 0) + ")"
+    if name == "http_fetch":
+        return "kz_http_request(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ", " + nth_arg(args, 2) + ", " + nth_arg(args, 3) + ", " + nth_arg(args, 4) + ")"
+
+    # 4. Pure builtins.
     if name == "link_lost":
         return "kz_bool(false)"
+    if name == "code":
+        return "kz_code(" + nth_arg(args, 0) + ")"
+    if name == "character":
+        return "kz_character(" + nth_arg(args, 0) + ")"
     if name == "sin":
         return "kz_math_sin(" + nth_arg(args, 0) + ")"
     if name == "cos":
@@ -4182,7 +5682,60 @@ action emit_c_call(node: AstNode):
     if name == "min" or name == "max" or name == "abs" or name == "floor" or name == "ceil" or name == "round":
         return "kz_unavailable(" + escape_c_str(name) + ")"
 
-    # 4. A routine written in this program.
+    # 4. Phase 12 tensor builtins. Each argument is evaluated exactly once by the
+    #    call expression it is embedded in.
+    if name == "tensor":
+        return "kz_tensor_wrap(kz_tensor_make(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + "))"
+    if name == "zeros":
+        return "kz_tensor_wrap(kz_tensor_zeros_of(" + nth_arg(args, 0) + "))"
+    if name == "matmul":
+        return "kz_tensor_wrap(kaze_tensor_matmul(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "matmul_t":
+        return "kz_tensor_wrap(kaze_tensor_matmul_t(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "add_bias":
+        return "kz_tensor_wrap(kaze_tensor_add_bias(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "tensor_add":
+        return "kz_tensor_wrap(kaze_tensor_add(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "tensor_sub":
+        return "kz_tensor_wrap(kaze_tensor_sub(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "tensor_mul":
+        return "kz_tensor_wrap(kaze_tensor_mul(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "tensor_div":
+        return "kz_tensor_wrap(kaze_tensor_div(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "transpose":
+        return "kz_tensor_wrap(kaze_tensor_transpose(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", 0, 1))"
+    if name == "reshape":
+        return "kz_tensor_wrap(kz_tensor_reshape_of(" + tensor_unwrap(child_at(node, 0)) + ", " + nth_arg(args, 1) + "))"
+    if name == "softmax":
+        return "kz_tensor_wrap(kaze_tensor_softmax(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "gelu":
+        return "kz_tensor_wrap(kaze_tensor_gelu(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "silu":
+        return "kz_tensor_wrap(kaze_tensor_silu(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "relu":
+        return "kz_tensor_wrap(kaze_tensor_relu(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "rms_norm":
+        return "kz_tensor_wrap(kaze_tensor_rms_norm(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + ", " + tensor_float(child_at(node, 2)) + "))"
+    if name == "layer_norm":
+        return "kz_tensor_wrap(kaze_tensor_layer_norm(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + ", " + tensor_unwrap(child_at(node, 2)) + ", " + tensor_float(child_at(node, 3)) + "))"
+    if name == "tensor_sum":
+        return "kz_tensor_wrap(kaze_tensor_sum_last(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "tensor_mean":
+        return "kz_tensor_wrap(kaze_tensor_mean_last(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "argmax":
+        return "kz_num((kaze_float_t)kaze_tensor_argmax_last(" + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "tensor_get":
+        return "kz_num(kaze_tensor_get(" + tensor_unwrap(child_at(node, 0)) + ", kz_i64(" + nth_arg(args, 1) + ")))"
+    if name == "tensor_shape":
+        return "kz_tensor_shape_value(" + tensor_unwrap(child_at(node, 0)) + ")"
+    if name == "cli_text":
+        return "kz_cli_text(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ")"
+    if name == "model_open":
+        return "kz_model_wrap(kaze_llama_open(kz_text_cstr(" + nth_arg(args, 0) + ")))"
+    if name == "model_forward":
+        return "kz_model_forward_value(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ")"
+
+    # 5. A routine written in this program.
     return "kaze_fn_" + sanitize_c_id(name) + "(" + arg_str + ")"
 
 action is_plain_integer(t: string) -> num:
@@ -4248,23 +5801,133 @@ action emit_c_expr(node: AstNode):
         if cnt == 0:
             return "kz_list_new(0)"
         return "kz_list_from(" + cnt + ", (KzValue[]){ " + emit_c_args(items) + " })"
+    # A receive with no fallback in reach: the checker has already refused the
+    # unguarded spelling, so this is the value of an unreadable empty read.
+    if k == "RECEIVE":
+        return "kz_chan_recv_or(" + emit_c_expr(child_at(node, 0)) + ", kz_nil())"
+    # join <task> as a value.
+    if k == "JOIN":
+        return "kz_fiber_join(" + emit_c_expr(child_at(node, 0)) + ")"
     if k == "CALL":
         return emit_c_call(node)
     return "kz_nil()"
 
+# ── phase 13: the fiber body transform ─────────────────────────────────
+#
+# A fiber may suspend, and the runtime has no C stacks to suspend: a fiber is a
+# stackless coroutine. The emitter therefore makes one step function per fiber
+# whose locals live in the task's frame instead of on the C stack, and a yield
+# spills every local, records the resume line and returns to the scheduler.
+#
+# The transform stays small because only statements can yield: a body is still
+# one function, and one label per yield line is enough because Kaze puts one
+# statement on a line. Loop counters are hoisted with the locals, because a
+# resume jumps back into the middle of a loop.
+
+record EmitFx:
+    fiber: num
+    slots: list
+    guards: list
+
+action fx_plain():
+    return EmitFx(fiber: 0, slots: [], guards: [])
+
+action slot_of(slots, name) -> num:
+    let i = 0
+    let len = length of slots
+    while i < len bounded 512:
+        if (slots[i] otherwise "") == name:
+            return i
+        set i to i + 1
+    return -1
+
+action guard_of(guards, name) -> num:
+    let i = 0
+    let len = length of guards
+    while i < len bounded 512:
+        if (guards[i] otherwise "") == name:
+            return i
+        set i to i + 1
+    return -1
+
+# Locals in slot order: parameters first (the spawn copies the call's arguments
+# into these slots), then every binding the body introduces.
+action collect_bindings(n: AstNode, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        let nm = ""
+        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH":
+            set nm to n.name
+        if n.kind == "SPAWN":
+            set nm to n.val_str
+        if nm != "" and slot_of(acc, nm) < 0:
+            set acc to acc + [nm]
+        for each c in n.children:
+            set acc to collect_bindings(c, acc, depth + 1)
+    return acc
+
+action collect_guards(n: AstNode, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        if n.kind == "WHILE":
+            set acc to acc + ["_kz_loop_l" + n.line]
+        for each c in n.children:
+            set acc to collect_guards(c, acc, depth + 1)
+    return acc
+
+action collect_yield_lines(n: AstNode, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        if n.kind == "YIELD" and slot_of(acc, n.line) < 0:
+            set acc to acc + [n.line]
+        for each c in n.children:
+            set acc to collect_yield_lines(c, acc, depth + 1)
+    return acc
+
+# Fill the hoisted locals from the task's frame at step entry.
+action fx_restore(fx: EmitFx, ind) -> string:
+    let out = ""
+    if fx.fiber == 0:
+        return out
+    for each nm in fx.slots:
+        set out to out + ind + "KzValue " + sanitize_c_id(nm) + " = _kz_task->slots[" + slot_of(fx.slots, nm) + "];\n"
+    for each g in fx.guards:
+        set out to out + ind + "long " + g + " = _kz_task->guards[" + guard_of(fx.guards, g) + "];\n"
+    return out
+
+# Spill them back before handing the task to the scheduler.
+action fx_spill(fx: EmitFx, ind) -> string:
+    let out = ""
+    if fx.fiber == 0:
+        return out
+    for each nm in fx.slots:
+        set out to out + ind + "_kz_task->slots[" + slot_of(fx.slots, nm) + "] = " + sanitize_c_id(nm) + ";\n"
+    for each g in fx.guards:
+        set out to out + ind + "_kz_task->guards[" + guard_of(fx.guards, g) + "] = " + g + ";\n"
+    return out
+
 # ── statements ──────────────────────────────────────────────────────────
 
-action emit_c_stmt(stmt: AstNode, ind):
+action emit_c_stmt(stmt: AstNode, ind, fx: EmitFx):
     recursion bounded 200
     let k = stmt.kind
 
     if k == "LET":
+        if fx.fiber == 1:
+            return ind + sanitize_c_id(stmt.name) + " = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
         return ind + "KzValue " + sanitize_c_id(stmt.name) + " = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
 
     if k == "SET":
         return ind + sanitize_c_id(stmt.name) + " = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
 
     if k == "RETURN":
+        if fx.fiber == 1:
+            if (length of stmt.children) > 0:
+                return ind + "_kz_task->ret = " + emit_c_expr(child_at(stmt, 0)) + "; return 0;\n"
+            return ind + "_kz_task->ret = kz_nil(); return 0;\n"
         if (length of stmt.children) > 0:
             return ind + "return " + emit_c_expr(child_at(stmt, 0)) + ";\n"
         return ind + "return kz_nil();\n"
@@ -4279,7 +5942,10 @@ action emit_c_stmt(stmt: AstNode, ind):
             set out to out + ind + "    exit(70);\n"
             set out to out + ind + "}\n"
             set i to i + 1
-        set out to out + ind + "return _kz_ret;\n"
+        if fx.fiber == 1:
+            set out to out + ind + "_kz_task->ret = _kz_ret; return 0;\n"
+        otherwise:
+            set out to out + ind + "return _kz_ret;\n"
         return out
 
     if k == "APPEND_OWN":
@@ -4297,6 +5963,8 @@ action emit_c_stmt(stmt: AstNode, ind):
 
     # guard <expr>: an executed assertion. A false invariant stops the run.
     if k == "GUARD":
+        if fx.fiber == 1:
+            return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + stmt.line + " is false\\n\"); exit(70); }\n"
         return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + stmt.line + " is false\\n\"); return kz_nil(); }\n"
 
     if k == "IF":
@@ -4305,11 +5973,11 @@ action emit_c_stmt(stmt: AstNode, ind):
         let other_block = child_at(stmt, 2)
         let out = ind + "if (kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
         for each s in then_block.children:
-            set out to out + emit_c_stmt(s, ind + "    ")
+            set out to out + emit_c_stmt(s, ind + "    ", fx)
         if (length of other_block.children) > 0:
             set out to out + ind + "} else {\n"
             for each s in other_block.children:
-                set out to out + emit_c_stmt(s, ind + "    ")
+                set out to out + emit_c_stmt(s, ind + "    ", fx)
         set out to out + ind + "}\n"
         return out
 
@@ -4319,6 +5987,17 @@ action emit_c_stmt(stmt: AstNode, ind):
         let body = child_at(stmt, 1)
         let bound = child_at(stmt, 2)
         let guard_id = "_kz_loop_l" + stmt.line
+        if fx.fiber == 1:
+            let fout = ind + "while (kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
+            if bound.val_str == "" or bound.val_str == "?":
+                set fout to fout + ind + "    /* no ceiling declared */\n"
+            otherwise:
+                set fout to fout + ind + "    if (" + guard_id + " >= " + bound.val_str + "L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); exit(70); }\n"
+            set fout to fout + ind + "    " + guard_id + " = " + guard_id + " + 1;\n"
+            for each s in body.children:
+                set fout to fout + emit_c_stmt(s, ind + "    ", fx)
+            set fout to fout + ind + "}\n"
+            return fout
         let out = ind + "{ long " + guard_id + " = 0;\n"
         set out to out + ind + "    while (kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
         if bound.val_str == "" or bound.val_str == "?":
@@ -4327,7 +6006,7 @@ action emit_c_stmt(stmt: AstNode, ind):
             set out to out + ind + "        if (" + guard_id + " >= " + bound.val_str + "L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); return kz_nil(); }\n"
         set out to out + ind + "        " + guard_id + " = " + guard_id + " + 1;\n"
         for each s in body.children:
-            set out to out + emit_c_stmt(s, ind + "        ")
+            set out to out + emit_c_stmt(s, ind + "        ", fx)
         set out to out + ind + "    }\n"
         set out to out + ind + "}\n"
         return out
@@ -4340,9 +6019,12 @@ action emit_c_stmt(stmt: AstNode, ind):
         set out to out + ind + "    if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {\n"
         set out to out + ind + "        size_t _len = _iter_target.as.list->len;\n"
         set out to out + ind + "        for (size_t _i = 0; _i < _len; _i++) {\n"
-        set out to out + ind + "            KzValue " + sanitize_c_id(stmt.name) + " = _iter_target.as.list->items[_i];\n"
+        if fx.fiber == 1:
+            set out to out + ind + "            " + sanitize_c_id(stmt.name) + " = _iter_target.as.list->items[_i];\n"
+        otherwise:
+            set out to out + ind + "            KzValue " + sanitize_c_id(stmt.name) + " = _iter_target.as.list->items[_i];\n"
         for each s in body.children:
-            set out to out + emit_c_stmt(s, ind + "            ")
+            set out to out + emit_c_stmt(s, ind + "            ", fx)
         set out to out + ind + "        }\n"
         set out to out + ind + "    }\n"
         set out to out + ind + "}\n"
@@ -4355,16 +6037,59 @@ action emit_c_stmt(stmt: AstNode, ind):
         let out = ind + "{\n"
         set out to out + ind + "    /* try block */\n"
         for each s in body.children:
-            set out to out + emit_c_stmt(s, ind + "    ")
+            set out to out + emit_c_stmt(s, ind + "    ", fx)
         if (length of other.children) > 0:
             set out to out + ind + "    if (0) {\n"
             if stmt.name != "":
-                set out to out + ind + "        KzValue " + sanitize_c_id(stmt.name) + " = kz_nil(); (void)" + sanitize_c_id(stmt.name) + ";\n"
+                if fx.fiber == 1:
+                    set out to out + ind + "        " + sanitize_c_id(stmt.name) + " = kz_nil();\n"
+                otherwise:
+                    set out to out + ind + "        KzValue " + sanitize_c_id(stmt.name) + " = kz_nil(); (void)" + sanitize_c_id(stmt.name) + ";\n"
             for each s in other.children:
-                set out to out + emit_c_stmt(s, ind + "        ")
+                set out to out + emit_c_stmt(s, ind + "        ", fx)
             set out to out + ind + "    }\n"
         set out to out + ind + "}\n"
         return out
+
+    # ── phase 13: spawn / yield / join / cancel / send ─────────────────
+    if k == "SPAWN":
+        # The task handle is a value: a plain local in an action, a frame slot
+        # in a fiber whose body spawns.
+        let task = stmt.val_str
+        let target = stmt.name
+        let args_s = "kz_nil()"
+        if (length of stmt.children) > 0:
+            set args_s to "kz_list_from(" + (length of stmt.children) + ", (KzValue[]){ " + emit_c_args(stmt.children) + " })"
+        let tmp = "_kz_args_" + stmt.line
+        let call = "kz_fiber_spawn(&kz_step_" + sanitize_c_id(target) + ", " + tmp + ", kz_slots_" + sanitize_c_id(target) + "(), kz_guards_" + sanitize_c_id(target) + "(), " + escape_c_str(task) + ", kz_fuel_" + sanitize_c_id(target) + "())"
+        let out = ind + "KzValue " + tmp + " = " + args_s + ";\n"
+        if fx.fiber == 1:
+            set out to out + ind + sanitize_c_id(task) + " = " + call + ";\n"
+        otherwise:
+            set out to out + ind + "KzValue " + sanitize_c_id(task) + " = " + call + ";\n"
+            set out to out + ind + "(void)" + sanitize_c_id(task) + ";   /* a task may be fire-and-forget */\n"
+        return out
+
+    if k == "YIELD":
+        # The one suspension point: spill the frame, remember the line, return
+        # to the scheduler. The label below is where the next step resumes.
+        if fx.fiber == 0:
+            return ind + "/* yield outside a fiber: refused before this point */\n"
+        let out = fx_spill(fx, ind)
+        set out to out + ind + "_kz_task->pc = " + stmt.line + ";\n"
+        set out to out + ind + "return 1;\n"
+        set out to out + "kz_L" + stmt.line + ": ;\n"
+        return out
+
+    if k == "JOIN":
+        return ind + "(void)kz_fiber_join(" + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
+    if k == "CANCEL":
+        return ind + "kz_fiber_cancel_value(" + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
+    if k == "SEND":
+        # Children are [value, channel], the order the source writes them in.
+        return ind + "(void)kz_chan_send(" + emit_c_expr(child_at(stmt, 1)) + ", " + emit_c_expr(child_at(stmt, 0)) + ");\n"
 
     return ""
 
@@ -4456,8 +6181,54 @@ action emit_routine(item: AstNode):
         set out to out + "    (void)" + sanitize_c_id(prm.name) + ";   /* a routine need not use every parameter */\n"
     set out to out + emit_requires(item)
     for each s in body.children:
-        set out to out + emit_c_stmt(s, "    ")
+        set out to out + emit_c_stmt(s, "    ", fx_plain())
     set out to out + "    return kz_nil();\n"
+    set out to out + "}\n\n"
+    return out
+
+# A fiber lowers to two symbols: a step function the scheduler calls once per
+# turn, and a tiny accessor carrying the fuel the routine declared.
+action fiber_fuel(item: AstNode) -> string:
+    let contracts = child_at(item, 1)
+    let out = "0"
+    for each c in contracts.children:
+        if c.kind == "FUEL":
+            set out to c.val_str
+    return out
+
+action fiber_ctx(item: AstNode) -> EmitFx:
+    let params = child_at(item, 0)
+    let body = child_at(item, 2)
+    let slots = []
+    for each p in params.children:
+        set slots to slots + [p.name]
+    set slots to collect_bindings(body, slots, 0)
+    let guards = collect_guards(body, [], 0)
+    return EmitFx(fiber: 1, slots: slots, guards: guards)
+
+action emit_fiber(item: AstNode):
+    recursion bounded 200
+    let id = sanitize_c_id(item.name)
+    let fx = fiber_ctx(item)
+    let body = child_at(item, 2)
+    let yields = collect_yield_lines(body, [], 0)
+    let out = "/* fiber '" + item.name + "': one step per turn, resuming at a yield line */\n"
+    set out to out + "static long kz_fuel_" + id + "(void) { return " + fiber_fuel(item) + "L; }\n"
+    set out to out + "static size_t kz_slots_" + id + "(void) { return " + (length of fx.slots) + "; }\n"
+    set out to out + "static size_t kz_guards_" + id + "(void) { return " + (length of fx.guards) + "; }\n"
+    set out to out + "KZ_MAYBE_UNUSED static int kz_step_" + id + "(kz_fiber* _kz_task) {\n"
+    set out to out + "    (void)_kz_task;\n"
+    set out to out + fx_restore(fx, "    ")
+    set out to out + emit_requires(item)
+    set out to out + "    switch (_kz_task->pc) {\n"
+    for each y in yields:
+        set out to out + "        case " + y + ": goto kz_L" + y + ";\n"
+    set out to out + "        default: break;\n"
+    set out to out + "    }\n"
+    for each s in body.children:
+        set out to out + emit_c_stmt(s, "    ", fx)
+    set out to out + "    _kz_task->ret = kz_nil();\n"
+    set out to out + "    return 0;\n"
     set out to out + "}\n\n"
     return out
 
@@ -4469,7 +6240,7 @@ action emit_hook(item: AstNode):
         set kind to "every"
     let out = "static KzValue kz_hook_" + kind + "_" + item.line + "(void) {\n"
     for each s in body.children:
-        set out to out + emit_c_stmt(s, "    ")
+        set out to out + emit_c_stmt(s, "    ", fx_plain())
     set out to out + "    return kz_nil();\n"
     set out to out + "}\n\n"
     return out
@@ -4522,37 +6293,33 @@ action single_routine(items):
         return found
     return none_node()
 
-action emit_c_entry(items):
+# The module's tasks bounded declaration, or 0 when it declares none.
+action tasks_bound_of(config) -> string:
+    let out = "0"
+    for each c in config:
+        if c.kind == "TASKS_BOUND":
+            set out to c.val_str
+    return out
+
+action emit_c_entry(items, config, uses_tensors):
     recursion bounded 200
     let out = "/* --- Main Entry Point --- */\n"
     set out to out + "int main(int argc, char** argv) {\n"
     set out to out + "    /* One arena for the whole run; KAZE_ARENA_BYTES overrides the default. */\n"
     set out to out + "    if (!kaze_arena_init_heap(&kz_arena, kz_arena_bytes())) { fprintf(stderr, \"E_KAZE_OOM: cannot reserve the arena\\n\"); return 70; }\n"
     set out to out + "    atexit(kz_print_alloc_sites);   /* KAZE_ARENA_STATS=1 reports by function */\n"
+    set out to out + "    atexit(kz_print_switch_stats);  /* KAZE_SWITCH_STATS=1 reports task switches */\n"
+    if uses_tensors == 1:
+        set out to out + "    kz_tensor_set_argv(argc, argv);\n"
+    set out to out + "    kz_tasks_declared = " + tasks_bound_of(config) + "L;\n"
     let main_item = find_named(items, "main")
-    if is_routine(main_item) == 0:
+    if is_routine(main_item) == 0 and main_item.kind != "FIBER":
         set main_item to single_routine(items)
-    if is_routine(main_item) == 0:
+    if main_item.kind == "FIBER":
+        # A fiber main is the root task: the scheduler runs it to completion,
+        # and its return value is the program's result.
         set out to out + "    (void)argc; (void)argv;\n"
-        set out to out + "    kz_run_hooks(argc, argv);\n"
-        set out to out + "    printf(\"Kaze module loaded (no main entry)\\n\");\n"
-    otherwise:
-        let params_node = child_at(main_item, 0)
-        let cnt = length of params_node.children
-        if cnt == 0:
-            set out to out + "    (void)argc; (void)argv;\n"
-            set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "();\n"
-        otherwise:
-            let i = 0
-            let call_args = ""
-            while i < cnt bounded 1000:
-                let prm = child_at(params_node, i)
-                set out to out + "    KzValue arg_" + i + " = kz_param(" + escape_c_str(prm.val_str) + ", " + escape_c_str(prm.name) + ", " + escape_c_str(main_item.name) + ", kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + "));\n"
-                if i > 0:
-                    set call_args to call_args + ", "
-                set call_args to call_args + "arg_" + i
-                set i to i + 1
-            set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "(" + call_args + ");\n"
+        set out to out + "    KzValue res = kz_fiber_run_root(&kz_step_" + sanitize_c_id(main_item.name) + ", kz_slots_" + sanitize_c_id(main_item.name) + "(), kz_guards_" + sanitize_c_id(main_item.name) + "(), kz_fuel_" + sanitize_c_id(main_item.name) + "());\n"
         set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
         set out to out + "        char numbuf[64];\n"
         set out to out + "        kz_format_number(numbuf, sizeof numbuf, res.as.number);\n"
@@ -4563,6 +6330,38 @@ action emit_c_entry(items):
         set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
         set out to out + "    }\n"
         set out to out + "    kz_run_hooks(argc, argv);\n"
+    otherwise:
+        if is_routine(main_item) == 0:
+            set out to out + "    (void)argc; (void)argv;\n"
+            set out to out + "    kz_run_hooks(argc, argv);\n"
+            set out to out + "    printf(\"Kaze module loaded (no main entry)\\n\");\n"
+        otherwise:
+            let params_node = child_at(main_item, 0)
+            let cnt = length of params_node.children
+            if cnt == 0:
+                set out to out + "    (void)argc; (void)argv;\n"
+                set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "();\n"
+            otherwise:
+                let i = 0
+                let call_args = ""
+                while i < cnt bounded 1000:
+                    let prm = child_at(params_node, i)
+                    set out to out + "    KzValue arg_" + i + " = kz_param(" + escape_c_str(prm.val_str) + ", " + escape_c_str(prm.name) + ", " + escape_c_str(main_item.name) + ", kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + "));\n"
+                    if i > 0:
+                        set call_args to call_args + ", "
+                    set call_args to call_args + "arg_" + i
+                    set i to i + 1
+                set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "(" + call_args + ");\n"
+            set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
+            set out to out + "        char numbuf[64];\n"
+            set out to out + "        kz_format_number(numbuf, sizeof numbuf, res.as.number);\n"
+            set out to out + "        printf(\"%s\\n\", numbuf);\n"
+            set out to out + "    } else if (res.kind == KZ_VAL_STR) {\n"
+            set out to out + "        printf(\"%s\\n\", res.as.str.data ? res.as.str.data : \"\");\n"
+            set out to out + "    } else if (res.kind == KZ_VAL_BOOL) {\n"
+            set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
+            set out to out + "    }\n"
+            set out to out + "    kz_run_hooks(argc, argv);\n"
     set out to out + "    return 0;\n"
     set out to out + "}\n"
     return out
@@ -4927,6 +6726,204 @@ action mark_item(item: AstNode, elided: list) -> AstNode:
         return make_node(item.kind, item.name, item.val_str, item.val_num, [params, contracts, body], item.line)
     return item
 
+# ── Phase 12: tensor emission helpers ─────────────────────────────────
+#
+# Tensor values travel as KzValue numbers holding the tensor handle. A 64-bit
+# host's user-space pointers fit exactly in a double's 53-bit integer range, and
+# the 32-bit target is exact too, so no new KzValue variant is needed and the
+# rest of the emitter is unchanged. Only the builtins below unwrap them.
+
+# Returns [spec, binds, diags] for a call whose name is a tensor builtin.
+action is_tensor_builtin(name: string) -> num:
+    if name == "tensor" or name == "zeros":
+        return 1
+    if name == "matmul" or name == "matmul_t" or name == "add_bias":
+        return 1
+    if name == "tensor_add" or name == "tensor_sub" or name == "tensor_mul" or name == "tensor_div":
+        return 1
+    if name == "transpose" or name == "reshape":
+        return 1
+    if name == "softmax" or name == "rms_norm" or name == "layer_norm":
+        return 1
+    if name == "gelu" or name == "silu" or name == "relu":
+        return 1
+    if name == "tensor_sum" or name == "tensor_mean":
+        return 1
+    if name == "argmax" or name == "tensor_get" or name == "tensor_shape":
+        return 1
+    if name == "model_open" or name == "model_forward":
+        return 1
+    if name == "cli_text":
+        return 1
+    return 0
+
+action tree_has_tensor_call(n: AstNode) -> num:
+    recursion bounded 256
+    if n.kind == "CALL":
+        if is_tensor_builtin(n.name) == 1:
+            return 1
+    for each c in n.children:
+        if tree_has_tensor_call(c) == 1:
+            return 1
+    return 0
+
+action program_uses_tensors(items) -> num:
+    recursion bounded 64
+    for each item in items:
+        if tree_has_tensor_call(item) == 1:
+            return 1
+    return 0
+
+action tree_has_http_call(n: AstNode) -> num:
+    recursion bounded 256
+    if n.kind == "CALL" and n.name == "http_fetch":
+        return 1
+    for each c in n.children:
+        if tree_has_http_call(c) == 1:
+            return 1
+    return 0
+
+action program_uses_http(items) -> num:
+    recursion bounded 64
+    for each item in items:
+        if tree_has_http_call(item) == 1:
+            return 1
+    return 0
+
+action tensor_unwrap(e: AstNode) -> string:
+    recursion bounded 64
+    return "kz_tensor_unwrap(" + emit_c_expr(e) + ")"
+
+action tensor_float(e: AstNode) -> string:
+    recursion bounded 64
+    return "kz_f32(" + emit_c_expr(e) + ")"
+
+# Tensor values in the generated program. A tensor handle travels inside a
+# KzValue number: 64-bit user pointers fit exactly in a double's 53-bit integer
+# range (and 32-bit pointers are exact too). Only the tensor builtins unwrap one,
+# so the rest of the emitter's value model is untouched.
+action get_c_tensor_header():
+    let h = ""
+    set h to h + "#include \"kaze_tensor.h\"\n"
+    set h to h + "\n/* --- Phase 12 tensor bridge --- */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline const char *kz_text_cstr(KzValue v) {\n"
+    set h to h + "    return (v.kind == KZ_VAL_STR && v.as.str.data) ? v.as.str.data : \"\";\n"
+    set h to h + "}\n"
+    set h to h + "static int kz_argc_g = 0;\n"
+    set h to h + "static char **kz_argv_g = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_tensor_set_argv(int argc, char **argv) {\n"
+    set h to h + "    kz_argc_g = argc; kz_argv_g = argv;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_cli_text(KzValue name, KzValue fallback) {\n"
+    set h to h + "    const char *want = kz_text_cstr(name);\n"
+    set h to h + "    size_t nlen = strlen(want);\n"
+    set h to h + "    int i;\n"
+    set h to h + "    for (i = 1; i + 1 < kz_argc_g; i++) {\n"
+    set h to h + "        const char *a = kz_argv_g[i];\n"
+    set h to h + "        if (strcmp(a, \"--arg\") == 0) {\n"
+    set h to h + "            const char *v = kz_argv_g[i + 1];\n"
+    set h to h + "            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"
+    set h to h + "                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"
+    set h to h + "        }\n"
+    set h to h + "        if (strncmp(a, \"--arg=\", 6) == 0) {\n"
+    set h to h + "            const char *v = a + 6;\n"
+    set h to h + "            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"
+    set h to h + "                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    return fallback;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_tensor_wrap(kaze_tensor_t *t) {\n"
+    set h to h + "    union { kaze_tensor_t *p; size_t u; } c;\n"
+    set h to h + "    c.p = t; return kz_num((kaze_float_t)c.u);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline kaze_tensor_t *kz_tensor_unwrap(KzValue v) {\n"
+    set h to h + "    union { kaze_tensor_t *p; size_t u; } c;\n"
+    set h to h + "    c.u = (size_t)((v.kind == KZ_VAL_NUM) ? v.as.number : 0.0); return c.p;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline kaze_float_t kz_f32(KzValue v) {\n"
+    set h to h + "    return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline int64_t kz_i64(KzValue v) {\n"
+    set h to h + "    return (int64_t)kz_f32(v);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static int kz_tensor_dims(KzValue shape, int64_t *dims) {\n"
+    set h to h + "    int n, i;\n"
+    set h to h + "    if (shape.kind != KZ_VAL_LIST || shape.as.list == NULL) return 0;\n"
+    set h to h + "    n = (int)shape.as.list->len;\n"
+    set h to h + "    if (n < 1 || n > KAZE_TENSOR_MAX_DIMS) return 0;\n"
+    set h to h + "    for (i = 0; i < n; i++) {\n"
+    set h to h + "        dims[i] = (int64_t)kz_f32(shape.as.list->items[i]);\n"
+    set h to h + "        if (dims[i] < 1) return 0;\n"
+    set h to h + "    }\n"
+    set h to h + "    return n;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_make(KzValue values, KzValue shape) {\n"
+    set h to h + "    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"
+    set h to h + "    int rank = kz_tensor_dims(shape, dims);\n"
+    set h to h + "    kaze_tensor_t *t;\n"
+    set h to h + "    int64_t i, n;\n"
+    set h to h + "    if (rank == 0) return NULL;\n"
+    set h to h + "    t = kaze_tensor_alloc(&kz_arena, KAZE_DTYPE_F32, rank, dims);\n"
+    set h to h + "    if (t == NULL) return NULL;\n"
+    set h to h + "    n = kaze_tensor_numel(t);\n"
+    set h to h + "    for (i = 0; i < n; i++) {\n"
+    set h to h + "        kaze_float_t v = 0.0f;\n"
+    set h to h + "        if (values.kind == KZ_VAL_LIST && values.as.list != NULL && (size_t)i < values.as.list->len)\n"
+    set h to h + "            v = kz_f32(values.as.list->items[i]);\n"
+    set h to h + "        kaze_tensor_set(t, i, v);\n"
+    set h to h + "    }\n"
+    set h to h + "    return t;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_zeros_of(KzValue shape) {\n"
+    set h to h + "    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"
+    set h to h + "    int rank = kz_tensor_dims(shape, dims);\n"
+    set h to h + "    if (rank == 0) return NULL;\n"
+    set h to h + "    return kaze_tensor_zeros(&kz_arena, KAZE_DTYPE_F32, rank, dims);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_reshape_of(kaze_tensor_t *t, KzValue shape) {\n"
+    set h to h + "    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"
+    set h to h + "    int rank = kz_tensor_dims(shape, dims);\n"
+    set h to h + "    if (t == NULL || rank == 0) return NULL;\n"
+    set h to h + "    return kaze_tensor_reshape(&kz_arena, t, rank, dims);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_tensor_shape_value(kaze_tensor_t *t) {\n"
+    set h to h + "    KzValue items[KAZE_TENSOR_MAX_DIMS];\n"
+    set h to h + "    int32_t i, rank = (t == NULL) ? 0 : t->rank;\n"
+    set h to h + "    for (i = 0; i < rank; i++) items[i] = kz_num((kaze_float_t)t->shape[i]);\n"
+    set h to h + "    return kz_list_from((size_t)rank, items);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_model_wrap(kaze_llama_t *m) {\n"
+    set h to h + "    union { kaze_llama_t *p; size_t u; } c;\n"
+    set h to h + "    c.p = m; return kz_num((kaze_float_t)c.u);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline kaze_llama_t *kz_model_unwrap(KzValue v) {\n"
+    set h to h + "    union { kaze_llama_t *p; size_t u; } c;\n"
+    set h to h + "    c.u = (size_t)kz_f32(v); return c.p;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_model_forward_value(KzValue model, KzValue tokens) {\n"
+    set h to h + "    kaze_llama_t *m = kz_model_unwrap(model);\n"
+    set h to h + "    int32_t ids[512];\n"
+    set h to h + "    size_t n = 0, i, vocab;\n"
+    set h to h + "    float *logits;\n"
+    set h to h + "    kaze_tensor_t *t;\n"
+    set h to h + "    int64_t dims[2];\n"
+    set h to h + "    if (m == NULL || tokens.kind != KZ_VAL_LIST || tokens.as.list == NULL) return kz_nil();\n"
+    set h to h + "    for (i = 0; i < tokens.as.list->len && i < 512; i++)\n"
+    set h to h + "        ids[n++] = (int32_t)kz_f32(tokens.as.list->items[i]);\n"
+    set h to h + "    vocab = kaze_llama_n_vocab(m);\n"
+    set h to h + "    logits = (float *)kmalloc(&kz_arena, vocab * sizeof(float));\n"
+    set h to h + "    if (logits == NULL) return kz_nil();\n"
+    set h to h + "    if (!kaze_llama_forward(m, ids, n, 0, logits)) return kz_nil();\n"
+    set h to h + "    dims[0] = 1; dims[1] = (int64_t)vocab;\n"
+    set h to h + "    t = kaze_tensor_alloc(&kz_arena, KAZE_DTYPE_F32, 2, dims);\n"
+    set h to h + "    if (t == NULL) return kz_nil();\n"
+    set h to h + "    memcpy(t->data, logits, vocab * sizeof(float));\n"
+    set h to h + "    return kz_tensor_wrap(t);\n"
+    set h to h + "}\n"
+    set h to h + "\n/* --- End Phase 12 tensor bridge --- */\n"
+    return h
+
 action emit_c_program(prog: AstNode):
     recursion bounded 200
     # Resolve bare telemetry words once, with each routine's declarations in hand.
@@ -4936,6 +6933,14 @@ action emit_c_program(prog: AstNode):
     for each it in raw_items:
         set items to items + [mark_item(it, elided)]
     let out = get_c_runtime_header()
+    let uses_tensors = program_uses_tensors(items)
+    if uses_tensors == 1:
+        set out to out + "\n" + get_c_tensor_header()
+    # The HTTP backend is opt-in and lives in its own header so the compiler
+    # and programs that never call it do not carry libcurl. It is appended
+    # after the prelude because it uses KzValue and the arena string helpers.
+    if program_uses_http(items) == 1:
+        set out to out + "\n#include \"kaze_http.h\"\n"
 
     # 1. Forward declarations.
     set out to out + "/* --- Forward Declarations --- */\n"
@@ -4946,6 +6951,11 @@ action emit_c_program(prog: AstNode):
             if is_routine(item) == 1:
                 let params_node = child_at(item, 0)
                 set out to out + "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
+            if item.kind == "FIBER":
+                set out to out + "KZ_MAYBE_UNUSED static int kz_step_" + sanitize_c_id(item.name) + "(kz_fiber*);\n"
+                set out to out + "static long kz_fuel_" + sanitize_c_id(item.name) + "(void);\n"
+                set out to out + "static size_t kz_slots_" + sanitize_c_id(item.name) + "(void);\n"
+                set out to out + "static size_t kz_guards_" + sanitize_c_id(item.name) + "(void);\n"
 
     # 2. Record constructors.
     set out to out + "\n/* --- Record Constructors --- */\n"
@@ -4960,12 +6970,14 @@ action emit_c_program(prog: AstNode):
         if is_routine(item) == 1:
             set out to out + emit_routine(item)
         otherwise:
+            if item.kind == "FIBER":
+                set out to out + emit_fiber(item)
             if item.kind == "WHEN" or item.kind == "EVERY":
                 set out to out + emit_hook(item)
 
     # 4. Hook driver, then the entry point.
     set out to out + "\n" + emit_hook_driver(items)
-    set out to out + emit_c_entry(items)
+    set out to out + emit_c_entry(items, program_config(prog), uses_tensors)
     return out
 
 # lsp.kaze — a Language Server Protocol engine written in pure Kaze.
@@ -7537,8 +9549,37 @@ action bc_first_unknown(n: AstNode):
     return ""
 
 # The compile command: parse, check, and print the module as hex.
+# Phase 13: a fiber suspends, and bytecode format 5 has no suspension point.
+# Writing a module that silently dropped a spawn or a yield would be the one
+# thing this project refuses to do, so the writer names the limit instead.
+action bc_concurrency_line(prog: AstNode) -> num:
+    let items = program_items(prog)
+    for each it in items:
+        if it.kind == "FIBER":
+            return it.line
+        let hits = bc_nodes_of(child_at(it, 2), "YIELD", [])
+        if (length of hits) > 0:
+            return (hits[0] otherwise it).line
+        let spawns = bc_nodes_of(child_at(it, 2), "SPAWN", [])
+        if (length of spawns) > 0:
+            return (spawns[0] otherwise it).line
+    return 0
+
+action bc_nodes_of(n: AstNode, want, out) -> list:
+    recursion bounded 64
+    let acc = out
+    if n.kind == want:
+        set acc to acc + [n]
+    for each c in n.children:
+        set acc to bc_nodes_of(c, want, acc)
+    return acc
+
 action compile_module(src):
     let program = parse_source(src)
+    let conc = bc_concurrency_line(program)
+    if conc > 0:
+        return "compile: E_KAZE_FIBER_BYTECODE at line " + conc + ": a fiber suspends, and module format 5 has no suspension point; emit the program as C (emit-c) to run it
+"
     let unread = bc_first_unknown(program)
     if (length of unread) > 0:
         return "compile: the parser could not read this source (line " + unread + "); no module written\n"

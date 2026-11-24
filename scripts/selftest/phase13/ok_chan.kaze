@@ -1,0 +1,31 @@
+# A bounded ring buffer with a concurrent consumer: the producer appends four
+# values into a depth-2 channel and yields after each send, so the consumer
+# drains it. A receive on an empty channel takes its fallback instead of
+# blocking, which is why the consumer yields and retries rather than waiting.
+fiber producer(q, n: int):
+    let i = 0
+    while i < n bounded 100:
+        send i to q
+        set i to i + 1
+        yield
+
+fiber consumer(q, want: int) -> int:
+    let sum = 0
+    let seen = 0
+    while seen < want bounded 200:
+        let v = receive from q otherwise -1
+        if v < 0:
+            yield
+        otherwise:
+            set sum to sum + v
+            set seen to seen + 1
+            yield
+    return sum
+
+action main():
+    let q = channel(2)
+    spawn producer(q, 4) as p
+    spawn consumer(q, 4) as c
+    let sum = join c
+    join p
+    return sum

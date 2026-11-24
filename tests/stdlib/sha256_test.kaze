@@ -1,0 +1,90 @@
+# tests/stdlib/sha256_test.kaze -- SHA-256 against the published FIPS 180-4 vectors.
+# Every digest in this file comes from FIPS 180-4 (the short messages the standard
+# illustrates plus the one-million-'a' message from its appendix); nothing here is
+# derived from the implementation, except the structural checks, which assert shape
+# rather than a value.
+needs: log
+
+use "./../../lib/sha256.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# Every character in t has to be one of the allowed characters.
+action in_charset(ch, charset) -> num:
+    let i = 0
+    let n = length of charset
+    while i < n bounded 1000:
+        if (charset[i] otherwise "") == ch:
+            return 1
+        set i to i + 1
+    return 0
+
+action all_lower_hex(t) -> num:
+    let i = 0
+    let n = length of t
+    while i < n bounded 1000:
+        if in_charset(t[i] otherwise "", "0123456789abcdef") == 0:
+            return 0
+        set i to i + 1
+    return 1
+
+# 2^k copies of the byte 'a', by repeated doubling. Concatenation copies its operands,
+# so a doubling build is O(n) where a per-byte append loop would be O(n^2).
+action fill_a(k) -> text:
+    let out = "a"
+    let i = 0
+    while i < k bounded 40:
+        set out to out + out
+        set i to i + 1
+    return out
+
+# The 1,000,000-byte message of the FIPS 180-4 appendix:
+# 2^19 + 2^18 + 2^17 + 2^16 + 2^14 + 2^9 + 2^6 = 1,000,000 bytes of 'a'.
+action million_a() -> text:
+    return fill_a(19) + fill_a(18) + fill_a(17) + fill_a(16) + fill_a(14) + fill_a(9) + fill_a(6)
+
+# The first count bytes of a digest list as lowercase hex, so the byte list itself can be
+# compared with the opening bytes of a published digest.
+action leading_hex(bytes, count) -> text:
+    let out = []
+    let i = 0
+    while i < count bounded 100:
+        set out to out + [bytes[i] otherwise 0]
+        set i to i + 1
+    return sha256_hex_of_bytes(out)
+
+action main() -> num:
+    let failures = 0
+
+    # FIPS 180-4 SHA-256 vectors, in the order the standard illustrates them.
+    set failures to check("empty message", sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", failures)
+    set failures to check("abc", sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", failures)
+    set failures to check("two-block 448-bit message", sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", failures)
+    set failures to check("the quick brown fox", sha256_hex("The quick brown fox jumps over the lazy dog") == "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592", failures)
+    set failures to check("one million a's", sha256_hex(million_a()) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0", failures)
+
+    # Structural: the digest is 32 bytes and the hex form is 64 lowercase characters.
+    let digest = sha256("abc")
+    set failures to check("digest is 32 bytes", (length of digest) == 32, failures)
+    let hex = sha256_hex("abc")
+    set failures to check("hex is 64 characters", (length of hex) == 64, failures)
+    set failures to check("hex is lowercase 0-9a-f", all_lower_hex(hex) == 1, failures)
+
+    # The byte list has to carry the same digest as the hex form: the opening bytes of
+    # the empty-message vector are e3 b0 c4 42.
+    set failures to check("byte list matches the published opening bytes", leading_hex(sha256(""), 4) == "e3b0c442", failures)
+    set failures to check("hex form agrees with the byte form", sha256_hex("") == sha256_hex_of_bytes(sha256("")), failures)
+
+    # One flipped bit has to change the whole digest. 0x63 ('c') and 0x62 ('b') differ
+    # in exactly one bit, so this is a one-bit change to the message, not a new message.
+    let m1 = "ab" + character(99)
+    let m2 = "ab" + character(98)
+    set failures to check("one-bit message change flips the digest", sha256_hex(m1) != sha256_hex(m2), failures)
+
+    if failures == 0:
+        log.info("OK sha256: 11 checks")
+    return failures

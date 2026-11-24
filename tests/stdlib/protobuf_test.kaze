@@ -1,0 +1,207 @@
+# tests/stdlib/protobuf_test.kaze -- the protobuf wire format against its published
+# vectors, plus 10,000 randomized varint and zigzag round-trips and a randomized
+# message round-trip.
+#
+# The byte strings asserted here come from the format definition, not from the
+# implementation: 150 encodes as 96 01 because seven bits and a continuation bit per
+# byte is what a varint is, and 08 96 01 is the example the protobuf documentation
+# uses for field 1 = 150. The randomized runs use a fixed seed so a failure repeats.
+needs: log
+
+use "./../../lib/protobuf.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# Element-wise comparison. The == operator on two lists compares identity, not
+# contents, so a list of bytes has to be compared by hand.
+action same_numbers(a, b) -> num:
+    if (length of a) != (length of b):
+        return 0
+    let i = 0
+    let n = length of a
+    let equal = 1
+    while i < n bounded 100000:
+        if (a[i] otherwise 0) != (b[i] otherwise 0):
+            set equal to 0
+        set i to i + 1
+    return equal
+
+action same_fields(a, b) -> num:
+    if (length of a) != (length of b):
+        return 0
+    let i = 0
+    let n = length of a
+    let equal = 1
+    while i < n bounded 100000:
+        let x = a[i] otherwise field_varint(0, 0)
+        let y = b[i] otherwise field_varint(0, 0)
+        if x.id != y.id or x.wire != y.wire or x.varint != y.varint:
+            set equal to 0
+        if same_numbers(x.blob, y.blob) == 0:
+            set equal to 0
+        set i to i + 1
+    return equal
+
+action lcg_next(state) -> num:
+    return (state * 1664525 + 1013904223) & 4294967295
+
+# A reference encoder written as division and modulo rather than shift and mask, so
+# the randomized run has an oracle that is not the library's own arithmetic.
+action ref_varint(n) -> list:
+    let out = []
+    let v = n
+    let stop = 0
+    while stop == 0 bounded 16:
+        let group = v % 128
+        let rest = (v - group) / 128 otherwise 0
+        if rest == 0:
+            set out to out + [group]
+            set stop to 1
+        otherwise:
+            set out to out + [group + 128]
+            set v to rest
+    return out
+
+action main() -> num:
+    let failures = 0
+
+    # ---- the comparators themselves -----------------------------------------------
+    # If either helper were broken the vector checks below would pass vacuously.
+    set failures to check("the byte comparator rejects a differing byte", same_numbers([1, 2], [1, 3]) == 0 and same_numbers([1, 2], [1, 2, 3]) == 0, failures)
+    set failures to check("the field comparator sees a wire type or payload change", same_fields([field_varint(1, 5)], [field_bytes(1, [5])]) == 0 and same_fields([field_bytes(2, [1])], [field_bytes(2, [2])]) == 0, failures)
+
+    # ---- varint vectors ----------------------------------------------------------
+    set failures to check("varint 0 is [0]", same_numbers(varint_encode(0), [0]) == 1, failures)
+    set failures to check("varint 1 is [1]", same_numbers(varint_encode(1), [1]) == 1, failures)
+    set failures to check("varint 127 is [127]", same_numbers(varint_encode(127), [127]) == 1, failures)
+    set failures to check("varint 128 is [128, 1]", same_numbers(varint_encode(128), [128, 1]) == 1, failures)
+    set failures to check("varint 300 is [172, 2]", same_numbers(varint_encode(300), [172, 2]) == 1, failures)
+    set failures to check("varint 2^31-1 is five bytes", same_numbers(varint_encode(2147483647), [255, 255, 255, 255, 7]) == 1, failures)
+    set failures to check("varint 2^53 is eight bytes", same_numbers(varint_encode(9007199254740992), [128, 128, 128, 128, 128, 128, 128, 16]) == 1, failures)
+    set failures to check("a negative number has no unsigned varint", (length of varint_encode(0 - 1)) == 0, failures)
+
+    # ---- varint decoding ---------------------------------------------------------
+    let v0 = varint_decode([0], 0)
+    set failures to check("decoding 0 reads one byte", v0.value == 0 and v0.next == 1, failures)
+    let v128 = varint_decode([128, 1], 0)
+    set failures to check("decoding 128 reads two bytes", v128.value == 128 and v128.next == 2, failures)
+    let v300 = varint_decode([172, 2], 0)
+    set failures to check("decoding 300 reads two bytes", v300.value == 300 and v300.next == 2, failures)
+    let vmax = varint_decode([255, 255, 255, 255, 7], 0)
+    set failures to check("decoding 2^31-1 reads five bytes", vmax.value == 2147483647 and vmax.next == 5, failures)
+    let vshort = varint_decode([128], 0)
+    set failures to check("a truncated varint stops at the end of the buffer", vshort.value == 0 and vshort.next == 1, failures)
+    let voffset = varint_decode([0, 0, 1], 2)
+    set failures to check("decoding honours the start offset", voffset.value == 1 and voffset.next == 3, failures)
+
+    # ---- zigzag ------------------------------------------------------------------
+    set failures to check("zigzag maps 0, -1, 1, -2, 2 to 0, 1, 2, 3, 4", zigzag_encode(0) == 0 and zigzag_encode(0 - 1) == 1 and zigzag_encode(1) == 2 and zigzag_encode(0 - 2) == 3 and zigzag_encode(2) == 4, failures)
+    set failures to check("zigzag of 2^31-1 and -2^31 hits the ends of the 32-bit range", zigzag_encode(2147483647) == 4294967294 and zigzag_encode(0 - 2147483648) == 4294967295, failures)
+    set failures to check("zigzag_decode reverses the same values", zigzag_decode(0) == 0 and zigzag_decode(1) == 0 - 1 and zigzag_decode(2) == 1 and zigzag_decode(3) == 0 - 2 and zigzag_decode(4) == 2 and zigzag_decode(4294967294) == 2147483647 and zigzag_decode(4294967295) == 0 - 2147483648, failures)
+
+    # ---- tags --------------------------------------------------------------------
+    set failures to check("field_key packs number and wire type", field_key(1, 0) == 8 and field_key(2, 2) == 18 and field_key(1, 5) == 13, failures)
+    let tag = read_tag([18, 2, 9], 0)
+    set failures to check("read_tag splits a tag back into number and wire type", tag.id == 2 and tag.wire == 2 and tag.next == 1, failures)
+    set failures to check("field 16 needs a two-byte tag", same_numbers(varint_encode(field_key(16, 0)), [128, 1]) == 1, failures)
+
+    # ---- a whole message ---------------------------------------------------------
+    let message = [field_varint(1, 150), field_bytes(2, [104, 105]), field_varint(3, 0)]
+    let encoded = write_tags(message)
+    # 08 96 01 | 12 02 68 69 | 18 00: field 1 varint 150, field 2 two bytes, field 3
+    # varint 0.
+    set failures to check("the documented example message encodes byte for byte", same_numbers(encoded, [8, 150, 1, 18, 2, 104, 105, 24, 0]) == 1, failures)
+    set failures to check("the message decodes back to the same fields", same_fields(read_tags(encoded), message) == 1, failures)
+    set failures to check("an empty message is empty bytes and no fields", (length of write_tags([])) == 0 and (length of read_tags([])) == 0, failures)
+
+    let inner = write_tags([field_varint(1, 42)])
+    let outer = write_tags([field_bytes(3, inner)])
+    let decoded_outer = read_tags(outer)
+    let decoded_inner = [field_varint(0, 0)]
+    if (length of decoded_outer) > 0:
+        let first = decoded_outer[0] otherwise field_varint(0, 0)
+        set decoded_inner to read_tags(first.blob)
+    set failures to check("a nested message round-trips as a length-delimited payload", same_fields(decoded_inner, [field_varint(1, 42)]) == 1 and same_numbers(outer, [26, 2, 8, 42]) == 1, failures)
+    set failures to check("an overrunning length is clamped to the bytes present", same_fields(read_tags([18, 5, 104]), [field_bytes(2, [104])]) == 1, failures)
+
+    # ---- 10,000 randomized values ------------------------------------------------
+    let seed = 424242
+    let mismatch = 0
+    let reference_mismatch = 0
+    let i = 0
+    while i < 10000 bounded 20000:
+        set seed to lcg_next(seed)
+        let kind = seed & 3
+        let value = 0
+        if kind == 0:
+            set value to seed & 127
+        otherwise:
+            if kind == 1:
+                set value to seed & 4294967295
+            otherwise:
+                if kind == 2:
+                    set value to ((seed & 2097151) * 4294967296) + (seed & 4294967295)
+                otherwise:
+                    set value to 9007199254740991
+        let bytes = varint_encode(value)
+        let back = varint_decode(bytes, 0)
+        if back.value != value or back.next != (length of bytes):
+            set mismatch to mismatch + 1
+        if same_numbers(bytes, ref_varint(value)) == 0:
+            set reference_mismatch to reference_mismatch + 1
+        set i to i + 1
+    set failures to check("10,000 randomized varints round-trip", mismatch == 0, failures)
+    set failures to check("10,000 randomized varints match a division-based reference", reference_mismatch == 0, failures)
+
+    # ---- 10,000 randomized zigzag values -----------------------------------------
+    let seed2 = 998877
+    let zigzag_mismatch = 0
+    let j = 0
+    while j < 10000 bounded 20000:
+        set seed2 to lcg_next(seed2)
+        let magnitude = seed2 & 2147483647
+        let signed = magnitude
+        if (seed2 & 1) != 0:
+            set signed to 0 - magnitude
+        let wire = varint_encode(zigzag_encode(signed))
+        let round = zigzag_decode((varint_decode(wire, 0)).value)
+        if round != signed:
+            set zigzag_mismatch to zigzag_mismatch + 1
+        set j to j + 1
+    set failures to check("10,000 randomized zigzags round-trip", zigzag_mismatch == 0, failures)
+
+    # ---- 200 randomized messages -------------------------------------------------
+    let seed3 = 13579
+    let message_mismatch = 0
+    let m = 0
+    while m < 200 bounded 1000:
+        let fields = []
+        set seed3 to lcg_next(seed3)
+        let count = (seed3 & 3) + 1
+        let f = 0
+        while f < count bounded 8:
+            set seed3 to lcg_next(seed3)
+            if (seed3 & 1) == 0:
+                set fields to fields + [field_varint(f + 1, seed3 & 4294967295)]
+            otherwise:
+                let blob = []
+                let b = 0
+                let blen = seed3 & 7
+                while b < blen bounded 16:
+                    set seed3 to lcg_next(seed3)
+                    set blob to blob + [seed3 & 255]
+                    set b to b + 1
+                set fields to fields + [field_bytes(f + 1, blob)]
+            set f to f + 1
+        if same_fields(read_tags(write_tags(fields)), fields) == 0:
+            set message_mismatch to message_mismatch + 1
+        set m to m + 1
+    set failures to check("200 randomized messages round-trip", message_mismatch == 0, failures)
+
+    if failures == 0:
+        log.info("OK protobuf: 31 checks")
+    return failures

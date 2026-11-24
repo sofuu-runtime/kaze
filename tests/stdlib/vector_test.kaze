@@ -1,0 +1,104 @@
+# tests/stdlib/vector_test.kaze -- the vector library, including the Phase 11 gate:
+# 10,000 randomized operations against a plain-list reference model.
+#
+# The generator is a fixed-seed LCG so a failure is reproducible; there is no random
+# builtin in Kaze and there should not be one on a deterministic runtime.
+
+needs: log
+
+use "./../../lib/vector.kaze"
+
+
+action lcg_next(state) -> num:
+    # 32-bit LCG parameters, kept inside a double's exact integer range.
+    let s = (state * 1664525 + 1013904223) & 4294967295
+    return s
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+    let v = vector_new()
+    set v to vector_push(v, 10)
+    set v to vector_push(v, 20)
+    set v to vector_push(v, 30)
+    set failures to check("push grows the vector", vector_size(v) == 3, failures)
+    set failures to check("get reads a pushed value", vector_get(v, 1) == 20, failures)
+    set failures to check("get past the end is 0", vector_get(v, 9) == 0, failures)
+    set failures to check("has_index knows the ends", vector_has_index(v, 2) == 1 and vector_has_index(v, 3) == 0, failures)
+    set failures to check("contains finds a value", vector_contains(v, 30) == 1 and vector_contains(v, 99) == 0, failures)
+    set failures to check("index_of reports position", vector_index_of(v, 20) == 1 and vector_index_of(v, 99) == 0 - 1, failures)
+
+    let w = vector_set(v, 1, 99)
+    set failures to check("set replaces one slot", vector_get(w, 1) == 99 and vector_get(v, 1) == 20, failures)
+    set failures to check("remove_at shifts the tail", vector_size(vector_remove_at(v, 0)) == 2 and vector_get(vector_remove_at(v, 0), 0) == 20, failures)
+    set failures to check("insert_at places in the middle", vector_get(vector_insert_at(v, 1, 15), 1) == 15, failures)
+    set failures to check("slice takes a window", vector_size(vector_slice(v, 1, 2)) == 2 and vector_get(vector_slice(v, 1, 2), 0) == 20, failures)
+    set failures to check("reverse flips the order", vector_get(vector_reverse(v), 0) == 30, failures)
+    set failures to check("sum adds every element", vector_sum(v) == 60, failures)
+    set failures to check("min and max", vector_min(v) == 10 and vector_max(v) == 30, failures)
+    set failures to check("concat joins two vectors", vector_size(vector_concat(v, w)) == 6, failures)
+    set failures to check("sorted orders ascending", vector_get(vector_sorted([3, 1, 2]), 0) == 1 and vector_get(vector_sorted([3, 1, 2]), 2) == 3, failures)
+
+    # ---- the gate: 10,000 randomized operations against a reference model ----------
+    let seed = 12345
+    let live = vector_new()
+    let model = []
+    let i = 0
+    let mismatches = 0
+    while i < 10000 bounded 100000:
+        set seed to lcg_next(seed)
+        let op = seed & 3
+        let value = (seed >> 8) & 255
+        if op == 0:
+            set live to vector_push(live, value)
+            set model to model + [value]
+        if op == 1:
+            if (length of model) > 0:
+                set seed to lcg_next(seed)
+                let at = (seed % (length of model)) otherwise 0
+                set live to vector_remove_at(live, at)
+                set model to vector_remove_at_plain(model, at)
+        if op == 2:
+            if (length of model) > 0:
+                set seed to lcg_next(seed)
+                let at = (seed % (length of model)) otherwise 0
+                set live to vector_set(live, at, value)
+                set model to plain_set(model, at, value)
+        if op == 3:
+            if vector_size(live) != (length of model):
+                set mismatches to mismatches + 1
+        if vector_size(live) != (length of model):
+            set mismatches to mismatches + 1
+        set i to i + 1
+    set failures to check("10,000 randomized operations keep the size in step", mismatches == 0, failures)
+    set failures to check("the final vector matches the model", vector_size(live) == (length of model), failures)
+
+    if failures == 0:
+        log.info("OK vector: 17 checks")
+    return failures
+
+# Plain-list helpers, deliberately independent of the library under test.
+action vector_remove_at_plain(xs, i) -> list:
+    let out = []
+    let k = 0
+    for each v in xs:
+        if k != i:
+            set out to out + [v]
+        set k to k + 1
+    return out
+
+action plain_set(xs, i, x) -> list:
+    let out = []
+    let k = 0
+    for each v in xs:
+        if k == i:
+            set out to out + [x]
+        otherwise:
+            set out to out + [v]
+        set k to k + 1
+    return out

@@ -1,0 +1,139 @@
+# lib/mavlink.kaze -- MAVLink 2.0 frame assembly and parsing, without signing.
+#
+# A MAVLink 2.0 frame is:
+#
+#   offset  size  meaning
+#   0       1     magic 0xFD
+#   1       1     payload length, 0..255
+#   2       1     incompat_flags
+#   3       1     compat_flags
+#   4       1     sequence number
+#   5       1     system id
+#   6       1     component id
+#   7       3     message id, little-endian 24 bits
+#   10      n     payload
+#   10+n    2     CRC-16/MCRF4XX, little-endian
+#
+# The CRC spans offsets 1 through 10+n-1: the length byte, the two flag bytes, the
+# sequence, system and component ids, the 24-bit message id, and the payload. The
+# magic byte is not covered - that is why a
+# receiver can resynchronise by scanning for 0xFD. After the span, one further byte is
+# fed through the register: the message's CRC_EXTRA. That byte is not transmitted. It
+# pins the frame to one message definition, so a receiver with a different definition
+# of the same message id gets a CRC failure instead of misread fields. The brief for
+# this module says the CRC is "seeded with crc_extra"; because a CRC is a fold, adding
+# the extra byte at the end is the same thing as seeding with it, and appending it is
+# how the reference implementations do it. The suite pins a frame whose CRC is
+# recomputed from a hand-written span plus the extra byte.
+#
+# CRC_EXTRA is a hash of the message definition - field names, types and order - and
+# cannot be derived from the wire bytes. Every table entry below was read from the
+# generated MAVLink C headers (MAVLINK_MSG_ID_<name>_CRC) for the common dialect:
+# HEARTBEAT (0) 50, PING (4) 237, ATTITUDE (30) 39, GLOBAL_POSITION_INT (33) 104,
+# COMMAND_LONG (76) 152. That is a handful, not a table: a real deployment generates
+# the complete list from its dialect XML. A message id outside this list returns -1
+# and parses as an error rather than being accepted unchecked.
+#
+# Signing is not implemented. Frames are built with incompat_flags 0, and a parse
+# rejects any frame that sets an incompatibility flag, because a signed MAVLink 2
+# frame carries a 13-byte signature this module cannot verify. MAVLink 1 frames
+# (magic 0xFE) are not parsed either; they are reported as a bad magic byte.
+#
+# One frame per buffer: the parser requires the buffer to be exactly header + payload
+# + CRC, so a stream has to be split by the caller. That strictness is deliberate -
+# a short read is otherwise indistinguishable from a length byte that drifted.
+
+use "./crc.kaze"
+
+record MavlinkFrame:
+    ok: bool
+    msgid: number
+    seq: number
+    sysid: number
+    compid: number
+    payload: list
+    crc: number
+    error: text
+
+# A refused frame carries no header field, only the reason, so a caller cannot mistake
+# a guess for a decoded value.
+action mavlink2_failed(reason) -> MavlinkFrame:
+    return MavlinkFrame(ok: false, msgid: 0, seq: 0, sysid: 0, compid: 0, payload: [], crc: 0, error: reason)
+
+# The CRC_EXTRA byte for the message ids this module knows, or -1. See the header for
+# where these numbers come from and why the full table is not here.
+action mavlink2_crc_extra(msgid) -> num:
+    if msgid == 0:
+        return 50
+    otherwise:
+        if msgid == 4:
+            return 237
+        otherwise:
+            if msgid == 30:
+                return 39
+            otherwise:
+                if msgid == 33:
+                    return 104
+                otherwise:
+                    if msgid == 76:
+                        return 152
+                    otherwise:
+                        return 0 - 1
+
+# Assemble a MAVLink 2.0 frame. The payload is a byte list of at most 255 entries and
+# the message id has to fit in 24 bits; anything else returns an empty list, because a
+# truncated or wrapped frame would be worse than no frame. seq, sysid and compid are
+# masked to a byte, so a caller counting past 255 does not corrupt the header.
+action mavlink2_frame(msgid, payload, seq, sysid, compid, crc_extra) -> list:
+    let out = []
+    let n = length of payload
+    if n > 255:
+        return out
+    if msgid < 0 or msgid > 16777215:
+        return out
+    # Offsets 1..9: everything the CRC covers before the payload starts.
+    let body = [n, 0, 0, (seq & 255), (sysid & 255), (compid & 255), (msgid & 255), ((msgid >> 8) & 255), ((msgid >> 16) & 255)]
+    set body to body + payload
+    let crc = crc16_mcrf4xx(body + [(crc_extra & 255)])
+    set out to out + [253]
+    set out to out + body
+    set out to out + [(crc & 255), ((crc >> 8) & 255)]
+    return out
+
+# Parse exactly one MAVLink 2.0 frame. Every rejection path returns ok false with the
+# reason in error: a short buffer, a wrong magic, a length that does not match the
+# buffer, an unknown message id, or a CRC that does not agree.
+action mavlink2_parse(bytes) -> MavlinkFrame:
+    let n = length of bytes
+    if n < 12:
+        return mavlink2_failed("frame shorter than 12 bytes")
+    if (bytes[0] otherwise 0) != 253:
+        return mavlink2_failed("bad magic: expected 253")
+    let len = bytes[1] otherwise 0
+    if n != 12 + len:
+        return mavlink2_failed("bad length: length byte " + len + " needs " + (12 + len) + " bytes, got " + n)
+    if (bytes[2] otherwise 0) != 0:
+        return mavlink2_failed("unsupported incompat flags " + (bytes[2] otherwise 0) + ": signing is not implemented")
+
+    let msgid = (bytes[7] otherwise 0) + ((bytes[8] otherwise 0) * 256) + ((bytes[9] otherwise 0) * 65536)
+    let extra = mavlink2_crc_extra(msgid)
+    if extra < 0:
+        return mavlink2_failed("unknown message id " + msgid + ": no CRC_EXTRA in this table")
+
+    # The covered span: offsets 1 through 10 + len - 1, then the CRC_EXTRA byte.
+    let span = []
+    let i = 1
+    while i < 10 + len bounded 300:
+        set span to span + [bytes[i] otherwise 0]
+        set i to i + 1
+    let computed = crc16_mcrf4xx(span + [extra])
+    let received = (bytes[n - 2] otherwise 0) + ((bytes[n - 1] otherwise 0) * 256)
+    if computed != received:
+        return mavlink2_failed("crc mismatch: frame says " + received + ", header and payload give " + computed)
+
+    let payload = []
+    let p = 0
+    while p < len bounded 300:
+        set payload to payload + [bytes[10 + p] otherwise 0]
+        set p to p + 1
+    return MavlinkFrame(ok: true, msgid: msgid, seq: bytes[4] otherwise 0, sysid: bytes[5] otherwise 0, compid: bytes[6] otherwise 0, payload: payload, crc: computed, error: "")

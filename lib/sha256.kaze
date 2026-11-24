@@ -1,0 +1,191 @@
+# lib/sha256.kaze -- SHA-256 (FIPS 180-4) over Kaze text and byte lists.
+#
+# The algorithm is defined on 32-bit words and Kaze has no integer type, so every word
+# here is a double masked back to 32 bits. The widest expression in the compression adds
+# five such words, which is under 5 * 2^32 and therefore exact in a double; that is why
+# every sum ends in `& 4294967295`. The rotation can use `>>` directly because it is
+# the logical shift the algorithm wants. `~` is deliberately not used: the parser lowers
+# it to `x ^ -1`, which drags a negative value into the arithmetic.
+#
+# The core hashes a list of byte values. sha256 and sha256_hex are the text front door;
+# HMAC (lib/hmac.kaze) needs the byte form because its key pads are not text. Text is
+# read one byte at a time with `code(t[i])`: Kaze text carries its byte length and
+# indexing yields a one-byte text, so a UTF-8 message is hashed as its UTF-8 bytes.
+#
+# A text value cannot carry a 0 byte in the first place - there is no escape for it and
+# `character(0)` yields empty text - so the text front door never meets one. The byte-list
+# entry point does handle all 256 values, including 0, and HMAC depends on that: its
+# hashed key and its inner digest are byte lists that may contain zeroes.
+#
+# The trailing length field is built as two 32-bit halves from `length of`, which stays
+# exact for messages up to 2^50 bytes. The practical limits are lower: the loop that reads
+# the bytes of a text stops at 50 million iterations, and the block loop at one million
+# blocks (64 MB). Either stops the run with E_KAZE_LOOP_BOUND instead of producing a
+# quietly wrong digest, and the 1,000,000-byte FIPS vector runs well inside both.
+
+# Right rotation of a 32-bit word. The shift count is always 1..31, so the left half
+# cannot leave the exact-integer range, but it still has to be masked: the shifted value
+# is not a 32-bit word any more.
+action sha256_rr(x, n) -> num:
+    let high = x >> n
+    let low = (x << (32 - n)) & 4294967295
+    return (high | low) & 4294967295
+
+# The 64 round constants: the first 32 bits of the fractional parts of the cube roots of
+# the first 64 primes. A list lookup beats a 64-way if-chain inside the round loop. The
+# table is rebuilt on every call because Kaze has no module-level storage; call it once
+# per message, not once per block.
+action sha256_round_constants() -> list:
+    let part1 = [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221, 3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580]
+    let part2 = [3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986, 2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895]
+    let part3 = [666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037, 2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344]
+    let part4 = [430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779, 1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298]
+    return part1 + part2 + part3 + part4
+
+# The eight initial hash words: fractional parts of the square roots of the first 8
+# primes, in FIPS 180-4 order.
+action sha256_initial_state() -> list:
+    return [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]
+
+# The bytes of a text, in order, as numbers 0..255.
+action sha256_message_bytes(t) -> list:
+    let out = []
+    let i = 0
+    let n = length of t
+    while i < n bounded 50000000:
+        set out to out + [(code(t[i]) otherwise 0) & 255]
+        set i to i + 1
+    return out
+
+# A list of k zero bytes. k is at most 63, so the append loop costs nothing.
+action sha256_zeros(k) -> list:
+    let out = []
+    let i = 0
+    while i < k bounded 64:
+        set out to out + [0]
+        set i to i + 1
+    return out
+
+# SHA-256 of a list of byte values, each expected in 0..255. Everything else in this
+# file funnels through here. Byte values are used as given; the text front door masks
+# them, and so does HMAC.
+action sha256_of_bytes(bytes) -> list:
+    let n = length of bytes
+
+    # Padding: the message, one 0x80 byte, zero bytes up to 56 modulo 64, then the
+    # message length in bits as a big-endian 64-bit number.
+    #
+    # The pieces are joined with a handful of concatenations rather than one append per
+    # byte. A list that is appended to and also indexed cannot use the emitter's
+    # in-place append, so a per-byte loop would copy the whole buffer on every byte and
+    # make hashing quadratic in the message size; three concatenations keep it linear.
+    let fill = 56 - ((n + 1) % 64)
+    if fill < 0:
+        set fill to fill + 64
+
+    # The bit length as two 32-bit halves, so the field is right for any length a double
+    # can count. The high half is n / 2^29 rounded down, written with one modulo rather
+    # than floor() because the C emitter lowers floor to a nil stub; nil coerces to 0,
+    # which would silently drop the high half of the length on a message of 512 MB or
+    # more. The loop ceiling makes that unreachable today, but the arithmetic should not
+    # depend on it. n, the remainder and the difference are exact integers, so the
+    # division is exact.
+    let high = ((n - ((n) % 536870912)) / 536870912) otherwise 0
+    let low = (n * 8) - (high * 4294967296)
+    let padded = bytes + [128] + sha256_zeros(fill) + [((high >> 24) & 255), ((high >> 16) & 255), ((high >> 8) & 255), (high & 255), ((low >> 24) & 255), ((low >> 16) & 255), ((low >> 8) & 255), (low & 255)]
+
+    let k = sha256_round_constants()
+    let state = sha256_initial_state()
+    let h0 = state[0] otherwise 0
+    let h1 = state[1] otherwise 0
+    let h2 = state[2] otherwise 0
+    let h3 = state[3] otherwise 0
+    let h4 = state[4] otherwise 0
+    let h5 = state[5] otherwise 0
+    let h6 = state[6] otherwise 0
+    let h7 = state[7] otherwise 0
+    let blocks = ((length of padded) / 64) otherwise 0
+
+    let block = 0
+    while block < blocks bounded 1000000:
+        # Message schedule: 16 big-endian words straight from the block, then 48
+        # recurrences. The schedule is rebuilt per block because lists are values, not
+        # buffers.
+        let w = []
+        let t = 0
+        while t < 16 bounded 100:
+            let at = (block * 64) + (t * 4)
+            let word = ((padded[at] otherwise 0) * 16777216) + ((padded[at + 1] otherwise 0) * 65536) + ((padded[at + 2] otherwise 0) * 256) + (padded[at + 3] otherwise 0)
+            set w to w + [word]
+            set t to t + 1
+        while t < 64 bounded 100:
+            let x = w[t - 15] otherwise 0
+            let y = w[t - 2] otherwise 0
+            let small0 = sha256_rr(x, 7) ^ sha256_rr(x, 18) ^ (x >> 3)
+            let small1 = sha256_rr(y, 17) ^ sha256_rr(y, 19) ^ (y >> 10)
+            let next = ((w[t - 16] otherwise 0) + small0 + (w[t - 7] otherwise 0) + small1) & 4294967295
+            set w to w + [next]
+            set t to t + 1
+
+        # Compression: eight working words, 64 rounds, then add the result back into the
+        # running state. The shifts and rotations cannot be hoisted out of the loop
+        # because every round rewrites the whole working set.
+        let a = h0
+        let b = h1
+        let c = h2
+        let d = h3
+        let e = h4
+        let f = h5
+        let g = h6
+        let hh = h7
+        let r = 0
+        while r < 64 bounded 100:
+            let big1 = (sha256_rr(e, 6) ^ sha256_rr(e, 11) ^ sha256_rr(e, 25)) & 4294967295
+            let ch = ((e & f) ^ ((e ^ 4294967295) & g)) & 4294967295
+            let t1 = (hh + big1 + ch + (k[r] otherwise 0) + (w[r] otherwise 0)) & 4294967295
+            let big0 = (sha256_rr(a, 2) ^ sha256_rr(a, 13) ^ sha256_rr(a, 22)) & 4294967295
+            let maj = ((a & b) ^ (a & c) ^ (b & c)) & 4294967295
+            let t2 = (big0 + maj) & 4294967295
+            set hh to g
+            set g to f
+            set f to e
+            set e to ((d + t1) & 4294967295)
+            set d to c
+            set c to b
+            set b to a
+            set a to ((t1 + t2) & 4294967295)
+            set r to r + 1
+        set h0 to ((h0 + a) & 4294967295)
+        set h1 to ((h1 + b) & 4294967295)
+        set h2 to ((h2 + c) & 4294967295)
+        set h3 to ((h3 + d) & 4294967295)
+        set h4 to ((h4 + e) & 4294967295)
+        set h5 to ((h5 + f) & 4294967295)
+        set h6 to ((h6 + g) & 4294967295)
+        set h7 to ((h7 + hh) & 4294967295)
+        set block to block + 1
+
+    # The state is eight words; the digest is those words big-endian, 32 bytes.
+    let out = []
+    for each word in [h0, h1, h2, h3, h4, h5, h6, h7]:
+        set out to out + [((word >> 24) & 255), ((word >> 16) & 255), ((word >> 8) & 255), (word & 255)]
+    return out
+
+# SHA-256 of a text as a list of 32 bytes.
+action sha256(t) -> list:
+    return sha256_of_bytes(sha256_message_bytes(t))
+
+# Lowercase hex of a byte list. Kept public because HMAC renders a digest list, and a
+# caller that already holds bytes should not have to rebuild text to print them.
+action sha256_hex_of_bytes(bytes) -> text:
+    let digits = "0123456789abcdef"
+    let out = ""
+    for each b in bytes:
+        let hi = (b >> 4) & 15
+        let lo = b & 15
+        set out to out + (digits[hi] otherwise "0") + (digits[lo] otherwise "0")
+    return out
+
+# SHA-256 of a text as 64 lowercase hex characters.
+action sha256_hex(t) -> text:
+    return sha256_hex_of_bytes(sha256(t))

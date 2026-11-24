@@ -1,0 +1,50 @@
+# lib/hmac.kaze -- HMAC-SHA-256 (RFC 2104) over Kaze text.
+#
+# HMAC wraps a hash in two keyed passes: the key is padded to one 64-byte SHA-256 block
+# and XORed with the inner pad 0x36, that block is hashed together with the message, and
+# the digest is then hashed together with the key XORed with the outer pad 0x5c. A key
+# longer than the block is hashed down to 32 bytes first, which is the branch in
+# hmac_key_block; a shorter key is padded with zero bytes.
+#
+# Everything stays in byte lists rather than text. The hash of a long key and the inner
+# digest are arbitrary bytes and can contain zeroes, which text cannot carry, so a text
+# round trip would be lossy. The SHA-256 core in lib/sha256.kaze is byte-oriented for
+# exactly this reason.
+
+use "./sha256.kaze"
+
+# The key as a list of its block bytes: hashed when it is longer than 64 bytes, returned
+# as-is otherwise. The caller pads it out to the block size.
+action hmac_key_block(key) -> list:
+    let bytes = sha256_message_bytes(key)
+    if (length of bytes) > 64:
+        return sha256_of_bytes(bytes)
+    return bytes
+
+# One 64-byte pad block: the key bytes XORed with the pad byte, then pad bytes to fill
+# the block. A key block longer than 64 bytes cannot reach here (hmac_key_block caps it),
+# so the guard only protects the index.
+action hmac_pad_block(key_block, pad_byte) -> list:
+    let out = []
+    let i = 0
+    while i < 64 bounded 100:
+        if i < (length of key_block):
+            set out to out + [((key_block[i] otherwise 0) ^ pad_byte)]
+        otherwise:
+            set out to out + [pad_byte]
+        set i to i + 1
+    return out
+
+# HMAC-SHA-256 of message under key, as a list of 32 bytes.
+action hmac_sha256(key, message) -> list:
+    let block = hmac_key_block(key)
+    # The inner hash covers ipad_block || message and the outer one opad_block || digest.
+    # Each is joined with one concatenation: appending byte by byte would copy the buffer
+    # once per byte, so a long message would cost time quadratic in its length.
+    let inner = hmac_pad_block(block, 54) + sha256_message_bytes(message)
+    let digest = sha256_of_bytes(inner)
+    return sha256_of_bytes(hmac_pad_block(block, 92) + digest)
+
+# HMAC-SHA-256 of message under key, as 64 lowercase hex characters.
+action hmac_sha256_hex(key, message) -> text:
+    return sha256_hex_of_bytes(hmac_sha256(key, message))

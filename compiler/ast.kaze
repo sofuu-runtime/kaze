@@ -140,6 +140,48 @@ action make_for_each(var, list_expr, body, l):
 action make_try(err_name, body, other_block, l):
     return make_node("TRY", err_name, "", 0, [body, other_block], l)
 
+# ── phase 13: deterministic concurrency ─────────────────────────────────
+#
+# Four statement shapes and one expression shape, all lowering to the
+# cooperative scheduler in the native runtime:
+#
+#   spawn worker(1) as w1     a child fiber task; the name holds its handle
+#   yield                     an explicit cooperative suspension point
+#   join w1                   drive the scheduler until w1 finishes, yield its value
+#   cancel w1                 cancel w1 and its children; it never resumes
+#   send v to q               ring-buffer send; false when the channel is full
+#                             (children are [value, channel], in written order)
+#   receive from q            ring-buffer receive; needs an otherwise fallback
+#
+# A fiber is a routine that may suspend, so it is neither an action nor a
+# hook: it is entered by spawning it, never by calling it.
+action make_spawn(routine_name, args, task_name, l):
+    return make_node("SPAWN", routine_name, task_name, 0, args, l)
+
+action make_yield(l):
+    return make_node("YIELD", "", "", 0, [], l)
+
+action make_join(task, l):
+    return make_node("JOIN", "", "", 0, [task], l)
+
+action make_cancel(task, l):
+    return make_node("CANCEL", "", "", 0, [task], l)
+
+action make_send(value, chan, l):
+    return make_node("SEND", "", "", 0, [value, chan], l)
+
+action make_receive(chan, l):
+    return make_node("RECEIVE", "", "", 0, [chan], l)
+
+# Fuel units a fiber may burn: each scheduling step and each suspended step
+# costs one, so a program's concurrency budget is a number, not a hope.
+action make_fuel(text, l):
+    return make_node("FUEL", "", text, 0, [], l)
+
+# The module-level task ceiling: tasks bounded <n>.
+action make_tasks_bound(text, l):
+    return make_node("TASKS_BOUND", "", text, 0, [], l)
+
 # ── items ───────────────────────────────────────────────────────────────
 
 action make_param(name, ty, defaults, l):
@@ -156,6 +198,8 @@ action make_item(kind_word, name, params, contracts, result, body, l):
         set kind to "CHECK"
     if kind_word == "filter":
         set kind to "FILTER"
+    if kind_word == "fiber":
+        set kind to "FIBER"
     return make_node(kind, name, result, 0, [params, contracts, body], l)
 
 action make_record_item(name, fields, l):
@@ -176,11 +220,12 @@ action make_when(cond, body, l):
 action make_every(duration, body, l):
     return make_node("EVERY", "", "", 0, [duration, body], l)
 
-action make_program(uses, needs, items):
+action make_program(uses, needs, items, config):
     let uses_node = make_node("USES", "", "", 0, uses, 0)
     let needs_node = make_node("NEEDS", "", "", 0, needs, 0)
     let items_node = make_node("ITEMS", "", "", 0, items, 0)
-    return make_node("PROGRAM", "", "", 0, [uses_node, needs_node, items_node], 0)
+    let config_node = make_node("CONFIG", "", "", 0, config, 0)
+    return make_node("PROGRAM", "", "", 0, [uses_node, needs_node, items_node, config_node], 0)
 
 action program_uses(prog: AstNode):
     return child_at(prog, 0)
@@ -191,6 +236,19 @@ action program_needs(prog: AstNode):
 action program_items(prog: AstNode):
     let items_node = child_at(prog, 2)
     return items_node.children
+
+# Module-level configuration (phase 13): the task ceiling and nothing else so
+# far. Absent means the runtime default from KAZE_MAX_TASKS.
+action program_config(prog: AstNode):
+    let config_node = child_at(prog, 3)
+    return config_node.children
+
+action config_tasks_bound(prog: AstNode) -> string:
+    let out = ""
+    for each c in program_config(prog):
+        if c.kind == "TASKS_BOUND":
+            set out to c.val_str
+    return out
 
 # ── vocabulary shared by the parser and the checker ─────────────────────
 

@@ -1,0 +1,900 @@
+# lib/json.kaze -- RFC 8259 JSON: a strict scanner and a deterministic stringifier.
+#
+# A JSON value is a tagged record, JVal, because Kaze is dynamically typed at run
+# time: "kind" says what the value is and the matching field carries it. Objects
+# keep their members as an ordered list of JField, so member order survives a round
+# trip instead of being flattened into a hash map.
+#
+# The parser is a recursive-descent scanner over one byte string. Kaze values are
+# immutable, so the scanner threads a JState through every step: "pos" is where
+# scanning stopped, "err" is "" or an E_JSON_* code, "at" is the byte offset
+# blamed for a failure, and "val" is the value just parsed. A routine that fails
+# returns the state it was handed with err set, so its caller tests err once and
+# hands the state further up.
+#
+# The grammar accepted is exactly RFC 8259: leading zeros, a leading plus, a bare
+# fraction, a trailing decimal point, NaN/Infinity, trailing commas, single quotes,
+# bare member names, raw control bytes in strings, truncated or non-hex unicode
+# escapes, unpaired surrogate escapes, bytes after the top-level value, and nesting
+# deeper than 64 containers are all rejected. Any top-level value is accepted, not
+# only objects and arrays.
+#
+# Text in this runtime is a byte string, so UTF-8 passes through untouched in both
+# directions: the scanner copies every byte from 0x20 up verbatim, and the
+# stringifier escapes only what JSON requires. UTF-8 validity is not checked - bytes
+# go through as they came in. A unicode escape is decoded by hand: a surrogate pair
+# becomes one four-byte UTF-8 sequence, an unpaired one is an error.
+#
+# The two bytes JSON cares about most, the quote and the backslash, are spelled here
+# as the numbers 34 and 92. Kaze string literals support a small fixed set of
+# escapes, and a file about escaping should not depend on them: comparing byte codes
+# is both clearer and impossible to mis-escape.
+#
+# Documented limits:
+#   * character(0) is the empty text in this runtime, so the escape for U+0000
+#     decodes to nothing; a Kaze text cannot hold a NUL byte.
+#   * numbers are parsed to the nearest double: the significand is carried as a
+#     double-double, so a literal of up to 17 significant digits converts with one
+#     rounding at the end, at any decimal exponent the double range can hold.
+#     Significant digits past the seventeenth are dropped, which leaves a longer
+#     literal at most one ulp from the nearest double. An exponent that overflows to
+#     a non-finite value is rejected as E_JSON_EXP; one that underflows is accepted
+#     as 0, which is what strtod does.
+#   * json_stringify returns "" when the value has no JSON spelling: a non-finite
+#     number, an unknown kind, or nesting deeper than 64. "" is never the text of a
+#     value, so a caller can tell failure from every real answer.
+
+record JField:
+    name: text
+    val: JVal
+
+record JVal:
+    kind: text
+    num: number
+    str: text
+    b: bool
+    items: list
+    fields: list
+
+record JDoc:
+    ok: bool
+    at: number
+    err: text
+    val: JVal
+
+# Scanner cursor and result. "at" is only meaningful when err is not "".
+record JState:
+    text: text
+    pos: number
+    err: text
+    at: number
+    val: JVal
+
+# String-scan cursor: text built so far, next byte to read, failure info, and the
+# code point the last unicode escape produced.
+record JStr:
+    out: text
+    i: number
+    err: text
+    at: number
+    cp: number
+
+# An unevaluated sum of two doubles: hi holds the leading half of the significand,
+# lo the remainder. Used only while a decimal literal is turned into a double.
+record JDD:
+    hi: number
+    lo: number
+
+action json_null() -> JVal:
+    return JVal(kind: "null", num: 0, str: "", b: false, items: [], fields: [])
+
+action json_bool(x: bool) -> JVal:
+    return JVal(kind: "bool", num: 0, str: "", b: x, items: [], fields: [])
+
+action json_num(x: number) -> JVal:
+    return JVal(kind: "num", num: x, str: "", b: false, items: [], fields: [])
+
+action json_str(s: text) -> JVal:
+    return JVal(kind: "str", num: 0, str: s, b: false, items: [], fields: [])
+
+action json_arr(items: list) -> JVal:
+    return JVal(kind: "arr", num: 0, str: "", b: false, items: items, fields: [])
+
+action json_field(name: text, val: JVal) -> JField:
+    return JField(name: name, val: val)
+
+# Members are appended in the order given; json_get reads the last match, so a
+# caller building an object with json_put gets last-write-wins.
+action json_obj(fields: list) -> JVal:
+    return JVal(kind: "obj", num: 0, str: "", b: false, items: [], fields: fields)
+
+action json_type(v: JVal) -> text:
+    return v.kind
+
+action json_is_null(v: JVal) -> bool:
+    return v.kind == "null"
+
+# Number of elements for an array, members for an object, 0 for anything else.
+action json_len(v: JVal) -> number:
+    if v.kind == "arr":
+        return length of v.items
+    if v.kind == "obj":
+        return length of v.fields
+    return 0
+
+# Member names in document order, duplicates included. Empty for non-objects.
+action json_keys(v: JVal) -> list:
+    let out = []
+    if v.kind == "obj":
+        for each f in v.fields:
+            set out to out + [f.name]
+    return out
+
+# The last member with this name, or a null JVal. Duplicate names are legal JSON:
+# every member is kept, so re-serialising the document is faithful, and a lookup
+# takes the last one, which is what JSON.parse in JavaScript reports.
+action json_get(v: JVal, key: text) -> JVal:
+    let found = json_null()
+    if v.kind != "obj":
+        return found
+    for each f in v.fields:
+        if f.name == key:
+            set found to f.val
+    return found
+
+# json_get cannot tell a null member from a missing one; this can.
+action json_has(v: JVal, key: text) -> bool:
+    if v.kind != "obj":
+        return false
+    for each f in v.fields:
+        if f.name == key:
+            return true
+    return false
+
+action json_at(v: JVal, i: number) -> JVal:
+    if v.kind != "arr":
+        return json_null()
+    if i < 0 or i >= (length of v.items):
+        return json_null()
+    return v.items[i] otherwise json_null()
+
+# A copy of the object with one member appended (shadowing an earlier one, since
+# lookups take the last match).
+action json_put(v: JVal, key: text, value: JVal) -> JVal:
+    let fields = []
+    if v.kind == "obj":
+        set fields to v.fields
+    return json_obj(fields + [json_field(key, value)])
+
+# Deep equality: same kind, same scalar, element-wise for arrays, member-wise in
+# order for objects. Members therefore have to match one for one, which is stricter
+# than json_get and keeps the round-trip property honest.
+action json_equal(a: JVal, b: JVal) -> bool:
+    recursion bounded 256
+    if a.kind != b.kind:
+        return false
+    if a.kind == "num":
+        return a.num == b.num
+    if a.kind == "str":
+        return a.str == b.str
+    if a.kind == "bool":
+        return a.b == b.b
+    if a.kind == "arr":
+        if (length of a.items) != (length of b.items):
+            return false
+        let same = true
+        let k = 0
+        for each x in a.items:
+            let y = b.items[k] otherwise json_null()
+            if not json_equal(x, y):
+                set same to false
+            set k to k + 1
+        return same
+    if a.kind == "obj":
+        if (length of a.fields) != (length of b.fields):
+            return false
+        let same = true
+        let k = 0
+        for each fa in a.fields:
+            let fb = b.fields[k] otherwise json_field("", json_null())
+            if fa.name != fb.name:
+                set same to false
+            if not json_equal(fa.val, fb.val):
+                set same to false
+            set k to k + 1
+        return same
+    return true
+
+# -------------------------------------------------------------- stringifier
+
+# The text of one JSON document, or "" when the value has no JSON spelling.
+action json_stringify(v: JVal) -> text:
+    return json_emit(v, 0)
+
+# "" means "no spelling"; every real answer is longer than that, the empty string
+# itself serialising to two quote bytes.
+action json_emit(v: JVal, depth: number) -> text:
+    recursion bounded 256
+    if depth > 64:
+        return ""
+    let kind = v.kind
+    if kind == "null":
+        return "null"
+    if kind == "bool":
+        if v.b:
+            return "true"
+        return "false"
+    if kind == "num":
+        return json_num_text(v.num)
+    if kind == "str":
+        return json_quote(v.str)
+    if kind == "arr":
+        let out = "["
+        let first = 1
+        let bad = 0
+        for each it in v.items:
+            if bad == 0:
+                let part = json_emit(it, depth + 1)
+                if part == "":
+                    set bad to 1
+                otherwise:
+                    if first == 0:
+                        set out to out + ","
+                    set out to out + part
+                    set first to 0
+        if bad == 1:
+            return ""
+        return out + "]"
+    if kind == "obj":
+        let out = "{"
+        let first = 1
+        let bad = 0
+        for each f in v.fields:
+            if bad == 0:
+                let name = json_quote(f.name)
+                let part = json_emit(f.val, depth + 1)
+                if part == "":
+                    set bad to 1
+                otherwise:
+                    if first == 0:
+                        set out to out + ","
+                    set out to out + name + ":" + part
+                    set first to 0
+        if bad == 1:
+            return ""
+        return out + "}"
+    return ""
+
+# "" + n is the runtime's shortest text that reads back as the same double, which
+# is exactly what JSON wants. Infinity and NaN have no JSON spelling, so they report
+# failure instead of printing inf.
+action json_num_text(x: number) -> text:
+    let z = x * 0
+    if z != z:
+        return ""
+    return "" + x
+
+action json_quote(s: text) -> text:
+    let n = length of s
+    let out = character(34)
+    let i = 0
+    while i < n bounded 1000000:
+        let c = s[i] otherwise ""
+        set out to out + jp_char_out(c, code(c))
+        set i to i + 1
+    return out + character(34)
+
+# One byte of a string, escaped only where RFC 8259 requires it. Bytes from 0x20 up
+# are copied through, which is what keeps UTF-8 intact.
+action jp_char_out(c: text, cc: number) -> text:
+    if cc == 34:
+        return character(92) + character(34)
+    if cc == 92:
+        return character(92) + character(92)
+    if cc == 8:
+        return character(92) + "b"
+    if cc == 12:
+        return character(92) + "f"
+    if cc == 10:
+        return character(92) + "n"
+    if cc == 13:
+        return character(92) + "r"
+    if cc == 9:
+        return character(92) + "t"
+    if cc < 32:
+        return character(92) + "u00" + jp_hex2(cc)
+    return c
+
+action jp_hex2(x: number) -> text:
+    let digits = "0123456789abcdef"
+    let hi = jp_floor_div(x, 16)
+    let lo = (x) % 16 otherwise 0
+    return (digits[hi] otherwise "0") + (digits[lo] otherwise "0")
+
+# ---------------------------------------------------------------- the parser
+
+# Parse one value. ok is false when the text is not exactly one RFC 8259 document;
+# err then carries an E_JSON_* code and at is the byte offset blamed.
+action json_parse(t: text) -> JDoc:
+    let st = jp_value(jp_new(t), 0)
+    if st.err != "":
+        return JDoc(ok: false, at: st.at, err: st.err, val: json_null())
+    let end = st.pos
+    let tail = jp_skip_ws(st)
+    if tail.pos < (length of t):
+        return JDoc(ok: false, at: tail.pos, err: "E_JSON_TRAIL", val: json_null())
+    return JDoc(ok: true, at: end, err: "", val: st.val)
+
+# Parse one value off the front of a buffer and report where it ended, leaving the
+# rest of the buffer alone: the streaming half of the scanner. A caller that wants
+# every byte consumed uses json_parse instead.
+action json_parse_prefix(t: text) -> JDoc:
+    let st = jp_value(jp_new(t), 0)
+    if st.err != "":
+        return JDoc(ok: false, at: st.at, err: st.err, val: json_null())
+    return JDoc(ok: true, at: st.pos, err: "", val: st.val)
+
+action jp_new(t: text) -> JState:
+    return JState(text: t, pos: 0, err: "", at: 0, val: json_null())
+
+action jp_seek(st: JState, p: number) -> JState:
+    return JState(text: st.text, pos: p, err: st.err, at: st.at, val: st.val)
+
+action jp_fail(st: JState, code: text, p: number) -> JState:
+    return JState(text: st.text, pos: p, err: code, at: p, val: json_null())
+
+# The byte at pos, or "" past the end. Every read in this file goes through here or
+# carries its own otherwise fallback.
+action jp_peek(st: JState) -> text:
+    if st.pos >= (length of st.text):
+        return ""
+    return st.text[st.pos] otherwise ""
+
+# RFC 8259 whitespace is exactly space, tab, LF and CR. A byte-order mark is not
+# whitespace, so it falls through to the value dispatcher and is rejected there.
+action jp_is_ws(cc: number) -> bool:
+    return cc == 32 or cc == 9 or cc == 10 or cc == 13
+
+action jp_skip_ws(st: JState) -> JState:
+    let cur = st
+    let n = length of cur.text
+    let going = 1
+    while going == 1 bounded 1000000:
+        if cur.pos >= n:
+            set going to 0
+        otherwise:
+            if jp_is_ws(code(jp_peek(cur))):
+                set cur to jp_seek(cur, cur.pos + 1)
+            otherwise:
+                set going to 0
+    return cur
+
+action jp_digit(c: text) -> bool:
+    return c >= "0" and c <= "9"
+
+action jp_hexval(c: text) -> number:
+    if c >= "0" and c <= "9":
+        return code(c) - 48
+    if c >= "a" and c <= "f":
+        return code(c) - 87
+    if c >= "A" and c <= "F":
+        return code(c) - 55
+    return 0 - 1
+
+# Truncating division, exact for the small non-negative values used here.
+action jp_floor_div(a: number, b: number) -> number:
+    return ((a - ((a) % b otherwise 0)) / b) otherwise 0
+
+# One code point as UTF-8 bytes. Kaze text is a byte string, so this is just the
+# right bytes appended in order.
+action jp_utf8(cp: number) -> text:
+    if cp < 128:
+        return character(cp)
+    if cp < 2048:
+        return character(192 + jp_floor_div(cp, 64)) + character(128 + ((cp) % 64 otherwise 0))
+    if cp < 65536:
+        return character(224 + jp_floor_div(cp, 4096)) + character(128 + ((jp_floor_div(cp, 64)) % 64 otherwise 0)) + character(128 + ((cp) % 64 otherwise 0))
+    return character(240 + jp_floor_div(cp, 262144)) + character(128 + ((jp_floor_div(cp, 4096)) % 64 otherwise 0)) + character(128 + ((jp_floor_div(cp, 64)) % 64 otherwise 0)) + character(128 + ((cp) % 64 otherwise 0))
+
+# Four hex digits at s.i into s.cp. A short buffer is EOF; anything else that is not
+# a hex digit is E_JSON_UNICODE, blamed on the byte itself.
+action jp_hex4(src: text, s: JStr) -> JStr:
+    let n = length of src
+    let cp = 0
+    let k = 0
+    let bad = 0 - 1
+    while k < 4 and bad < 0 bounded 16:
+        if s.i + k >= n:
+            set bad to s.i + k
+        otherwise:
+            let hv = jp_hexval(src[s.i + k] otherwise "")
+            if hv < 0:
+                set bad to s.i + k
+            otherwise:
+                set cp to cp * 16 + hv
+        set k to k + 1
+    if bad >= 0:
+        if bad >= n:
+            return JStr(out: s.out, i: s.i, err: "E_JSON_EOF", at: n, cp: 0)
+        return JStr(out: s.out, i: s.i, err: "E_JSON_UNICODE", at: bad, cp: 0)
+    return JStr(out: s.out, i: s.i + 4, err: "", at: 0, cp: cp)
+
+# s.i at the backslash. A complete escape appends its byte and moves past it;
+# anything else in that position is E_JSON_ESC blamed on the escape letter.
+action jp_str_escape(src: text, s: JStr) -> JStr:
+    recursion bounded 256
+    let n = length of src
+    if s.i + 1 >= n:
+        return JStr(out: s.out, i: s.i, err: "E_JSON_EOF", at: n, cp: 0)
+    let e = src[s.i + 1] otherwise ""
+    let ec = code(e)
+    if ec == 117:
+        return jp_str_unicode(src, JStr(out: s.out, i: s.i + 2, err: "", at: 0, cp: 0), s.i)
+    let ni = s.i + 2
+    if ec == 34:
+        return JStr(out: s.out + character(34), i: ni, err: "", at: 0, cp: 0)
+    if ec == 92:
+        return JStr(out: s.out + character(92), i: ni, err: "", at: 0, cp: 0)
+    if ec == 47:
+        return JStr(out: s.out + "/", i: ni, err: "", at: 0, cp: 0)
+    if ec == 98:
+        return JStr(out: s.out + character(8), i: ni, err: "", at: 0, cp: 0)
+    if ec == 102:
+        return JStr(out: s.out + character(12), i: ni, err: "", at: 0, cp: 0)
+    if ec == 110:
+        return JStr(out: s.out + character(10), i: ni, err: "", at: 0, cp: 0)
+    if ec == 114:
+        return JStr(out: s.out + character(13), i: ni, err: "", at: 0, cp: 0)
+    if ec == 116:
+        return JStr(out: s.out + character(9), i: ni, err: "", at: 0, cp: 0)
+    return JStr(out: s.out, i: s.i, err: "E_JSON_ESC", at: s.i + 1, cp: 0)
+
+# The unicode half of an escape, at s.i just past the "u". escpos is the backslash,
+# which is what a surrogate complaint points at. A high surrogate must be followed
+# by a low one, and the pair folds into a single code point above U+FFFF.
+action jp_str_unicode(src: text, s: JStr, escpos: number) -> JStr:
+    let n = length of src
+    let u = jp_hex4(src, s)
+    if u.err != "":
+        return u
+    if u.cp >= 56320 and u.cp <= 57343:
+        return JStr(out: u.out, i: u.i, err: "E_JSON_SURROGATE", at: escpos, cp: 0)
+    if u.cp >= 55296 and u.cp <= 56319:
+        # A high surrogate needs a low one right here. Running out of input is EOF;
+        # a closing quote instead is an unpaired surrogate, which is what the
+        # document actually says, so it is reported as such.
+        if u.i >= n:
+            return JStr(out: u.out, i: u.i, err: "E_JSON_EOF", at: n, cp: 0)
+        if code(src[u.i] otherwise "") == 34:
+            return JStr(out: u.out, i: u.i, err: "E_JSON_SURROGATE", at: escpos, cp: 0)
+        if u.i + 1 >= n:
+            return JStr(out: u.out, i: u.i, err: "E_JSON_EOF", at: n, cp: 0)
+        if code(src[u.i] otherwise "") != 92 or code(src[u.i + 1] otherwise "") != 117:
+            return JStr(out: u.out, i: u.i, err: "E_JSON_SURROGATE", at: escpos, cp: 0)
+        let lo = jp_hex4(src, JStr(out: u.out, i: u.i + 2, err: "", at: 0, cp: 0))
+        if lo.err != "":
+            return lo
+        if lo.cp < 56320 or lo.cp > 57343:
+            return JStr(out: lo.out, i: lo.i, err: "E_JSON_SURROGATE", at: escpos, cp: 0)
+        let full = 65536 + (u.cp - 55296) * 1024 + (lo.cp - 56320)
+        return JStr(out: lo.out + jp_utf8(full), i: lo.i, err: "", at: 0, cp: 0)
+    return JStr(out: u.out + jp_utf8(u.cp), i: u.i, err: "", at: 0, cp: 0)
+
+# st.pos at the opening quote; the result's val is a str JVal and pos is past the
+# closing quote. Bytes below 0x20 are rejected raw, which is what RFC 8259 asks.
+action jp_string(st: JState) -> JState:
+    let src = st.text
+    let n = length of src
+    let cur = JStr(out: "", i: st.pos + 1, err: "", at: 0, cp: 0)
+    let going = 1
+    while going == 1 bounded 1000000:
+        if cur.err != "":
+            set going to 0
+        otherwise:
+            if cur.i >= n:
+                set cur to JStr(out: cur.out, i: cur.i, err: "E_JSON_EOF", at: n, cp: 0)
+            otherwise:
+                let c = src[cur.i] otherwise ""
+                let cc = code(c)
+                if cc == 34:
+                    set cur to JStr(out: cur.out, i: cur.i + 1, err: "", at: 0, cp: 0)
+                    set going to 0
+                otherwise:
+                    if cc < 32:
+                        set cur to JStr(out: cur.out, i: cur.i, err: "E_JSON_CTRL", at: cur.i, cp: 0)
+                    otherwise:
+                        if cc == 92:
+                            set cur to jp_str_escape(src, cur)
+                        otherwise:
+                            set cur to JStr(out: cur.out + c, i: cur.i + 1, err: "", at: 0, cp: 0)
+    if cur.err != "":
+        return jp_fail(st, cur.err, cur.at)
+    return JState(text: src, pos: cur.i, err: "", at: 0, val: json_str(cur.out))
+
+# true/false/null. A word that ends early is EOF; a word that continues is caught by
+# the caller as trailing bytes, so "nulll" fails at 4 like any other junk.
+action jp_literal(st: JState, word: text, v: JVal) -> JState:
+    let src = st.text
+    let n = length of src
+    let w = length of word
+    if st.pos + w > n:
+        return jp_fail(st, "E_JSON_EOF", n)
+    let k = 0
+    let mismatch = 0 - 1
+    while k < w and mismatch < 0 bounded 16:
+        if (src[st.pos + k] otherwise "") != (word[k] otherwise ""):
+            set mismatch to st.pos + k
+        set k to k + 1
+    if mismatch >= 0:
+        return jp_fail(st, "E_JSON_CHAR", mismatch)
+    return JState(text: src, pos: st.pos + w, err: "", at: 0, val: v)
+
+# 10^k for 0 <= k <= 22 exactly: every power of ten up to 1e22 is representable, so
+# this loop adds no error.
+action jp_pow10(k: number) -> number:
+    let r = 1
+    let j = 0
+    while j < k bounded 32:
+        set r to r * 10
+        set j to j + 1
+    return r
+
+action jp_inf() -> number:
+    let x = 1
+    let i = 0
+    while i < 400 bounded 512:
+        set x to x * 10
+        set i to i + 1
+    return x
+
+# Rounding a decimal to the nearest double takes more than one double of
+# precision: a 17-digit significand does not fit in a double at all, and a power of
+# ten outside 1e-22..1e22 is not exact either. Every intermediate below is carried
+# as hi + lo (a double-double), so all the error sits at the 2^-106 level and the
+# single conversion at the end is the only rounding that matters. These are
+# Dekker's two-sum and two-product splits, which need only plain arithmetic.
+
+# s + e == a + b exactly.
+action jp_two_sum(a: number, b: number) -> JDD:
+    let s = a + b
+    let bb = s - a
+    let e = (a - (s - bb)) + (b - bb)
+    return JDD(hi: s, lo: e)
+
+# hi + lo == a exactly.
+action jp_split(a: number) -> JDD:
+    let c = a * 134217729
+    let hi = c - (c - a)
+    return JDD(hi: hi, lo: a - hi)
+
+# p + e == a * b exactly. Two hazards live here: the split multiplies by 2^27, which
+# overflows above about 1e300, and even an in-range product can round to infinity
+# when the exact value sits at the very top of the double range. Halving a factor is
+# exact, so both are handled by computing at half scale and doubling the exact pair
+# back. A product that really does overflow stays infinite, which the caller reports
+# as E_JSON_EXP.
+action jp_two_prod(a: number, b: number) -> JDD:
+    let x = a
+    let doublings = 0
+    let going = 1
+    while going == 1 bounded 48:
+        if jp_nonfinite(x * 134217729) or jp_nonfinite(x * b):
+            set x to x / 2
+            set doublings to doublings + 1
+        otherwise:
+            set going to 0
+    let p = x * b
+    let sx = jp_split(x)
+    let sb = jp_split(b)
+    let e = ((sx.hi * sb.hi - p) + sx.hi * sb.lo + sx.lo * sb.hi) + sx.lo * sb.lo
+    let hi = p
+    let lo = e
+    let k = 0
+    while k < doublings bounded 48:
+        set hi to hi * 2
+        set lo to lo * 2
+        set k to k + 1
+    return JDD(hi: hi, lo: lo)
+
+action jp_dd_mul_d(x: JDD, k: number) -> JDD:
+    let p = jp_two_prod(x.hi, k)
+    return jp_two_sum(p.hi, p.lo + x.lo * k)
+
+action jp_dd_add(x: JDD, y: JDD) -> JDD:
+    let s = jp_two_sum(x.hi, y.hi)
+    return jp_two_sum(s.hi, s.lo + x.lo + y.lo)
+
+action jp_dd_mul(x: JDD, y: JDD) -> JDD:
+    let p = jp_two_prod(x.hi, y.hi)
+    let e = p.lo + x.hi * y.lo + x.lo * y.hi
+    return jp_two_sum(p.hi, e)
+
+# One Newton step from a double estimate is enough at this precision: the
+# correction is a 2^-53 relative term, so the quotient fills both halves.
+action jp_dd_div(x: JDD, y: JDD) -> JDD:
+    let q0 = (x.hi / y.hi) otherwise 0
+    let p = jp_dd_mul_d(y, q0)
+    let r = jp_dd_add(x, JDD(hi: 0 - p.hi, lo: 0 - p.lo))
+    let q1 = (r.hi / y.hi) otherwise 0
+    return jp_two_sum(q0, q1)
+
+# 10^k for k <= 308, keeping the low half: multiplying by ten is exact in this
+# representation, so the accumulated error is far below one ulp of a double.
+action jp_dd_pow10(k: number) -> JDD:
+    let p = JDD(hi: 1, lo: 0)
+    let j = 0
+    while j < k bounded 340:
+        set p to jp_dd_mul_d(p, 10)
+        set j = j + 1
+    return p
+
+# Scale by 10^e, e >= 0. The power is applied in chunks of at most 1e280: the
+# split inside jp_two_prod multiplies a value by 2^27 internally, and 1e280 * 2^27
+# stays finite where 1e308 * 2^27 would not.
+action jp_dec_up(x: JDD, e: number) -> number:
+    let left = e
+    let acc = x
+    while left > 280 bounded 4:
+        set acc to jp_dd_mul(acc, jp_dd_pow10(280))
+        set left to left - 280
+    # The last scaling is done at half scale. Halving is exact and doubling the
+    # rounded result is exact, so nothing is lost - but no intermediate has to cross
+    # the top of the double range, where the leading half of a product can round to
+    # infinity even though the value itself fits.
+    let half = jp_dd_mul(JDD(hi: acc.hi / 2, lo: acc.lo / 2), jp_dd_pow10(left))
+    let up = half.hi + half.lo
+    if jp_nonfinite(up):
+        return up
+    return up * 2
+
+# Scale by 10^-k, k >= 0, with the same 1e280 ceiling on any single power.
+action jp_dec_down(x: JDD, k: number) -> number:
+    let left = k
+    let acc = x
+    while left > 280 bounded 4:
+        set acc to jp_dd_div(acc, jp_dd_pow10(280))
+        set left to left - 280
+    let down = jp_dd_div(acc, jp_dd_pow10(left))
+    return down.hi + down.lo
+
+# The value (hi * 10^r + lo) * 10^exp10, with sig significant digits in the
+# significand. "top" is the decimal exponent of the leading digit, which is what
+# decides overflow and underflow before any intermediate can overflow.
+action jp_dec(hi: number, lo: number, r: number, sig: number, exp10: number) -> number:
+    if sig == 0:
+        return 0
+    # The range test comes first so that an absurd exponent is answered by the guard
+    # rather than by a scaling loop that would have to run millions of times.
+    let top = exp10 + sig - 1
+    if top > 308:
+        return jp_inf()
+    if top < 0 - 350:
+        return 0
+    if r > 0:
+        let base = jp_two_prod(hi, jp_pow10(r))
+        let mant = jp_two_sum(base.hi, base.lo + lo)
+        if exp10 == 0:
+            return mant.hi + mant.lo
+        if exp10 > 0:
+            return jp_dec_up(mant, exp10)
+        return jp_dec_down(mant, 0 - exp10)
+    if exp10 == 0:
+        return hi
+    # Inside +-22 the power of ten is exact, so one multiply or divide is already
+    # correctly rounded; there is no reason to pay for the wide path there.
+    if exp10 >= 1 and exp10 <= 22:
+        return hi * jp_pow10(exp10)
+    if exp10 <= 0 - 1 and exp10 >= 0 - 22:
+        return (hi / jp_pow10(0 - exp10)) otherwise 0
+    let one = JDD(hi: hi, lo: 0)
+    if exp10 > 0:
+        return jp_dec_up(one, exp10)
+    return jp_dec_down(one, 0 - exp10)
+
+# true for both infinities and for NaN without an isfinite builtin: x * 0 is NaN for
+# any non-finite x, and NaN is the only value not equal to itself.
+action jp_nonfinite(x: number) -> bool:
+    let z = x * 0
+    return z != z
+
+# The RFC number grammar assembled by hand: this runtime has no number parser.
+# Digits past the seventeenth only move the decimal exponent.
+action jp_number(st: JState) -> JState:
+    let src = st.text
+    let n = length of src
+    let i = st.pos
+    let neg = 0
+    if (src[i] otherwise "") == "-":
+        set neg to 1
+        set i to i + 1
+    if i >= n:
+        return jp_fail(st, "E_JSON_NUM", i)
+    let hi = 0
+    let lo = 0
+    let sig = 0
+    let exp10 = 0
+    let c0 = src[i] otherwise ""
+    if c0 == "0":
+        set i to i + 1
+    otherwise:
+        if c0 >= "1" and c0 <= "9":
+            let going = 1
+            while going == 1 bounded 1000000:
+                if i < n and jp_digit(src[i] otherwise ""):
+                    let dv = code(src[i] otherwise "0") - 48
+                    if sig < 15:
+                        set hi to hi * 10 + dv
+                        set sig to sig + 1
+                    otherwise:
+                        if sig < 17:
+                            set lo to lo * 10 + dv
+                            set sig to sig + 1
+                        otherwise:
+                            set exp10 to exp10 + 1
+                    set i to i + 1
+                otherwise:
+                    set going to 0
+        otherwise:
+            return jp_fail(st, "E_JSON_NUM", i)
+    if i < n and (src[i] otherwise "") == ".":
+        set i to i + 1
+        let fdigits = 0
+        let going = 1
+        while going == 1 bounded 1000000:
+            if i < n and jp_digit(src[i] otherwise ""):
+                let dv = code(src[i] otherwise "0") - 48
+                if sig == 0 and dv == 0:
+                    set exp10 to exp10 - 1
+                otherwise:
+                    if sig < 15:
+                        set hi to hi * 10 + dv
+                        set sig to sig + 1
+                        set exp10 to exp10 - 1
+                    otherwise:
+                        if sig < 17:
+                            set lo to lo * 10 + dv
+                            set sig to sig + 1
+                            set exp10 to exp10 - 1
+                set fdigits to fdigits + 1
+                set i to i + 1
+            otherwise:
+                set going to 0
+        if fdigits == 0:
+            return jp_fail(st, "E_JSON_NUM", i)
+    if i < n and ((src[i] otherwise "") == "e" or (src[i] otherwise "") == "E"):
+        set i to i + 1
+        let esign = 1
+        if i < n and (src[i] otherwise "") == "+":
+            set i to i + 1
+        otherwise:
+            if i < n and (src[i] otherwise "") == "-":
+                set esign to 0 - 1
+                set i to i + 1
+        let edigits = 0
+        let ev = 0
+        let going = 1
+        while going == 1 bounded 1000000:
+            if i < n and jp_digit(src[i] otherwise ""):
+                if ev < 100000:
+                    set ev to ev * 10 + (code(src[i] otherwise "0") - 48)
+                set edigits to edigits + 1
+                set i to i + 1
+            otherwise:
+                set going to 0
+        if edigits == 0:
+            return jp_fail(st, "E_JSON_NUM", i)
+        if esign < 0:
+            set exp10 to exp10 - ev
+        otherwise:
+            set exp10 to exp10 + ev
+    let r = 0
+    if sig > 15:
+        set r to sig - 15
+    let v = jp_dec(hi, lo, r, sig, exp10)
+    if jp_nonfinite(v):
+        return jp_fail(st, "E_JSON_EXP", st.pos)
+    let value = v
+    # Multiplying by -1 rather than subtracting from 0 keeps a negative zero signed.
+    if neg == 1:
+        set value to v * (0 - 1)
+    return JState(text: src, pos: i, err: "", at: 0, val: json_num(value))
+
+# st.pos at "[". Elements are appended in order; a comma must be followed by another
+# value, so a trailing comma is rejected by the value dispatcher at that byte.
+action jp_array(st: JState, depth: number) -> JState:
+    recursion bounded 256
+    let src = st.text
+    let n = length of src
+    let cur = jp_skip_ws(jp_seek(st, st.pos + 1))
+    let items = []
+    if jp_peek(cur) == "]":
+        return JState(text: src, pos: cur.pos + 1, err: "", at: 0, val: json_arr(items))
+    let going = 1
+    while going == 1 bounded 1000000:
+        let elem = jp_value(cur, depth + 1)
+        if elem.err != "":
+            return elem
+        set items to items + [elem.val]
+        set cur to jp_skip_ws(elem)
+        let c = jp_peek(cur)
+        if c == ",":
+            set cur to jp_skip_ws(jp_seek(cur, cur.pos + 1))
+        otherwise:
+            if c == "]":
+                set going to 0
+            otherwise:
+                if cur.pos >= n:
+                    return jp_fail(cur, "E_JSON_EOF", cur.pos)
+                return jp_fail(cur, "E_JSON_CHAR", cur.pos)
+    return JState(text: src, pos: cur.pos + 1, err: "", at: 0, val: json_arr(items))
+
+# st.pos at "{". A member name must be a quoted string, so single quotes and bare
+# names fail as E_JSON_KEY at the byte that should have opened the quote.
+action jp_object(st: JState, depth: number) -> JState:
+    recursion bounded 256
+    let src = st.text
+    let n = length of src
+    let cur = jp_skip_ws(jp_seek(st, st.pos + 1))
+    let fields = []
+    if jp_peek(cur) == "}":
+        return JState(text: src, pos: cur.pos + 1, err: "", at: 0, val: json_obj(fields))
+    let going = 1
+    while going == 1 bounded 1000000:
+        let open = jp_peek(cur)
+        if open == "":
+            return jp_fail(cur, "E_JSON_EOF", cur.pos)
+        if code(open) != 34:
+            return jp_fail(cur, "E_JSON_KEY", cur.pos)
+        let keyed = jp_string(cur)
+        if keyed.err != "":
+            return keyed
+        let key = keyed.val.str
+        set cur to jp_skip_ws(keyed)
+        if jp_peek(cur) != ":":
+            if cur.pos >= n:
+                return jp_fail(cur, "E_JSON_EOF", cur.pos)
+            return jp_fail(cur, "E_JSON_COLON", cur.pos)
+        set cur to jp_skip_ws(jp_seek(cur, cur.pos + 1))
+        let member = jp_value(cur, depth + 1)
+        if member.err != "":
+            return member
+        set fields to fields + [json_field(key, member.val)]
+        set cur to jp_skip_ws(member)
+        let c = jp_peek(cur)
+        if c == ",":
+            set cur to jp_skip_ws(jp_seek(cur, cur.pos + 1))
+        otherwise:
+            if c == "}":
+                set going to 0
+            otherwise:
+                if cur.pos >= n:
+                    return jp_fail(cur, "E_JSON_EOF", cur.pos)
+                return jp_fail(cur, "E_JSON_CHAR", cur.pos)
+    return JState(text: src, pos: cur.pos + 1, err: "", at: 0, val: json_obj(fields))
+
+# The value dispatcher. depth counts open containers, so a document may nest 64
+# deep: the cap bounds the work and keeps this recursion far from the runtime's 256
+# ceiling, and going deeper is reported as E_JSON_DEPTH rather than failing late.
+action jp_value(st: JState, depth: number) -> JState:
+    recursion bounded 256
+    if depth > 64:
+        return jp_fail(st, "E_JSON_DEPTH", st.pos)
+    let cur = jp_skip_ws(st)
+    if cur.pos >= (length of cur.text):
+        return jp_fail(cur, "E_JSON_EOF", cur.pos)
+    let c = jp_peek(cur)
+    if code(c) == 34:
+        return jp_string(cur)
+    if c == "{":
+        return jp_object(cur, depth)
+    if c == "[":
+        return jp_array(cur, depth)
+    if c == "t":
+        return jp_literal(cur, "true", json_bool(true))
+    if c == "f":
+        return jp_literal(cur, "false", json_bool(false))
+    if c == "n":
+        return jp_literal(cur, "null", json_null())
+    if c == "-" or jp_digit(c):
+        return jp_number(cur)
+    return jp_fail(cur, "E_JSON_CHAR", cur.pos)

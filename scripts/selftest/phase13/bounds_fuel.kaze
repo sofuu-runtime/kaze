@@ -1,0 +1,12 @@
+fiber slow() -> int:
+    fuel 5
+    let n = 0
+    while n < 20 bounded 50:
+        set n to n + 1
+        yield
+    return n
+
+action main():
+    spawn slow() as s
+    join s
+    return 1

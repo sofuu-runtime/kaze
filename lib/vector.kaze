@@ -1,0 +1,153 @@
+# lib/vector.kaze -- dynamic vectors over Kaze lists.
+#
+# A Kaze list is already a contiguous, arena-backed dynamic array: appending is
+# amortised O(1) and the value carries its length. This module is the disciplined
+# interface over it - the operations a program reaches for, each with a defined
+# answer instead of a fallible index, so a caller never needs an inline fallback.
+#
+# There are no type parameters: Kaze values are dynamic at run time, so one
+# implementation serves vectors of numbers, text, records or points alike.
+
+action vector_new() -> list:
+    return []
+
+action vector_push(xs, x) -> list:
+    return xs + [x]
+
+action vector_size(xs) -> num:
+    return length of xs
+
+# The element at i, or 0 when i is outside the vector. A caller that needs to tell
+# 0 from "absent" uses vector_has_index first.
+action vector_get(xs, i) -> num:
+    if i < 0 or i >= (length of xs):
+        return 0
+    let v = xs[i] otherwise 0
+    return v
+
+action vector_has_index(xs, i) -> num:
+    if i >= 0 and i < (length of xs):
+        return 1
+    return 0
+
+# A copy with position i replaced. Out-of-range positions return the vector unchanged.
+action vector_set(xs, i, x) -> list:
+    if i < 0 or i >= (length of xs):
+        return xs
+    let out = []
+    let k = 0
+    for each v in xs:
+        if k == i:
+            set out to out + [x]
+        otherwise:
+            set out to out + [v]
+        set k to k + 1
+    return out
+
+action vector_contains(xs, x) -> num:
+    for each v in xs:
+        if v == x:
+            return 1
+    return 0
+
+action vector_index_of(xs, x) -> num:
+    let k = 0
+    for each v in xs:
+        if v == x:
+            return k
+        set k to k + 1
+    return 0 - 1
+
+action vector_slice(xs, from, count) -> list:
+    let out = []
+    if count <= 0:
+        return out
+    let k = 0
+    for each v in xs:
+        if k >= from and k < from + count:
+            set out to out + [v]
+        set k to k + 1
+    return out
+
+action vector_concat(a, b) -> list:
+    return a + b
+
+action vector_reverse(xs) -> list:
+    let out = []
+    let k = length of xs
+    while k > 0 bounded 1000000:
+        set k to k - 1
+        set out to out + [xs[k] otherwise 0]
+    return out
+
+action vector_sum(xs) -> num:
+    let total = 0
+    for each v in xs:
+        set total to total + v
+    return total
+
+action vector_min(xs) -> num:
+    if (length of xs) == 0:
+        return 0
+    let best = xs[0] otherwise 0
+    for each v in xs:
+        if v < best:
+            set best to v
+    return best
+
+action vector_max(xs) -> num:
+    if (length of xs) == 0:
+        return 0
+    let best = xs[0] otherwise 0
+    for each v in xs:
+        if v > best:
+            set best to v
+    return best
+
+# Drop position i, shifting the tail down. Out-of-range i returns the vector unchanged.
+action vector_remove_at(xs, i) -> list:
+    if i < 0 or i >= (length of xs):
+        return xs
+    let out = []
+    let k = 0
+    for each v in xs:
+        if k != i:
+            set out to out + [v]
+        set k to k + 1
+    return out
+
+# Insert x before position i, clamped to the ends.
+action vector_insert_at(xs, i, x) -> list:
+    let at = i
+    if at < 0:
+        set at to 0
+    if at > (length of xs):
+        set at to length of xs
+    let out = []
+    let k = 0
+    let placed = 0
+    for each v in xs:
+        if k == at and placed == 0:
+            set out to out + [x]
+            set placed to 1
+        set out to out + [v]
+        set k to k + 1
+    if placed == 0:
+        set out to out + [x]
+    return out
+
+# Ascending insertion sort: deterministic, in one pass of the arena, no recursion.
+action vector_sorted(xs) -> list:
+    let out = []
+    for each v in xs:
+        set out to vector_insert_at(out, vector_upper_bound(out, v), v)
+    return out
+
+# First position whose value is greater than x, so equal values keep their order.
+action vector_upper_bound(xs, x) -> num:
+    let k = 0
+    for each v in xs:
+        if v > x:
+            return k
+        set k to k + 1
+    return k

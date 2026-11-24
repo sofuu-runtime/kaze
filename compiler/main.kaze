@@ -1488,8 +1488,37 @@ action bc_first_unknown(n: AstNode):
     return ""
 
 # The compile command: parse, check, and print the module as hex.
+# Phase 13: a fiber suspends, and bytecode format 5 has no suspension point.
+# Writing a module that silently dropped a spawn or a yield would be the one
+# thing this project refuses to do, so the writer names the limit instead.
+action bc_concurrency_line(prog: AstNode) -> num:
+    let items = program_items(prog)
+    for each it in items:
+        if it.kind == "FIBER":
+            return it.line
+        let hits = bc_nodes_of(child_at(it, 2), "YIELD", [])
+        if (length of hits) > 0:
+            return (hits[0] otherwise it).line
+        let spawns = bc_nodes_of(child_at(it, 2), "SPAWN", [])
+        if (length of spawns) > 0:
+            return (spawns[0] otherwise it).line
+    return 0
+
+action bc_nodes_of(n: AstNode, want, out) -> list:
+    recursion bounded 64
+    let acc = out
+    if n.kind == want:
+        set acc to acc + [n]
+    for each c in n.children:
+        set acc to bc_nodes_of(c, want, acc)
+    return acc
+
 action compile_module(src):
     let program = parse_source(src)
+    let conc = bc_concurrency_line(program)
+    if conc > 0:
+        return "compile: E_KAZE_FIBER_BYTECODE at line " + conc + ": a fiber suspends, and module format 5 has no suspension point; emit the program as C (emit-c) to run it
+"
     let unread = bc_first_unknown(program)
     if (length of unread) > 0:
         return "compile: the parser could not read this source (line " + unread + "); no module written\n"

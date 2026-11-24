@@ -159,6 +159,10 @@ action emit_expr_machine(e: AstNode):
         return "(call " + quoted(e.name) + parts + ")"
     if k == "NAMED_ARG":
         return "(named " + quoted(e.name) + " " + emit_expr_machine(child_at(e, 0)) + ")"
+    if k == "RECEIVE":
+        return "(receive " + emit_expr_machine(child_at(e, 0)) + ")"
+    if k == "JOIN":
+        return "(join " + emit_expr_machine(child_at(e, 0)) + ")"
     return "(unsupported " + quoted(k) + ")"
 
 action emit_stmts_machine(stmts):
@@ -198,6 +202,20 @@ action emit_stmt_machine(s: AstNode):
         if s.name != "":
             set with_part to " (with " + quoted(s.name) + ")"
         return "(try (body" + emit_stmts_machine(kids_of(child_at(s, 0))) + ") (otherwise" + with_part + emit_stmts_machine(kids_of(child_at(s, 1))) + "))"
+    # phase 13: the concurrency statements
+    if k == "SPAWN":
+        let parts = ""
+        for each a in s.children:
+            set parts to parts + " " + emit_expr_machine(a)
+        return "(spawn " + quoted(s.name) + " (args" + parts + ") " + quoted(s.val_str) + ")"
+    if k == "YIELD":
+        return "(yield)"
+    if k == "JOIN":
+        return "(join " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "CANCEL":
+        return "(cancel " + emit_expr_machine(child_at(s, 0)) + ")"
+    if k == "SEND":
+        return "(send " + emit_expr_machine(child_at(s, 0)) + " " + emit_expr_machine(child_at(s, 1)) + ")"
     return "(unsupported_stmt " + quoted(k) + ")"
 
 action emit_params_machine(item: AstNode):
@@ -222,6 +240,8 @@ action emit_contracts_machine(item: AstNode):
             otherwise:
                 if c.kind == "ROUTINE_NEED":
                     set parts to parts + " (needs " + quoted(c.name) + ")"
+                if c.kind == "FUEL":
+                    set parts to parts + " (fuel " + c.val_str + ")"
                 otherwise:
                     set parts to parts + " (unsupported_contract " + quoted(c.kind) + ")"
     return "(contracts" + parts + ")"
@@ -231,6 +251,8 @@ action item_keyword(item: AstNode):
         return "check"
     if item.kind == "FILTER":
         return "filter"
+    if item.kind == "FIBER":
+        return "fiber"
     return "action"
 
 action emit_item_machine(item: AstNode, depth):
@@ -242,7 +264,7 @@ action emit_item_machine(item: AstNode, depth):
         for each f in item.children:
             set fields to fields + " (" + f.name + " " + f.val_str + ")"
         return ind + "(record " + quoted(item.name) + "\n" + ind + "  (fields" + fields + "))\n"
-    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
         let body = child_at(item, 2)
         set out to ind + "(" + item_keyword(item) + " " + quoted(item.name) + "\n"
         set out to out + ind + "  " + emit_params_machine(item) + "\n"
@@ -268,6 +290,9 @@ action emit_machine(prog: AstNode):
         for each n in needs_node.children:
             set parts to parts + " " + quoted(n.name)
         set out to out + "  (needs" + parts + ")\n"
+    for each c in program_config(prog):
+        if c.kind == "TASKS_BOUND":
+            set out to out + "  (tasks " + c.val_str + ")\n"
     for each item in program_items(prog):
         set out to out + emit_item_machine(item, 1)
     set out to out + ")\n"
@@ -346,6 +371,10 @@ action lower_expr(form: AstNode):
         return make_call(m_text(m_arg(form, 0)), args, form.line)
     if h == "named":
         return make_named_arg(m_text(m_arg(form, 0)), lower_expr(m_arg(form, 1)), form.line)
+    if h == "receive":
+        return make_receive(lower_expr(m_arg(form, 0)), form.line)
+    if h == "join":
+        return make_join(lower_expr(m_arg(form, 0)), form.line)
     return make_unknown(form.line)
 
 action lower_stmts(forms):
@@ -405,6 +434,21 @@ action lower_stmt(form: AstNode):
                 set body_forms to drop_first(inner)
         let other = make_block("otherwise", lower_stmts(body_forms), form.line)
         return make_try(err, body, other, form.line)
+    if h == "spawn":
+        let args = []
+        let args_form = m_arg(form, 1)
+        if m_head(args_form) == "args":
+            for each c in drop_first(args_form.children):
+                set args to args + [lower_expr(c)]
+        return make_spawn(m_text(m_arg(form, 0)), args, m_text(m_arg(form, 2)), form.line)
+    if h == "yield":
+        return make_yield(form.line)
+    if h == "join":
+        return make_join(lower_expr(m_arg(form, 0)), form.line)
+    if h == "cancel":
+        return make_cancel(lower_expr(m_arg(form, 0)), form.line)
+    if h == "send":
+        return make_send(lower_expr(m_arg(form, 0)), lower_expr(m_arg(form, 1)), form.line)
     return make_unknown(form.line)
 
 action lower_params(form: AstNode):
@@ -429,6 +473,8 @@ action lower_contracts(form: AstNode):
             otherwise:
                 if h == "needs":
                     set out to out + [make_routine_need(m_text(m_arg(c, 0)), c.line)]
+            if h == "fuel":
+                set out to out + [make_fuel(m_text(m_arg(c, 0)), c.line)]
     return out
 
 action lower_item(form: AstNode):
@@ -444,7 +490,7 @@ action lower_item(form: AstNode):
                 otherwise:
                     set fields to fields + [make_field_def(m_text(f), "any", f.line)]
         return make_record_item(m_text(m_arg(form, 0)), fields, form.line)
-    if h == "action" or h == "check" or h == "filter":
+    if h == "action" or h == "check" or h == "filter" or h == "fiber":
         let params_form = none_node()
         let contracts_form = none_node()
         let body_form = none_node()
@@ -480,8 +526,9 @@ action lower_program(root: AstNode):
     let uses = []
     let needs = []
     let items = []
+    let config = []
     if root.kind != "L":
-        return make_program(uses, needs, items)
+        return make_program(uses, needs, items, config)
     for each form in root.children:
         let h = m_head(form)
         if form.kind != "L":
@@ -493,9 +540,12 @@ action lower_program(root: AstNode):
                 for each c in drop_first(form.children):
                     set needs to needs + [make_node("NEED", m_text(c), "", 0, [], form.line)]
             otherwise:
-                if h != "kaze" and h != "format":
-                    set items to items + [lower_item(form)]
-    return make_program(uses, needs, items)
+                if h == "tasks":
+                    set config to config + [make_tasks_bound(m_text(m_arg(form, 0)), form.line)]
+                otherwise:
+                    if h != "kaze" and h != "format":
+                        set items to items + [lower_item(form)]
+    return make_program(uses, needs, items, config)
 
 # Read the canonical machine form back into a PROGRAM node.
 action parse_machine(src):
@@ -597,6 +647,10 @@ action emit_expr_human(e: AstNode):
         return e.name + "(" + parts + ")"
     if k == "NAMED_ARG":
         return e.name + ": " + emit_expr_human(child_at(e, 0))
+    if k == "RECEIVE":
+        return "receive from " + emit_expr_human(child_at(e, 0))
+    if k == "JOIN":
+        return "join " + emit_expr_human(child_at(e, 0))
     if k == "UNKNOWN":
         return "# the machine reader could not lower an expression here\n    guard false"
     return "0"
@@ -657,6 +711,26 @@ action emit_stmt_human(s: AstNode, depth):
         set out to out + ":\n"
         set out to out + emit_block_human(child_at(s, 1), depth + 1)
         return out
+    if k == "SPAWN":
+        let args = ""
+        let first = 1
+        for each a in s.children:
+            if first == 0:
+                set args to args + ", "
+            set args to args + emit_expr_human(a)
+            set first to 0
+        let out = ind + "spawn " + s.name + "(" + args + ")"
+        if s.val_str != "":
+            set out to out + " as " + s.val_str
+        return out + "\n"
+    if k == "YIELD":
+        return ind + "yield\n"
+    if k == "JOIN":
+        return ind + "join " + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "CANCEL":
+        return ind + "cancel " + emit_expr_human(child_at(s, 0)) + "\n"
+    if k == "SEND":
+        return ind + "send " + emit_expr_human(child_at(s, 0)) + " to " + emit_expr_human(child_at(s, 1)) + "\n"
     if k == "UNKNOWN":
         return ind + "# unreadable statement\n" + ind + "guard false\n"
     return ind + "guard false\n"
@@ -684,7 +758,7 @@ action emit_item_human(item: AstNode, depth):
         for each f in item.children:
             set out to out + ind + "    " + f.name + ": " + f.val_str + "\n"
         return out
-    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
         let head = ind + item_keyword(item) + " " + item.name + "(" + emit_params_human(item) + ")"
         if item.val_str != "":
             set head to head + " -> " + item.val_str
@@ -696,6 +770,8 @@ action emit_item_human(item: AstNode, depth):
             otherwise:
                 if c.kind == "RECURSION_BOUND":
                     set out to out + ind + "    recursion bounded " + c.val_str + "\n"
+                if c.kind == "FUEL":
+                    set out to out + ind + "    fuel " + c.val_str + "\n"
                 otherwise:
                     if c.kind == "ROUTINE_NEED":
                         set out to out + ind + "    needs: " + c.name + "\n"
@@ -722,6 +798,9 @@ action emit_human(prog: AstNode):
             set parts to parts + n.name
             set first to 0
         set out to out + "needs: " + parts + "\n"
+    for each c in program_config(prog):
+        if c.kind == "TASKS_BOUND":
+            set out to out + "tasks bounded " + c.val_str + "\n"
     for each item in program_items(prog):
         set out to out + "\n" + emit_item_human(item, 0)
     return out

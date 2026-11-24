@@ -31,6 +31,16 @@ if [ ! -s "$NEW" ]; then
     rm -f "$NEW"
     exit 1
 fi
+# Never install a bootstrap that does not compile: a poisoned dist/kaze.c has to be
+# recovered with git, and that happened twice. The candidate is linked first.
+if ! "$CC" -x c -O1 -w -I "$ROOT/dist" "$NEW" "$ROOT/dist/kaze_rt.c" -lm -o "$NEW.bin" 2>"$NEW.err"; then
+    echo "regen-dist: the emitted C does not build; dist/kaze.c left untouched" >&2
+    head -5 "$NEW.err" >&2
+    rm -f "$NEW" "$NEW.err"
+    exit 1
+fi
+rm -f "$NEW.bin" "$NEW.err"
+
 if cmp -s "$OUT" "$NEW"; then
     echo "regen-dist: fixed point - dist/kaze.c already reproduces itself"
     rm -f "$NEW"

@@ -1,0 +1,171 @@
+# lib/protobuf.kaze -- the protobuf wire format, without a schema.
+#
+# A protobuf message is a sequence of fields, and each field is a tag followed by its
+# payload. The tag is one varint: (field number << 3) | wire type. Only two wire types
+# are implemented here, which is enough for a varint, a string, a byte blob, and any
+# nested message (a nested message is just its own encoded bytes as a length-delimited
+# payload):
+#
+#   wire 0  varint            tag, then the value as a varint
+#   wire 2  length-delimited  tag, then the byte count as a varint, then that many bytes
+#
+# Wire types 1 (fixed 64-bit), 5 (fixed 32-bit), and the deprecated groups 3/4 are not
+# implemented. read_tags stops at the first tag it cannot size instead of guessing, so
+# an unknown wire type truncates the decode rather than producing garbage.
+#
+# A varint is little-endian base 128: seven bits per byte, low group first, with bit 7
+# set on every byte except the last. It is unsigned. Negative numbers need zigzag,
+# which maps small magnitudes to small varints by alternating the sign
+# (0, -1, 1, -2, 2 -> 0, 1, 2, 3, 4).
+#
+# Kaze numbers are IEEE doubles, so exact integers stop at 2^53. That is the whole
+# range this module covers: the widest varint emitted is 8 bytes, and 2^53 - 1 is the
+# largest value it carries exactly. A wire varint with more than 53 significant bits
+# decodes to a rounded double, which is a limit of the number type, not of the format.
+#
+# varint_decode accumulates with an explicit power-of-128 multiplier rather than a
+# shift. A shift would also work here (the widest count is 56 and the runtime integer
+# is 64-bit), but the multiplier keeps every intermediate a plain product, so the 2^53
+# bound is visible in the code instead of implied by a shift width.
+#
+# Decoding a list of Field records and encoding it back is the round-trip the suite
+# pins: read_tags(write_tags(fields)) reproduces every id, wire type, varint and blob.
+
+record Varint:
+    value: number
+    next: number
+
+record Tag:
+    id: number
+    wire: number
+    next: number
+
+# A decoded field. The two payload slots are never both meaningful: wire 0 fills
+# varint and leaves blob empty, wire 2 does the reverse. Keeping them separate avoids
+# a field that physically holds a list in a slot the checker believes is a number.
+record Field:
+    id: number
+    wire: number
+    varint: number
+    blob: list
+
+action field_varint(id, value) -> Field:
+    return Field(id: id, wire: 0, varint: value, blob: [])
+
+action field_bytes(id, blob) -> Field:
+    return Field(id: id, wire: 2, varint: 0, blob: blob)
+
+# The tag for a field: the field number shifted left three bits, then the wire type
+# in the low three bits.
+action field_key(field, wire) -> num:
+    return (field * 8) + (wire & 7)
+
+# Unsigned varint of a non-negative integer. A negative input has no unsigned varint,
+# so the answer is an empty list; use zigzag_encode first. Values are masked to bytes,
+# so a fractional input cannot put a non-byte on the wire.
+action varint_encode(n) -> list:
+    let out = []
+    if n < 0:
+        return out
+    let v = n
+    let groups = 0
+    while groups < 10 bounded 16:
+        if v < 128:
+            set out to out + [(v & 127)]
+            return out
+        set out to out + [((v & 127) | 128)]
+        set v to v >> 7
+        set groups to groups + 1
+    return out
+
+# The varint starting at position at, and the position just past it. A truncated
+# buffer returns what was read so far with next equal to its length; a caller that
+# needs to reject truncation compares next against the buffer length itself.
+action varint_decode(bytes, at) -> Varint:
+    let value = 0
+    let mult = 1
+    let i = at
+    let n = length of bytes
+    let groups = 0
+    while groups < 10 bounded 16:
+        if i >= n:
+            return Varint(value: value, next: i)
+        let b = (bytes[i] otherwise 0) & 255
+        set value to value + ((b & 127) * mult)
+        set i to i + 1
+        if (b & 128) == 0:
+            return Varint(value: value, next: i)
+        set mult to mult * 128
+        set groups to groups + 1
+    return Varint(value: value, next: i)
+
+# Zigzag: 0 -> 0, -1 -> 1, 1 -> 2, -2 -> 3, 2 -> 4. This is how a signed varint field
+# stays small for small negative numbers.
+action zigzag_encode(n) -> num:
+    if n >= 0:
+        return n * 2
+    return ((0 - n) * 2) - 1
+
+action zigzag_decode(n) -> num:
+    if (n & 1) != 0:
+        return 0 - ((n + 1) >> 1)
+    return n >> 1
+
+# Encode a message: a list of Field records, in order, to wire bytes. Unsupported wire
+# types are dropped rather than mis-encoded, which cannot happen through the two
+# constructors above.
+action write_tags(fields) -> list:
+    let out = []
+    for each f in fields:
+        set out to out + varint_encode(field_key(f.id, f.wire))
+        if f.wire == 0:
+            set out to out + varint_encode(f.varint)
+        otherwise:
+            if f.wire == 2:
+                set out to out + varint_encode(length of f.blob)
+                set out to out + f.blob
+    return out
+
+# Decode a message back to a list of Field records. The walk is bounded by the buffer:
+# a length-delimited payload that claims more bytes than remain is clamped to the bytes
+# that exist, and an unsupported wire type ends the decode, so no payload byte is ever
+# invented.
+action read_tags(bytes) -> list:
+    let out = []
+    let at = 0
+    let n = length of bytes
+    let guard = 0
+    while at < n and guard < 100000 bounded 200000:
+        let key = varint_decode(bytes, at)
+        let id = key.value >> 3
+        let wire = key.value & 7
+        set at to key.next
+        if wire == 0:
+            let v = varint_decode(bytes, at)
+            set out to out + [field_varint(id, v.value)]
+            set at to v.next
+        otherwise:
+            if wire == 2:
+                let counted = varint_decode(bytes, at)
+                set at to counted.next
+                let take = counted.value
+                if at + take > n:
+                    set take to n - at
+                let k = 0
+                let blob = []
+                while k < take bounded 100000:
+                    set blob to blob + [bytes[at + k] otherwise 0]
+                    set k to k + 1
+                set out to out + [field_bytes(id, blob)]
+                set at to at + take
+            otherwise:
+                set at to n
+        set guard to guard + 1
+    return out
+
+# The tag at position at, for a caller walking bytes by hand rather than using
+# read_tags. Not needed for the round-trip path, but it makes the wire format legible
+# in a test.
+action read_tag(bytes, at) -> Tag:
+    let key = varint_decode(bytes, at)
+    return Tag(id: key.value >> 3, wire: key.value & 7, next: key.next)

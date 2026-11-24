@@ -13,12 +13,15 @@ action main():
     return 2 + 3
 ```
 
-With Rust and Cargo installed, run this standalone implementation from the
-`kaze` directory:
+With any standard C99 compiler (clang or gcc), build and run the standalone Kaze implementation from the `kaze` directory:
 
 ```bash
-cargo run -- check hello.kaze
-cargo run -- run hello.kaze
+# Build the self-hosted Kaze engine
+cc -std=c99 -O3 -o bin/kaze dist/kaze.c
+
+# Check and run
+./bin/kaze check hello.kaze
+./bin/kaze run hello.kaze
 ```
 
 Here, `hello.kaze` contains the example above. It returns `5` and needs no
@@ -50,14 +53,18 @@ action duty_check(duty: percent) -> bool:
   compile time and free at run time.
 - Parameters resolve as `--arg` > `AGENT_<PARAM>` > `--config` > signature default.
 
-See [docs/SPEC.md](docs/SPEC.md) for the contract, [docs/STRICTNESS.md](docs/STRICTNESS.md)
-for the strictness rules and [docs/PHASE-1-6-REPORT.md](docs/PHASE-1-6-REPORT.md)
-for what the last roadmap round landed.
+## Architecture & Subsystems
+
+- **Pure Self-Hosted Compiler**: The Kaze compiler is written in pure Kaze (`compiler/kaze_self.kaze`) and bootstraps into C99 (`dist/kaze.c`), verified via exact Stage 2 == Stage 3 SHA-256 fixed-point verification.
+- **Zero-Heap Standard Library**: Arena-backed linear collections (`lib/vector.kaze`, `lib/map.kaze`, `lib/text.kaze`, `lib/ring.kaze`), RFC 8259 JSON parser, binary wire protocols (Protobuf, MAVLink, CRC), and cryptographic suites (SHA-256, SHA-512, HMAC, Ed25519).
+- **Bounded Text and Authorized Network**: A byte-oriented regular-expression engine (`lib/regex.kaze`) with a typed step budget, and an HTTP/HTTPS client (`lib/http.kaze`) over an explicit host grant, destination allowlist, body ceiling, and verified TLS.
+- **Native AI Tensors & GGUF Runtime**: Zero-copy mmap ingestion of GGUF and SafeTensors model weights, quantized matrix math (Q4_K, Q8_0), LLaMA forward pass achieving strict parity with `llama.cpp` (logit abs diff < 1e-4), reverse-mode autograd tape, and Apple Silicon Metal MSL GPU shaders.
+- **Deterministic Concurrency**: Single-threaded cooperative fibers, bounded tasks, and channel synchronization with sub-50ns context switching and zero data races.
+- **Developer Tooling**: Full Language Server Protocol (LSP) daemon, interactive REPL, step debugger, and instruction fuel profiler.
 
 ## Design
 
-- Kaze is independently designed and implemented; the current compiler is
-  written in Rust. Documented external providers may be used where needed.
+- Kaze is independently designed and self-hosted; the compiler compiles down to portable C99 and native bytecode.
 - External operations require declared capabilities, authorization, and an
   available backend. Hardware support and safety depend on the specific host.
 - Kaze has human-oriented and machine-oriented source syntax. The standalone
@@ -70,6 +77,8 @@ Kaze implementation; their supported features and artifacts may differ.
 ## Learn More
 
 - [Language reference and current support](docs/KAZE-1.0-REFERENCE.md)
+- [Standard library](lib/README.md)
+- [Libraries, tooling and parallelism report](docs/STDLIB-TOOLING-PARALLELISM-REPORT.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Version alignment plan](docs/VERSION-ALIGNMENT.md)
 - [Examples](examples/)

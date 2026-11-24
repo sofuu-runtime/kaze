@@ -1,0 +1,320 @@
+# lib/text.kaze -- growable and inspectable text for Kaze programs.
+#
+# Kaze text is length-carrying and immutable; these are the operations every program
+# needs and none of them allocate outside the current arena. There are no type
+# parameters because Kaze values are dynamic at run time: one implementation serves
+# every program.
+#
+# Every indexing operation carries an `otherwise` fallback, so no call can panic;
+# a scan that reaches the end returns a number rather than failing.
+
+action text_length(t) -> num:
+    return length of t
+
+# The character at i as a one-character text, or "" when i is outside the string.
+action text_char_at(t, i) -> text:
+    if i < 0 or i >= (length of t):
+        return ""
+    return t[i] otherwise ""
+
+# -1 when sub does not occur; otherwise the index of its first occurrence.
+action text_index_of(t, sub) -> num:
+    let n = length of t
+    let m = length of sub
+    if m == 0:
+        return 0
+    if m > n:
+        return 0 - 1
+    let i = 0
+    while i + m <= n bounded 100000:
+        let window = ""
+        let j = 0
+        while j < m bounded 100000:
+            set window to window + (t[i + j] otherwise "")
+            set j to j + 1
+        if window == sub:
+            return i
+        set i to i + 1
+    return 0 - 1
+
+action text_contains(t, sub) -> num:
+    if text_index_of(t, sub) >= 0:
+        return 1
+    return 0
+
+action text_starts_with(t, prefix) -> num:
+    let m = length of prefix
+    if m > (length of t):
+        return 0
+    let i = 0
+    while i < m bounded 100000:
+        if (t[i] otherwise "") != (prefix[i] otherwise ""):
+            return 0
+        set i to i + 1
+    return 1
+
+action text_ends_with(t, suffix) -> num:
+    let n = length of t
+    let m = length of suffix
+    if m > n:
+        return 0
+    let i = 0
+    while i < m bounded 100000:
+        if (t[n - m + i] otherwise "") != (suffix[i] otherwise ""):
+            return 0
+        set i to i + 1
+    return 1
+
+# A slice of count characters starting at from, clamped to the ends.
+action text_slice(t, from, count) -> text:
+    let n = length of t
+    if count <= 0:
+        return ""
+    let start = from
+    if start < 0:
+        set start to 0
+    if start >= n:
+        return ""
+    let out = ""
+    let i = 0
+    while i < count and start + i < n bounded 100000:
+        set out to out + (t[start + i] otherwise "")
+        set i to i + 1
+    return out
+
+action text_split(t, sep) -> list:
+    let out = []
+    let m = length of sep
+    if m == 0:
+        return [t]
+    let from = 0
+    let i = 0
+    let n = length of t
+    while i + m <= n bounded 100000:
+        let window = ""
+        let j = 0
+        while j < m bounded 100000:
+            set window to window + (t[i + j] otherwise "")
+            set j to j + 1
+        if window == sep:
+            set out to out + [text_slice(t, from, i - from)]
+            set from to i + m
+            set i to i + m
+        otherwise:
+            set i to i + 1
+    set out to out + [text_slice(t, from, n - from)]
+    return out
+
+action text_join(parts, sep) -> text:
+    let out = ""
+    let first = 1
+    for each p in parts:
+        if first == 1:
+            set out to p
+            set first to 0
+        otherwise:
+            set out to out + sep + p
+    return out
+
+action text_repeat(t, times) -> text:
+    let out = ""
+    let i = 0
+    while i < times bounded 100000:
+        set out to out + t
+        set i to i + 1
+    return out
+
+action text_replace(t, from, to) -> text:
+    let out = ""
+    let m = length of from
+    if m == 0:
+        return t
+    let i = 0
+    let n = length of t
+    while i < n bounded 100000:
+        if text_starts_with(text_slice(t, i, m), from) == 1:
+            set out to out + to
+            set i to i + m
+        otherwise:
+            set out to out + (t[i] otherwise "")
+            set i to i + 1
+    return out
+
+# Drop leading and trailing spaces and tabs.
+action text_trim(t) -> text:
+    let n = length of t
+    let start = 0
+    while start < n and ((t[start] otherwise " ") == " " or (t[start] otherwise " ") == "\t") bounded 100000:
+        set start to start + 1
+    let stop = n
+    while stop > start and ((t[stop - 1] otherwise " ") == " " or (t[stop - 1] otherwise " ") == "\t") bounded 100000:
+        set stop to stop - 1
+    return text_slice(t, start, stop - start)
+
+# ── formatting ─────────────────────────────────────────────────────────
+#
+# Kaze has no string-formatting primitive and should not: a routine that takes its
+# arguments as a list is enough, and the list can be built at the call site. '{}' is
+# replaced in order by the values given, each rendered the way concatenation renders it
+# (a number as its own text, a text as itself). '{{' is a literal brace. A placeholder
+# with no value left is copied through as it stands, so a template cannot crash here.
+
+action text_format(template, values) -> text:
+    let out = ""
+    let n = length of template
+    let vi = 0
+    let i = 0
+    while i < n bounded 1000000:
+        let ch = template[i] otherwise ""
+        let next = template[i + 1] otherwise ""
+        # One decision per character, spelled as a nested chain: 'otherwise' belongs to
+        # the 'if' directly above it, so sibling ifs after an 'if B:' would all run and
+        # each would append to 'out'. The nesting is the whole point of this shape.
+        if ch == "{" and next == "{":
+            set out to out + "{"
+            set i to i + 2
+        otherwise:
+            if ch == "}" and next == "}":
+                set out to out + "}"
+                set i to i + 2
+            otherwise:
+                if ch == "{" and next == "}":
+                    if vi < (length of values):
+                        set out to out + ("" + (values[vi] otherwise ""))
+                        set vi to vi + 1
+                        set i to i + 2
+                    otherwise:
+                        set out to out + "{"
+                        set i to i + 1
+                otherwise:
+                    set out to out + ch
+                    set i to i + 1
+    return out
+
+# ── UTF-8 ──────────────────────────────────────────────────────────────
+#
+# Kaze text is a byte string, so "length of" counts bytes, not characters. These two say
+# how many code points a text holds and whether the bytes are well-formed UTF-8 at all:
+# no stray continuation byte, no overlong encoding, no surrogate, nothing above U+10FFFF.
+# Text that has passed text_split/replace/slice of valid input is valid, so a program that
+# only ever slices its own data does not need this; a program reading a socket does.
+
+action text_utf8_valid(t) -> num:
+    let n = length of t
+    let i = 0
+    while i < n bounded 1000000:
+        let b = code(t[i] otherwise "")
+        if b < 128:
+            set i to i + 1
+        otherwise:
+            let need = 0
+            let low = 0
+            let cp = 0
+            if b >= 194 and b <= 223:
+                set need to 1
+                set low to 128
+                set cp to b - 192
+            otherwise:
+                if b >= 224 and b <= 239:
+                    set need to 2
+                    set low to 2048
+                    set cp to b - 224
+                otherwise:
+                    if b >= 240 and b <= 244:
+                        set need to 3
+                        set low to 65536
+                        set cp to b - 240
+                    otherwise:
+                        return 0
+            if i + need >= n:
+                return 0
+            let k = 1
+            while k <= need bounded 4:
+                let cb = code(t[i + k] otherwise "")
+                if cb < 128 or cb > 191:
+                    return 0
+                set cp to cp * 64 + (cb - 128)
+                set k to k + 1
+            if cp < low:
+                return 0
+            if cp > 1114111:
+                return 0
+            if cp >= 55296 and cp <= 57343:
+                return 0
+            set i to i + need + 1
+    return 1
+
+# Code points rather than bytes. Only meaningful on text that is valid UTF-8; a lone
+# continuation byte counts as nothing here, which is why the validator exists next to it.
+action text_utf8_count(t) -> num:
+    let n = length of t
+    let i = 0
+    let count = 0
+    while i < n bounded 1000000:
+        let b = code(t[i] otherwise "")
+        if b < 128:
+            set count to count + 1
+        otherwise:
+            if b >= 192:
+                set count to count + 1
+        set i to i + 1
+    return count
+
+# Build a UTF-8 text from a code point, so a program can round-trip what it parsed.
+# Out-of-range input returns "" rather than a broken byte sequence.
+action text_from_codepoint(cp) -> text:
+    if cp < 0 or cp > 1114111:
+        return ""
+    if cp >= 55296 and cp <= 57343:
+        return ""
+    if cp < 128:
+        return character(cp)
+    if cp < 2048:
+        return character(192 + (cp >> 6)) + character(128 + (cp & 63))
+    if cp < 65536:
+        return character(224 + (cp >> 12)) + character(128 + ((cp >> 6) & 63)) + character(128 + (cp & 63))
+    return character(240 + (cp >> 18)) + character(128 + ((cp >> 12) & 63)) + character(128 + ((cp >> 6) & 63)) + character(128 + (cp & 63))
+
+# The code point starting at byte i, or -1 when the bytes there are not a valid sequence.
+action text_codepoint_at(t, i) -> num:
+    let n = length of t
+    if i < 0 or i >= n:
+        return 0 - 1
+    let b = code(t[i] otherwise "")
+    let need = 0
+    let low = 0
+    let cp = 0
+    if b < 128:
+        return b
+    otherwise:
+        if b >= 194 and b <= 223:
+            set need to 1
+            set low to 128
+            set cp to b - 192
+        otherwise:
+            if b >= 224 and b <= 239:
+                set need to 2
+                set low to 2048
+                set cp to b - 224
+            otherwise:
+                if b >= 240 and b <= 244:
+                    set need to 3
+                    set low to 65536
+                    set cp to b - 240
+                otherwise:
+                    return 0 - 1
+    if i + need >= n:
+        return 0 - 1
+    let k = 1
+    while k <= need bounded 4:
+        let cb = code(t[i + k] otherwise "")
+        if cb < 128 or cb > 191:
+            return 0 - 1
+        set cp to cp * 64 + (cb - 128)
+        set k to k + 1
+    if cp < low or cp > 1114111:
+        return 0 - 1
+    if cp >= 55296 and cp <= 57343:
+        return 0 - 1
+    return cp
+

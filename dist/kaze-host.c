@@ -127,13 +127,16 @@ static int do_run(int argc, char** argv, const char* self) {
     /* Does the emitted C want the runtime header? The self-hosted emitter's output
      *    does; the Rust-era emitter's output is self-contained. */
     int wants_runtime = 0;
+    int wants_http = 0;
     {
+        /* The prelude is large, so scan the whole file rather than a prefix. */
         FILE* probe = fopen(c_path, "r");
         if (probe != NULL) {
-            char buf[4096];
-            size_t n = fread(buf, 1, sizeof buf - 1, probe);
-            buf[n] = 0;
-            wants_runtime = strstr(buf, "kaze_rt.h") != NULL;
+            char buf[8192];
+            while (fgets(buf, sizeof buf, probe) != NULL) {
+                if (strstr(buf, "kaze_rt.h") != NULL) wants_runtime = 1;
+                if (strstr(buf, "kz_http_request") != NULL) wants_http = 1;
+            }
             fclose(probe);
         }
     }
@@ -145,12 +148,23 @@ static int do_run(int argc, char** argv, const char* self) {
     char rt_h[4200], rt_c[4200];
     snprintf(rt_h, sizeof rt_h, "-I%s", runtime_dir);
     snprintf(rt_c, sizeof rt_c, "%s/kaze_rt.c", runtime_dir);
-    char* build_argv_plain[] = { (char*)cc, "-std=c99", "-O2", "-w", (char*)rt_h, c_path, "-lm", "-o", bin_path, NULL };
-    char* build_argv_rt[] = { (char*)cc, "-std=c99", "-O2", "-w", (char*)rt_h, c_path, (char*)rt_c, "-lm", "-o", bin_path, NULL };
+    char* build_argv[16];
+    int bn = 0;
+    build_argv[bn++] = (char*)cc;
+    build_argv[bn++] = "-std=c99";
+    build_argv[bn++] = "-O2";
+    build_argv[bn++] = "-w";
+    build_argv[bn++] = (char*)rt_h;
+    build_argv[bn++] = c_path;
+    if (wants_runtime && access(rt_c, R_OK) == 0) build_argv[bn++] = (char*)rt_c;
+    build_argv[bn++] = "-lm";
+    if (wants_http) build_argv[bn++] = "-lcurl";
+    build_argv[bn++] = "-o";
+    build_argv[bn++] = bin_path;
+    build_argv[bn] = NULL;
     // If the runtime is not next to the compiler, the emitted C had better be
-    // self-contained; try the plain build rather than failing on a missing file.
-    if (wants_runtime && access(rt_c, R_OK) != 0) wants_runtime = 0;
-    status = run_child(wants_runtime ? build_argv_rt : build_argv_plain);
+    // self-contained; the runtime translation unit is simply left out above.
+    status = run_child(build_argv);
     if (status != 0) {
         fprintf(stderr, "kaze-host: the emitted C for %s did not build\n", source);
         unlink(c_path); rmdir(dir);

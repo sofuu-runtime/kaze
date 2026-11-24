@@ -1,0 +1,624 @@
+# tests/stdlib/json_test.kaze -- RFC 8259: what must be accepted, what must be
+# rejected, and the round-trip property.
+#
+# Three groups:
+#   1. documents that must parse, each with its top-level type spot-checked;
+#   2. documents that must fail, each with the E_JSON_* code and the exact byte
+#      offset the scanner blames;
+#   3. a fixed-seed property: 10,000 generated values go through stringify, parse
+#      and json_equal, and the text must be identical on a second pass.
+#
+# The corpus is Kaze literals because this runtime has no file I/O. Bytes a string
+# literal cannot carry - quotes, backslashes, control bytes, high bytes - are
+# spelled with character(n), so what the scanner reads is exactly the byte sequence
+# the label names. The quote and backslash helpers below exist so that no literal in
+# this file depends on Kaze's own escape handling for the two bytes JSON is about.
+needs: log
+
+use "./../../lib/json.kaze"
+
+record Tally:
+    failures: number
+    checks: number
+
+action expect(t: Tally, label: text, ok: bool) -> Tally:
+    if ok:
+        return Tally(failures: t.failures, checks: t.checks + 1)
+    log.info("FAIL " + label)
+    return Tally(failures: t.failures + 1, checks: t.checks + 1)
+
+action q() -> text:
+    return character(34)
+
+action bs() -> text:
+    return character(92)
+
+# Division with the fallback the checker insists on, so the corpus reads as numbers.
+action div(a: number, b: number) -> number:
+    return (a / b) otherwise 0
+
+action pow10(n: number) -> number:
+    let r = 1
+    let i = 0
+    while i < n bounded 512:
+        set r to r * 10
+        set i to i + 1
+    return r
+
+record Case:
+    label: text
+    doc: text
+    kind: text
+
+record Bad:
+    label: text
+    doc: text
+    code: text
+    at: number
+
+# Two checks per accepted document: it parses, and its top-level type is the one
+# named. Deeper shapes are checked by hand below.
+action accept_all(t: Tally, cases: list) -> Tally:
+    let cur = t
+    for each c in cases:
+        let d = json_parse(c.doc)
+        set cur to expect(cur, c.label + ": accepted", d.ok)
+        set cur to expect(cur, c.label + ": top-level type is " + c.kind, d.ok and json_type(d.val) == c.kind)
+    return cur
+
+# Four checks per rejected document: the refusal, the error code, an offset inside
+# the input, and the exact byte the scanner should blame.
+action reject_all(t: Tally, cases: list) -> Tally:
+    let cur = t
+    for each b in cases:
+        let d = json_parse(b.doc)
+        set cur to expect(cur, b.label + ": rejected", not d.ok)
+        set cur to expect(cur, b.label + ": code is " + b.code, d.err == b.code)
+        set cur to expect(cur, b.label + ": offset inside the input", d.at >= 0 and d.at <= (length of b.doc))
+        if b.at >= 0:
+            set cur to expect(cur, b.label + ": offset is " + b.at, d.at == b.at)
+    return cur
+
+# Text from a byte offset, so the streaming check can hand the scanner whatever
+# follows the first document.
+action slice_from(t: text, start: number) -> text:
+    let out = ""
+    let n = length of t
+    let pos = start
+    while pos < n bounded 100000:
+        set out to out + (t[pos] otherwise "")
+        set pos to pos + 1
+    return out
+
+# The first stop bytes of a text, for the truncation sweep.
+action slice_upto(t: text, stop: number) -> text:
+    let out = ""
+    let n = length of t
+    if stop < n:
+        set n to stop
+    let pos = 0
+    while pos < n bounded 100000:
+        set out to out + (t[pos] otherwise "")
+        set pos to pos + 1
+    return out
+
+# n nested arrays around a zero, and the same with n nested objects: the depth cap is
+# a boundary, so it needs a 130-byte document, and building it beats mistyping it.
+action nest_arrays(n: number) -> text:
+    let out = ""
+    let opens = 0
+    while opens < n bounded 1000:
+        set out to out + "["
+        set opens to opens + 1
+    set out to out + "0"
+    let closes = 0
+    while closes < n bounded 1000:
+        set out to out + "]"
+        set closes to closes + 1
+    return out
+
+action nest_objects(n: number) -> text:
+    let piece = "{" + q() + "a" + q() + ":"
+    let out = ""
+    let opens = 0
+    while opens < n bounded 1000:
+        set out to out + piece
+        set opens to opens + 1
+    set out to out + "1"
+    let closes = 0
+    while closes < n bounded 1000:
+        set out to out + "}"
+        set closes to closes + 1
+    return out
+
+# Member names in order, joined, so one text comparison checks the order.
+action key_soup(v: JVal) -> text:
+    let out = ""
+    let first = 1
+    for each k in json_keys(v):
+        if first == 0:
+            set out to out + ","
+        set out to out + k
+        set first to 0
+    return out
+
+# One double survives serialising and reading back, and the text is identical on a
+# second pass. 1 when both hold.
+action round_trips(v: number) -> num:
+    let once = json_stringify(json_num(v))
+    let back = json_parse(once)
+    if not back.ok:
+        return 0
+    if back.val.num != v:
+        return 0
+    if json_stringify(back.val) != once:
+        return 0
+    return 1
+
+# ---------------------------------------------------------------- generator
+
+record Gen:
+    seed: number
+    val: JVal
+
+# The brief's fixed-seed LCG: a failure reproduces from the seed alone.
+action lcg(s: number) -> number:
+    return (s * 1664525 + 1013904223) & 4294967295
+
+# Bytes a generated string may contain: quotes, backslashes, a solidus, every short
+# escape byte, raw control bytes the stringifier has to escape, DEL, and a byte that
+# is not valid UTF-8 on its own.
+action gen_pieces() -> list:
+    return ["a", "Z", "0", " ", "kaze", "/", q(), bs(), character(8), character(9), character(10), character(13), character(1), character(2), character(31), character(127), character(200)]
+
+action gen_text(s: number) -> text:
+    let pieces = gen_pieces()
+    let np = length of pieces
+    let count = ((s >> 5) % 8) otherwise 0
+    let cur = s
+    let out = ""
+    let taken = 0
+    while taken < count bounded 16:
+        set cur to lcg(cur)
+        let idx = ((cur >> 3) % np) otherwise 0
+        set out to out + (pieces[idx] otherwise "a")
+        set taken to taken + 1
+    return out
+
+# Member names repeat on purpose, so duplicate names are exercised too.
+action gen_name(s: number) -> text:
+    let names = ["a", "b", "c", "d", "", "x y", q() + "q", bs() + "s", character(10)]
+    let np = length of names
+    let idx = ((s >> 7) % np) otherwise 0
+    return names[idx] otherwise "a"
+
+# Numbers are built so a stringifier and a parser see the same exact decimal:
+# integers, exact thousandths, and sevenths (whose shortest forms need all 17 digits),
+# some of them scaled by a power of ten.
+action gen_scalar(s: number) -> Gen:
+    let r = (s >> 4) otherwise 0
+    let pick = (r) % 8 otherwise 0
+    if pick == 0:
+        return Gen(seed: s, val: json_null())
+    if pick == 1:
+        return Gen(seed: s, val: json_bool(((r >> 2) & 1) == 1))
+    if pick == 2:
+        let mi = ((r) % 2000001 otherwise 0) - 1000000
+        return Gen(seed: s, val: json_num(mi))
+    if pick == 3:
+        let mf = ((r) % 2000001 otherwise 0) - 1000000
+        return Gen(seed: s, val: json_num(div(mf, 1000)))
+    if pick == 4:
+        let mq = ((r) % 1000003 otherwise 0) + 1
+        return Gen(seed: s, val: json_num(div(mq, 7)))
+    if pick == 5:
+        let ms = ((r) % 1000003 otherwise 0) + 1
+        let e = ((r >> 5) % 41 otherwise 0) - 20
+        let base = div(ms, 7)
+        if e >= 0:
+            return Gen(seed: s, val: json_num(base * pow10(e)))
+        return Gen(seed: s, val: json_num(div(base, pow10(0 - e))))
+    return Gen(seed: s, val: json_str(gen_text(s)))
+
+action gen(seed: number, depth: number, cap: number) -> Gen:
+    recursion bounded 256
+    let s = lcg(seed)
+    let r = (s >> 3) otherwise 0
+    if depth >= cap:
+        return gen_scalar(s)
+    let pick = (r) % 8 otherwise 0
+    if pick < 2:
+        return gen_scalar(s)
+    let count = ((r >> 4) % 4) otherwise 0
+    if pick < 4:
+        let items = []
+        let cur = s
+        let made = 0
+        while made < count bounded 16:
+            let g = gen(cur, depth + 1, cap)
+            set items to items + [g.val]
+            set cur to g.seed
+            set made to made + 1
+        return Gen(seed: cur, val: json_arr(items))
+    let fields = []
+    let oc = s
+    let m = 0
+    while m < count bounded 16:
+        let member = gen(oc, depth + 1, cap)
+        set fields to fields + [json_field(gen_name(oc), member.val)]
+        set oc to member.seed
+        set m to m + 1
+    return Gen(seed: oc, val: json_obj(fields))
+
+# ---------------------------------------------------------------------- suite
+
+action main() -> num:
+    let t = Tally(failures: 0, checks: 0)
+
+    # ---- group 1: documents RFC 8259 must accept ---------------------------
+    set t to accept_all(t, [
+        Case(label: "null literal", doc: "null", kind: "null"),
+        Case(label: "true literal", doc: "true", kind: "bool"),
+        Case(label: "false literal", doc: "false", kind: "bool"),
+        Case(label: "zero", doc: "0", kind: "num"),
+        Case(label: "negative zero", doc: "-0", kind: "num"),
+        Case(label: "integer", doc: "123", kind: "num"),
+        Case(label: "negative integer", doc: "-123", kind: "num"),
+        Case(label: "fraction", doc: "0.5", kind: "num"),
+        Case(label: "negative fraction", doc: "-0.5", kind: "num"),
+        Case(label: "fraction with leading zeroes", doc: "0.000123", kind: "num"),
+        Case(label: "lowercase exponent", doc: "1e2", kind: "num"),
+        Case(label: "capital exponent with a plus", doc: "1E+2", kind: "num"),
+        Case(label: "negative exponent", doc: "1e-2", kind: "num"),
+        Case(label: "zero with an exponent", doc: "0e1", kind: "num"),
+        Case(label: "twenty e one", doc: "20e1", kind: "num"),
+        Case(label: "fraction with an exponent", doc: "123.456e78", kind: "num"),
+        Case(label: "thirty-digit integer", doc: "123456789012345678901234567890", kind: "num"),
+        Case(label: "forty-eight-digit negative integer", doc: "-237462374673276894279832749832423479823246327846", kind: "num"),
+        Case(label: "empty array", doc: "[]", kind: "arr"),
+        Case(label: "empty object", doc: "{}", kind: "obj"),
+        Case(label: "array of numbers", doc: "[1,2,3]", kind: "arr"),
+        Case(label: "nested empty arrays", doc: "[[[[]]]]", kind: "arr"),
+        Case(label: "mixed array", doc: "[{},[],\"\",0,false,null]", kind: "arr"),
+        Case(label: "single member object", doc: "{\"a\":1}", kind: "obj"),
+        Case(label: "nested objects", doc: "{\"a\":{\"b\":{\"c\":null}}}", kind: "obj"),
+        Case(label: "members with whitespace", doc: "{ \"a\" : [ 1 , 2 ] , \"b\" : true }", kind: "obj"),
+        Case(label: "top-level string", doc: "\"hello\"", kind: "str"),
+        Case(label: "empty string", doc: "\"\"", kind: "str"),
+        Case(label: "all short escapes", doc: "\"\\\"\\\\\\/\\b\\f\\n\\r\\t\"", kind: "str"),
+        Case(label: "unicode escapes", doc: "\"\\u0041\\u00e9\\u4e16\"", kind: "str"),
+        Case(label: "surrogate pair", doc: "\"\\ud834\\udd1e\"", kind: "str"),
+        Case(label: "raw UTF-8 bytes", doc: "\"caf" + character(195) + character(169) + "\"", kind: "str"),
+        Case(label: "all four whitespace bytes", doc: character(10) + character(13) + character(9) + " 1 " + character(9) + character(13) + character(10), kind: "num"),
+        Case(label: "duplicate member names", doc: "{\"a\":1,\"a\":2}", kind: "obj"),
+        Case(label: "escaped NUL", doc: "\"\\u0000\"", kind: "str"),
+        Case(label: "largest finite exponent", doc: "1e308", kind: "num"),
+        Case(label: "largest double", doc: "1.7976931348623157e308", kind: "num"),
+        Case(label: "smallest normal double", doc: "2.2250738585072014e-308", kind: "num"),
+        Case(label: "smallest denormal double", doc: "5e-324", kind: "num"),
+        Case(label: "negative largest double", doc: "-1.7976931348623157e308", kind: "num"),
+        Case(label: "number after a space", doc: " 4", kind: "num"),
+        Case(label: "escaped solidus", doc: "\"\\/\"", kind: "str"),
+        Case(label: "raw byte that is not valid UTF-8 on its own", doc: "\"" + character(255) + "\"", kind: "str"),
+        Case(label: "object with an empty name", doc: "{\"\":1}", kind: "obj"),
+        Case(label: "deeply nested mixture", doc: "[{\"a\":[{\"b\":[]}]}]", kind: "arr"),
+        Case(label: "zero exponent with a plus", doc: "0e+1", kind: "num"),
+        Case(label: "negative fraction with an exponent", doc: "-1.5e-3", kind: "num"),
+        Case(label: "number with leading and trailing whitespace", doc: "  7  ", kind: "num"),
+        Case(label: "seventeen-digit significand with an underflowing exponent", doc: "12345678901234567e-999999", kind: "num"),
+    ])
+
+    # ---- group 2: documents RFC 8259 must reject ---------------------------
+    set t to reject_all(t, [
+        Bad(label: "empty input", doc: "", code: "E_JSON_EOF", at: 0),
+        Bad(label: "spaces only", doc: "   ", code: "E_JSON_EOF", at: 3),
+        Bad(label: "newline only", doc: character(10), code: "E_JSON_EOF", at: 1),
+        Bad(label: "leading zero", doc: "01", code: "E_JSON_TRAIL", at: 1),
+        Bad(label: "negative leading zero", doc: "-01", code: "E_JSON_TRAIL", at: 2),
+        Bad(label: "leading zero inside an array", doc: "[01]", code: "E_JSON_CHAR", at: 2),
+        Bad(label: "leading plus", doc: "+1", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "bare fraction", doc: ".5", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "trailing decimal point", doc: "1.", code: "E_JSON_NUM", at: 2),
+        Bad(label: "lone minus", doc: "-", code: "E_JSON_NUM", at: 1),
+        Bad(label: "minus then space", doc: "- 1", code: "E_JSON_NUM", at: 1),
+        Bad(label: "bare exponent", doc: "1e", code: "E_JSON_NUM", at: 2),
+        Bad(label: "exponent plus only", doc: "1e+", code: "E_JSON_NUM", at: 3),
+        Bad(label: "exponent minus only", doc: "1e-", code: "E_JSON_NUM", at: 3),
+        Bad(label: "two decimal points", doc: "1.5.5", code: "E_JSON_TRAIL", at: 3),
+        Bad(label: "hex literal", doc: "0x1F", code: "E_JSON_TRAIL", at: 1),
+        Bad(label: "NaN", doc: "NaN", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "Infinity", doc: "Infinity", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "minus Infinity", doc: "-Infinity", code: "E_JSON_NUM", at: 1),
+        Bad(label: "decimal point only", doc: ".", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "trailing comma in an array", doc: "[1,]", code: "E_JSON_CHAR", at: 3),
+        Bad(label: "leading comma in an array", doc: "[,1]", code: "E_JSON_CHAR", at: 1),
+        Bad(label: "trailing comma in an object", doc: "{\"a\":1,}", code: "E_JSON_KEY", at: 7),
+        Bad(label: "comma before any member", doc: "{,}", code: "E_JSON_KEY", at: 1),
+        Bad(label: "single quoted name", doc: "{'a':1}", code: "E_JSON_KEY", at: 1),
+        Bad(label: "single quoted string", doc: "'abc'", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "bare member name", doc: "{a:1}", code: "E_JSON_KEY", at: 1),
+        Bad(label: "missing colon", doc: "{\"a\" 1}", code: "E_JSON_COLON", at: 5),
+        Bad(label: "missing value", doc: "{\"a\":}", code: "E_JSON_CHAR", at: 5),
+        Bad(label: "unterminated string", doc: "\"abc", code: "E_JSON_EOF", at: 4),
+        Bad(label: "unterminated escape", doc: "\"ab\\", code: "E_JSON_EOF", at: 4),
+        Bad(label: "escaped closing quote then the end", doc: "\"a\\\"", code: "E_JSON_EOF", at: 4),
+        Bad(label: "short unicode escape", doc: "\"\\u12\"", code: "E_JSON_UNICODE", at: 5),
+        Bad(label: "non-hex unicode escape", doc: "\"\\uZZZZ\"", code: "E_JSON_UNICODE", at: 3),
+        Bad(label: "unknown escape letter", doc: "\"\\x41\"", code: "E_JSON_ESC", at: 2),
+        Bad(label: "raw control byte in a string", doc: "\"a" + character(31) + "b\"", code: "E_JSON_CTRL", at: 2),
+        Bad(label: "raw tab in a string", doc: "\"a" + character(9) + "b\"", code: "E_JSON_CTRL", at: 2),
+        Bad(label: "raw newline in a string", doc: "\"a" + character(10) + "b\"", code: "E_JSON_CTRL", at: 2),
+        Bad(label: "lone high surrogate", doc: "\"\\ud800\"", code: "E_JSON_SURROGATE", at: 1),
+        Bad(label: "lone low surrogate", doc: "\"\\udc00\"", code: "E_JSON_SURROGATE", at: 1),
+        Bad(label: "high surrogate then high surrogate", doc: "\"\\ud800\\ud800\"", code: "E_JSON_SURROGATE", at: 1),
+        Bad(label: "high surrogate then plain text", doc: "\"\\ud800x\"", code: "E_JSON_SURROGATE", at: 1),
+        Bad(label: "high surrogate then a bare escape", doc: "\"\\ud800\\u\"", code: "E_JSON_UNICODE", at: 9),
+        Bad(label: "surrogate escape as a member name", doc: "{\"\\ud800\":1}", code: "E_JSON_SURROGATE", at: 2),
+        Bad(label: "exponent overflow", doc: "1e400", code: "E_JSON_EXP", at: 0),
+        Bad(label: "negative exponent overflow", doc: "-1e400", code: "E_JSON_EXP", at: 0),
+        Bad(label: "enormous exponent", doc: "1e999999999999999999", code: "E_JSON_EXP", at: 0),
+        Bad(label: "overflow inside an array", doc: "[2, 1e309]", code: "E_JSON_EXP", at: 4),
+        Bad(label: "garbage after a number", doc: "1 x", code: "E_JSON_TRAIL", at: 2),
+        Bad(label: "garbage after null", doc: "null x", code: "E_JSON_TRAIL", at: 5),
+        Bad(label: "two documents", doc: "[] []", code: "E_JSON_TRAIL", at: 3),
+        Bad(label: "garbage after an object", doc: "{\"a\":1}x", code: "E_JSON_TRAIL", at: 7),
+        Bad(label: "garbage after a string", doc: "\"a\"b", code: "E_JSON_TRAIL", at: 3),
+        Bad(label: "unclosed array", doc: "[1,2", code: "E_JSON_EOF", at: 4),
+        Bad(label: "unclosed object", doc: "{\"a\":1", code: "E_JSON_EOF", at: 6),
+        Bad(label: "unclosed nested array", doc: "[[]", code: "E_JSON_EOF", at: 3),
+        Bad(label: "open bracket only", doc: "[", code: "E_JSON_EOF", at: 1),
+        Bad(label: "open brace only", doc: "{", code: "E_JSON_EOF", at: 1),
+        Bad(label: "stray closing bracket", doc: "]", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "stray closing brace", doc: "}", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "truncated true", doc: "tru", code: "E_JSON_EOF", at: 3),
+        Bad(label: "uppercase TRUE", doc: "TRUE", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "truncated null", doc: "nul", code: "E_JSON_EOF", at: 3),
+        Bad(label: "null with an extra letter", doc: "nulll", code: "E_JSON_TRAIL", at: 4),
+        Bad(label: "true with an extra letter", doc: "truex", code: "E_JSON_TRAIL", at: 4),
+        Bad(label: "byte order mark before an object", doc: character(239) + character(187) + character(191) + "{}", code: "E_JSON_CHAR", at: 0),
+        Bad(label: "comment after a member", doc: "{\"a\":1 /*x*/}", code: "E_JSON_CHAR", at: 7),
+        Bad(label: "missing comma between members", doc: "{\"a\":1 \"b\":2}", code: "E_JSON_CHAR", at: 7),
+        Bad(label: "missing comma in an array", doc: "[1 2]", code: "E_JSON_CHAR", at: 3),
+        Bad(label: "truncated after a comma", doc: "[1,", code: "E_JSON_EOF", at: 3),
+        Bad(label: "object truncated after a comma", doc: "{\"a\":1,", code: "E_JSON_EOF", at: 7),
+        Bad(label: "seventeen-digit significand with an overflowing exponent", doc: "12345678901234567e999999", code: "E_JSON_EXP", at: 0),
+    ])
+
+    # ---- where a value ends ------------------------------------------------
+    let d_null = json_parse("null")
+    set t to expect(t, "at: null consumes four bytes", d_null.at == 4)
+    let d_ws = json_parse("  1  ")
+    set t to expect(t, "at: the end of the value, not of the whitespace", d_ws.ok and d_ws.at == 3)
+    let d_arr = json_parse("[1, 2]")
+    set t to expect(t, "at: the closing bracket is consumed", d_arr.ok and d_arr.at == 6)
+
+    # ---- numbers: grammar, value, and the exactness the module promises -----
+    let n1 = json_parse(" -12.5e1 ")
+    set t to expect(t, "number: sign, fraction and exponent fold into -125", n1.ok and n1.val.num == (0 - 125))
+    let n2 = json_parse("0.00150")
+    set t to expect(t, "number: trailing fraction zeroes change nothing", n2.ok and n2.val.num == div(15, 10000))
+    let n3 = json_parse("20e1")
+    set t to expect(t, "number: 20e1 is 200", n3.ok and n3.val.num == 200)
+    let n4 = json_parse("1E+2")
+    set t to expect(t, "number: capital E with an explicit plus", n4.ok and n4.val.num == 100)
+    let n5 = json_parse("1234567890123456")
+    set t to expect(t, "number: sixteen-digit integer is exact", n5.ok and n5.val.num == 1234567890123456)
+    let n6 = json_parse("0.14285714285714285")
+    set t to expect(t, "number: seventeen significant digits round correctly", n6.ok and n6.val.num == div(1, 7))
+    let n7 = json_parse("12345678901234567")
+    set t to expect(t, "number: seventeen digits land on the nearest double", n7.ok and n7.val.num == 12345678901234568)
+    let n8 = json_parse("-0")
+    set t to expect(t, "number: negative zero keeps its sign", n8.ok and json_stringify(n8.val) == "-0")
+    let n9 = json_parse("0e999999")
+    set t to expect(t, "number: a zero survives an absurd exponent", n9.ok and n9.val.num == 0)
+    let n10 = json_parse("1e-400")
+    set t to expect(t, "number: an exponent that underflows reads as zero", n10.ok and n10.val.num == 0)
+    let n11 = json_parse("1e308")
+    set t to expect(t, "number: the largest exponent that still fits parses", n11.ok and n11.val.num > pow10(307))
+    set t to expect(t, "number: ...and reads back as itself", n11.ok and round_trips(n11.val.num) == 1)
+    let n12 = json_parse("123.456e78")
+    set t to expect(t, "number: a fraction with a large exponent stays finite", n12.ok and n12.val.num > pow10(78))
+    let n13u = json_parse("12345678901234567e-999999")
+    set t to expect(t, "number: an absurd exponent underflows to zero, not a hang", n13u.ok and n13u.val.num == 0)
+    let n13 = json_parse("3.14159265358979323846264338327950288")
+    let n13p = json_parse("3.1415926535897932")
+    set t to expect(t, "number: digits past the seventeenth are dropped (documented limit)", n13.ok and n13.val.num == n13p.val.num)
+
+    # ---- strings: bytes in, the same bytes out -----------------------------
+    let esc_doc = q() + bs() + q() + bs() + bs() + bs() + "/" + bs() + "b" + bs() + "f" + bs() + "n" + bs() + "r" + bs() + "t" + q()
+    let esc_want = q() + bs() + "/" + character(8) + character(12) + character(10) + character(13) + character(9)
+    let s1 = json_parse(esc_doc)
+    set t to expect(t, "string: every short escape decodes to its byte", s1.ok and s1.val.str == esc_want)
+    let s1b = json_parse(json_stringify(s1.val))
+    set t to expect(t, "string: the decoded escapes reserialise and read back", s1b.ok and s1b.val.str == esc_want)
+    let minimal = json_str(q() + bs() + character(10) + character(9) + character(1))
+    set t to expect(t, "string: only the bytes RFC 8259 requires are escaped", json_stringify(minimal) == q() + bs() + q() + bs() + bs() + bs() + "n" + bs() + "t" + bs() + "u0001" + q())
+    let u1 = json_parse(q() + bs() + "u0041" + bs() + "u00e9" + bs() + "u4e16" + q())
+    set t to expect(t, "string: unicode escapes encode as UTF-8", u1.ok and u1.val.str == "A" + character(195) + character(169) + character(228) + character(184) + character(150))
+    let u2 = json_parse(q() + bs() + "ud834" + bs() + "udd1e" + q())
+    set t to expect(t, "string: a surrogate pair becomes one four-byte character", u2.ok and u2.val.str == character(240) + character(157) + character(132) + character(158))
+    let u3 = json_parse(q() + bs() + "u007f" + q())
+    set t to expect(t, "string: DEL is not escaped, RFC 8259 does not ask for it", u3.ok and u3.val.str == character(127))
+    let u4 = json_parse(q() + "caf" + character(195) + character(169) + q())
+    set t to expect(t, "string: raw UTF-8 bytes pass through unchanged", u4.ok and u4.val.str == "caf" + character(195) + character(169))
+    let u5 = json_parse(q() + bs() + "u0000" + q())
+    set t to expect(t, "string: an escaped NUL decodes to nothing (documented limit)", u5.ok and u5.val.str == "")
+    let cb = 1
+    let cbad = 0
+    while cb < 32 bounded 64:
+        let one = json_parse(json_stringify(json_str(character(cb))))
+        if not one.ok:
+            set cbad to cbad + 1
+        otherwise:
+            if one.val.str != character(cb):
+                set cbad to cbad + 1
+        set cb to cb + 1
+    set t to expect(t, "string: all 31 control bytes survive a round trip", cbad == 0)
+    let high = json_parse(json_stringify(json_str(character(255))))
+    set t to expect(t, "string: a byte that is not valid UTF-8 still round trips", high.ok and high.val.str == character(255))
+
+    # ---- objects, arrays and the accessors --------------------------------
+    let o1 = json_parse("{" + q() + "a" + q() + ":1," + q() + "b" + q() + ":[true,false,null]," + q() + "c" + q() + ":" + q() + "x" + q() + "}")
+    set t to expect(t, "object: accepted with three members", o1.ok and json_len(o1.val) == 3)
+    set t to expect(t, "object: names keep document order", key_soup(o1.val) == "a,b,c")
+    set t to expect(t, "object: member a is the number 1", (json_get(o1.val, "a")).num == 1)
+    set t to expect(t, "object: member b is an array of three", json_len(json_get(o1.val, "b")) == 3)
+    set t to expect(t, "object: b[2] is null", json_is_null(json_at(json_get(o1.val, "b"), 2)))
+    set t to expect(t, "object: b[3] is a null JVal, not a crash", json_is_null(json_at(json_get(o1.val, "b"), 3)))
+    set t to expect(t, "object: member c is the text x", (json_get(o1.val, "c")).str == "x")
+    set t to expect(t, "object: a missing member reads as null", json_is_null(json_get(o1.val, "zz")))
+    set t to expect(t, "object: json_has tells a null member from a missing one", json_has(o1.val, "c") and not json_has(o1.val, "zz"))
+    set t to expect(t, "object: json_at on an object is null", json_is_null(json_at(o1.val, 0)))
+    set t to expect(t, "object: json_get on an array is null", json_is_null(json_get(json_get(o1.val, "b"), "0")))
+    let dup_doc = "{" + q() + "a" + q() + ":1," + q() + "a" + q() + ":2}"
+    let dup = json_parse(dup_doc)
+    set t to expect(t, "duplicate names: accepted, both members kept", dup.ok and json_len(dup.val) == 2)
+    set t to expect(t, "duplicate names: a lookup takes the last one", (json_get(dup.val, "a")).num == 2)
+    set t to expect(t, "duplicate names: reserialising keeps both", json_stringify(dup.val) == dup_doc)
+    set t to expect(t, "duplicate names: both name positions are reported", key_soup(dup.val) == "a,a")
+    let e1 = json_parse("[]")
+    set t to expect(t, "empty array: length zero and the text []", e1.ok and json_len(e1.val) == 0 and json_stringify(e1.val) == "[]")
+    let e2 = json_parse("{}")
+    set t to expect(t, "empty object: length zero and the text {}", e2.ok and json_len(e2.val) == 0 and json_stringify(e2.val) == "{}")
+
+    # ---- constructors and equality ----------------------------------------
+    set t to expect(t, "constructors: every kind builds", json_type(json_null()) == "null" and json_type(json_bool(true)) == "bool" and json_type(json_num(2)) == "num" and json_type(json_str("s")) == "str" and json_type(json_arr([])) == "arr" and json_type(json_obj([])) == "obj")
+    set t to expect(t, "constructors: the payload survives", json_num(2).num == 2 and json_str("s").str == "s" and json_bool(true).b and json_is_null(json_null()))
+    set t to expect(t, "json_put appends one member", json_len(json_put(json_obj([]), "k", json_num(1))) == 1)
+    let eqv = json_obj([json_field("a", json_num(1)), json_field("b", json_arr([json_bool(true)]))])
+    let eqp = json_parse("{" + q() + "a" + q() + ":1," + q() + "b" + q() + ":[true]}")
+    set t to expect(t, "json_equal: a parsed object equals a built one", eqp.ok and json_equal(eqp.val, eqv))
+    let eqw = json_put(eqv, "a", json_num(2))
+    set t to expect(t, "json_equal: a different number is not equal", not json_equal(eqv, eqw))
+    let swapped = json_parse("{" + q() + "b" + q() + ":[true]," + q() + "a" + q() + ":1}")
+    set t to expect(t, "json_equal: member order matters", swapped.ok and not json_equal(swapped.val, eqv))
+    set t to expect(t, "json_equal: kinds must match", not json_equal(json_num(1), json_str("1")))
+
+    # ---- the depth cap -----------------------------------------------------
+    let deep_ok = json_parse(nest_arrays(64))
+    set t to expect(t, "depth: 64 nested arrays are accepted", deep_ok.ok)
+    let deep_bad = json_parse(nest_arrays(65))
+    set t to expect(t, "depth: 65 nested arrays are refused as E_JSON_DEPTH", not deep_bad.ok and deep_bad.err == "E_JSON_DEPTH")
+    let obj_ok = json_parse(nest_objects(64))
+    set t to expect(t, "depth: 64 nested objects are accepted", obj_ok.ok)
+    let obj_bad = json_parse(nest_objects(65))
+    set t to expect(t, "depth: 65 nested objects are refused as E_JSON_DEPTH", not obj_bad.ok and obj_bad.err == "E_JSON_DEPTH")
+    let deep_text = json_stringify(deep_ok.val)
+    let deep_again = json_parse(deep_text)
+    set t to expect(t, "depth: a 64-deep value reserialises byte for byte", deep_again.ok and deep_text == nest_arrays(64))
+    let v64 = json_num(1)
+    let wraps = 0
+    while wraps < 64 bounded 200:
+        set v64 to json_arr([v64])
+        set wraps to wraps + 1
+    set t to expect(t, "depth: stringify handles a 64-deep value", json_stringify(v64) != "")
+    set v64 to json_arr([v64])
+    set t to expect(t, "depth: stringify refuses a 65-deep value", json_stringify(v64) == "")
+
+    # ---- streaming: one value off the front of a buffer --------------------
+    let two = "{" + q() + "a" + q() + ":1}{" + q() + "b" + q() + ":2}"
+    let first = json_parse_prefix(two)
+    set t to expect(t, "streaming: the first value stops at its own end", first.ok and first.at == 7)
+    set t to expect(t, "streaming: the value read is the one at the front", (json_get(first.val, "a")).num == 1)
+    let second = json_parse(slice_from(two, first.at))
+    set t to expect(t, "streaming: the remainder parses as the second document", second.ok and (json_get(second.val, "b")).num == 2)
+    let whole = json_parse(two)
+    set t to expect(t, "streaming: json_parse insists the whole buffer is one document", not whole.ok and whole.err == "E_JSON_TRAIL")
+
+    # ---- a value with no JSON spelling is refused, not printed as inf ------
+    let infv = pow10(400)
+    set t to expect(t, "stringify: infinity has no JSON spelling", json_stringify(json_num(infv)) == "")
+    set t to expect(t, "stringify: NaN has no JSON spelling", json_stringify(json_num(infv - infv)) == "")
+    set t to expect(t, "stringify: one non-finite number spoils its container", json_stringify(json_arr([json_num(1), json_num(infv)])) == "")
+    set t to expect(t, "stringify: an unknown kind is refused", json_stringify(JVal(kind: "wat", num: 0, str: "", b: false, items: [], fields: [])) == "")
+
+    # ---- every double the formatter can print is read back as itself -------
+    let doubles = [0, 1, 0 - 1, 0.5, 0 - 0.5, 0.1, 0.25, 3.5, div(1, 3), div(1, 7), div(1, 1000), div(1, 100000), 1000000, 1234567890123456, 12345678901234568, pow10(22), div(1, pow10(22)), div(1, pow10(300)), pow10(300), div(2.2250738585072014, pow10(308)), div(div(5, pow10(300)), pow10(24)), (0 - 1) * div(1, 7)]
+    let dbad = 0
+    for each dv in doubles:
+        if round_trips(dv) == 0:
+            set dbad to dbad + 1
+    set t to expect(t, "numbers: every double in the corpus round trips exactly", dbad == 0)
+
+    # ---- group 3: 10,000 generated values round trip -----------------------
+    let seed = 20241124
+    let unparsed = 0
+    let unequal = 0
+    let unstable = 0
+    let iter = 0
+    while iter < 10000 bounded 20000:
+        let g = gen(seed, 0, 3)
+        set seed to g.seed
+        let once = json_stringify(g.val)
+        if once == "":
+            set unparsed to unparsed + 1
+        otherwise:
+            let back = json_parse(once)
+            if not back.ok:
+                set unparsed to unparsed + 1
+            otherwise:
+                if not json_equal(back.val, g.val):
+                    set unequal to unequal + 1
+                otherwise:
+                    if json_stringify(back.val) != once:
+                        set unstable to unstable + 1
+        set iter to iter + 1
+    set t to expect(t, "10,000 generated values: every one serialises and parses", unparsed == 0)
+    set t to expect(t, "10,000 generated values: every one reads back equal", unequal == 0)
+    set t to expect(t, "10,000 generated values: a second serialisation is identical", unstable == 0)
+    set t to expect(t, "the generator ran the full 10,000 rounds", iter == 10000)
+
+    # ---- group 4: anything at all is answered, nothing is fatal ------------
+    # Byte soup through the scanner. Every document has to come back as a decision:
+    # accepted with an offset inside the text, or rejected with a code and an offset
+    # inside the text. A crash, a hang or an out-of-range index ends the run here.
+    let soup = "[]{}.\",:0123456789eE+-truefalsnl " + character(1) + bs() + character(200)
+    let sn = length of soup
+    let fseed = 777
+    let ftotal = 0
+    let fsane = 0
+    let f = 0
+    while f < 2000 bounded 4000:
+        set fseed to lcg(fseed)
+        let flen = ((fseed >> 7) % 12) otherwise 0
+        let doc = ""
+        let cur = fseed
+        let taken = 0
+        while taken < flen bounded 16:
+            set cur to lcg(cur)
+            let idx = ((cur >> 5) % sn) otherwise 0
+            set doc to doc + (soup[idx] otherwise "a")
+            set taken to taken + 1
+        let d = json_parse(doc)
+        set ftotal to ftotal + 1
+        if d.ok:
+            if d.at >= 0 and d.at <= (length of doc) and d.err == "":
+                set fsane to fsane + 1
+        otherwise:
+            if d.err != "" and d.at >= 0 and d.at <= (length of doc):
+                set fsane to fsane + 1
+        set f to f + 1
+    set t to expect(t, "2,000 random byte strings are answered, never fatal", fsane == ftotal)
+    set t to expect(t, "the fuzz loop ran all 2,000 rounds", ftotal == 2000)
+
+    # Every truncation of a valid document must be either a valid document or a
+    # clean refusal with the offset inside what was given: this is the shape of a
+    # streaming reader being fed a partial buffer.
+    let full = "{" + q() + "a" + q() + ":[1,-2.5e3,true,null," + q() + bs() + "u0041" + q() + "]," + q() + "b" + q() + ":{" + q() + "c" + q() + ":[]}}"
+    let fulln = length of full
+    let cut = 1
+    let cutbad = 0
+    let cutok = 0
+    while cut < fulln bounded 400:
+        let d = json_parse(slice_upto(full, cut))
+        if d.ok:
+            set cutok to cutok + 1
+        otherwise:
+            if d.err == "" or d.at < 0 or d.at > cut:
+                set cutbad to cutbad + 1
+        set cut to cut + 1
+    set t to expect(t, "every truncation of a valid document fails cleanly", cutbad == 0)
+
+    if t.failures == 0:
+        log.info("OK json: " + t.checks + " checks")
+    return t.failures

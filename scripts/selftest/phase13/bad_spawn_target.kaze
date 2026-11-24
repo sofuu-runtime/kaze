@@ -1,0 +1,7 @@
+action helper() -> int:
+    return 1
+
+action main():
+    spawn helper() as h
+    join h
+    return 1

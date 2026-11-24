@@ -151,11 +151,42 @@ action op_known(family, op):
     return list_has(cap_verbs(), family + "." + op)
 
 action pure_builtin(name):
+    if name == "code" or name == "character":
+        return 1
     if name == "sin" or name == "cos" or name == "tan" or name == "sqrt" or name == "atan2":
         return 1
     if name == "abs" or name == "min" or name == "max" or name == "floor" or name == "ceil" or name == "round":
         return 1
     if name == "vector" or name == "link_lost" or name == "length":
+        return 1
+    if name == "channel":
+        return 1
+    # Phase 3 of the libraries/tooling plan: an explicit, host-granted HTTP
+    # fetch. The builtin is standalone-only; the embedded engine has its own
+    # capability registry and does not claim it.
+    if name == "http_fetch":
+        return 1
+    # Phase 12 tensor builtins. The names are namespaced (tensor_add, tensor_sum)
+    # so a program routine may still be called add or sum.
+    if name == "tensor" or name == "zeros":
+        return 1
+    if name == "matmul" or name == "matmul_t" or name == "add_bias":
+        return 1
+    if name == "tensor_add" or name == "tensor_sub" or name == "tensor_mul" or name == "tensor_div":
+        return 1
+    if name == "transpose" or name == "reshape":
+        return 1
+    if name == "softmax" or name == "rms_norm" or name == "layer_norm":
+        return 1
+    if name == "gelu" or name == "silu" or name == "relu":
+        return 1
+    if name == "tensor_sum" or name == "tensor_mean":
+        return 1
+    if name == "argmax" or name == "tensor_get" or name == "tensor_shape":
+        return 1
+    if name == "model_open" or name == "model_forward":
+        return 1
+    if name == "cli_text":
         return 1
     return 0
 
@@ -491,6 +522,15 @@ action check_expr_g(e: AstNode, names, facts, items, needs, open, diags, guard):
 
     if k == "CALL":
         return check_call(e, names, facts, items, needs, open, diags, guard)
+
+    # receive from <channel> fails when the ring buffer is empty, so it is a
+    # fallible read: the checker asks for the same otherwise fallback a dynamic
+    # index or a device read needs.
+    if k == "RECEIVE":
+        let out = check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
+        if guard == 0:
+            set out to out + [diag("E_KAZE_MISSING_FALLBACK", e.line, "this 'receive from' fails when the channel is empty and has no fallback; write 'receive from <channel> otherwise <fallback>'")]
+        return out
 
     return diags
 
@@ -835,6 +875,140 @@ action ends_with_verdict(stmts):
             return 1
     return 0
 
+# Names the emitter generates for its own bookkeeping (a resume label's guard,
+# a frame slot, a return binding) all start with _kz_. A program that used that
+# prefix could collide with one, so the prefix is reserved.
+action reserved_name(w: string) -> num:
+    if (length of w) < 4:
+        return 0
+    if w == "_kz_":
+        return 1
+    let i = 0
+    let prefix = ""
+    while i < 4 bounded 8:
+        set prefix to prefix + (w[i] otherwise " ")
+        set i to i + 1
+    if prefix == "_kz_":
+        return 1
+    return 0
+
+action reserved_diags(n: AstNode, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        let nm = ""
+        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH":
+            set nm to n.name
+        if n.kind == "SPAWN":
+            set nm to n.val_str
+        if n.kind == "PARAM":
+            set nm to n.name
+        if nm != "" and reserved_name(nm) == 1:
+            set acc to acc + [diag("E_KAZE_RESERVED", n.line, "'" + nm + "' starts with _kz_, which the compiler reserves for its own bookkeeping")]
+        for each c in n.children:
+            set acc to reserved_diags(c, acc, depth + 1)
+    return acc
+
+# ── phase 13: deterministic concurrency ────────────────────────────────
+#
+# Three rules, all from the AST:
+#
+#   a. yield only inside a fiber body                 E_KAZE_YIELD
+#   b. a fiber is spawned, never called               E_KAZE_FIBER_CALL
+#   c. a fiber may not reach a capability             E_KAZE_FIBER_EFFECT
+#
+# Rule (c) is what makes the concurrency model race-free by construction: only
+# the serialized root task can touch hardware, so two fibers can never race for
+# an effector, and a fiber never holds a device while it is suspended.
+
+action name_is_capability(name) -> num:
+    if has_dot(name) == 0:
+        return 0
+    if head_words(name) == "geo":
+        return 0
+    return cap_name_known(head_words(name))
+
+action call_names_of(nodes) -> list:
+    let out = []
+    for each n in nodes:
+        set out to out + [n.name]
+    return out
+
+action calls_reach_capability(call_names, items, depth) -> num:
+    recursion bounded 12
+    if depth > 8:
+        return 0
+    for each nm in call_names:
+        if name_is_capability(nm) == 1:
+            return 1
+        let callee = routine_named(items, nm)
+        if callee.kind != "NONE" and callee.kind != "RECORD":
+            let inner = call_names_of(collect_kind(child_at(callee, 2), "CALL", [], 0))
+            if calls_reach_capability(inner, items, depth + 1) == 1:
+                return 1
+    return 0
+
+# Every node of a given kind inside an item body, wherever it sits.
+action collect_kind(n: AstNode, want, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        if n.kind == want:
+            set acc to acc + [n]
+        for each c in n.children:
+            set acc to collect_kind(c, want, acc, depth + 1)
+    return acc
+
+action fiber_declared(items, name) -> num:
+    let it = routine_named(items, name)
+    if it.kind == "FIBER":
+        return 1
+    return 0
+
+action body_of(item: AstNode) -> AstNode:
+    if item.kind == "WHEN" or item.kind == "EVERY":
+        return child_at(item, 1)
+    return child_at(item, 2)
+
+action concurrency_diags_item(item: AstNode, items) -> list:
+    recursion bounded 64
+    let out = []
+    let body = body_of(item)
+    let yields = collect_kind(body, "YIELD", [], 0)
+    let spawns = collect_kind(body, "SPAWN", [], 0)
+    # every call in the body, dotted capability calls included
+    let calls = call_names_of(collect_kind(body, "CALL", [], 0))
+
+    # (a) a yield suspends the fiber that owns it; nothing else can suspend.
+    if item.kind != "FIBER":
+        for each y in yields:
+            set out to out + [diag("E_KAZE_YIELD", y.line, "'yield' is only legal inside a fiber body; a routine an action calls cannot suspend")]
+    otherwise:
+        # a fiber may not declare capabilities, and may not reach one
+        if (length of routine_needs(item)) > 0:
+            set out to out + [diag("E_KAZE_FIBER_EFFECT", item.line, "fiber '" + item.name + "' declares 'needs:'; a fiber is pure by construction, so hardware calls stay in the root task")]
+        if calls_reach_capability(calls, items, 0) == 1:
+            set out to out + [diag("E_KAZE_FIBER_EFFECT", item.line, "fiber '" + item.name + "' reaches a capability call; spawn a pure routine instead so no two tasks can race for a device")]
+
+    # (b) a fiber is a task, not a callable routine
+    for each nm in calls:
+        if fiber_declared(items, nm) == 1:
+            set out to out + [diag("E_KAZE_FIBER_CALL", item.line, "'" + nm + "' is a fiber; write 'spawn " + nm + "(...) as <task>' instead of calling it")]
+
+    # a spawn target must be a fiber declared in this file
+    for each sp in spawns:
+        if fiber_declared(items, sp.name) == 0:
+            set out to out + [diag("E_KAZE_FIBER_TARGET", sp.line, "'" + sp.name + "' is not a fiber declared in this file; declare it with 'fiber " + sp.name + "(...)'")]
+    return out
+
+action concurrency_diags(items) -> list:
+    recursion bounded 64
+    let out = []
+    for each item in items:
+        if item.kind == "FIBER" or item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "WHEN" or item.kind == "EVERY":
+            set out to out + concurrency_diags_item(item, items)
+    return out
+
 # ── items ──────────────────────────────────────────────────────────────
 
 action param_names(item: AstNode):
@@ -882,6 +1056,10 @@ action contract_diags(item: AstNode):
             let n = text_to_num(c.val_str)
             if n < 1 or n > 256:
                 set out to out + [diag("E_KAZE_PARSE", c.line, "'recursion bounded' needs a whole number of frames from 1 to 256")]
+        if c.kind == "FUEL":
+            let f = text_to_num(c.val_str)
+            if f < 1 or f > 10000000:
+                set out to out + [diag("E_KAZE_PARSE", c.line, "'fuel' needs a whole number of scheduler steps from 1 to 10000000")]
         set i to i + 1
     return out
 
@@ -952,6 +1130,670 @@ action declared_families(need_list):
         set out to out + [family_of_word(n)]
     return out
 
+# ── Phase 12: tensor shape algebra ─────────────────────────────────────
+#
+# Tensor shape checking is a second, additive pass: it does not re-run the
+# strictness rules above, it infers a shape for every expression that can have
+# one and refuses a program whose shapes cannot be unified. The representation is
+# plain lists so the pass needs no new record types:
+#
+#   spec   ["tensor", d0, d1, ...]   a tensor shape (dims are text)
+#          ["num"] ["bool"] ["text"] ["list"] ["model"] ["?"]
+#   env    [[name, spec], ...]
+#   binds  [[symbol, dim], ...]      symbolic dimension unification bindings
+#
+# Shapes are canonical text in the type annotation (tensor<f32,[2,3]>). Parsing
+# that text here keeps the AST, the machine syntax and the human syntax on one
+# representation.
+
+action ts_char(s: string, i: num) -> string:
+    if i >= 0 and i < (length of s):
+        return (s[i] otherwise "")
+    return ""
+
+action ts_find(s: string, want: string, from: num) -> num:
+    let i = from
+    let n = length of s
+    let found = 0 - 1
+    while i < n bounded 100000:
+        if ts_char(s, i) == want:
+            set found to i
+            set i to n
+        otherwise:
+            set i to i + 1
+    return found
+
+action ts_starts(s: string, pre: string) -> num:
+    if (length of pre) > (length of s):
+        return 0
+    let i = 0
+    let ok = 1
+    while i < (length of pre) bounded 10000:
+        if ts_char(s, i) != ts_char(pre, i):
+            set ok to 0
+            set i to length of pre
+        otherwise:
+            set i to i + 1
+    return ok
+
+action is_num_text(s: string) -> num:
+    if (length of s) == 0:
+        return 0
+    let i = 0
+    let ok = 1
+    while i < (length of s) bounded 10000:
+        let c = ts_char(s, i)
+        if c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9":
+            set i to i + 1
+        otherwise:
+            set ok to 0
+            set i to length of s
+    return ok
+
+action num_text_of(i: num) -> string:
+    # Small non-negative integers only (ranks, literal dims, error text). Kaze
+    # numbers are floats, so //-style truncation is done by repeated subtraction.
+    if i <= 0:
+        return "0"
+    let n = i
+    let out = ""
+    let guard = 0
+    while n > 0 bounded 1000:
+        let q = 0
+        let rem = n
+        while rem >= 10 bounded 1000:
+            set rem to rem - 10
+            set q to q + 1
+        let ch = ts_char("0123456789", rem)
+        set out to ch + out
+        set n to q
+        set guard to guard + 1
+    return out
+
+# Parses "tensor<f32,[2,3]>" / "tensor<f16,[B,D]>" into ["tensor","2","3"].
+# Anything that is not a tensor annotation yields [].
+action tensor_spec_of_type(ty: string) -> list:
+    if ts_starts(ty, "tensor<") == 0:
+        return []
+    let n = length of ty
+    let comma = ts_find(ty, ",", 7)
+    if comma < 0:
+        return []
+    let p = comma + 1
+    if ts_char(ty, p) != "[":
+        return []
+    set p to p + 1
+    let dims = []
+    let cur = ""
+    let done = 0
+    while done == 0 bounded 10000:
+        let c = ts_char(ty, p)
+        if c == "" or c == "]":
+            if cur != "":
+                set dims to dims + [cur]
+            set done to 1
+        otherwise:
+            if c == ",":
+                if cur != "":
+                    set dims to dims + [cur]
+                set cur to ""
+            otherwise:
+                set cur to cur + c
+        set p to p + 1
+    if (length of dims) == 0:
+        return []
+    return ["tensor"] + dims
+
+action rank_of(spec: list) -> num:
+    if (length of spec) == 0:
+        return 0
+    if (spec[0] otherwise "") != "tensor":
+        return 0
+    return (length of spec) - 1
+
+action dim_of(spec: list, i: num) -> string:
+    if i >= 0 and i < rank_of(spec):
+        return (spec[i + 1] otherwise "")
+    return ""
+
+action spec_equal(a: list, b: list) -> num:
+    if (length of a) != (length of b):
+        return 0
+    let i = 0
+    let ok = 1
+    while i < (length of a) bounded 10000:
+        if (a[i] otherwise "") != (b[i] otherwise ""):
+            set ok to 0
+            set i to length of a
+        otherwise:
+            set i to i + 1
+    return ok
+
+action render_spec(spec: list) -> string:
+    if (length of spec) == 0:
+        return "nothing"
+    if (spec[0] otherwise "") != "tensor":
+        return (spec[0] otherwise "")
+    let out = "["
+    let i = 0
+    while i < rank_of(spec) bounded 1000:
+        if i > 0:
+            set out to out + ","
+        set out to out + dim_of(spec, i)
+        set i to i + 1
+    return out + "]"
+
+action resolve_dim(dim: string, binds: list) -> string:
+    let cur = dim
+    let guard = 0
+    while guard < 128 bounded 128:
+        let next = ""
+        for each b in binds:
+            if (b[0] otherwise "") == cur:
+                set next to (b[1] otherwise "")
+        if next == "" or next == cur:
+            return cur
+        set cur to next
+        set guard to guard + 1
+    return cur
+
+# Unify one dimension. Returns [ok, binds]; ok is "1" or "0".
+action bind_dim(x: string, y: string, binds: list) -> list:
+    let rx = resolve_dim(x, binds)
+    let ry = resolve_dim(y, binds)
+    if rx == ry:
+        return ["1", binds]
+    if is_num_text(rx) == 1 and is_num_text(ry) == 1:
+        return ["0", binds]
+    if is_num_text(rx) == 1:
+        return ["1", binds + [[ry, rx]]]
+    if is_num_text(ry) == 1:
+        return ["1", binds + [[rx, ry]]]
+    return ["1", binds + [[ry, rx]]]
+
+# Unify two shapes dimension by dimension. Returns [ok, binds].
+action unify_shape(a: list, b: list, binds: list) -> list:
+    if rank_of(a) != rank_of(b):
+        return ["0", binds]
+    let cur = binds
+    let i = 0
+    let ok = 1
+    while i < rank_of(a) bounded 1000:
+        let r = bind_dim(dim_of(a, i), dim_of(b, i), cur)
+        if (r[0] otherwise "") == "0":
+            set ok to 0
+            set i to rank_of(a)
+        otherwise:
+            set cur to (r[1] otherwise "")
+            set i to i + 1
+    return [num_text_of(ok), cur]
+
+action env_get(env: list, name: string) -> list:
+    let i = (length of env) - 1
+    while i >= 0 bounded 10000:
+        let e = (env[i] otherwise "")
+        if (e[0] otherwise "") == name:
+            return (e[1] otherwise "")
+        set i to i - 1
+    return ["?"]
+
+action env_set(env: list, name: string, spec: list) -> list:
+    return env + [[name, spec]]
+
+action unify_specs(a: list, b: list, binds: list) -> list:
+    # Only tensor shapes are this pass's contract. A number used where text sits
+    # is not a shape error, and treating it as one made every string-building
+    # fallback in the standard library a false positive.
+    if (length of a) == 0 or (length of b) == 0:
+        return ["1", binds]
+    if (a[0] otherwise "") == "?" or (b[0] otherwise "") == "?":
+        return ["1", binds]
+    if (a[0] otherwise "") == "tensor" and (b[0] otherwise "") == "tensor":
+        return unify_shape(a, b, binds)
+    return ["1", binds]
+
+action specs_compatible(a: list, b: list) -> num:
+    if (length of a) == 0 or (length of b) == 0:
+        return 1
+    if (a[0] otherwise "") == "?" or (b[0] otherwise "") == "?":
+        return 1
+    if (a[0] otherwise "") != (b[0] otherwise ""):
+        return 0
+    if (a[0] otherwise "") != "tensor":
+        return 1
+    if rank_of(a) != rank_of(b):
+        return 0
+    let i = 0
+    let ok = 1
+    while i < rank_of(a) bounded 1000:
+        let x = dim_of(a, i)
+        let y = dim_of(b, i)
+        if is_num_text(x) == 1 and is_num_text(y) == 1 and x != y:
+            set ok to 0
+            set i to rank_of(a)
+        otherwise:
+            set i to i + 1
+    return ok
+
+action shape_error(diags: list, line: num, msg: string) -> list:
+    return diags + [diag("E_KAZE_SHAPE_MISMATCH", line, msg)]
+
+action dims_product(spec: list) -> num:
+    if rank_of(spec) == 0:
+        return 0 - 1
+    let p = 1
+    let i = 0
+    let known = 1
+    while i < rank_of(spec) bounded 1000:
+        let d = dim_of(spec, i)
+        if is_num_text(d) == 1:
+            set p to p * text_to_num(d)
+            set i to i + 1
+        otherwise:
+            set known to 0
+            set i to rank_of(spec)
+    if known == 0:
+        return 0 - 1
+    return p
+
+action spec_with_last_one(spec: list) -> list:
+    if rank_of(spec) == 0:
+        return spec
+    let out = ["tensor"]
+    let i = 0
+    while i < rank_of(spec) bounded 1000:
+        if i + 1 == rank_of(spec):
+            set out to out + ["1"]
+        otherwise:
+            set out to out + [dim_of(spec, i)]
+        set i to i + 1
+    return out
+
+action spec_swap_last2(spec: list) -> list:
+    if rank_of(spec) != 2:
+        return spec
+    return ["tensor", dim_of(spec, 1), dim_of(spec, 0)]
+
+action spec_matmul_result(a: list, b: list, transpose_right: num) -> list:
+    # a's leading dims, then b's trailing dims (or leading dims when b is
+    # contracted transposed). Both leading/trailing parts exclude the contracted
+    # dimension itself.
+    let out = ["tensor"]
+    let i = 0
+    while i < rank_of(a) - 1 bounded 1000:
+        set out to out + [dim_of(a, i)]
+        set i to i + 1
+    if transpose_right == 1:
+        set i to 0
+        while i < rank_of(b) - 1 bounded 1000:
+            set out to out + [dim_of(b, i)]
+            set i to i + 1
+    otherwise:
+        set i to 1
+        while i < rank_of(b) bounded 1000:
+            set out to out + [dim_of(b, i)]
+            set i to i + 1
+    return out
+
+action spec_of_list_dims(e: AstNode) -> list:
+    # A shape literal such as [2, 3] gives a tensor shape; anything else is
+    # unknown and is not guessed.
+    if e.kind != "LIST":
+        return []
+    let dims = ["tensor"]
+    for each c in e.children:
+        if c.kind == "NUM":
+            set dims to dims + [c.val_str]
+        otherwise:
+            return []
+    if (length of dims) < 2:
+        return []
+    return dims
+
+action infer_expr(e: AstNode, env: list, binds: list, items: list, diags: list) -> list:
+    recursion bounded 200
+    let k = e.kind
+    if k == "IDENT":
+        return [env_get(env, e.name), binds, diags]
+    if k == "NUM":
+        return [["num"], binds, diags]
+    if k == "STR":
+        return [["text"], binds, diags]
+    if k == "BOOL":
+        return [["bool"], binds, diags]
+    if k == "LIST":
+        return [["list"], binds, diags]
+    if k == "LEN" or k == "LEN_LIT":
+        return [["num"], binds, diags]
+    if k == "BIN" or k == "INDEX" or k == "IN_UNIT":
+        return [["num"], binds, diags]
+    if k == "FIELD":
+        return [["?"], binds, diags]
+    if k == "FALLBACK":
+        let ri = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rf = infer_expr(child_at(e, 1), env, (ri[1] otherwise ""), items, (ri[2] otherwise ""))
+        let u = unify_specs((ri[0] otherwise ""), (rf[0] otherwise ""), (rf[1] otherwise ""))
+        let out = (rf[2] otherwise "")
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, "the two sides of otherwise have different shapes: " + render_spec((ri[0] otherwise "")) + " and " + render_spec((rf[0] otherwise "")))
+        return [(ri[0] otherwise ""), (u[1] otherwise ""), out]
+    if k == "CALL":
+        return infer_call(e, env, binds, items, diags)
+    return [["?"], binds, diags]
+
+action infer_call(e: AstNode, env: list, binds: list, items: list, diags: list) -> list:
+    recursion bounded 200
+    let name = e.name
+    let cnt = length of e.children
+
+    if name == "tensor":
+        if cnt < 2:
+            return [["?"], binds, diags]
+        let vals = child_at(e, 0)
+        let spec = spec_of_list_dims(child_at(e, 1))
+        let out = diags
+        if (length of spec) == 0:
+            set out to shape_error(out, e.line, "tensor(...) needs a literal shape list such as [2, 3]")
+            return [["?"], binds, out]
+        if vals.kind == "LIST":
+            let want = dims_product(spec)
+            if want >= 0 and (length of vals.children) != want:
+                set out to shape_error(out, e.line, "tensor(...) shape " + render_spec(spec) + " needs " + num_text_of(want) + " values, the list has " + num_text_of(length of vals.children))
+                return [["?"], binds, out]
+        return [spec, binds, out]
+
+    if name == "zeros":
+        let spec = spec_of_list_dims(child_at(e, 0))
+        if (length of spec) == 0:
+            return [["?"], binds, shape_error(diags, e.line, "zeros(...) needs a literal shape list such as [2, 3]")]
+        return [spec, binds, diags]
+
+    if name == "matmul" or name == "matmul_t":
+        let ra = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rb = infer_expr(child_at(e, 1), env, (ra[1] otherwise ""), items, (ra[2] otherwise ""))
+        let a = (ra[0] otherwise "")
+        let b = (rb[0] otherwise "")
+        let out = (rb[2] otherwise "")
+        if rank_of(a) < 2 or rank_of(b) < 2:
+            set out to shape_error(out, e.line, name + " needs two matrices; got " + render_spec(a) + " and " + render_spec(b))
+            return [["?"], (rb[1] otherwise ""), out]
+        let xdim = dim_of(a, rank_of(a) - 1)
+        let ydim = dim_of(b, 0)
+        if name == "matmul_t":
+            set ydim to dim_of(b, rank_of(b) - 1)
+        let u = bind_dim(xdim, ydim, (rb[1] otherwise ""))
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, name + " inner dimensions do not match: " + render_spec(a) + " and " + render_spec(b))
+            return [["?"], (rb[1] otherwise ""), out]
+        let tx = 0
+        if name == "matmul_t":
+            set tx to 1
+        return [spec_matmul_result(a, b, tx), (u[1] otherwise ""), out]
+
+    if name == "tensor_add" or name == "tensor_sub" or name == "tensor_mul" or name == "tensor_div":
+        let ra = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rb = infer_expr(child_at(e, 1), env, (ra[1] otherwise ""), items, (ra[2] otherwise ""))
+        let a = (ra[0] otherwise "")
+        let b = (rb[0] otherwise "")
+        let out = (rb[2] otherwise "")
+        if rank_of(a) > 0 and rank_of(b) > 0:
+            let u = unify_shape(a, b, (rb[1] otherwise ""))
+            if (u[0] otherwise "") == "0":
+                set out to shape_error(out, e.line, name + " needs equal shapes; got " + render_spec(a) + " and " + render_spec(b))
+                return [["?"], (rb[1] otherwise ""), out]
+            return [a, (u[1] otherwise ""), out]
+        if rank_of(a) > 0:
+            return [a, (rb[1] otherwise ""), out]
+        if rank_of(b) > 0:
+            return [b, (rb[1] otherwise ""), out]
+        if (a[0] otherwise "") == "num" and (b[0] otherwise "") == "num":
+            return [["num"], (rb[1] otherwise ""), out]
+        return [["?"], (rb[1] otherwise ""), out]
+
+    if name == "add_bias":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rb = infer_expr(child_at(e, 1), env, (rx[1] otherwise ""), items, (rx[2] otherwise ""))
+        let x = (rx[0] otherwise "")
+        let b = (rb[0] otherwise "")
+        let out = (rb[2] otherwise "")
+        if rank_of(x) < 1 or rank_of(b) != 1:
+            set out to shape_error(out, e.line, "add_bias needs a tensor and a rank-1 bias; got " + render_spec(x) + " and " + render_spec(b))
+            return [["?"], (rb[1] otherwise ""), out]
+        let u = bind_dim(dim_of(x, rank_of(x) - 1), dim_of(b, 0), (rb[1] otherwise ""))
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, "add_bias bias width does not match the last dimension: " + render_spec(x) + " and " + render_spec(b))
+            return [["?"], (rb[1] otherwise ""), out]
+        return [x, (u[1] otherwise ""), out]
+
+    if name == "transpose":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        if rank_of((rx[0] otherwise "")) != 2:
+            return [["?"], (rx[1] otherwise ""), shape_error((rx[2] otherwise ""), e.line, "transpose here needs a rank-2 tensor; got " + render_spec((rx[0] otherwise "")))]
+        return [spec_swap_last2((rx[0] otherwise "")), (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "reshape":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let spec = spec_of_list_dims(child_at(e, 1))
+        let out = (rx[2] otherwise "")
+        if (length of spec) == 0:
+            return [["?"], (rx[1] otherwise ""), shape_error(out, e.line, "reshape needs a literal target shape such as [2, 3]")]
+        let from_n = dims_product((rx[0] otherwise ""))
+        let to_n = dims_product(spec)
+        if from_n >= 0 and to_n >= 0 and from_n != to_n:
+            set out to shape_error(out, e.line, "reshape changes the element count: " + render_spec((rx[0] otherwise "")) + " -> " + render_spec(spec))
+            return [["?"], (rx[1] otherwise ""), out]
+        return [spec, (rx[1] otherwise ""), out]
+
+    if name == "softmax" or name == "gelu" or name == "silu" or name == "relu":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [(rx[0] otherwise ""), (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "rms_norm":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rw = infer_expr(child_at(e, 1), env, (rx[1] otherwise ""), items, (rx[2] otherwise ""))
+        let out = (rw[2] otherwise "")
+        if rank_of((rx[0] otherwise "")) < 1 or rank_of((rw[0] otherwise "")) != 1:
+            set out to shape_error(out, e.line, "rms_norm needs a tensor and a rank-1 weight")
+            return [["?"], (rw[1] otherwise ""), out]
+        let u = bind_dim(dim_of((rx[0] otherwise ""), rank_of((rx[0] otherwise "")) - 1), dim_of((rw[0] otherwise ""), 0), (rw[1] otherwise ""))
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, "rms_norm weight width does not match the last dimension")
+            return [["?"], (rw[1] otherwise ""), out]
+        return [(rx[0] otherwise ""), (u[1] otherwise ""), out]
+
+    if name == "layer_norm":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let rw = infer_expr(child_at(e, 1), env, (rx[1] otherwise ""), items, (rx[2] otherwise ""))
+        let out = (rw[2] otherwise "")
+        if rank_of((rx[0] otherwise "")) < 1 or rank_of((rw[0] otherwise "")) != 1:
+            set out to shape_error(out, e.line, "layer_norm needs a tensor and a rank-1 weight")
+            return [["?"], (rw[1] otherwise ""), out]
+        let u = bind_dim(dim_of((rx[0] otherwise ""), rank_of((rx[0] otherwise "")) - 1), dim_of((rw[0] otherwise ""), 0), (rw[1] otherwise ""))
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, e.line, "layer_norm weight width does not match the last dimension")
+            return [["?"], (rw[1] otherwise ""), out]
+        let outb = out
+        if cnt > 2:
+            let rbb = infer_expr(child_at(e, 2), env, (u[1] otherwise ""), items, outb)
+            set out to (rbb[2] otherwise "")
+            if rank_of((rbb[0] otherwise "")) == 1:
+                let u2 = bind_dim(dim_of((rx[0] otherwise ""), rank_of((rx[0] otherwise "")) - 1), dim_of((rbb[0] otherwise ""), 0), (rbb[1] otherwise ""))
+                if (u2[0] otherwise "") == "0":
+                    set out to shape_error(out, e.line, "layer_norm bias width does not match the last dimension")
+        return [(rx[0] otherwise ""), (u[1] otherwise ""), out]
+
+    if name == "tensor_sum" or name == "tensor_mean":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [spec_with_last_one((rx[0] otherwise "")), (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "argmax" or name == "tensor_argmax":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [["num"], (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "tensor_get":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [["num"], (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "tensor_shape":
+        let rx = infer_expr(child_at(e, 0), env, binds, items, diags)
+        return [["list"], (rx[1] otherwise ""), (rx[2] otherwise "")]
+
+    if name == "cli_text":
+        return [["text"], binds, diags]
+
+    if name == "model_open":
+        return [["model"], binds, diags]
+
+    if name == "model_forward":
+        let rm = infer_expr(child_at(e, 0), env, binds, items, diags)
+        let out = (rm[2] otherwise "")
+        let rms = (rm[0] otherwise [])
+        if (rms[0] otherwise "") != "model" and (rms[0] otherwise "") != "?":
+            set out to shape_error(out, e.line, "model_forward needs the value model_open returned")
+        if cnt < 2:
+            return [["?"], (rm[1] otherwise ""), shape_error(out, e.line, "model_forward needs a token list")]
+        let rt = infer_expr(child_at(e, 1), env, (rm[1] otherwise ""), items, out)
+        return [["tensor", "1", "V"], (rt[1] otherwise ""), (rt[2] otherwise "")]
+
+    let callee = routine_named(items, name)
+    if callee.kind != "NONE" and cnt == (length of child_at(callee, 0).children):
+        let params = child_at(callee, 0)
+        let cur = binds
+        let out = diags
+        let i = 0
+        while i < cnt bounded 1000:
+            let ra = infer_expr(child_at(e, i), env, cur, items, out)
+            let ps = tensor_spec_of_type(child_at(params, i).val_str)
+            set out to (ra[2] otherwise "")
+            if (length of ps) > 0 and rank_of((ra[0] otherwise "")) > 0:
+                let u = unify_shape((ra[0] otherwise ""), ps, (ra[1] otherwise ""))
+                if (u[0] otherwise "") == "0":
+                    set out to shape_error(out, e.line, "argument " + num_text_of(i + 1) + " of " + name + " has shape " + render_spec((ra[0] otherwise "")) + ", the parameter declares " + render_spec(ps))
+                otherwise:
+                    set cur to (u[1] otherwise "")
+            otherwise:
+                set cur to (ra[1] otherwise "")
+            set i to i + 1
+        let rs = tensor_spec_of_type(callee.val_str)
+        if (length of rs) > 0:
+            return [rs, cur, out]
+        return [["?"], cur, out]
+
+    if pure_builtin(name) == 1:
+        return [["num"], binds, diags]
+    return [["?"], binds, diags]
+
+action tensor_stmt(s: AstNode, env: list, result_spec: list, items: list, binds: list, diags: list) -> list:
+    recursion bounded 200
+    let k = s.kind
+    if k == "LET":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        return [env_set(env, s.name, (r[0] otherwise "")), (r[1] otherwise ""), (r[2] otherwise "")]
+    if k == "SET":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let old = env_get(env, s.name)
+        let u = unify_specs(old, (r[0] otherwise ""), (r[1] otherwise ""))
+        let out = (r[2] otherwise "")
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, s.line, "'" + s.name + "' has shape " + render_spec(old) + " but this assignment gives " + render_spec((r[0] otherwise "")))
+        return [env, (u[1] otherwise ""), out]
+    if k == "RETURN":
+        if (length of s.children) == 0:
+            return [env, binds, diags]
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let u = unify_specs(result_spec, (r[0] otherwise ""), (r[1] otherwise ""))
+        let out = (r[2] otherwise "")
+        if (u[0] otherwise "") == "0":
+            set out to shape_error(out, s.line, "this routine declares shape " + render_spec(result_spec) + " but returns " + render_spec((r[0] otherwise "")))
+        return [env, (u[1] otherwise ""), out]
+    if k == "EXPR" or k == "GUARD":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        return [env, (r[1] otherwise ""), (r[2] otherwise "")]
+    if k == "IF":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let t = tensor_stmts(kids_of(child_at(s, 1)), (r[0] otherwise ""), result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
+        let e = tensor_stmts(kids_of(child_at(s, 2)), (t[0] otherwise ""), result_spec, items, (t[1] otherwise ""), (t[2] otherwise ""))
+        return [(e[0] otherwise ""), (e[1] otherwise ""), (e[2] otherwise "")]
+    if k == "WHILE":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let b = tensor_stmts(kids_of(child_at(s, 1)), (r[0] otherwise ""), result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
+        return [(b[0] otherwise ""), (b[1] otherwise ""), (b[2] otherwise "")]
+    if k == "FOR_EACH":
+        let r = infer_expr(child_at(s, 0), env, binds, items, diags)
+        let inner = env_set((r[0] otherwise ""), s.name, ["num"])
+        let b = tensor_stmts(kids_of(child_at(s, 1)), inner, result_spec, items, (r[1] otherwise ""), (r[2] otherwise ""))
+        return [env, (b[1] otherwise ""), (b[2] otherwise "")]
+    if k == "TRY":
+        let inner = env
+        if s.name != "":
+            set inner to env_set(env, s.name, ["?"])
+        let b = tensor_stmts(kids_of(child_at(s, 0)), inner, result_spec, items, binds, diags)
+        let e = tensor_stmts(kids_of(child_at(s, 1)), (b[0] otherwise ""), result_spec, items, (b[1] otherwise ""), (b[2] otherwise ""))
+        return [env, (e[1] otherwise ""), (e[2] otherwise "")]
+    if k == "SPAWN" or k == "JOIN" or k == "SEND" or k == "RECEIVE" or k == "RETURN_VALUE":
+        let cur = binds
+        let out = diags
+        for each c in s.children:
+            let r = infer_expr(c, env, cur, items, out)
+            set cur to (r[1] otherwise "")
+            set out to (r[2] otherwise "")
+        return [env, cur, out]
+    return [env, binds, diags]
+
+action tensor_stmts(stmts, env: list, result_spec: list, items: list, binds: list, diags: list) -> list:
+    recursion bounded 200
+    let cur_env = env
+    let cur_binds = binds
+    let out = diags
+    for each s in stmts:
+        let r = tensor_stmt(s, cur_env, result_spec, items, cur_binds, out)
+        set cur_env to (r[0] otherwise "")
+        set cur_binds to (r[1] otherwise "")
+        set out to (r[2] otherwise "")
+    return [cur_env, cur_binds, out]
+
+action tensor_item_diags(item: AstNode, items: list) -> list:
+    recursion bounded 200
+    if item.kind != "ACTION" and item.kind != "CHECK" and item.kind != "FILTER" and item.kind != "FIBER":
+        return []
+    let params = child_at(item, 0)
+    let env = []
+    for each p in params.children:
+        let spec = tensor_spec_of_type(p.val_str)
+        if (length of spec) > 0:
+            set env to env_set(env, p.name, spec)
+    let result_spec = tensor_spec_of_type(item.val_str)
+    let body = child_at(item, 2)
+    let r = tensor_stmts(body.children, env, result_spec, items, [], [])
+    return (r[2] otherwise "")
+
+action tensor_diags(items: list, need_list: list) -> list:
+    recursion bounded 64
+    let out = []
+    for each item in items:
+        set out to out + tensor_item_diags(item, items)
+    # Host-resource rule: opening a model file reads the host filesystem, so the
+    # file must declare the memory family. A missing declaration is the same
+    # class of refusal as a missing capability anywhere else.
+    let calls = []
+    for each item in items:
+        set calls to calls + collect_kind(item, "CALL", [], 0)
+    let names = call_names_of(calls)
+    let needs_mem = 0
+    for each nm in names:
+        if nm == "model_open" or nm == "model_forward":
+            set needs_mem to 1
+    if needs_mem == 1:
+        let declared = 0
+        for each n in need_list:
+            if family_of_word(n) == "memory":
+                set declared to 1
+        if declared == 0:
+            set out to out + [diag("E_CAP_UNDECLARED", 1, "model_open reads the host filesystem but this file does not declare it; add 'memory' to the needs: line")]
+    return out
+
+
+
 action check_program(prog: AstNode):
     recursion bounded 200
     let out = []
@@ -978,12 +1820,31 @@ action check_program(prog: AstNode):
     set i to 0
     while i < (length of items) bounded 1000000:
         let item = node_at(items, i)
-        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER":
+        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
             set out to out + check_item(item, declared, items, names_all, froms, tos, open)
+        if item.kind == "RECORD" and (length of item.children) == 0:
+            # A record written on one line ('record P: a: number') parses as a record with
+            # no fields, and every field read of it then yields nil without a word. Refuse
+            # it here instead: the indented form is the only form the reader accepts.
+            set out to out + [diag("E_KAZE_RECORD_NO_FIELDS", item.line, "record '" + item.name + "' declares no fields; indent each 'name: type' line under it")]
         if item.kind == "UNKNOWN_ITEM":
             set out to out + [diag("E_KAZE_PARSE", item.line, "the machine reader does not know the form '" + item.name + "'")]
         if item.kind == "WHEN" or item.kind == "EVERY":
             let body = child_at(item, 1)
             set out to check_stmts(body.children, [], [], items, declared, open, out)
         set i to i + 1
+    # 2b. A callable may not reuse a builtin's name. The emitter resolves builder
+    #     names before program routines, so a routine called 'code' would leave every
+    #     code(...) call compiled to the builtin and silently return the wrong value.
+    for each item in items:
+        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
+            if pure_builtin(item.name) == 1:
+                set out to out + [diag("E_KAZE_RESERVED_NAME", item.line, "'" + item.name + "' is a builtin; a routine may not reuse the name")]
+    # 3. the phase 13 rules: yield placement, fiber calls, fiber effects.
+    set out to out + concurrency_diags(items)
+    # 3b. the phase 12 tensor shape algebra.
+    set out to out + tensor_diags(items, need_list)
+    # 4. the _kz_ prefix is the compiler's, in every body and every parameter list.
+    for each item in items:
+        set out to out + reserved_diags(item, [], 0)
     return out

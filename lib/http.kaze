@@ -1,0 +1,159 @@
+# lib/http.kaze -- an authorized HTTP/HTTPS client over the host backend.
+#
+# Kaze has no socket primitive, so the transport is the host's documented
+# external provider: `http_fetch` is a builtin lowered to kaze_http.h and linked
+# by `kaze-host run`. It returns
+#
+#     [ok, status, response_headers, response_body, error]
+#
+# and this module turns that into the record a program reads. An HTTP error
+# status is a successful exchange: `ok` is true and `status` is the number.
+# `ok` is false only for a transport, policy or backend failure, in which case
+# `error` is a stable E_HTTP_* code.
+#
+# Authority is explicit and host-side (there is no ambient network):
+#     KAZE_HTTP=1                     grant network access
+#     KAZE_HTTP_ALLOW=host[:port],... destination allowlist (loopback default)
+#     KAZE_HTTP_MAX_BYTES=N           response body ceiling (1 MiB default)
+#
+# Limits: a response body is text, so a NUL byte truncates it; redirects stop
+# after five and each target is checked against the allowlist before it is
+# requested; only http and https are accepted; a program that never calls this
+# module needs no libcurl. Nothing here discovers DNS policy on its own, and a
+# `use` line grants no authority. The transport is C-path only: `compile`
+# refuses a module that calls http_fetch because format 5 has no HTTP opcode;
+# use `emit-c` / `kaze-host run`.
+
+record HttpResponse:
+    ok: bool
+    status: number
+    headers: text
+    body: text
+    error: text
+
+action http_request(method: text, url: text, headers: text, body: text, timeout_ms: number) -> HttpResponse:
+    let raw = http_fetch(method, url, headers, body, timeout_ms)
+    return HttpResponse(
+        ok: raw[0] otherwise false,
+        status: raw[1] otherwise 0,
+        headers: raw[2] otherwise "",
+        body: raw[3] otherwise "",
+        error: raw[4] otherwise "")
+
+action http_get(url: text) -> HttpResponse:
+    return http_request("GET", url, "", "", 5000)
+
+action http_get_with(url: text, headers: text, timeout_ms: number) -> HttpResponse:
+    return http_request("GET", url, headers, "", timeout_ms)
+
+action http_post(url: text, body: text) -> HttpResponse:
+    return http_request("POST", url, "", body, 5000)
+
+action http_post_with(url: text, headers: text, body: text, timeout_ms: number) -> HttpResponse:
+    return http_request("POST", url, headers, body, timeout_ms)
+
+action http_head(url: text) -> HttpResponse:
+    return http_request("HEAD", url, "", "", 5000)
+
+# The header block is returned exactly as it arrived (CRLF lines). This finds a
+# name case-insensitively and returns the value with surrounding whitespace
+# removed, or "" when absent. `http_has_header` distinguishes an absent header
+# from one with an empty value. It is a small parser, not a security boundary.
+action http_header(r: HttpResponse, name: text) -> text:
+    let lines = http_split_lines(r.headers)
+    let want = http_lower(name)
+    for each line in lines:
+        let colon = http_find_char(line, ":")
+        if colon >= 0:
+            let key = http_lower(http_slice(line, 0, colon))
+            if key == want:
+                let value = http_slice(line, colon + 1, length of line)
+                return http_trim(value)
+    return ""
+
+action http_has_header(r: HttpResponse, name: text) -> bool:
+    let lines = http_split_lines(r.headers)
+    let want = http_lower(name)
+    for each line in lines:
+        let colon = http_find_char(line, ":")
+        if colon >= 0:
+            let key = http_lower(http_slice(line, 0, colon))
+            if key == want:
+                return true
+    return false
+
+action http_status(r: HttpResponse) -> number:
+    return r.status
+
+action http_succeeded(r: HttpResponse) -> bool:
+    return r.ok and r.status >= 200 and r.status < 300
+
+# ── small text helpers (no dependency on lib/text.kaze) ────────────────
+
+action http_find_char(t: text, ch: text) -> number:
+    let i = 0
+    while i < (length of t) bounded 1048576:
+        if (t[i] otherwise "") == ch:
+            return i
+        set i to i + 1
+    return 0 - 1
+
+action http_slice(t: text, from: number, to: number) -> text:
+    let out = ""
+    let i = from
+    if i < 0:
+        set i to 0
+    while i < to and i < (length of t) bounded 1048576:
+        set out to out + (t[i] otherwise "")
+        set i to i + 1
+    return out
+
+action http_trim(t: text) -> text:
+    let start = 0
+    let stop = length of t
+    let scanning = 1
+    while start < stop and scanning == 1 bounded 1048576:
+        let c = t[start] otherwise " "
+        let b = code(c)
+        if b == 32 or b == 9 or b == 13 or b == 10:
+            set start to start + 1
+        otherwise:
+            set scanning to 0
+    set scanning to 1
+    while stop > start and scanning == 1 bounded 1048576:
+        let c = t[stop - 1] otherwise " "
+        let b = code(c)
+        if b == 32 or b == 9 or b == 13 or b == 10:
+            set stop to stop - 1
+        otherwise:
+            set scanning to 0
+    return http_slice(t, start, stop)
+
+action http_lower(t: text) -> text:
+    let out = ""
+    let i = 0
+    while i < (length of t) bounded 1048576:
+        let c = t[i] otherwise ""
+        let b = code(c)
+        if b >= 65 and b <= 90:
+            set out to out + character(b + 32)
+        otherwise:
+            set out to out + c
+        set i to i + 1
+    return out
+
+action http_split_lines(t: text) -> list:
+    let out = []
+    let line = ""
+    let i = 0
+    while i < (length of t) bounded 1048576:
+        let c = t[i] otherwise ""
+        if c == "\n":
+            set out to out + [line]
+            set line to ""
+        otherwise:
+            set line to line + c
+        set i to i + 1
+    if (length of line) > 0:
+        set out to out + [line]
+    return out

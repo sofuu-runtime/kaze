@@ -1,0 +1,25 @@
+# Two pure fibers record their run order through a bounded channel.
+# Round-robin over spawn order makes the interleaving 1,2,1,2,1,2 every run.
+fiber tagger(q, id: int) -> int:
+    let n = 0
+    while n < 3 bounded 10:
+        send id to q
+        set n to n + 1
+        yield
+    return id
+
+action main():
+    let q = channel(64)
+    spawn tagger(q, 1) as a
+    spawn tagger(q, 2) as b
+    join a
+    join b
+    let seen = 0
+    let more = 1
+    while more == 1 bounded 64:
+        let v = receive from q otherwise 0
+        if v == 0:
+            set more to 0
+        otherwise:
+            set seen to seen * 10 + v
+    return seen

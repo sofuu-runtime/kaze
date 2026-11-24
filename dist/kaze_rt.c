@@ -104,6 +104,14 @@ const char *kaze_code_name(kaze_code_t code)
         return "E_KAZE_BADARG";
     case KAZE_ERR_TYPE:
         return "E_KAZE_TYPE";
+    case KAZE_ERR_SHAPE:
+        return "E_KAZE_SHAPE_MISMATCH";
+    case KAZE_ERR_QUANT:
+        return "E_KAZE_QUANT";
+    case KAZE_ERR_IO:
+        return "E_KAZE_IO";
+    case KAZE_ERR_FORMAT:
+        return "E_KAZE_FORMAT";
     default:
         return "E_KAZE_BADCODE";
     }

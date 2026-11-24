@@ -1,0 +1,159 @@
+# tests/stdlib/ed25519_test.kaze -- RFC 8032 Ed25519 signature verification.
+#
+# The three published test vectors must verify, and every tamper must not: a changed
+# message, a changed signature digit, a key of the wrong length, a non-hex key, an S
+# at the group order, a y at or above p, a y that is not on the curve, and the one
+# point encoding RFC 8032 singles out (x = 0 with the sign bit set).
+#
+# TEST 3 has the message bytes 0xaf 0x82, which is not valid UTF-8. Kaze text is a
+# byte array and character(n) produces exactly the byte n, so those two bytes can be
+# carried in a text; the same vector is also run through the byte-list entry point,
+# which is the honest way to pass a binary message.
+#
+# A decoded point's x is checked limb by limb: list equality in Kaze is identity, not
+# content, so lists are always compared element by element here.
+
+needs: log
+
+use "./../../lib/ed25519.kaze"
+
+action expect(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action same_limbs(a, b) -> bool:
+    if (length of a) != (length of b):
+        return false
+    let i = 0
+    let n = length of a
+    while i < n bounded 1000:
+        if (a[i] otherwise 0) != (b[i] otherwise 0):
+            return false
+        set i to i + 1
+    return true
+
+action other_digit(c) -> text:
+    if c == "0":
+        return "1"
+    return "0"
+
+# The same hex text with the digit at position "at" swapped for a different digit, so
+# the length is unchanged and exactly one nibble differs.
+action flip_hex_at(t, at) -> text:
+    let out = ""
+    let i = 0
+    let n = length of t
+    while i < n bounded 10000:
+        if i == at:
+            set out to out + other_digit(t[i] otherwise "0")
+        otherwise:
+            set out to out + (t[i] otherwise "")
+        set i to i + 1
+    return out
+
+# A small number as a field element, for the arithmetic sanity check below.
+action f_of(n) -> list:
+    return [n, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+action lcg_next(state) -> num:
+    return (state * 1664525 + 1013904223) & 4294967295
+
+action main() -> num:
+    let failures = 0
+
+    # ---- RFC 8032 section 7.1 vectors ----------------------------------------
+    let pk1 = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    let sig1 = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    let pk2 = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+    let sig2 = "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+    let pk3 = "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"
+    let sig3 = "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a"
+    let msg3_text = character(175) + character(130)
+
+    set failures to expect("TEST 1 verifies", ed25519_verify(pk1, "", sig1) == 1, failures)
+    set failures to expect("TEST 2 verifies", ed25519_verify(pk2, "r", sig2) == 1, failures)
+    set failures to expect("TEST 3 verifies through the text entry point", ed25519_verify(pk3, msg3_text, sig3) == 1, failures)
+    set failures to expect("TEST 3 verifies through the byte entry point", ed25519_verify_bytes(ed25519_hex_to_bytes(pk3), [175, 130], ed25519_hex_to_bytes(sig3)) == 1, failures)
+
+    # ---- tampering ----------------------------------------------------------
+    set failures to expect("TEST 1 fails on a different message", ed25519_verify(pk1, "x", sig1) == 0, failures)
+    set failures to expect("TEST 1 fails with one signature nibble changed", ed25519_verify(pk1, "", flip_hex_at(sig1, 2)) == 0, failures)
+    set failures to expect("TEST 1 fails with one S nibble changed", ed25519_verify(pk1, "", flip_hex_at(sig1, 100)) == 0, failures)
+    set failures to expect("TEST 2 fails with one signature nibble changed", ed25519_verify(pk2, "r", flip_hex_at(sig2, 5)) == 0, failures)
+    # TEST 2's message is the single byte 0x72, so this is a one-byte message flip.
+    set failures to expect("TEST 2 fails with its one message byte flipped", ed25519_verify(pk2, "s", sig2) == 0, failures)
+    set failures to expect("a signature is not valid under another key", ed25519_verify(pk2, "", sig1) == 0, failures)
+
+    # ---- malformed encodings ------------------------------------------------
+    set failures to expect("a 63-character public key is rejected", ed25519_verify("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511", "", sig1) == 0, failures)
+    set failures to expect("a 64-byte public key is rejected", ed25519_verify(pk1 + pk1, "", sig1) == 0, failures)
+    set failures to expect("a 127-character signature is rejected", ed25519_verify(pk1, "", sig1 + "0") == 0, failures)
+    set failures to expect("a non-hex public key is rejected", ed25519_verify("zz5a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "", sig1) == 0, failures)
+    # S = L, the group order, as 32 little-endian bytes: canonical scalars stop at L-1.
+    set failures to expect("S equal to the group order is rejected", ed25519_verify(pk1, "", "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010") == 0, failures)
+
+    # [S+L]B = [S]B, because L is the order of B, so this signature satisfies the group
+    # equation exactly. Only the rule that S is a canonical scalar below L rejects it,
+    # which makes this the check that the rule is really enforced and not just assumed.
+    set failures to expect("a non-canonical S shifted by L is rejected", ed25519_verify(pk1, "", "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155" + "4c8c7872aa064e049dbb3013fbf29380d25bf5f0595bbe24655141438e7a101b") == 0, failures)
+
+    # ---- decoding edge cases ------------------------------------------------
+    let r_zero = ed25519_point_decode(ed25519_hex_to_bytes("0200000000000000000000000000000000000000000000000000000000000000"))
+    set failures to expect("a y that is not on the curve is rejected", (r_zero[0] otherwise 1) == 0, failures)
+    let r_p = ed25519_point_decode(ed25519_hex_to_bytes("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"))
+    set failures to expect("a y at or above p is rejected", (r_p[0] otherwise 1) == 0, failures)
+    let r_sign = ed25519_point_decode(ed25519_hex_to_bytes("0100000000000000000000000000000000000000000000000000000000000080"))
+    set failures to expect("x = 0 with the sign bit set is rejected", (r_sign[0] otherwise 1) == 0, failures)
+
+    # ---- the base point, recovered the same way a public key is -------------
+    let base = ed25519_point_decode(ed25519_hex_to_bytes("5866666666666666666666666666666666666666666666666666666666666666"))
+    let base_ok = (base[0] otherwise 0)
+    let base_pt = base[1] otherwise []
+    let base_x = base_pt[0] otherwise []
+    let want_x = [54554, 36645, 11616, 51542, 42930, 38181, 51040, 26924, 56412, 64982, 57905, 49316, 21502, 52590, 14035, 8553]
+    set failures to expect("the base point decodes to the RFC x coordinate", base_ok == 1 and same_limbs(base_x, want_x), failures)
+    # y = 4/5, so 5*y must be 4 in the field: this is the constant the decode started
+    # from, and checking it confirms the limb arithmetic on a value with no small form.
+    let by_limbs = [26200, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214]
+    set failures to expect("the field holds 5*(4/5) = 4", same_limbs(f_mul(f_of(5), by_limbs), f_of(4)), failures)
+
+    # ---- a signature from an independent implementation ---------------------
+    # This key pair and both signatures come from a standard Ed25519 implementation,
+    # not from this file, so they are a real second opinion. The 200-byte message
+    # pushes R || A || M past one SHA-512 block; the 8-byte one contains zero bytes,
+    # which is the case binary messages exist for.
+    let ref_pk = "c3b0437e41cae334deb796494e672e14e733fa4096b01e76c273ae67d05d8cbf"
+    let ref_sig_a = "e549a939e9dd1107cdf906b52d4a1311408c16e6be5ecdfbeb153c996120b67a72a5c6f2035c589a79707fc852b9c26c241e61a5856b8bccfa6ca6f1d6111909"
+    let ref_sig_b = "7ab70ae949ab6fa7cdc8d9c9ede069e27c70e3ff9ee8a1a679f4cffd920641cc604b59164a3b35ee5de3060802f0d5dac28ca583fe41019c5bcb20ec1e3d0d02"
+    let long_msg = []
+    let li = 0
+    while li < 200 bounded 1000:
+        set long_msg to long_msg + [((li * 37 + 11) & 255)]
+        set li to li + 1
+    set failures to expect("a 200-byte message verifies across two hash blocks", ed25519_verify_bytes(ed25519_hex_to_bytes(ref_pk), long_msg, ed25519_hex_to_bytes(ref_sig_a)) == 1, failures)
+    set failures to expect("a message containing zero bytes verifies", ed25519_verify_bytes(ed25519_hex_to_bytes(ref_pk), [0, 1, 0, 255, 128, 0, 7, 33], ed25519_hex_to_bytes(ref_sig_b)) == 1, failures)
+    set failures to expect("that 200-byte message with one byte changed is rejected", ed25519_verify_bytes(ed25519_hex_to_bytes(ref_pk), long_msg + [1], ed25519_hex_to_bytes(ref_sig_a)) == 0, failures)
+
+    # ---- hex helpers --------------------------------------------------------
+    let pk_bytes = ed25519_hex_to_bytes(pk1)
+    set failures to expect("hex_to_bytes gives the 32 key bytes", (length of pk_bytes) == 32 and (pk_bytes[0] otherwise 0) == 215 and (pk_bytes[31] otherwise 0) == 26, failures)
+    set failures to expect("bytes_to_hex round-trips the signature", ed25519_bytes_to_hex(ed25519_hex_to_bytes(sig1)) == sig1, failures)
+    set failures to expect("bytes_to_hex pads every byte to two digits", ed25519_bytes_to_hex([0, 15, 255]) == "000fff", failures)
+
+    # ---- fixed-seed randomised tampering ------------------------------------
+    let seed = 424242
+    let accepted = 0
+    let i = 0
+    while i < 8 bounded 100:
+        set seed to lcg_next(seed)
+        let at = seed % 128
+        if ed25519_verify(pk1, "", flip_hex_at(sig1, at)) == 1:
+            set accepted to accepted + 1
+        set i to i + 1
+    set failures to expect("8 random signature nibble flips are all rejected", accepted == 0, failures)
+
+    if failures == 0:
+        log.info("OK ed25519: 28 checks")
+    return failures

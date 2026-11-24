@@ -1,0 +1,101 @@
+# lib/crc.kaze -- table-free CRC-16.
+#
+# A CRC is a shift register: one message byte is XORed into the top (or bottom) of a
+# 16-bit register, then the register is advanced eight times, XORing the polynomial
+# back in whenever the bit that shifts out is set. No lookup table is built, so the
+# cost is eight shifts per byte and nothing is allocated. Kaze has no integer type, so
+# every value is a double masked back to 16 bits with `& 65535`, and `>>` is used
+# because it is the logical shift a reflected register wants.
+#
+# Two parameter families are here because the protocols that matter use both:
+#
+#   MSB-first (not reflected):  crc16_ccitt / crc16_ccitt_false, poly 0x1021 (4129).
+#   LSB-first (reflected):      crc16_reflected / crc16_mcrf4xx, poly 0x8408 (33800),
+#                               which is 0x1021 with its bits reversed.
+#
+# CRC-16/CCITT-FALSE is init 0xFFFF, poly 0x1021, no reflection, xorout 0. Its
+# published check value over the ASCII "123456789" is 0x29B1 (10673).
+#
+# The brief that asked for this module quoted 0x31C3 (12739) for CCITT-FALSE. That is
+# the CRC-16/XMODEM value: the same polynomial with init 0, published in the same
+# catalogue. Both are asserted in the suite, from the two entry points, so the number
+# in the brief is covered by a real function rather than by a fudged initial value.
+#
+# CRC-16/MCRF4XX is init 0xFFFF, poly 0x1021 reflected in and out, xorout 0; its
+# published check value for the same message is 0x6F91 (28561). That is the CRC
+# MAVLink 2.0 computes over a frame header and payload, and it is why the reflected
+# form is here at all.
+#
+# Nothing distinguishes "the message ended" from "the message continues": a CRC is a
+# fold over bytes, so continuing a partial buffer is the one-shot function with the
+# previous register value as the init. crc16_accumulate and crc16_mcrf4xx_accumulate
+# are exactly that, and the suite checks a split buffer against a whole one.
+
+# One byte through the MSB-first register. Both inputs are masked: a caller that hands
+# over a number outside a byte or outside 16 bits gets the defined low bits, not a
+# surprising shift.
+action crc16_ccitt_step(crc, byte, poly) -> num:
+    let c = (crc ^ ((byte & 255) << 8)) & 65535
+    let bit = 0
+    while bit < 8 bounded 16:
+        if (c & 32768) != 0:
+            set c to (((c << 1) ^ poly) & 65535)
+        otherwise:
+            set c to ((c << 1) & 65535)
+        set bit to bit + 1
+    return c
+
+# One byte through the LSB-first register. rpoly is the reflected form of the
+# polynomial: 0x8408 for the CCITT one, 0xA001 for the CRC-16/IBM (ARC) one.
+action crc16_reflected_step(crc, byte, rpoly) -> num:
+    let c = (crc ^ (byte & 255)) & 65535
+    let bit = 0
+    while bit < 8 bounded 16:
+        if (c & 1) != 0:
+            set c to (((c >> 1) ^ rpoly) & 65535)
+        otherwise:
+            set c to ((c >> 1) & 65535)
+        set bit to bit + 1
+    return c
+
+# CRC-16 over a byte list, MSB-first, from an explicit starting register value. The
+# xorout is 0 for every parameter set here, so the register is returned as it stands.
+action crc16_ccitt(bytes, init, poly) -> num:
+    let c = init & 65535
+    for each b in bytes:
+        set c to crc16_ccitt_step(c, b, poly)
+    return c
+
+# Feed more bytes to a register that already holds a partial CRC (MSB-first). This is
+# how a caller hashes a buffer that arrives in pieces.
+action crc16_accumulate(crc, bytes, poly) -> num:
+    return crc16_ccitt(bytes, crc, poly)
+
+# CRC-16/CCITT-FALSE. The one programmers mean by "CRC-16 CCITT" half the time.
+action crc16_ccitt_false(bytes) -> num:
+    return crc16_ccitt(bytes, 65535, 4129)
+
+# CRC-16/XMODEM: same polynomial, init 0. Its check value over "123456789" is 0x31C3.
+action crc16_xmodem(bytes) -> num:
+    return crc16_ccitt(bytes, 0, 4129)
+
+# CRC-16 over a byte list, LSB-first, from an explicit starting register value.
+action crc16_reflected(bytes, init, rpoly) -> num:
+    let c = init & 65535
+    for each b in bytes:
+        set c to crc16_reflected_step(c, b, rpoly)
+    return c
+
+# Continue a reflected CRC over a partial buffer.
+action crc16_reflected_accumulate(crc, bytes, rpoly) -> num:
+    return crc16_reflected(bytes, crc, rpoly)
+
+# CRC-16/MCRF4XX, the CRC MAVLink 2.0 uses. Over "123456789" it is 0x6F91.
+action crc16_mcrf4xx(bytes) -> num:
+    return crc16_reflected(bytes, 65535, 33800)
+
+# Continue a CRC-16/MCRF4XX over a partial buffer. MAVLink seeds a frame CRC with
+# 0xFFFF and then appends the message's CRC_EXTRA byte to the end of the spanned
+# bytes, which is one more call to this.
+action crc16_mcrf4xx_accumulate(crc, bytes) -> num:
+    return crc16_reflected(bytes, crc, 33800)

@@ -1,0 +1,12 @@
+# Phase 12 execution gate: tensor literals, matmul, elementwise add, transpose
+# and element access all round-trip through the emitted C99 runtime.
+# C = [[1,2,3],[4,5,6]] x [[1,2],[3,4],[5,6]] = [[22,28],[49,64]]
+# d = 2*C -> [[44,56],[98,128]], e = transpose(d) -> [[44,98],[56,128]]
+# e[0] + e[3] = 44 + 128 = 172.
+action main():
+    let a = tensor([1, 2, 3, 4, 5, 6], [2, 3])
+    let b = tensor([1, 2, 3, 4, 5, 6], [3, 2])
+    let c = matmul(a, b)
+    let d = tensor_add(c, c)
+    let e = transpose(d)
+    return tensor_get(e, 0) + tensor_get(e, 3)

@@ -6,12 +6,14 @@
 # 1. Kaze Source Files
 *.kaze linguist-detectable=true
 compiler/*.kaze linguist-detectable=true
+lib/*.kaze linguist-detectable=true
 examples/*.kaze linguist-detectable=true
 
 # 2. Exclude Generated C & Runtime Substrates from Statistics
 dist/* linguist-vendored
 dist/**/*.c linguist-vendored
 dist/**/*.h linguist-vendored
+dist/**/*.m linguist-vendored
 
 # 3. Exclude Shell & Python Tooling Scripts from Statistics
 scripts/* linguist-vendored

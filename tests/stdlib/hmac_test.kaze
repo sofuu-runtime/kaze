@@ -1,0 +1,94 @@
+# tests/stdlib/hmac_test.kaze -- HMAC-SHA-256 against the published RFC 4231 cases.
+# The five digests come from RFC 4231 section 4 (cases 1, 2, 3, and cases 6 and 7, both
+# with a 131-byte key so the hashed-key path runs; case 7 also carries data longer than
+# one block). Nothing here is derived from the implementation; the remaining checks
+# assert shape and one identity.
+needs: log
+
+use "./../../lib/hmac.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# n copies of one byte value as text. The repeated-byte keys and messages in RFC 4231
+# are written this way rather than as twenty escapes.
+action repeated_byte(n, value) -> text:
+    let out = ""
+    let i = 0
+    while i < n bounded 1000:
+        set out to out + character(value)
+        set i to i + 1
+    return out
+
+# Every character in t has to be one of the allowed characters.
+action in_charset(ch, charset) -> num:
+    let i = 0
+    let n = length of charset
+    while i < n bounded 100:
+        if (charset[i] otherwise "") == ch:
+            return 1
+        set i to i + 1
+    return 0
+
+action all_lower_hex(t) -> num:
+    let i = 0
+    let n = length of t
+    while i < n bounded 100:
+        if in_charset(t[i] otherwise "", "0123456789abcdef") == 0:
+            return 0
+        set i to i + 1
+    return 1
+
+action main() -> num:
+    let failures = 0
+
+    # RFC 4231 case 1: key = twenty 0x0b bytes, data = "Hi There".
+    let key1 = repeated_byte(20, 11)
+    set failures to check("RFC 4231 case 1", hmac_sha256_hex(key1, "Hi There") == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7", failures)
+
+    # RFC 4231 case 2: key = "Jefe", data = "what do ya want for nothing?".
+    set failures to check("RFC 4231 case 2", hmac_sha256_hex("Jefe", "what do ya want for nothing?") == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", failures)
+
+    # RFC 4231 case 3: key = twenty 0xaa bytes, data = fifty 0xdd bytes.
+    let key3 = repeated_byte(20, 170)
+    let data3 = repeated_byte(50, 221)
+    set failures to check("RFC 4231 case 3", hmac_sha256_hex(key3, data3) == "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe", failures)
+
+    # RFC 4231 case 6: a 131-byte key, longer than the 64-byte block, so the key is
+    # hashed before it is padded. Case 7 below shares that key and so that branch.
+    let key4 = repeated_byte(131, 170)
+    set failures to check("RFC 4231 case 6, key longer than the block", hmac_sha256_hex(key4, "Test Using Larger Than Block-Size Key - Hash Key First") == "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54", failures)
+
+    # RFC 4231 case 7: the 131-byte key again, but over 152 bytes of data, so the inner
+    # hash sees four blocks (64-byte pad + 152-byte message + padding). The other cases
+    # never reach a third block.
+    set failures to check("RFC 4231 case 7, data longer than one block", hmac_sha256_hex(key4, "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.") == "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2", failures)
+
+    # Structural: the digest is 32 bytes, the hex form 64 lowercase characters, and the
+    # two forms have to agree.
+    let digest = hmac_sha256("Jefe", "what do ya want for nothing?")
+    set failures to check("digest is 32 bytes", (length of digest) == 32, failures)
+    let hex = hmac_sha256_hex("Jefe", "what do ya want for nothing?")
+    set failures to check("hex is 64 characters", (length of hex) == 64, failures)
+    set failures to check("hex is lowercase 0-9a-f", all_lower_hex(hex) == 1, failures)
+    set failures to check("hex form agrees with the byte form", hex == sha256_hex_of_bytes(digest), failures)
+
+    # The empty-key path, checked against the construction written out from the SHA-256
+    # front door alone. RFC 2104 zero-pads the key to the 64-byte block, so with no key
+    # bytes at all the inner pad block is 0x36 repeated 64 times and the outer pad block
+    # is 0x5c repeated 64 times. The identity asserted is therefore
+    #   HMAC("", m) = sha256(opad_block || sha256(ipad_block || m)).
+    # It pins the wiring of lib/hmac.kaze (pad order, XOR bytes, digest-as-block) without
+    # reusing hmac_pad_block, so a swapped pad or a forgotten XOR shows up here.
+    let ipad_block = repeated_byte(64, 54)
+    let opad_block = repeated_byte(64, 92)
+    let inner_digest = sha256_of_bytes(sha256_message_bytes(ipad_block + "kaze"))
+    let manual = sha256_hex_of_bytes(sha256_of_bytes(sha256_message_bytes(opad_block) + inner_digest))
+    set failures to check("empty-key HMAC equals the padded construction", hmac_sha256_hex("", "kaze") == manual, failures)
+
+    if failures == 0:
+        log.info("OK hmac: 10 checks")
+    return failures

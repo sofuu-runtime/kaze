@@ -1,0 +1,4 @@
+action main():
+    let q = channel(2)
+    let v = receive from q
+    return v

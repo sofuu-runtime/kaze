@@ -1,0 +1,10 @@
+needs: log
+
+fiber chatty() -> int:
+    log "hello"
+    return 1
+
+action main():
+    spawn chatty() as c
+    join c
+    return 1

@@ -1,0 +1,221 @@
+# tests/stdlib/ring_test.kaze -- the ring library, including the Phase 11 gate:
+# 10,000 randomized operations against a plain-list FIFO model.
+#
+# The randomized ring is deliberately tiny (capacity 8) so the head wraps thousands of
+# times inside the gate, not only in the hand-written wrap cases. The generator is a
+# fixed-seed LCG so a failure reproduces exactly.
+
+needs: log
+
+use "./../../lib/ring.kaze"
+
+
+action lcg_next(state) -> num:
+    # 32-bit LCG parameters, kept inside a double's exact integer range.
+    let s = (state * 1664525 + 1013904223) & 4294967295
+    return s
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# Plain-list reference model: a FIFO is a list whose oldest value sits at index 0.
+# Deliberately independent of the library under test.
+action model_push(model, v, cap) -> list:
+    if (length of model) >= cap:
+        return model
+    return model + [v]
+
+action model_push_over(model, v, cap) -> list:
+    if (length of model) < cap:
+        return model + [v]
+    let out = []
+    let k = 0
+    for each x in model:
+        if k > 0:
+            set out to out + [x]
+        set k to k + 1
+    return out + [v]
+
+action model_pop(model) -> list:
+    let out = []
+    let k = 0
+    for each x in model:
+        if k > 0:
+            set out to out + [x]
+        set k to k + 1
+    return out
+
+action lists_equal(a, b) -> bool:
+    if (length of a) != (length of b):
+        return false
+    let i = 0
+    while i < (length of a) bounded 1000000:
+        if (a[i] otherwise 0) != (b[i] otherwise 0):
+            return false
+        set i to i + 1
+    return true
+
+action main() -> num:
+    let failures = 0
+
+    # ---- empty ring, push, peek, pop -------------------------------------------
+    let r = ring_new(3)
+    set failures to check("a new ring is empty, keeps its capacity and is not full", ring_size(r) == 0 and ring_capacity(r) == 3 and ring_full(r) == false, failures)
+    set r to ring_push(r, 10)
+    set r to ring_push(r, 20)
+    set r to ring_push(r, 30)
+    set failures to check("three pushes fill three slots", ring_size(r) == 3 and ring_capacity(r) == 3, failures)
+    set failures to check("to_list reads oldest-first", lists_equal(ring_to_list(r), [10, 20, 30]), failures)
+
+    let peeked = ring_peek(r)
+    set failures to check("peek reads the oldest without removing it", peeked.ok and peeked.value == 10 and ring_size(r) == 3, failures)
+    set failures to check("ring_pop_value reads the oldest without removing it", ring_pop_value(r) == 10 and ring_size(r) == 3, failures)
+
+    let first = ring_pop(r)
+    set failures to check("pop returns the oldest value and the shortened ring", first.ok and first.value == 10 and ring_size(first.ring) == 2 and lists_equal(ring_to_list(first.ring), [20, 30]), failures)
+    set failures to check("pop leaves the ring it was given untouched", ring_size(r) == 3 and lists_equal(ring_to_list(r), [10, 20, 30]), failures)
+
+    let after_first = first.ring
+    let second = ring_pop(after_first)
+    let after_second = second.ring
+    let third = ring_pop(after_second)
+    set failures to check("popping every element lands in FIFO order", second.ok and second.value == 20 and third.ok and third.value == 30, failures)
+    let after_third = third.ring
+    let drained = ring_pop(after_third)
+    set failures to check("popping an empty ring reports failure without changing it", drained.ok == false and drained.value == 0 and ring_size(drained.ring) == 0 and lists_equal(ring_to_list(drained.ring), []), failures)
+
+    # ---- wrap-around ------------------------------------------------------------
+    let w = ring_new(3)
+    set w to ring_push(w, 1)
+    set w to ring_push(w, 2)
+    set w to ring_push(w, 3)
+    # Two pops move head to slot 2, so the next two pushes have to wrap past the end.
+    let wp1 = ring_pop(w)
+    set w to wp1.ring
+    let wp2 = ring_pop(w)
+    set w to wp2.ring
+    set w to ring_push(w, 4)
+    set w to ring_push(w, 5)
+    set failures to check("wrap-around keeps FIFO order after the head passes the end", lists_equal(ring_to_list(w), [3, 4, 5]), failures)
+    set failures to check("wrap-around never grows the capacity", ring_capacity(w) == 3 and ring_size(w) == 3, failures)
+
+    let wrapped_peek = ring_peek(w)
+    set failures to check("peek after wrap reads the oldest live slot", wrapped_peek.ok and wrapped_peek.value == 3, failures)
+
+    set w to ring_push_over(w, 6)
+    set failures to check("push_over at the wrapped end drops the oldest", ring_size(w) == 3 and lists_equal(ring_to_list(w), [4, 5, 6]), failures)
+
+    # ---- rejection and the drop-oldest policy ----------------------------------
+    let f = ring_new(2)
+    set f to ring_push(f, 1)
+    set f to ring_push(f, 2)
+    let rejected = ring_push(f, 3)
+    set failures to check("push on a full ring is rejected and leaves it untouched", ring_size(rejected) == 2 and ring_capacity(rejected) == 2 and lists_equal(ring_to_list(rejected), [1, 2]), failures)
+
+    let d = ring_new(2)
+    set d to ring_push(d, 1)
+    set d to ring_push(d, 2)
+    set d to ring_push_over(d, 3)
+    set failures to check("push_over drops the oldest when full", ring_size(d) == 2 and lists_equal(ring_to_list(d), [2, 3]), failures)
+    set d to ring_push_over(d, 4)
+    set failures to check("repeated push_over keeps the newest capacity-worth of values", lists_equal(ring_to_list(d), [3, 4]), failures)
+    let g = ring_new(3)
+    set g to ring_push_over(g, 9)
+    set failures to check("push_over on a non-full ring is a plain push", ring_size(g) == 1 and ring_full(g) == false and lists_equal(ring_to_list(g), [9]), failures)
+
+    # ---- clear -----------------------------------------------------------------
+    let c = ring_new(3)
+    set c to ring_push(c, 1)
+    set c to ring_push(c, 2)
+    let cleared = ring_clear(c)
+    set failures to check("clear empties the ring but keeps its capacity", ring_size(cleared) == 0 and ring_capacity(cleared) == 3 and ring_full(cleared) == false and lists_equal(ring_to_list(cleared), []), failures)
+    set failures to check("clear leaves the original ring untouched", ring_size(c) == 2 and lists_equal(ring_to_list(c), [1, 2]), failures)
+    let refilled = ring_push(cleared, 9)
+    set failures to check("a cleared ring accepts pushes again from the start", ring_size(refilled) == 1 and lists_equal(ring_to_list(refilled), [9]), failures)
+
+    # ---- capacity 1 ------------------------------------------------------------
+    let one = ring_new(1)
+    set one to ring_push(one, 7)
+    let one_rejected = ring_push(one, 8)
+    set failures to check("capacity 1 holds one value and rejects the next push", ring_size(one) == 1 and ring_full(one) and ring_size(one_rejected) == 1 and lists_equal(ring_to_list(one_rejected), [7]), failures)
+    let one_over = ring_push_over(one, 8)
+    set failures to check("capacity 1 push_over replaces the only value", ring_size(one_over) == 1 and lists_equal(ring_to_list(one_over), [8]), failures)
+    let one_read = ring_pop(one_over)
+    let one_empty_ring = one_read.ring
+    let one_refilled = ring_push(one_empty_ring, 9)
+    set failures to check("capacity 1 pops to empty and can be refilled", one_read.ok and one_read.value == 8 and ring_size(one_empty_ring) == 0 and lists_equal(ring_to_list(one_refilled), [9]), failures)
+    let one_empty = ring_pop(one_empty_ring)
+    set failures to check("capacity 1 rejects a pop once empty", one_empty.ok == false and one_empty.value == 0 and ring_size(one_empty.ring) == 0, failures)
+
+    # ---- capacity 0 ------------------------------------------------------------
+    let zero = ring_new(0)
+    set failures to check("capacity 0 is a valid ring that reports full and holds nothing", ring_size(zero) == 0 and ring_capacity(zero) == 0 and ring_full(zero) and lists_equal(ring_to_list(zero), []), failures)
+    let zero_push = ring_push(zero, 5)
+    let zero_over = ring_push_over(zero, 5)
+    set failures to check("capacity 0 rejects push and push_over without changing", ring_size(zero_push) == 0 and ring_capacity(zero_push) == 0 and lists_equal(ring_to_list(zero_push), []) and ring_size(zero_over) == 0 and lists_equal(ring_to_list(zero_over), []), failures)
+    let zero_read = ring_pop(zero)
+    let zero_cleared = ring_clear(zero)
+    set failures to check("capacity 0 pop fails and clear keeps it usable", zero_read.ok == false and zero_read.value == 0 and ring_size(zero_read.ring) == 0 and ring_size(zero_cleared) == 0 and ring_capacity(zero_cleared) == 0, failures)
+
+    # ---- the capacity never grows under sustained push --------------------------
+    let s = ring_new(5)
+    let i = 0
+    while i < 100 bounded 1000:
+        set s to ring_push(s, i + 1)
+        set i to i + 1
+    set failures to check("100 pushes never grow a capacity-5 ring", ring_capacity(s) == 5 and ring_size(s) == 5 and lists_equal(ring_to_list(s), [1, 2, 3, 4, 5]), failures)
+
+    # ---- the gate: 10,000 randomized operations against the model ---------------
+    let seed = 246813579
+    let cap = 8
+    let live = ring_new(cap)
+    let model = []
+    let k = 0
+    let size_mismatches = 0
+    let content_mismatches = 0
+    let flag_mismatches = 0
+    while k < 10000 bounded 100000:
+        set seed to lcg_next(seed)
+        let op = seed & 3
+        let value = (seed >> 9) & 4095
+        if op == 0:
+            set live to ring_push(live, value)
+            set model to model_push(model, value, cap)
+        if op == 1:
+            set live to ring_push_over(live, value)
+            set model to model_push_over(model, value, cap)
+        if op == 2:
+            let expected = model[0] otherwise 0
+            let had = (length of model) > 0
+            let read = ring_pop(live)
+            if read.ok != had:
+                set flag_mismatches to flag_mismatches + 1
+            if had and read.value != expected:
+                set flag_mismatches to flag_mismatches + 1
+            set live to read.ring
+            set model to model_pop(model)
+        if op == 3:
+            let expected = model[0] otherwise 0
+            let had = (length of model) > 0
+            let read = ring_peek(live)
+            if read.ok != had:
+                set flag_mismatches to flag_mismatches + 1
+            if had and read.value != expected:
+                set flag_mismatches to flag_mismatches + 1
+        if ring_size(live) != (length of model):
+            set size_mismatches to size_mismatches + 1
+        if lists_equal(ring_to_list(live), model) == false:
+            set content_mismatches to content_mismatches + 1
+        set k to k + 1
+
+    set failures to check("10,000 randomized operations keep the size in step", size_mismatches == 0, failures)
+    set failures to check("randomized contents match the model after every op", content_mismatches == 0, failures)
+    set failures to check("randomized pop and peek agree on emptiness", flag_mismatches == 0, failures)
+    set failures to check("the final randomized ring matches the model", ring_capacity(live) == cap and ring_size(live) == (length of model) and lists_equal(ring_to_list(live), model), failures)
+
+    if failures == 0:
+        log.info("OK ring: 32 checks")
+    return failures

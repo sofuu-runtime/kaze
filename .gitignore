@@ -4,6 +4,7 @@
 *.vsix
 .DS_Store
 **/*.rs.bk
+dist/kaze_parallel_bench
 
 # Local-only documentation and release plans
 /RELEASE-1.0.0-PREP.md

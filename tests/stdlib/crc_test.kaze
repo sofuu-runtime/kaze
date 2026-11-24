@@ -1,0 +1,162 @@
+# tests/stdlib/crc_test.kaze -- CRC-16 checked against the published catalogue values
+# plus two structural properties that do not reuse the library's own fold.
+#
+# The catalogue values are the ones every CRC reference lists for the ASCII message
+# "123456789": CCITT-FALSE 0x29B1, XMODEM 0x31C3, MCRF4XX 0x6F91, ARC 0xBB3D. The
+# brief for this module quoted 0x31C3 for CCITT-FALSE; 0x31C3 is the XMODEM row (same
+# polynomial, init 0), so both rows are asserted from their own entry points.
+#
+# The two properties a CRC has to satisfy, and which catch a wrong shift direction or
+# an unmasked intermediate, are:
+#   * a buffer split into two pieces accumulates to the same register as the whole
+#     buffer, and
+#   * the register is linear over the message: for equal-length a and b,
+#     crc(a) ^ crc(b) ^ crc(a ^ b) equals crc of the all-zero message of that length,
+#     for any init. That constant is computed here from a zero message, not restated
+#     from the library.
+needs: log
+
+use "./../../lib/crc.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# The bytes of a text. Kaze text carries its byte length, so this is UTF-8 safe.
+action bytes_of(t) -> list:
+    let out = []
+    let i = 0
+    let n = length of t
+    while i < n bounded 1000:
+        set out to out + [((code(t[i]) otherwise 0)) & 255]
+        set i to i + 1
+    return out
+
+action xor_bytes(a, b) -> list:
+    let out = []
+    let i = 0
+    let n = length of a
+    while i < n bounded 1000:
+        set out to out + [((a[i] otherwise 0) ^ (b[i] otherwise 0))]
+        set i to i + 1
+    return out
+
+action zero_bytes(n) -> list:
+    let out = []
+    let i = 0
+    while i < n bounded 1000:
+        set out to out + [0]
+        set i to i + 1
+    return out
+
+action lcg_next(state) -> num:
+    return (state * 1664525 + 1013904223) & 4294967295
+
+action main() -> num:
+    let failures = 0
+    let digits = bytes_of("123456789")
+
+    # ---- the published catalogue rows --------------------------------------------
+    set failures to check("CRC-16/CCITT-FALSE is 0x29B1", crc16_ccitt_false(digits) == 10673, failures)
+    set failures to check("CRC-16/XMODEM is 0x31C3", crc16_xmodem(digits) == 12739, failures)
+    set failures to check("CRC-16/MCRF4XX is 0x6F91", crc16_mcrf4xx(digits) == 28561, failures)
+    # 0xBB3D is 47933: poly 0x8005 reflected (0xA001), init 0.
+    set failures to check("CRC-16/ARC is 0xBB3D", crc16_reflected(digits, 0, 40961) == 47933, failures)
+
+    # An empty message has no bit to shift, so the register is the init value unchanged.
+    set failures to check("CCITT-FALSE of nothing is its init", crc16_ccitt_false([]) == 65535, failures)
+    set failures to check("MCRF4XX of nothing is its init", crc16_mcrf4xx([]) == 65535, failures)
+
+    # Short buffers whose value was taken from an independent reference implementation
+    # written straight from the catalogue parameters.
+    set failures to check("CCITT-FALSE of a single zero byte is 57840", crc16_ccitt_false([0]) == 57840, failures)
+    set failures to check("CCITT-FALSE of 1,2,3,4 is 35267", crc16_ccitt_false([1, 2, 3, 4]) == 35267, failures)
+    set failures to check("MCRF4XX of 1,2,3,4 is 50798", crc16_mcrf4xx([1, 2, 3, 4]) == 50798, failures)
+
+    # ---- a partial buffer continues where the previous one stopped ----------------
+    let hello = bytes_of("hello")
+    let head = [104, 101, 108]
+    let tail = [108, 111]
+    # 53870 and 52034 are the whole-"hello" CRCs from the independent reference, so the
+    # split result is pinned to an outside value, not just to the one-shot fold.
+    let msb_split = crc16_accumulate(crc16_ccitt(head, 65535, 4129), tail, 4129)
+    set failures to check("split buffer matches the whole one (MSB-first)", msb_split == 53870 and msb_split == crc16_ccitt(hello, 65535, 4129), failures)
+    let lsb_split = crc16_mcrf4xx_accumulate(crc16_mcrf4xx(head), tail)
+    set failures to check("split buffer matches the whole one (reflected)", lsb_split == 52034 and lsb_split == crc16_mcrf4xx(hello), failures)
+
+    # Whether the register runs MSB-first or LSB-first is visible in the answer, so a
+    # reflection bug cannot hide behind a shared code path.
+    set failures to check("the two families disagree on one message", crc16_ccitt_false(digits) != crc16_mcrf4xx(digits), failures)
+
+    # ---- structural properties ---------------------------------------------------
+    let long = bytes_of("the quick brown fox jumps over the lazy dog")
+    let c_ccitt = crc16_ccitt_false(long)
+    let c_mcrf = crc16_mcrf4xx(long)
+    set failures to check("the register stays inside 16 bits", c_ccitt >= 0 and c_ccitt <= 65535 and c_mcrf >= 0 and c_mcrf <= 65535, failures)
+
+    # The digits with their first byte changed from 49 ('1') to 48 ('0').
+    let flipped_bytes = [48, 50, 51, 52, 53, 54, 55, 56, 57]
+    set failures to check("one changed byte changes the CRC", crc16_ccitt_false(flipped_bytes) != crc16_ccitt_false(digits) and crc16_mcrf4xx(flipped_bytes) != crc16_mcrf4xx(digits), failures)
+
+    set failures to check("a different polynomial gives a different CRC", crc16_ccitt(digits, 65535, 32773) != crc16_ccitt(digits, 65535, 4129), failures)
+
+    # ---- 200 randomized buffers --------------------------------------------------
+    # Every buffer is checked three ways: split accumulation against the one-shot fold,
+    # in both families, and the linearity identity against the zero-message constant.
+    # A fixed seed keeps a failure reproducible.
+    let seed = 20260101
+    let split_mismatches = 0
+    let linear_mismatches = 0
+    let trial = 0
+    while trial < 200 bounded 1000:
+        set seed to lcg_next(seed)
+        let n = seed & 15
+        let buf = []
+        let i = 0
+        while i < n bounded 32:
+            set seed to lcg_next(seed)
+            set buf to buf + [seed & 255]
+            set i to i + 1
+
+        set seed to lcg_next(seed)
+        let cut = seed & 15
+        let head_part = []
+        let tail_part = []
+        let k = 0
+        for each b in buf:
+            if k < cut:
+                set head_part to head_part + [b]
+            otherwise:
+                set tail_part to tail_part + [b]
+            set k to k + 1
+
+        if crc16_accumulate(crc16_ccitt(head_part, 65535, 4129), tail_part, 4129) != crc16_ccitt(buf, 65535, 4129):
+            set split_mismatches to split_mismatches + 1
+        if crc16_mcrf4xx_accumulate(crc16_mcrf4xx(head_part), tail_part) != crc16_mcrf4xx(buf):
+            set split_mismatches to split_mismatches + 1
+
+        # A second buffer of the same length, produced by XORing every byte with one
+        # mask, plus the byte-wise XOR of the two.
+        set seed to lcg_next(seed)
+        let mask = seed & 255
+        let other = []
+        for each b in buf:
+            set other to other + [(b ^ mask) & 255]
+        let mixed = xor_bytes(buf, other)
+
+        let lhs = crc16_ccitt_false(buf) ^ crc16_ccitt_false(other) ^ crc16_ccitt_false(mixed)
+        if lhs != crc16_ccitt_false(zero_bytes(n)):
+            set linear_mismatches to linear_mismatches + 1
+        let lhs_reflected = crc16_mcrf4xx(buf) ^ crc16_mcrf4xx(other) ^ crc16_mcrf4xx(mixed)
+        if lhs_reflected != crc16_mcrf4xx(zero_bytes(n)):
+            set linear_mismatches to linear_mismatches + 1
+
+        set trial to trial + 1
+    set failures to check("200 random buffers: a split buffer accumulates to the whole one", split_mismatches == 0, failures)
+    set failures to check("200 random buffers: crc(a)^crc(b)^crc(a^b) stays the zero-message crc", linear_mismatches == 0, failures)
+
+    if failures == 0:
+        log.info("OK crc: 17 checks")
+    return failures

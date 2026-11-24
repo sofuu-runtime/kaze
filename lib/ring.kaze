@@ -1,0 +1,140 @@
+# lib/ring.kaze -- fixed-capacity circular queues over one arena-backed list.
+#
+# A ring is a slot list plus two numbers: `head` is the index of the oldest live slot,
+# `count` is how many slots are live. The live slots are [head, head + count) taken
+# modulo the capacity, so push and pop move two integers and the slot list is never
+# resized. Capacity is fixed by ring_new and every operation answers with a new value,
+# because Kaze values are immutable.
+#
+# Two full-ring policies are provided on purpose:
+#   ring_push       rejects the new value and returns the ring unchanged.
+#   ring_push_over  accepts it and drops the oldest; this is the telemetry policy.
+#
+# ring_pop answers with a RingRead record: the value, an `ok` flag and the shortened
+# ring, so a checked pop is one call:
+#
+#     let read = ring_pop(r)
+#     if read.ok:
+#         set total to total + read.value
+#         set r to read.ring
+#
+# ring_pop_value and ring_peek are the number-only forms.
+#
+# "Lock-free" here means what the roadmap means: no lock is needed, and an in-place
+# runtime would allocate nothing after construction. This pure-Kaze version does
+# allocate -- every operation returns a rebuilt value in the arena. There is one
+# thread until Phase 13, so no concurrency safety is claimed or tested.
+
+record Ring:
+    data: list
+    head: number
+    count: number
+
+# The answer to a pop or a peek. `ring` is the queue after the operation; for a peek
+# it is the same ring that went in.
+record RingRead:
+    value: number
+    ok: bool
+    ring: Ring
+
+# A copy of the slot list with position i replaced. The length is preserved, which is
+# what keeps the capacity fixed. An out-of-range i returns the list unchanged.
+action ring_set_slot(data, i, v) -> list:
+    let out = []
+    let k = 0
+    for each x in data:
+        if k == i:
+            set out to out + [v]
+        otherwise:
+            set out to out + [x]
+        set k to k + 1
+    return out
+
+# Capacity is laid down once, here. cap is expected to be a non-negative whole number;
+# the loop bound of a million is also the largest capacity this module can build.
+action ring_new(cap) -> Ring:
+    let n = cap
+    if n < 0:
+        set n to 0
+    let data = []
+    let i = 0
+    while i < n bounded 1000000:
+        set data to data + [0]
+        set i to i + 1
+    return Ring(data: data, head: 0, count: 0)
+
+# Logical position i maps to a physical slot with one modulo. That wrap is the whole
+# structure: nothing is ever shifted or reallocated. The fallback only covers a
+# capacity of 0, where no slot exists and no caller reads one.
+action ring_slot(r: Ring, i: number) -> num:
+    let cap = length of r.data
+    return ((r.head + i) % cap) otherwise 0
+
+action ring_size(r: Ring) -> num:
+    return r.count
+
+action ring_capacity(r: Ring) -> num:
+    return length of r.data
+
+# A zero-capacity ring cannot accept anything, so it counts as full.
+action ring_full(r: Ring) -> bool:
+    return r.count >= (length of r.data)
+
+# FIFO push. When there is no room the value is dropped and the ring comes back
+# unchanged, so the caller can check ring_full first or compare sizes.
+action ring_push(r: Ring, v: number) -> Ring:
+    if ring_full(r):
+        return r
+    let data = ring_set_slot(r.data, ring_slot(r, r.count), v)
+    return Ring(data: data, head: r.head, count: r.count + 1)
+
+# Full-ring policy for telemetry: overwrite the oldest slot and move head one step.
+# The count does not change because every slot was already live.
+action ring_push_over(r: Ring, v: number) -> Ring:
+    let cap = length of r.data
+    if cap <= 0:
+        return r
+    if ring_full(r) == false:
+        return ring_push(r, v)
+    let at = (r.head % cap) otherwise 0
+    let data = ring_set_slot(r.data, at, v)
+    let head = ((r.head + 1) % cap) otherwise 0
+    return Ring(data: data, head: head, count: r.count)
+
+action ring_pop(r: Ring) -> RingRead:
+    if r.count <= 0:
+        return RingRead(value: 0, ok: false, ring: r)
+    let cap = length of r.data
+    let at = (r.head % cap) otherwise 0
+    let value = r.data[at] otherwise 0
+    let head = ((r.head + 1) % cap) otherwise 0
+    return RingRead(value: value, ok: true, ring: Ring(data: r.data, head: head, count: r.count - 1))
+
+# The value a pop would remove, or 0 when there is none. This is the number-only form
+# for call sites that track the size themselves; ring_peek is the same read.
+action ring_pop_value(r: Ring) -> number:
+    if r.count <= 0:
+        return 0
+    let at = (r.head % (length of r.data)) otherwise 0
+    return r.data[at] otherwise 0
+
+action ring_peek(r: Ring) -> RingRead:
+    if r.count <= 0:
+        return RingRead(value: 0, ok: false, ring: r)
+    let at = (r.head % (length of r.data)) otherwise 0
+    let value = r.data[at] otherwise 0
+    return RingRead(value: value, ok: true, ring: r)
+
+# Oldest first, so the answer is the queue as the caller thinks of it.
+action ring_to_list(r: Ring) -> list:
+    let out = []
+    let i = 0
+    while i < r.count bounded 1000000:
+        let at = ring_slot(r, i)
+        set out to out + [r.data[at] otherwise 0]
+        set i to i + 1
+    return out
+
+# Emptying resets the two indexes and keeps the slots, so the capacity survives.
+action ring_clear(r: Ring) -> Ring:
+    return Ring(data: r.data, head: 0, count: 0)

@@ -127,7 +127,46 @@ action parse_or(tokens, pos):
             set done to 1
     return [node, p]
 
-action parse_and(tokens, pos):
+# Bitwise operators, in C precedence: | lowest, then ^, then &, all looser than the
+# relational tests, with the shifts binding tighter than additive. Kaze numbers are
+# doubles, so these truncate to the runtime's integer type; they exist because hash maps,
+# CRC-16, SHA-256 and the binary codecs in the standard library cannot be written without
+# them.
+action parse_bitor(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let r = parse_bitxor(tokens, pos)
+    let node = r[0]
+    let p = r[1]
+    let done = 0
+    while done == 0 bounded 1000000:
+        let t = tok(tokens, p)
+        if t.kind == "SYM" and t.text == "|":
+            let rr = parse_bitxor(tokens, p + 1)
+            set node to make_bin("|", node, rr[0], t.line)
+            set p to rr[1]
+        otherwise:
+            set done to 1
+    return [node, p]
+
+action parse_bitxor(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let r = parse_bitand(tokens, pos)
+    let node = r[0]
+    let p = r[1]
+    let done = 0
+    while done == 0 bounded 1000000:
+        let t = tok(tokens, p)
+        if t.kind == "SYM" and t.text == "^":
+            let rr = parse_bitand(tokens, p + 1)
+            set node to make_bin("^", node, rr[0], t.line)
+            set p to rr[1]
+        otherwise:
+            set done to 1
+    return [node, p]
+
+action parse_bitand(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
     let r = parse_relational(tokens, pos)
@@ -135,8 +174,25 @@ action parse_and(tokens, pos):
     let p = r[1]
     let done = 0
     while done == 0 bounded 1000000:
-        if is_word(tokens, p, "and"):
+        let t = tok(tokens, p)
+        if t.kind == "SYM" and t.text == "&":
             let rr = parse_relational(tokens, p + 1)
+            set node to make_bin("&", node, rr[0], t.line)
+            set p to rr[1]
+        otherwise:
+            set done to 1
+    return [node, p]
+
+action parse_and(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let r = parse_bitor(tokens, pos)
+    let node = r[0]
+    let p = r[1]
+    let done = 0
+    while done == 0 bounded 1000000:
+        if is_word(tokens, p, "and"):
+            let rr = parse_bitor(tokens, p + 1)
             set node to make_bin("and", node, rr[0], tok_line(tokens, p))
             set p to rr[1]
         otherwise:
@@ -146,7 +202,7 @@ action parse_and(tokens, pos):
 action parse_relational(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
-    let r = parse_additive(tokens, pos)
+    let r = parse_shift(tokens, pos)
     let node = r[0]
     let p = r[1]
     let done = 0
@@ -158,6 +214,23 @@ action parse_relational(tokens, pos):
         if t.kind == "SYM" and (t.text == "<" or t.text == ">"):
             set is_rel to 1
         if is_rel == 1:
+            let rr = parse_shift(tokens, p + 1)
+            set node to make_bin(t.text, node, rr[0], t.line)
+            set p to rr[1]
+        otherwise:
+            set done to 1
+    return [node, p]
+
+action parse_shift(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let r = parse_additive(tokens, pos)
+    let node = r[0]
+    let p = r[1]
+    let done = 0
+    while done == 0 bounded 1000000:
+        let t = tok(tokens, p)
+        if t.kind == "OP" and (t.text == "<<" or t.text == ">>"):
             let rr = parse_additive(tokens, p + 1)
             set node to make_bin(t.text, node, rr[0], t.line)
             set p to rr[1]
@@ -205,6 +278,11 @@ action parse_multiplicative(tokens, pos):
 action parse_unary(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
+    if is_sym(tokens, pos, "~"):
+        # ~x is x ^ -1 for integers, so the complement needs no node kind of its own
+        let r = parse_unary(tokens, pos + 1)
+        let l = tok_line(tokens, pos)
+        return [make_bin("^", r[0], make_num("-1", l), l), r[1]]
     if is_word(tokens, pos, "not"):
         let r = parse_unary(tokens, pos + 1)
         return [make_bin("not", r[0], make_num("0", tok_line(tokens, pos)), tok_line(tokens, pos)), r[1]]
@@ -348,6 +426,18 @@ action parse_primary(tokens, pos):
                 set args to [a[0]]
                 set q to a[1]
             return [make_call("link_lost", args, l), q]
+
+    # 9b. phase 13: two expressions that read a task.
+    #   receive from <channel>   a ring-buffer read that fails when empty, so the
+    #                            checker demands an otherwise fallback
+    #   join <task>              the value the task returned
+    if k == "IDENT" and w == "receive":
+        if is_word(tokens, p + 1, "from"):
+            let a = parse_or(tokens, p + 2)
+            return [make_receive(a[0], l), a[1]]
+    if k == "IDENT" and w == "join":
+        let jr = parse_or(tokens, p + 1)
+        return [make_join(jr[0], l), jr[1]]
 
     # 10. Booleans, calls and names.
     if k == "IDENT":
@@ -570,6 +660,44 @@ action parse_stmt(tokens, pos):
                 set q2 to ob[1]
             return [make_try(err, b[0], other, l), q2]
 
+        # spawn worker(1) as w1 — a child fiber task.
+        if w == "spawn":
+            if is_kind(tokens, p + 1, "IDENT"):
+                let target = tok_text(tokens, p + 1)
+                let q = p + 2
+                let args = []
+                if is_sym(tokens, q, "("):
+                    let ar = parse_call_args(tokens, q + 1)
+                    set args to ar[0]
+                    set q to ar[1]
+                let task = target
+                if is_word(tokens, q, "as") and is_kind(tokens, q + 1, "IDENT"):
+                    set task to tok_text(tokens, q + 1)
+                    set q to q + 2
+                return [make_spawn(target, args, task, l), q]
+            return [make_unknown(l), p + 1]
+
+        # yield — an explicit cooperative suspension point.
+        if w == "yield":
+            return [make_yield(l), p + 1]
+
+        # join w1 / cancel w1 — a task handle, not a capability call.
+        if w == "join":
+            let r = parse_or(tokens, p + 1)
+            return [make_join(r[0], l), r[1]]
+        if w == "cancel":
+            let r = parse_or(tokens, p + 1)
+            return [make_cancel(r[0], l), r[1]]
+
+        # send <value> to <channel>. "send alert ..." stays the capability verb.
+        if w == "send":
+            if is_word(tokens, p + 1, "alert") == 0:
+                let v = parse_or(tokens, p + 1)
+                if is_word(tokens, v[1], "to"):
+                    let c = parse_or(tokens, v[1] + 1)
+                    return [make_send(v[0], c[0], l), c[1]]
+                return [make_unknown(l), p + 1]
+
         # log / arm / takeoff / fly / stop / turn / drive / pulse / send /
         # reject / allow / remember / recall
         let v = parse_verb(tokens, p)
@@ -761,18 +889,26 @@ action parse_routine_body(tokens, pos):
                                 set contracts to contracts + [make_recursion_bound("?", bt.line)]
                             set p to q + 1
                         otherwise:
-                            if seen == 0 and k == "IDENT" and w == "needs":
-                                let nr = parse_cap_list(tokens, p + 1)
-                                set contracts to contracts + nr[0]
-                                set p to nr[1]
-                            otherwise:
-                                set seen to 1
-                                let r = parse_stmt(tokens, p)
-                                set stmts to stmts + [r[0]]
-                                if r[1] > p:
-                                    set p to r[1]
+                            if seen == 0 and k == "IDENT" and w == "fuel":
+                                let ft = tok(tokens, p + 1)
+                                if ft.kind == "NUM":
+                                    set contracts to contracts + [make_fuel(ft.text, ft.line)]
+                                    set p to p + 2
                                 otherwise:
                                     set p to p + 1
+                            otherwise:
+                                if seen == 0 and k == "IDENT" and w == "needs":
+                                    let nr = parse_cap_list(tokens, p + 1)
+                                    set contracts to contracts + nr[0]
+                                    set p to nr[1]
+                                otherwise:
+                                    set seen to 1
+                                    let r = parse_stmt(tokens, p)
+                                    set stmts to stmts + [r[0]]
+                                    if r[1] > p:
+                                        set p to r[1]
+                                    otherwise:
+                                        set p to p + 1
     return [contracts, make_block("body", stmts, l), p]
 
 # The capability list of a routine's own needs: line.
@@ -809,6 +945,80 @@ action parse_cap_list(tokens, pos):
             set done to 1
     return [out, p]
 
+# ── type references ─────────────────────────────────────────────────────
+#
+# A type reference is an identifier optionally followed by a generic argument
+# list. Tensor types use it: tensor<f32,[2,3]> and symbolic tensor<f32,[B,D]>.
+# untrusted<number> keeps working through the same path. The canonical text is
+# what the AST stores (a param's val_str), so the machine-syntax emitter and
+# reader carry types through without a second representation.
+
+action parse_type_arg(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let p = pos
+    if is_sym(tokens, p, "["):
+        let out = ""
+        let first = 1
+        set p to p + 1
+        let done = 0
+        while done == 0 bounded 10000:
+            if at_end(tokens, p) == 1:
+                set done to 1
+            otherwise:
+                if is_sym(tokens, p, "]"):
+                    set p to p + 1
+                    set done to 1
+                otherwise:
+                    let t = tok(tokens, p)
+                    if t.kind == "IDENT" or t.kind == "NUM":
+                        if first == 0:
+                            set out to out + ","
+                        set out to out + t.text
+                        set first to 0
+                        set p to p + 1
+                    otherwise:
+                        if is_sym(tokens, p, ","):
+                            set p to p + 1
+                        otherwise:
+                            set done to 1
+        return ["[" + out + "]", p]
+    return parse_type_ref(tokens, p)
+
+action parse_type_ref(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let t = tok(tokens, pos)
+    if t.kind != "IDENT":
+        return ["", pos + 1]
+    let name = t.text
+    let p = pos + 1
+    if is_sym(tokens, p, "<"):
+        let inner = ""
+        let first = 1
+        set p to p + 1
+        let done = 0
+        while done == 0 bounded 10000:
+            if at_end(tokens, p) == 1:
+                set done to 1
+            otherwise:
+                if is_sym(tokens, p, ">"):
+                    set p to p + 1
+                    set done to 1
+                otherwise:
+                    let r = parse_type_arg(tokens, p)
+                    if r[0] != "":
+                        if first == 0:
+                            set inner to inner + ","
+                        set inner to inner + r[0]
+                        set first to 0
+                    if r[1] > p:
+                        set p to r[1]
+                    otherwise:
+                        set done to 1
+        return [name + "<" + inner + ">", p]
+    return [name, p]
+
 action parse_params(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
@@ -830,17 +1040,9 @@ action parse_params(tokens, pos):
                     let ty = ""
                     let q = p + 1
                     if is_sym(tokens, q, ":"):
-                        set ty to tok_text(tokens, q + 1)
-                        set q to q + 2
-                        if ty == "untrusted" and is_sym(tokens, q, "<"):
-                            let depth = 1
-                            set q to q + 1
-                            while depth > 0 and at_end(tokens, q) == 0 bounded 1000:
-                                if is_sym(tokens, q, "<"):
-                                    set depth to depth + 1
-                                if is_sym(tokens, q, ">"):
-                                    set depth to depth - 1
-                                set q to q + 1
+                        let tyref = parse_type_ref(tokens, q + 1)
+                        set ty to tyref[0]
+                        set q to tyref[1]
                     let defaults = []
                     if is_sym(tokens, q, "="):
                         let r = parse_expr(tokens, q + 1)
@@ -868,8 +1070,9 @@ action parse_routine(tokens, pos):
         set p to pr[1]
     let result = ""
     if is_sym(tokens, p, "-") and is_sym(tokens, p + 1, ">"):
-        set result to tok_text(tokens, p + 2)
-        set p to p + 3
+        let rref = parse_type_ref(tokens, p + 2)
+        set result to rref[0]
+        set p to rref[1]
     if is_sym(tokens, p, ":"):
         set p to p + 1
     let br = parse_routine_body(tokens, p)
@@ -905,8 +1108,9 @@ action parse_record(tokens, pos):
                         let fty = "any"
                         let q = p + 1
                         if is_sym(tokens, q, ":"):
-                            set fty to tok_text(tokens, q + 1)
-                            set q to q + 2
+                            let fref = parse_type_ref(tokens, q + 1)
+                            set fty to fref[0]
+                            set q to fref[1]
                         set fields to fields + [make_field_def(fname, fty, tok_line(tokens, p))]
                         set p to q
                     otherwise:
@@ -979,6 +1183,7 @@ action parse_program(tokens):
     let uses = []
     let needs = []
     let items = []
+    let config = []
     let p = 0
     let len = length of tokens
     let done = 0
@@ -1008,7 +1213,7 @@ action parse_program(tokens):
                             set items to items + [r[0]]
                             set p to r[1]
                         otherwise:
-                            if k == "IDENT" and (w == "action" or w == "routine" or w == "func" or w == "check" or w == "filter"):
+                            if k == "IDENT" and (w == "action" or w == "routine" or w == "func" or w == "check" or w == "filter" or w == "fiber"):
                                 let r = parse_routine(tokens, p)
                                 set items to items + [r[0]]
                                 set p to r[1]
@@ -1023,5 +1228,16 @@ action parse_program(tokens):
                                         set items to items + [r[0]]
                                         set p to r[1]
                                     otherwise:
-                                        set p to p + 1
-    return make_program(uses, needs, items)
+                                        if k == "IDENT" and w == "tasks":
+                                            let q = p + 1
+                                            if is_word(tokens, q, "bounded"):
+                                                set q to q + 1
+                                            let bt = tok(tokens, q)
+                                            if bt.kind == "NUM":
+                                                set config to config + [make_tasks_bound(bt.text, bt.line)]
+                                                set p to q + 1
+                                            otherwise:
+                                                set p to p + 1
+                                        otherwise:
+                                            set p to p + 1
+    return make_program(uses, needs, items, config)

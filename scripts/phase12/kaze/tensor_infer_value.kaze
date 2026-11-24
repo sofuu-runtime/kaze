@@ -1,0 +1,9 @@
+# Phase 12 numerical-parity gate: a Kaze routine runs the model forward on an
+# f32 reference GGUF and returns one logit, so the gate can compare a number
+# against llama.cpp within 1e-4.
+needs: memory
+
+action main(t0: number, t1: number, t2: number, t3: number, t4: number):
+    let model = model_open(cli_text("model", ""))
+    let logits = model_forward(model, [t0, t1, t2, t3, t4])
+    return tensor_get(logits, 0)

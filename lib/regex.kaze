@@ -1,0 +1,599 @@
+# lib/regex.kaze -- a bounded regular-expression engine in Kaze.
+#
+# Scope is deliberately small and documented: literals, `.`, character classes
+# (`[a-z]`, `[^...]`), the escapes `\d \w \s \D \W \S \n \t \r`, grouping,
+# alternation, the quantifiers `* + ?`, and the anchors `^` and `$`. There are
+# no backreferences, lookaround, lazy quantifiers or counted repetition (`{m,n}`);
+# an unsupported form is a syntax error, not a silently different match.
+#
+# Why this shape: a backtracking matcher can go exponential on patterns like
+# `(a+)+$`. This engine keeps the set of reachable byte positions instead, so
+# each input byte is visited a bounded number of times, and it still carries an
+# explicit step budget so an adversarial pattern cannot tie up the process.
+# The budget is returned to the caller (`steps`) and exceeding it is a typed
+# failure (`E_REGEX_BUDGET`), never a wrong answer.
+#
+# Byte oriented: the runtime's text is bytes with a length, `code(c)` returns a
+# byte and `character(n)` builds one back. UTF-8 is therefore matched byte by
+# byte; a caller that needs code-point classes should pre-split the text.
+
+record Regex:
+    ok: bool
+    root: list
+    error: text
+    at: number
+
+record RegexResult:
+    ok: bool
+    matched: bool
+    start: number
+    end: number
+    steps: number
+    error: text
+
+record RxParse:
+    ok: bool
+    node: list
+    pos: number
+    error: text
+    at: number
+
+record RxAtom:
+    ok: bool
+    node: list
+    pos: number
+    error: text
+    at: number
+
+# The documented ceilings. A caller that needs a different work budget can call
+# the `_limited` forms; the plain forms use these defaults.
+action regex_max_pattern() -> num:
+    return 1024
+
+action regex_max_text() -> num:
+    return 1048576
+
+action regex_max_steps() -> num:
+    return 1000000
+
+# ── small helpers ──────────────────────────────────────────────────────
+
+action rx_char(p: text, i: number) -> text:
+    if i < 0 or i >= (length of p):
+        return ""
+    return p[i] otherwise ""
+
+action rx_code(p: text, i: number) -> num:
+    let c = rx_char(p, i)
+    if length of c == 0:
+        return 0 - 1
+    return code(c)
+
+action rx_valid(p: text, i: number) -> num:
+    if i >= 0 and i < (length of p):
+        return 1
+    return 0
+
+action rx_list_has(xs: list, v) -> bool:
+    for each x in xs:
+        if x == v:
+            return true
+    return false
+
+action rx_merge(a: list, b: list) -> list:
+    let out = a
+    for each v in b:
+        if not rx_list_has(out, v):
+            set out to out + [v]
+    return out
+
+action rx_error(msg: text, at: number) -> RxParse:
+    return RxParse(ok: false, node: [], pos: at, error: msg, at: at)
+
+action rx_ok(node: list, pos: number) -> RxParse:
+    return RxParse(ok: true, node: node, pos: pos, error: "", at: 0)
+
+# ── parser ─────────────────────────────────────────────────────────────
+#
+# Recursive descent: alternation > sequence > repetition > atom. Every parser
+# routine returns RxParse so a failure carries the byte offset that caused it.
+
+action rx_parse(pattern: text) -> Regex:
+    if length of pattern > regex_max_pattern():
+        return Regex(ok: false, root: [], error: "E_REGEX_PATTERN_TOO_LARGE: pattern exceeds " + ("" + regex_max_pattern()) + " bytes", at: regex_max_pattern())
+    let r = rx_parse_alt(pattern, 0, 0)
+    if not r.ok:
+        return Regex(ok: false, root: [], error: "E_REGEX_SYNTAX: " + r.error, at: r.at)
+    if r.pos != (length of pattern):
+        return Regex(ok: false, root: [], error: "E_REGEX_SYNTAX: unexpected '" + rx_char(pattern, r.pos) + "'", at: r.pos)
+    return Regex(ok: true, root: r.node, error: "", at: 0)
+
+action rx_parse_alt(p: text, i: number, depth: number) -> RxParse:
+    recursion bounded 128
+    if depth > 128:
+        return rx_error("group nesting exceeds 128", i)
+    let first = rx_parse_seq(p, i, depth)
+    if not first.ok:
+        return first
+    let branches = [first.node]
+    let cur = first.pos
+    while rx_char(p, cur) == "|" bounded 100000:
+        let next = rx_parse_seq(p, cur + 1, depth)
+        if not next.ok:
+            return next
+        set branches to branches + [next.node]
+        set cur to next.pos
+    if (length of branches) == 1:
+        return rx_ok(first.node, cur)
+    return rx_ok(["alt", branches], cur)
+
+action rx_parse_seq(p: text, i: number, depth: number) -> RxParse:
+    recursion bounded 128
+    let items = []
+    let cur = i
+    let done = 0
+    while done == 0 bounded 100000:
+        let c = rx_char(p, cur)
+        if length of c == 0:
+            set done to 1
+        otherwise:
+            if c == "|" or c == ")":
+                set done to 1
+            otherwise:
+                let r = rx_parse_repeat(p, cur, depth)
+                if not r.ok:
+                    return r
+                set items to items + [r.node]
+                set cur to r.pos
+    # A one-item sequence is that item. Keeping the wrapper would hide a
+    # quantified group from rx_quantify and restore the nested-closure blowup.
+    if (length of items) == 1:
+        return rx_ok(items[0] otherwise ["seq", items], cur)
+    return rx_ok(["seq", items], cur)
+
+# Wrapping a quantifier in another quantifier multiplies the matcher's work
+# without changing the language. `(a+)+` is `a+`, `(a*)*` is `a*`, and so on;
+# collapsing them at parse time is what keeps the advertised adversarial case
+# inside a linear number of steps instead of a nested-closure quadratic.
+action rx_quantify(node: list, q: text) -> list:
+    let kind = node[0] otherwise ""
+    let inner = node[1] otherwise []
+    if kind == "star":
+        return node
+    if kind == "plus":
+        if q == "*":
+            return node
+        if q == "+":
+            return node
+        return ["opt", node]
+    if kind == "opt":
+        if q == "*" or q == "+":
+            return ["star", inner]
+        return node
+    if q == "*":
+        return ["star", node]
+    if q == "+":
+        return ["plus", node]
+    return ["opt", node]
+
+action rx_parse_repeat(p: text, i: number, depth: number) -> RxParse:
+    recursion bounded 128
+    let atom = rx_parse_atom(p, i, depth)
+    if not atom.ok:
+        return atom
+    let node = atom.node
+    let cur = atom.pos
+    let done = 0
+    while done == 0 bounded 1000:
+        let c = rx_char(p, cur)
+        if c == "*":
+            set node to rx_quantify(node, "*")
+            set cur to cur + 1
+        otherwise:
+            if c == "+":
+                set node to rx_quantify(node, "+")
+                set cur to cur + 1
+            otherwise:
+                if c == "?":
+                    set node to rx_quantify(node, "?")
+                    set cur to cur + 1
+                otherwise:
+                    set done to 1
+    return rx_ok(node, cur)
+
+action rx_parse_atom(p: text, i: number, depth: number) -> RxParse:
+    recursion bounded 128
+    if not rx_valid(p, i):
+        return rx_error("expected an expression", i)
+    let c = rx_char(p, i)
+    if c == "(":
+        let inner = rx_parse_alt(p, i + 1, depth + 1)
+        if not inner.ok:
+            return inner
+        if rx_char(p, inner.pos) != ")":
+            return rx_error("missing ')'", inner.pos)
+        # There are no captures, so a group is pure structure. Dropping it here
+        # is what lets rx_quantify see through `(a+)+` and collapse it.
+        return rx_ok(inner.node, inner.pos + 1)
+    if c == "[":
+        return rx_parse_class(p, i + 1)
+    if c == ".":
+        return rx_ok(["any"], i + 1)
+    if c == "^":
+        return rx_ok(["start"], i + 1)
+    if c == "$":
+        return rx_ok(["end"], i + 1)
+    if c == "\\":
+        return rx_parse_escape(p, i)
+    if c == "*" or c == "+" or c == "?":
+        return rx_error("'" + c + "' has nothing to repeat", i)
+    # Counted repetition is outside the documented subset. Refusing it is
+    # better than treating '{' as a literal and quietly answering wrong.
+    if c == "{" or c == "}":
+        return rx_error("counted repetition '{m,n}' is not supported", i)
+    return rx_ok(["char", rx_code(p, i)], i + 1)
+
+action rx_parse_escape(p: text, i: number) -> RxParse:
+    recursion bounded 128
+    let e = rx_char(p, i + 1)
+    if length of e == 0:
+        return rx_error("trailing backslash", i)
+    if e == "d":
+        return rx_ok(["class", 0, [[48, 57]]], i + 2)
+    if e == "D":
+        return rx_ok(["class", 1, [[48, 57]]], i + 2)
+    if e == "w":
+        return rx_ok(["class", 0, [[48, 57], [65, 90], [97, 122], [95, 95]]], i + 2)
+    if e == "W":
+        return rx_ok(["class", 1, [[48, 57], [65, 90], [97, 122], [95, 95]]], i + 2)
+    if e == "s":
+        return rx_ok(["class", 0, [[9, 13], [32, 32]]], i + 2)
+    if e == "S":
+        return rx_ok(["class", 1, [[9, 13], [32, 32]]], i + 2)
+    if e == "n":
+        return rx_ok(["char", 10], i + 2)
+    if e == "t":
+        return rx_ok(["char", 9], i + 2)
+    if e == "r":
+        return rx_ok(["char", 13], i + 2)
+    # An escaped punctuation character stands for itself.
+    return rx_ok(["char", rx_code(p, i + 1)], i + 2)
+
+action rx_parse_class(p: text, i: number) -> RxParse:
+    recursion bounded 128
+    let cur = i
+    let negated = 0
+    if rx_char(p, cur) == "^":
+        set negated to 1
+        set cur to cur + 1
+    let ranges = []
+    let first = 1
+    let closed = 0
+    while closed == 0 bounded 10000:
+        if not rx_valid(p, cur):
+            return rx_error("missing ']'", cur)
+        let c = rx_char(p, cur)
+        if c == "]" and first == 0:
+            set closed to 1
+        otherwise:
+            if c == "]" and first == 1:
+                # A leading ']' is a literal, as in POSIX.
+                set ranges to ranges + [[93, 93]]
+                set cur to cur + 1
+                set first to 0
+            otherwise:
+                let atom = rx_class_atom(p, cur)
+                if not atom.ok:
+                    return rx_error(atom.error, atom.at)
+                if rx_char(p, atom.pos) == "-" and rx_valid(p, atom.pos + 1) and rx_char(p, atom.pos + 1) != "]":
+                    let upper = rx_class_atom(p, atom.pos + 1)
+                    if not upper.ok:
+                        return rx_error(upper.error, upper.at)
+                    if (length of upper.node) != 1:
+                        return rx_error("a character class range needs a single upper bound", atom.pos + 1)
+                    let pair = upper.node[0] otherwise [0, 0]
+                    # node holds [lo, hi] pairs, so the lower bound is the pair's first
+                    # element, not the pair itself: comparing a byte against a list is
+                    # silently false, which made every ranged class match nothing and
+                    # let a reversed range through the check below.
+                    let lo_pair = atom.node[0] otherwise [0, 0]
+                    let lo = lo_pair[0] otherwise 0
+                    let hi = pair[0] otherwise 0
+                    if lo > hi:
+                        return rx_error("character class range is reversed", atom.pos)
+                    set ranges to ranges + [[lo, hi]]
+                    set cur to upper.pos
+                otherwise:
+                    for each r in atom.node:
+                        set ranges to ranges + [r]
+                    set cur to atom.pos
+                set first to 0
+    if (length of ranges) == 0:
+        return rx_error("empty character class", i)
+    return rx_ok(["class", negated, ranges], cur + 1)
+
+# One class member: a literal byte, an escape range, or a shorthand class.
+# `node` is a list of [lo, hi] ranges so a range like a-z stays one range while
+# \d contributes several.
+action rx_class_atom(p: text, i: number) -> RxAtom:
+    recursion bounded 128
+    let c = rx_char(p, i)
+    if c == "\\":
+        let e = rx_char(p, i + 1)
+        if length of e == 0:
+            return RxAtom(ok: false, node: [], pos: i, error: "trailing backslash in a character class", at: i)
+        if e == "d":
+            return RxAtom(ok: true, node: [[48, 57]], pos: i + 2, error: "", at: 0)
+        if e == "w":
+            return RxAtom(ok: true, node: [[48, 57], [65, 90], [97, 122], [95, 95]], pos: i + 2, error: "", at: 0)
+        if e == "s":
+            return RxAtom(ok: true, node: [[9, 13], [32, 32]], pos: i + 2, error: "", at: 0)
+        if e == "n":
+            return RxAtom(ok: true, node: [[10, 10]], pos: i + 2, error: "", at: 0)
+        if e == "t":
+            return RxAtom(ok: true, node: [[9, 9]], pos: i + 2, error: "", at: 0)
+        if e == "r":
+            return RxAtom(ok: true, node: [[13, 13]], pos: i + 2, error: "", at: 0)
+        let b = rx_code(p, i + 1)
+        return RxAtom(ok: true, node: [[b, b]], pos: i + 2, error: "", at: 0)
+    let b = rx_code(p, i)
+    return RxAtom(ok: true, node: [[b, b]], pos: i + 1, error: "", at: 0)
+
+# ── matcher ────────────────────────────────────────────────────────────
+#
+# The matcher keeps a set of reachable byte positions instead of backtracking.
+# A star is the transitive closure of its child over those positions, so an
+# input byte is never reconsidered by the same node more than a bounded number
+# of times. `steps` counts node applications and the caller gets it back.
+
+action rx_class_match(ranges: list, b: number) -> bool:
+    for each r in ranges:
+        let lo = r[0] otherwise 0
+        let hi = r[1] otherwise 0
+        if b >= lo and b <= hi:
+            return true
+    return false
+
+# A match result is the plain list [positions, steps, ok]. It is a list rather
+# than a record because the matcher allocates one per node visit and the arena
+# is the whole memory model.
+action rx_match_node(node: list, text: text, pos: number, steps: number, limit: number) -> list:
+    recursion bounded 256
+    if steps >= limit:
+        return [[], steps, false]
+    let kind = node[0] otherwise ""
+    let n = length of text
+    if kind == "char":
+        if pos < n and rx_code(text, pos) == (node[1] otherwise 0 - 1):
+            return [[pos + 1], steps + 1, true]
+        return [[], steps + 1, true]
+    if kind == "any":
+        if pos < n and rx_code(text, pos) != 10:
+            return [[pos + 1], steps + 1, true]
+        return [[], steps + 1, true]
+    if kind == "class":
+        if pos >= n:
+            return [[], steps + 1, true]
+        let negated = node[1] otherwise 0
+        let inside = rx_class_match(node[2] otherwise [], rx_code(text, pos))
+        if (negated == 1 and not inside) or (negated == 0 and inside):
+            return [[pos + 1], steps + 1, true]
+        return [[], steps + 1, true]
+    if kind == "start":
+        if pos == 0:
+            return [[pos], steps + 1, true]
+        return [[], steps + 1, true]
+    if kind == "end":
+        if pos == n:
+            return [[pos], steps + 1, true]
+        return [[], steps + 1, true]
+    if kind == "seq":
+        return rx_match_items(node[1] otherwise [], text, [pos], steps, limit)
+    if kind == "group":
+        return rx_match_node(node[1] otherwise [], text, pos, steps, limit)
+    if kind == "alt":
+        let ends = []
+        let total = steps
+        for each branch in (node[1] otherwise []):
+            let r = rx_match_node(branch, text, pos, total, limit)
+            if not (r[2] otherwise false):
+                return [[], r[1] otherwise total, false]
+            set total to r[1] otherwise total
+            set ends to rx_merge(ends, r[0] otherwise [])
+        return [ends, total, true]
+    if kind == "opt":
+        let r = rx_match_node(node[1] otherwise [], text, pos, steps, limit)
+        if not (r[2] otherwise false):
+            return r
+        return [rx_merge([pos], r[0] otherwise []), r[1] otherwise steps, true]
+    if kind == "star":
+        return rx_star(node[1] otherwise [], text, pos, steps, limit)
+    if kind == "plus":
+        let once = rx_match_node(node[1] otherwise [], text, pos, steps, limit)
+        if not (once[2] otherwise false):
+            return once
+        let ends = []
+        let total = once[1] otherwise steps
+        for each end in (once[0] otherwise []):
+            let r = rx_star(node[1] otherwise [], text, end, total, limit)
+            if not (r[2] otherwise false):
+                return [[], r[1] otherwise total, false]
+            set total to r[1] otherwise total
+            set ends to rx_merge(ends, r[0] otherwise [])
+        return [ends, total, true]
+    # An unknown node can only come from a hand-built AST; refuse it as no match.
+    return [[], steps + 1, true]
+
+action rx_star(child: list, text: text, start: number, steps: number, limit: number) -> list:
+    recursion bounded 256
+    let seen = [start]
+    let frontier = [start]
+    let total = steps
+    let done = 0
+    while done == 0 and length of frontier > 0 bounded 100000:
+        let next = []
+        for each pos in frontier:
+            let r = rx_match_node(child, text, pos, total, limit)
+            if not (r[2] otherwise false):
+                return [[], r[1] otherwise total, false]
+            set total to r[1] otherwise total
+            for each end in (r[0] otherwise []):
+                if not rx_list_has(seen, end):
+                    set seen to seen + [end]
+                    set next to next + [end]
+        if length of next == 0:
+            set done to 1
+        otherwise:
+            set frontier to next
+    return [seen, total, true]
+
+action rx_match_items(items: list, text: text, positions: list, steps: number, limit: number) -> list:
+    recursion bounded 256
+    let cur = positions
+    let total = steps
+    for each item in items:
+        let next = []
+        for each pos in cur:
+            let r = rx_match_node(item, text, pos, total, limit)
+            if not (r[2] otherwise false):
+                return [[], r[1] otherwise total, false]
+            set total to r[1] otherwise total
+            for each end in (r[0] otherwise []):
+                if not rx_list_has(next, end):
+                    set next to next + [end]
+        set cur to next
+        if length of cur == 0:
+            return [[], total, true]
+    return [cur, total, true]
+
+action rx_longest(ends: list) -> number:
+    if (length of ends) == 0:
+        return 0 - 1
+    let best = 0 - 1
+    for each e in ends:
+        if e > best:
+            set best to e
+    return best
+
+# ── public API ─────────────────────────────────────────────────────────
+
+action regex_is_valid(pattern: text) -> bool:
+    let re = rx_parse(pattern)
+    return re.ok
+
+# Match the whole text: `matched` is true only when the pattern consumes every
+# byte. Anchors still work; this is the "validate" form.
+action regex_full_match_limited(re: Regex, text: text, limit: number) -> RegexResult:
+    if not re.ok:
+        return RegexResult(ok: false, matched: false, start: 0, end: 0, steps: 0, error: re.error)
+    if length of text > regex_max_text():
+        return RegexResult(ok: false, matched: false, start: 0, end: 0, steps: 0, error: "E_REGEX_TEXT_TOO_LARGE: text exceeds " + ("" + regex_max_text()) + " bytes")
+    let r = rx_match_node(re.root, text, 0, 0, limit)
+    if not (r[2] otherwise false):
+        let used = r[1] otherwise limit
+        return RegexResult(ok: false, matched: false, start: 0, end: 0, steps: used, error: "E_REGEX_BUDGET: match exceeded " + ("" + limit) + " steps")
+    let used = r[1] otherwise 0
+    let end = rx_longest(r[0] otherwise [])
+    if end == (length of text):
+        return RegexResult(ok: true, matched: true, start: 0, end: end, steps: used, error: "")
+    return RegexResult(ok: true, matched: false, start: 0, end: 0, steps: used, error: "")
+
+action regex_full_match(pattern: text, text: text) -> RegexResult:
+    return regex_full_match_limited(rx_parse(pattern), text, regex_max_steps())
+
+# Search for the leftmost match, longest at that start position.
+action regex_search_limited(re: Regex, text: text, limit: number) -> RegexResult:
+    if not re.ok:
+        return RegexResult(ok: false, matched: false, start: 0, end: 0, steps: 0, error: re.error)
+    if length of text > regex_max_text():
+        return RegexResult(ok: false, matched: false, start: 0, end: 0, steps: 0, error: "E_REGEX_TEXT_TOO_LARGE: text exceeds " + ("" + regex_max_text()) + " bytes")
+    let n = length of text
+    let at = 0
+    let total = 0
+    while at <= n bounded 1048576:
+        let r = rx_match_node(re.root, text, at, total, limit)
+        if not (r[2] otherwise false):
+            let used = r[1] otherwise limit
+            return RegexResult(ok: false, matched: false, start: at, end: 0, steps: used, error: "E_REGEX_BUDGET: match exceeded " + ("" + limit) + " steps")
+        set total to r[1] otherwise total
+        let end = rx_longest(r[0] otherwise [])
+        if end >= 0:
+            return RegexResult(ok: true, matched: true, start: at, end: end, steps: total, error: "")
+        set at to at + 1
+    return RegexResult(ok: true, matched: false, start: 0, end: 0, steps: total, error: "")
+
+action regex_search(pattern: text, text: text) -> RegexResult:
+    return regex_search_limited(rx_parse(pattern), text, regex_max_steps())
+
+action regex_replace_limited(re: Regex, text: text, replacement: text, limit: number) -> text:
+    let out = ""
+    let at = 0
+    let n = length of text
+    let total = 0
+    while at <= n bounded 1048576:
+        let rest = rx_slice_from(text, at)
+        let r = regex_search_limited(re, rest, limit - total)
+        if not r.ok or not r.matched:
+            set out to out + rest
+            return out
+        set total to total + r.steps
+        let start = at + r.start
+        let end = at + r.end
+        set out to out + rx_slice_range(text, at, start)
+        set out to out + replacement
+        if end > at:
+            set at to end
+        otherwise:
+            if at < n:
+                set out to out + (text[at] otherwise "")
+            set at to at + 1
+    return out
+
+action regex_replace(pattern: text, text: text, replacement: text) -> text:
+    return regex_replace_limited(rx_parse(pattern), text, replacement, regex_max_steps())
+
+# All non-overlapping matches, leftmost first, as [start, end] byte pairs.
+action regex_find_all_limited(re: Regex, text: text, limit: number) -> list:
+    let out = []
+    let at = 0
+    let n = length of text
+    let total = 0
+    while at <= n bounded 1048576:
+        let rest = rx_slice_from(text, at)
+        let r = regex_search_limited(re, rest, limit - total)
+        if not r.ok or not r.matched:
+            return out
+        set total to total + r.steps
+        let start = at + r.start
+        let end = at + r.end
+        set out to out + [[start, end]]
+        if end > at:
+            set at to end
+        otherwise:
+            # An empty match would loop forever at the same position; advance one
+            # byte so find-all still terminates and reports every empty slot.
+            set at to at + 1
+    return out
+
+action regex_find_all(pattern: text, text: text) -> list:
+    return regex_find_all_limited(rx_parse(pattern), text, regex_max_steps())
+
+action rx_slice_from(t: text, start: number) -> text:
+    let out = ""
+    let i = start
+    let n = length of t
+    while i < n bounded 1048576:
+        set out to out + (t[i] otherwise "")
+        set i to i + 1
+    return out
+
+action rx_slice_range(t: text, from: number, to: number) -> text:
+    let out = ""
+    let i = from
+    let n = length of t
+    if to < n:
+        set n to to
+    while i < n bounded 1048576:
+        set out to out + (t[i] otherwise "")
+        set i to i + 1
+    return out

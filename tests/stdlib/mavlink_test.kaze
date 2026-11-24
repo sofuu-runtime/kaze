@@ -1,0 +1,197 @@
+# tests/stdlib/mavlink_test.kaze -- MAVLink 2.0 frames: a pinned byte sequence, the
+# CRC recomputed from a hand-written span, the rejection paths, and 100 randomized
+# frames each followed by a single-byte corruption.
+#
+# The pinned frames do not come from the code under test. They were computed with an
+# independent MAVLink 2.0 implementation written from the layout documented in the
+# module header: magic 0xFD, length, flags, seq, sysid, compid, 24-bit little-endian
+# message id, payload, CRC-16/MCRF4XX little-endian over the span plus the CRC_EXTRA
+# byte. The span for the msgid 30 frame is 04 00 00 07 01 C8 1E 00 00 01 02 03 04,
+# followed by the extra byte 0x27 (39), giving CRC 0xF06D = 61549, which is the
+# two bytes 6D F0 in that order. If a little-endian byte ever gets flipped, this file
+# fails on the byte string, not on a symptom.
+needs: log
+
+use "./../../lib/mavlink.kaze"
+use "./../../lib/crc.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# Element-wise byte comparison; == on two lists compares identity, not contents.
+action same_numbers(a, b) -> num:
+    if (length of a) != (length of b):
+        return 0
+    let i = 0
+    let n = length of a
+    let equal = 1
+    while i < n bounded 1000:
+        if (a[i] otherwise 0) != (b[i] otherwise 0):
+            set equal to 0
+        set i to i + 1
+    return equal
+
+# Substring test for the error text, so a check does not depend on the exact wording
+# of a whole message.
+action contains(t, part) -> num:
+    let n = length of t
+    let m = length of part
+    if m > n:
+        return 0
+    let i = 0
+    let found = 0
+    while i + m <= n bounded 1000:
+        let window = ""
+        let k = 0
+        while k < m bounded 100:
+            set window to window + (t[i + k] otherwise "")
+            set k to k + 1
+        if window == part:
+            set found to 1
+        set i to i + 1
+    return found
+
+action lcg_next(state) -> num:
+    return (state * 1664525 + 1013904223) & 4294967295
+
+action main() -> num:
+    let failures = 0
+
+    # ---- a frame whose bytes are pinned outside this implementation --------------
+    let frame = mavlink2_frame(30, [1, 2, 3, 4], 7, 1, 200, 39)
+    set failures to check("the msgid 30 frame is the hand-computed byte string", same_numbers(frame, [253, 4, 0, 0, 7, 1, 200, 30, 0, 0, 1, 2, 3, 4, 109, 240]) == 1, failures)
+    set failures to check("the magic is 253 and the length counts only the payload", (frame[0] otherwise 0) == 253 and (frame[1] otherwise 0) == 4 and (length of frame) == 16, failures)
+
+    let parsed = mavlink2_parse(frame)
+    set failures to check("the frame round-trips its header", parsed.ok and parsed.msgid == 30 and parsed.seq == 7 and parsed.sysid == 1 and parsed.compid == 200, failures)
+    set failures to check("the frame round-trips its payload", same_numbers(parsed.payload, [1, 2, 3, 4]) == 1, failures)
+    # The covered span is the length byte through the payload; the extra byte is fed
+    # through afterwards. 0xF06D is what an independent implementation produced.
+    let span_crc = crc16_mcrf4xx([4, 0, 0, 7, 1, 200, 30, 0, 0, 1, 2, 3, 4, 39])
+    set failures to check("the frame CRC is the CRC over the documented span plus the extra byte", span_crc == 61549 and span_crc == ((frame[14] otherwise 0) + ((frame[15] otherwise 0) * 256)), failures)
+
+    # ---- an empty payload --------------------------------------------------------
+    let empty_frame = mavlink2_frame(0, [], 0, 1, 1, 50)
+    set failures to check("the empty HEARTBEAT frame is the hand-computed byte string", same_numbers(empty_frame, [253, 0, 0, 0, 0, 1, 1, 0, 0, 0, 121, 129]) == 1, failures)
+    let empty_parsed = mavlink2_parse(empty_frame)
+    set failures to check("an empty payload makes a 12-byte frame that parses back", (length of empty_frame) == 12 and empty_parsed.ok and (length of empty_parsed.payload) == 0 and empty_parsed.msgid == 0, failures)
+
+    # ---- the largest payload -----------------------------------------------------
+    let big = []
+    let b = 0
+    while b < 255 bounded 300:
+        set big to big + [(b * 7) & 255]
+        set b to b + 1
+    let big_frame = mavlink2_frame(33, big, 255, 255, 255, 104)
+    let big_parsed = mavlink2_parse(big_frame)
+    set failures to check("a 255-byte payload round-trips", (length of big_frame) == 267 and big_parsed.ok and same_numbers(big_parsed.payload, big) == 1, failures)
+    set failures to check("seq, sysid and compid of 255 survive the round-trip", big_parsed.seq == 255 and big_parsed.sysid == 255 and big_parsed.compid == 255, failures)
+
+    let too_big = big + [0]
+    set failures to check("a 256-byte payload is refused", (length of mavlink2_frame(33, too_big, 0, 1, 1, 104)) == 0, failures)
+    set failures to check("a message id outside 24 bits is refused", (length of mavlink2_frame(16777216, [1], 0, 1, 1, 1)) == 0, failures)
+
+    # ---- rejection paths ---------------------------------------------------------
+    let damaged = []
+    let d = 0
+    for each byte in frame:
+        if d == 11:
+            set damaged to damaged + [(byte ^ 1) & 255]
+        otherwise:
+            set damaged to damaged + [byte]
+        set d to d + 1
+    let damaged_parsed = mavlink2_parse(damaged)
+    set failures to check("a corrupted payload byte fails the CRC", damaged_parsed.ok == false and contains(damaged_parsed.error, "crc") == 1, failures)
+
+    let bad_magic = []
+    set bad_magic to bad_magic + [254]
+    let m = 1
+    while m < (length of frame) bounded 300:
+        set bad_magic to bad_magic + [frame[m] otherwise 0]
+        set m to m + 1
+    let bad_magic_parsed = mavlink2_parse(bad_magic)
+    set failures to check("a MAVLink 1 magic byte is rejected as a bad magic", bad_magic_parsed.ok == false and contains(bad_magic_parsed.error, "magic") == 1, failures)
+
+    let shortened = []
+    let s = 0
+    while s < (length of frame) - 1 bounded 300:
+        set shortened to shortened + [frame[s] otherwise 0]
+        set s to s + 1
+    let shortened_parsed = mavlink2_parse(shortened)
+    set failures to check("a truncated frame fails as a length error", shortened_parsed.ok == false and contains(shortened_parsed.error, "length") == 1, failures)
+
+    let unknown_frame = mavlink2_frame(999, [1, 2], 0, 1, 1, 7)
+    let unknown_parsed = mavlink2_parse(unknown_frame)
+    set failures to check("an unknown message id is refused rather than accepted", unknown_parsed.ok == false and contains(unknown_parsed.error, "unknown") == 1, failures)
+
+    let wrong_extra = mavlink2_frame(30, [1, 2, 3, 4], 7, 1, 200, 40)
+    let wrong_extra_parsed = mavlink2_parse(wrong_extra)
+    set failures to check("the wrong CRC_EXTRA byte for a known id fails the CRC", wrong_extra_parsed.ok == false and contains(wrong_extra_parsed.error, "crc") == 1, failures)
+
+    let signed_frame = []
+    let f2 = 0
+    for each byte in frame:
+        if f2 == 2:
+            set signed_frame to signed_frame + [1]
+        otherwise:
+            set signed_frame to signed_frame + [byte]
+        set f2 to f2 + 1
+    let signed_parsed = mavlink2_parse(signed_frame)
+    set failures to check("a frame with incompatibility flags set is refused", signed_parsed.ok == false and contains(signed_parsed.error, "incompat") == 1, failures)
+
+    set failures to check("a frame shorter than the 12-byte minimum is refused", (mavlink2_parse([253, 4, 0])).ok == false, failures)
+
+    # ---- the CRC_EXTRA table -----------------------------------------------------
+    set failures to check("the table carries the five common-dialect ids", mavlink2_crc_extra(0) == 50 and mavlink2_crc_extra(4) == 237 and mavlink2_crc_extra(30) == 39 and mavlink2_crc_extra(33) == 104 and mavlink2_crc_extra(76) == 152, failures)
+    set failures to check("an unknown message id has no extra byte", mavlink2_crc_extra(999) == 0 - 1 and mavlink2_crc_extra(1) == 0 - 1, failures)
+
+    # ---- 100 randomized frames, each with one corrupted copy ---------------------
+    let ids = [0, 4, 30, 33, 76]
+    let seed = 777001
+    let round_mismatch = 0
+    let corruption_mismatch = 0
+    let trial = 0
+    while trial < 100 bounded 200:
+        set seed to lcg_next(seed)
+        let msgid = ids[seed % 5] otherwise 0
+        let plen = seed & 63
+        let payload = []
+        let k = 0
+        while k < plen bounded 100:
+            set seed to lcg_next(seed)
+            set payload to payload + [seed & 255]
+            set k to k + 1
+        let seq = seed & 255
+        let sysid = (seed >> 8) & 255
+        let compid = (seed >> 16) & 255
+        let extra = mavlink2_crc_extra(msgid)
+        let built = mavlink2_frame(msgid, payload, seq, sysid, compid, extra)
+        let back = mavlink2_parse(built)
+        if back.ok == false or back.msgid != msgid or back.seq != seq or back.sysid != sysid or back.compid != compid:
+            set round_mismatch to round_mismatch + 1
+        if same_numbers(back.payload, payload) == 0:
+            set round_mismatch to round_mismatch + 1
+
+        set seed to lcg_next(seed)
+        let at = (seed % (length of built)) otherwise 0
+        let mask = (seed & 254) | 1
+        let hurt = []
+        let d2 = 0
+        for each byte in built:
+            if d2 == at:
+                set hurt to hurt + [(byte ^ mask) & 255]
+            otherwise:
+                set hurt to hurt + [byte]
+            set d2 to d2 + 1
+        if (mavlink2_parse(hurt)).ok:
+            set corruption_mismatch to corruption_mismatch + 1
+        set trial to trial + 1
+    set failures to check("100 random frames round-trip", round_mismatch == 0, failures)
+    set failures to check("100 random single-byte corruptions are all rejected", corruption_mismatch == 0, failures)
+
+    if failures == 0:
+        log.info("OK mavlink: 22 checks")
+    return failures

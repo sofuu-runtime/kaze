@@ -1,0 +1,162 @@
+# tests/stdlib/regex_test.kaze -- the bounded regex engine.
+#
+# The suite is split into the documented surface (what must match), the
+# documented refusals (what must be a syntax error), and the resource property
+# (an adversarial pattern must answer quickly and inside its step budget). The
+# last group is why the engine exists: a backtracking matcher dies on `(a+)+$`.
+
+needs: log
+
+use "./../../lib/regex.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action expect_full(pattern, text, want, failures, label) -> num:
+    let r = regex_full_match(pattern, text)
+    if not r.ok:
+        log.info("FAIL " + label + " (unexpected error: " + r.error + ")")
+        return failures + 1
+    return check(label, r.matched == want, failures)
+
+action text_starts_with(t: text, prefix: text) -> bool:
+    if length of prefix > (length of t):
+        return false
+    let i = 0
+    while i < (length of prefix) bounded 1024:
+        if (t[i] otherwise "") != (prefix[i] otherwise ""):
+            return false
+        set i to i + 1
+    return true
+
+action expect_invalid(pattern, failures, label) -> num:
+    let r = regex_full_match(pattern, "anything")
+    if r.ok:
+        log.info("FAIL " + label + " (pattern accepted)")
+        return failures + 1
+    if text_starts_with(r.error, "E_REGEX_SYNTAX"):
+        return failures
+    log.info("FAIL " + label + " (wrong error: " + r.error + ")")
+    return failures + 1
+
+action span_is(spans, i, start, end) -> bool:
+    if i < 0 or i >= (length of spans):
+        return false
+    let s = spans[i] otherwise [0, 0]
+    return (s[0] otherwise -1) == start and (s[1] otherwise -1) == end
+
+action main() -> num:
+    let failures = 0
+
+    # ---- literals and the full-match contract ---------------------------
+    set failures to expect_full("abc", "abc", true, failures, "literal matches itself")
+    set failures to expect_full("abc", "abd", false, failures, "literal rejects a different byte")
+    set failures to expect_full("abc", "xabc", false, failures, "full match is anchored at both ends")
+    set failures to expect_full("", "", true, failures, "the empty pattern matches empty text")
+    set failures to expect_full("", "x", false, failures, "the empty pattern does not match text")
+
+    # ---- dot, classes, escapes ------------------------------------------
+    set failures to expect_full("a.c", "abc", true, failures, "dot matches one byte")
+    set failures to expect_full("a.c", "a" + character(10) + "c", false, failures, "dot does not match newline")
+    set failures to expect_full("[a-z]+", "hello", true, failures, "class range matches lowercase")
+    set failures to expect_full("[a-z]+", "Hello", false, failures, "class range is case sensitive")
+    set failures to expect_full("[^0-9]+", "abc", true, failures, "negated class")
+    set failures to expect_full("[^0-9]+", "ab1", false, failures, "negated class rejects a digit")
+    set failures to expect_full("[-+]?[0-9]+", "-42", true, failures, "a leading dash is a literal outside a range")
+    set failures to expect_full("\\d+", "2026", true, failures, "\\d shorthand")
+    set failures to expect_full("\\w+", "a_1", true, failures, "\\w shorthand")
+    set failures to expect_full("\\s+", " " + character(9), true, failures, "\\s shorthand")
+    set failures to expect_full("\\D+", "abc", true, failures, "\\D shorthand")
+    set failures to expect_full("[\\d]+", "42", true, failures, "a shorthand inside a class")
+    set failures to expect_full("a\\tb", "a" + character(9) + "b", true, failures, "an escaped tab")
+    set failures to expect_full("a\\nb", "a" + character(10) + "b", true, failures, "an escaped newline")
+    set failures to expect_full("]", "]", true, failures, "a closing bracket outside a class is a literal")
+
+    # ---- grouping, alternation, quantifiers -----------------------------
+    set failures to expect_full("cat|dog", "dog", true, failures, "alternation takes the second branch")
+    set failures to expect_full("cat|dog", "cow", false, failures, "alternation rejects neither branch")
+    set failures to expect_full("(ab)+", "abab", true, failures, "a group can repeat")
+    set failures to expect_full("(ab)+", "aba", false, failures, "a repeated group must consume the tail")
+    set failures to expect_full("a(b|c)d", "acd", true, failures, "a group can sit mid-pattern")
+    set failures to expect_full("a(b|c)d", "abd", true, failures, "the other branch of that group")
+    set failures to expect_full("a(b|c)d", "ad", false, failures, "the group is not optional")
+    set failures to expect_full("ab*c", "ac", true, failures, "star accepts zero occurrences")
+    set failures to expect_full("ab*c", "abbbc", true, failures, "star accepts many occurrences")
+    set failures to expect_full("ab+c", "ac", false, failures, "plus requires one occurrence")
+    set failures to expect_full("ab?c", "ac", true, failures, "question accepts zero occurrences")
+    set failures to expect_full("ab?c", "abc", true, failures, "question accepts one occurrence")
+    set failures to expect_full("ab?c", "abbc", false, failures, "question accepts at most one occurrence")
+    set failures to expect_full("[0-9]+\\.?[0-9]*", "3.14", true, failures, "a decimal shape")
+    set failures to expect_full("^abc$", "abc", true, failures, "anchors match the whole text")
+    set failures to expect_full("^abc$", "xabc", false, failures, "the start anchor refuses a prefix")
+
+    # ---- search and find-all --------------------------------------------
+    let found = regex_search("b+", "abbc")
+    set failures to check("search finds the leftmost run", found.ok and found.matched and found.start == 1 and found.end == 3, failures)
+    let anchored = regex_search("^b", "abc")
+    set failures to check("a start anchor only matches at the start", anchored.ok and not anchored.matched, failures)
+    let end_anchored = regex_search("c$", "abc")
+    set failures to check("an end anchor matches at the end", end_anchored.ok and end_anchored.matched and end_anchored.start == 2, failures)
+    let absent = regex_search("zz", "abc")
+    set failures to check("search reports absence", absent.ok and not absent.matched, failures)
+
+    let spans = regex_find_all("[0-9]+", "a1b22c333")
+    set failures to check("find_all finds every run", (length of spans) == 3, failures)
+    set failures to check("find_all first span", span_is(spans, 0, 1, 2), failures)
+    set failures to check("find_all middle span", span_is(spans, 1, 3, 5), failures)
+    set failures to check("find_all last span", span_is(spans, 2, 6, 9), failures)
+
+    let empty_spans = regex_find_all("x*", "ab")
+    set failures to check("find_all terminates on empty matches", (length of empty_spans) == 3, failures)
+
+    # ---- replacement -----------------------------------------------------
+    set failures to check("replace rewrites every run", regex_replace("[0-9]+", "a1b22c333", "#") == "a#b#c#", failures)
+    set failures to check("replace with no match returns the input", regex_replace("[0-9]+", "abc", "#") == "abc", failures)
+    set failures to check("replace terminates on empty matches", regex_replace("a*", "bbb", "-") == "-b-b-b-", failures)
+    set failures to check("replace can delete", regex_replace("\\s+", " a b ", "") == "ab", failures)
+
+    # ---- documented refusals --------------------------------------------
+    set failures to expect_invalid("(", failures, "an unclosed group")
+    set failures to expect_invalid("[abc", failures, "an unclosed class")
+    set failures to expect_invalid("a\\", failures, "a trailing backslash")
+    set failures to expect_invalid("*a", failures, "a quantifier with nothing to repeat")
+    set failures to expect_invalid("[z-a]", failures, "a reversed class range")
+    set failures to expect_invalid("a{2}", failures, "counted repetition is not in the subset")
+    set failures to check("regex_is_valid agrees with the parser", regex_is_valid("a+") and not regex_is_valid("(a"), failures)
+
+    # ---- budget and size limits -----------------------------------------
+    let tiny = regex_full_match_limited(rx_parse("abc"), "abc", 1)
+    set failures to check("an exhausted budget is a typed refusal", not tiny.ok and text_starts_with(tiny.error, "E_REGEX_BUDGET"), failures)
+    set failures to check("a normal match reports its step count", regex_full_match("abc", "abc").steps > 0, failures)
+
+    # The classic backtracking bomb. The position-set matcher must answer
+    # inside the default budget; the tail is 'b', so the answer is "no match".
+    let bomb_text = ""
+    let i = 0
+    while i < 200 bounded 1000:
+        set bomb_text to bomb_text + "a"
+        set i to i + 1
+    set bomb_text to bomb_text + "b"
+    let bomb = regex_full_match("(a+)+$", bomb_text)
+    set failures to check("adversarial nesting answers no-match", bomb.ok and not bomb.matched, failures)
+    set failures to check("adversarial nesting stays inside its budget", bomb.ok and bomb.steps < 1000000, failures)
+
+    # ---- byte orientation and documented limits -------------------------
+    # The engine is byte oriented: a two-byte UTF-8 character is two dots.
+    set failures to expect_full(".", "é", false, failures, "dot matches one byte, not one code point")
+    set failures to expect_full("..", "é", true, failures, "two dots match a two-byte character")
+
+    let huge_pattern = ""
+    let j = 0
+    while j < 1025 bounded 2000:
+        set huge_pattern to huge_pattern + "a"
+        set j to j + 1
+    let huge = regex_full_match(huge_pattern, "a")
+    set failures to check("a pattern over the 1024-byte ceiling is refused", not huge.ok and text_starts_with(huge.error, "E_REGEX_PATTERN_TOO_LARGE"), failures)
+
+    if failures == 0:
+        log.info("OK regex: 63 checks")
+    return failures

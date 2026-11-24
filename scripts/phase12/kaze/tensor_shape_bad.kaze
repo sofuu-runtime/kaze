@@ -1,0 +1,6 @@
+# Phase 12 shape gate: the inner dimensions do not match and the compiler must
+# refuse this before any code is generated.
+action main():
+    let a = tensor([1, 2, 3, 4, 5, 6], [2, 3])
+    let b = tensor([1, 2, 3, 4], [2, 2])
+    return matmul(a, b)

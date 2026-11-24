@@ -1,0 +1,331 @@
+# lib/sha512.kaze -- FIPS 180-4 SHA-512 over Kaze text.
+#
+# Kaze numbers are IEEE doubles and exact integers stop at 2^53, so a 64-bit word
+# cannot live in one number. Every word in this module is a two-element list
+# [hi, lo] of 32-bit halves, and add64, xor64, and64, rotr64 and shr64 are the only
+# routines that touch the halves. Each of them keeps its intermediate below 2^33
+# (a low-half sum tops out at 2^33-1, a rotated half is rebuilt from a masked piece
+# that is smaller than 2^32), so every step is an exact double.
+#
+# Text is hashed byte for byte: Kaze text is UTF-8 at run time, `length of t` counts
+# bytes and `code(t[i])` returns the byte at i, so non-ASCII input is hashed as its
+# UTF-8 encoding, which is what FIPS 180-4 specifies.
+#
+# The length field is the 128-bit bit count. Its high 64 bits are always zero: a text
+# whose bit length needs more than 53 bits cannot exist as a Kaze value.
+#
+#   sha512(text)         -> list of 64 bytes, each 0..255, in digest order
+#   sha512_hex(text)     -> 128 lowercase hex characters
+#   sha512_of_bytes(msg) -> the same digest for a message given as a byte list
+#   sha512_text_bytes(t) -> the UTF-8 bytes of a text, one entry per byte
+
+# ---- 64-bit words as [hi, lo] pairs ------------------------------------------
+
+# Modulo-2^64 addition. The low halves sum to at most 2^33-1, so the carry is one
+# comparison; the high halves then sum to at most 2^33-1 and lose their own carry,
+# which is what modulo 2^64 means.
+action add64(a, b) -> list:
+    let lo = (a[1] otherwise 0) + (b[1] otherwise 0)
+    let carry = 0
+    if lo >= 4294967296:
+        set lo to lo - 4294967296
+        set carry to 1
+    let hi = (a[0] otherwise 0) + (b[0] otherwise 0) + carry
+    if hi >= 4294967296:
+        set hi to hi - 4294967296
+    return [hi, lo]
+
+action xor64(a, b) -> list:
+    let hi = (a[0] otherwise 0) ^ (b[0] otherwise 0)
+    let lo = (a[1] otherwise 0) ^ (b[1] otherwise 0)
+    return [hi, lo]
+
+action and64(a, b) -> list:
+    let hi = (a[0] otherwise 0) & (b[0] otherwise 0)
+    let lo = (a[1] otherwise 0) & (b[1] otherwise 0)
+    return [hi, lo]
+
+action not64(a) -> list:
+    return [(a[0] otherwise 0) ^ 4294967295, (a[1] otherwise 0) ^ 4294967295]
+
+# Ch(e, f, g) = (e & f) ^ (~e & g)
+action ch64(e, f, g) -> list:
+    return xor64(and64(e, f), and64(not64(e), g))
+
+# Maj(a, b, c) = (a & b) ^ (a & c) ^ (b & c)
+action maj64(a, b, c) -> list:
+    return xor64(xor64(and64(a, b), and64(a, c)), and64(b, c))
+
+# Rotate the 64-bit word hi:lo right by n, where 1 <= n <= 31.
+# The pieces shifted up by (32 - n) are first masked down to n bits, so they are
+# below 2^32 before the shift and the result stays under 2^32 - never a 64-bit
+# intermediate that a double would round.
+action rotr_lt32(hi, lo, n) -> list:
+    let m = (1 << n) - 1
+    let up = 32 - n
+    let nh = ((hi >> n) | ((lo & m) << up)) & 4294967295
+    let nl = ((lo >> n) | ((hi & m) << up)) & 4294967295
+    return [nh, nl]
+
+action rotr64(x, n) -> list:
+    let hi = x[0] otherwise 0
+    let lo = x[1] otherwise 0
+    if n <= 0:
+        return [hi, lo]
+    if n == 32:
+        return [lo, hi]
+    if n > 32:
+        # A rotation by 32+n is a rotation of the swapped halves by n.
+        return rotr_lt32(lo, hi, n - 32)
+    return rotr_lt32(hi, lo, n)
+
+action shr64(x, n) -> list:
+    let hi = x[0] otherwise 0
+    let lo = x[1] otherwise 0
+    if n <= 0:
+        return [hi, lo]
+    if n == 32:
+        return [0, hi]
+    if n > 32:
+        # Everything below the high half's (n-32) surviving bits is gone: the low
+        # half contributes only bits below the dropped range.
+        return [0, hi >> (n - 32)]
+    let m = (1 << n) - 1
+    let nh = hi >> n
+    let nl = ((lo >> n) | ((hi & m) << (32 - n))) & 4294967295
+    return [nh, nl]
+
+# ---- the six mixed functions -------------------------------------------------
+
+# ROTR 28, ROTR 34, ROTR 39
+action big_sigma0(x) -> list:
+    return xor64(xor64(rotr64(x, 28), rotr64(x, 34)), rotr64(x, 39))
+
+# ROTR 14, ROTR 18, ROTR 41
+action big_sigma1(x) -> list:
+    return xor64(xor64(rotr64(x, 14), rotr64(x, 18)), rotr64(x, 41))
+
+# ROTR 1, ROTR 8, SHR 7
+action small_sigma0(x) -> list:
+    return xor64(xor64(rotr64(x, 1), rotr64(x, 8)), shr64(x, 7))
+
+# ROTR 19, ROTR 61, SHR 6
+action small_sigma1(x) -> list:
+    return xor64(xor64(rotr64(x, 19), rotr64(x, 61)), shr64(x, 6))
+
+# ---- the round constants and the initial state -------------------------------
+
+# First 80 primes, fractional parts of their cube roots, as [hi, lo]. The comment
+# after each pair of entries is the 16 hex digits of the constant, so the table can
+# be checked against FIPS 180-4 without running anything.
+action sha512_k() -> list:
+    return [
+    [1116352408, 3609767458], [1899447441, 602891725],  # 428a2f98d728ae22 7137449123ef65cd
+    [3049323471, 3964484399], [3921009573, 2173295548],  # b5c0fbcfec4d3b2f e9b5dba58189dbbc
+    [961987163, 4081628472], [1508970993, 3053834265],  # 3956c25bf348b538 59f111f1b605d019
+    [2453635748, 2937671579], [2870763221, 3664609560],  # 923f82a4af194f9b ab1c5ed5da6d8118
+    [3624381080, 2734883394], [310598401, 1164996542],  # d807aa98a3030242 12835b0145706fbe
+    [607225278, 1323610764], [1426881987, 3590304994],  # 243185be4ee4b28c 550c7dc3d5ffb4e2
+    [1925078388, 4068182383], [2162078206, 991336113],  # 72be5d74f27b896f 80deb1fe3b1696b1
+    [2614888103, 633803317], [3248222580, 3479774868],  # 9bdc06a725c71235 c19bf174cf692694
+    [3835390401, 2666613458], [4022224774, 944711139],  # e49b69c19ef14ad2 efbe4786384f25e3
+    [264347078, 2341262773], [604807628, 2007800933],  # 0fc19dc68b8cd5b5 240ca1cc77ac9c65
+    [770255983, 1495990901], [1249150122, 1856431235],  # 2de92c6f592b0275 4a7484aa6ea6e483
+    [1555081692, 3175218132], [1996064986, 2198950837],  # 5cb0a9dcbd41fbd4 76f988da831153b5
+    [2554220882, 3999719339], [2821834349, 766784016],  # 983e5152ee66dfab a831c66d2db43210
+    [2952996808, 2566594879], [3210313671, 3203337956],  # b00327c898fb213f bf597fc7beef0ee4
+    [3336571891, 1034457026], [3584528711, 2466948901],  # c6e00bf33da88fc2 d5a79147930aa725
+    [113926993, 3758326383], [338241895, 168717936],  # 06ca6351e003826f 142929670a0e6e70
+    [666307205, 1188179964], [773529912, 1546045734],  # 27b70a8546d22ffc 2e1b21385c26c926
+    [1294757372, 1522805485], [1396182291, 2643833823],  # 4d2c6dfc5ac42aed 53380d139d95b3df
+    [1695183700, 2343527390], [1986661051, 1014477480],  # 650a73548baf63de 766a0abb3c77b2a8
+    [2177026350, 1206759142], [2456956037, 344077627],  # 81c2c92e47edaee6 92722c851482353b
+    [2730485921, 1290863460], [2820302411, 3158454273],  # a2bfe8a14cf10364 a81a664bbc423001
+    [3259730800, 3505952657], [3345764771, 106217008],  # c24b8b70d0f89791 c76c51a30654be30
+    [3516065817, 3606008344], [3600352804, 1432725776],  # d192e819d6ef5218 d69906245565a910
+    [4094571909, 1467031594], [275423344, 851169720],  # f40e35855771202a 106aa07032bbd1b8
+    [430227734, 3100823752], [506948616, 1363258195],  # 19a4c116b8d2d0c8 1e376c085141ab53
+    [659060556, 3750685593], [883997877, 3785050280],  # 2748774cdf8eeb99 34b0bcb5e19b48a8
+    [958139571, 3318307427], [1322822218, 3812723403],  # 391c0cb3c5c95a63 4ed8aa4ae3418acb
+    [1537002063, 2003034995], [1747873779, 3602036899],  # 5b9cca4f7763e373 682e6ff3d6b2b8a3
+    [1955562222, 1575990012], [2024104815, 1125592928],  # 748f82ee5defb2fc 78a5636f43172f60
+    [2227730452, 2716904306], [2361852424, 442776044],  # 84c87814a1f0ab72 8cc702081a6439ec
+    [2428436474, 593698344], [2756734187, 3733110249],  # 90befffa23631e28 a4506cebde82bde9
+    [3204031479, 2999351573], [3329325298, 3815920427],  # bef9a3f7b2c67915 c67178f2e372532b
+    [3391569614, 3928383900], [3515267271, 566280711],  # ca273eceea26619c d186b8c721c0c207
+    [3940187606, 3454069534], [4118630271, 4000239992],  # eada7dd6cde0eb1e f57d4f7fee6ed178
+    [116418474, 1914138554], [174292421, 2731055270],  # 06f067aa72176fba 0a637dc5a2c898a6
+    [289380356, 3203993006], [460393269, 320620315],  # 113f9804bef90dae 1b710b35131c471b
+    [685471733, 587496836], [852142971, 1086792851],  # 28db77f523047d84 32caab7b40c72493
+    [1017036298, 365543100], [1126000580, 2618297676],  # 3c9ebe0a15c9bebc 431d67c49c100d4c
+    [1288033470, 3409855158], [1501505948, 4234509866],  # 4cc5d4becb3e42b6 597f299cfc657e2a
+    [1607167915, 987167468], [1816402316, 1246189591],  # 5fcb6fab3ad6faec 6c44198c4a475817
+    ]
+
+# First 8 primes, fractional parts of their square roots. These are the SHA-512
+# initial hash values, again as [hi, lo] pairs.
+action sha512_iv() -> list:
+    return [
+        [1779033703, 4089235720],
+        [3144134277, 2227873595],
+        [1013904242, 4271175723],
+        [2773480762, 1595750129],
+        [1359893119, 2917565137],
+        [2600822924, 725511199],
+        [528734635, 4215389547],
+        [1541459225, 327033209]
+    ]
+
+# ---- message schedule and compression ----------------------------------------
+
+# One 128-byte block as 16 big-endian 64-bit words.
+action sha512_block_words(block) -> list:
+    let out = []
+    let i = 0
+    while i < 16 bounded 20:
+        let o = i * 8
+        let b0 = block[o] otherwise 0
+        let b1 = block[o + 1] otherwise 0
+        let b2 = block[o + 2] otherwise 0
+        let b3 = block[o + 3] otherwise 0
+        let b4 = block[o + 4] otherwise 0
+        let b5 = block[o + 5] otherwise 0
+        let b6 = block[o + 6] otherwise 0
+        let b7 = block[o + 7] otherwise 0
+        let hi = b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+        let lo = b4 * 16777216 + b5 * 65536 + b6 * 256 + b7
+        set out to out + [[hi, lo]]
+        set i to i + 1
+    return out
+
+# The 80-word schedule: W[t] = s1(W[t-2]) + W[t-7] + s0(W[t-15]) + W[t-16].
+action sha512_schedule(words) -> list:
+    let w = words
+    let t = 16
+    while t < 80 bounded 100:
+        let w15 = w[t - 15] otherwise [0, 0]
+        let w2 = w[t - 2] otherwise [0, 0]
+        let s0 = small_sigma0(w15)
+        let s1 = small_sigma1(w2)
+        let sum = add64(add64(add64(w[t - 16] otherwise [0, 0], s0), w[t - 7] otherwise [0, 0]), s1)
+        set w to w + [sum]
+        set t to t + 1
+    return w
+
+# One block of compression. The eight working variables are rotated by rebinding,
+# so the round body never indexes the state.
+action sha512_compress(state, block) -> list:
+    let w = sha512_schedule(sha512_block_words(block))
+    let k = sha512_k()
+    let a = state[0] otherwise [0, 0]
+    let b = state[1] otherwise [0, 0]
+    let c = state[2] otherwise [0, 0]
+    let d = state[3] otherwise [0, 0]
+    let e = state[4] otherwise [0, 0]
+    let f = state[5] otherwise [0, 0]
+    let g = state[6] otherwise [0, 0]
+    let h = state[7] otherwise [0, 0]
+    let t = 0
+    while t < 80 bounded 100:
+        let ki = k[t] otherwise [0, 0]
+        let wi = w[t] otherwise [0, 0]
+        let t1 = add64(add64(add64(h, big_sigma1(e)), ch64(e, f, g)), add64(ki, wi))
+        let t2 = add64(big_sigma0(a), maj64(a, b, c))
+        set h to g
+        set g to f
+        set f to e
+        set e to add64(d, t1)
+        set d to c
+        set c to b
+        set b to a
+        set a to add64(t1, t2)
+        set t to t + 1
+    let work = [a, b, c, d, e, f, g, h]
+    let out = []
+    let i = 0
+    while i < 8 bounded 10:
+        let old = state[i] otherwise [0, 0]
+        set out to out + [add64(old, work[i] otherwise [0, 0])]
+        set i to i + 1
+    return out
+
+# The eight state words as 64 big-endian bytes.
+action sha512_state_bytes(state) -> list:
+    let out = []
+    for each word in state:
+        let hi = word[0] otherwise 0
+        let lo = word[1] otherwise 0
+        set out to out + [hi >> 24, (hi >> 16) & 255, (hi >> 8) & 255, hi & 255]
+        set out to out + [lo >> 24, (lo >> 16) & 255, (lo >> 8) & 255, lo & 255]
+    return out
+
+# ---- padding and the public entry points -------------------------------------
+
+# The message padded to a multiple of 128 bytes: 0x80, zeros, then the 128-bit
+# bit length as 16 big-endian bytes.
+action sha512_pad(msg, nbytes) -> list:
+    let out = msg + [128]
+    let m = length of out
+    while (m % 128) != 112 bounded 10000000:
+        set out to out + [0]
+        set m to m + 1
+    # bitlen < 2^53 always, so the high 64 bits of the length field are zero.
+    let bitlen = nbytes * 8
+    let bit_hi = bitlen >> 32
+    let bit_lo = bitlen & 4294967295
+    let z = 0
+    while z < 8 bounded 16:
+        set out to out + [0]
+        set z to z + 1
+    set out to out + [bit_hi >> 24, (bit_hi >> 16) & 255, (bit_hi >> 8) & 255, bit_hi & 255]
+    set out to out + [bit_lo >> 24, (bit_lo >> 16) & 255, (bit_lo >> 8) & 255, bit_lo & 255]
+    return out
+
+# The digest of a message already in byte form. Ed25519 hashes the concatenation of
+# two encoded points with a message, which is a byte list and not text, so it needs
+# this entry point; sha512(text) is the same routine after the UTF-8 bytes are read
+# out one by one.
+action sha512_of_bytes(msg) -> list:
+    let padded = sha512_pad(msg, length of msg)
+    let state = sha512_iv()
+    let off = 0
+    let total = length of padded
+    while off < total bounded 10000000:
+        let block = []
+        let j = 0
+        while j < 128 bounded 200:
+            set block to block + [padded[off + j] otherwise 0]
+            set j to j + 1
+        set state to sha512_compress(state, block)
+        set off to off + 128
+    return sha512_state_bytes(state)
+
+# The UTF-8 bytes of a text, one entry per byte: length counts bytes and code gives
+# the byte value at a byte position, which is why this is exact for any input.
+action sha512_text_bytes(text) -> list:
+    let msg = []
+    let i = 0
+    let n = length of text
+    while i < n bounded 10000000:
+        set msg to msg + [(code(text[i]) & 255)]
+        set i to i + 1
+    return msg
+
+action sha512(text) -> list:
+    return sha512_of_bytes(sha512_text_bytes(text))
+
+action sha512_hex_digit(n) -> text:
+    if n < 10:
+        return character(48 + n)
+    return character(87 + n)
+
+action sha512_hex_byte(b) -> text:
+    let hi = (b >> 4) & 15
+    let lo = b & 15
+    return sha512_hex_digit(hi) + sha512_hex_digit(lo)
+
+action sha512_hex(text) -> text:
+    let out = ""
+    for each b in sha512(text):
+        set out to out + sha512_hex_byte(b)
+    return out

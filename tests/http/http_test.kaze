@@ -1,0 +1,83 @@
+# tests/http/http_test.kaze -- Phase 3 integration against a real local server.
+#
+# Not under tests/stdlib because it needs a live server and an explicit grant.
+# scripts/http-smoke.py starts the server, supplies --arg url=..., and runs this
+# program through kaze-host. Without a URL it reports a skip and exits 0, so a
+# reader can run it by hand without a server and get an honest answer.
+#
+# The grant is host-side: KAZE_HTTP=1, and KAZE_HTTP_ALLOW must name the server.
+
+needs: log
+
+use "./../../lib/http.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let base = cli_text("url", "")
+    if (length of base) == 0:
+        log.info("OK http: skipped (pass --arg url=http://127.0.0.1:PORT)")
+        return 0
+    let failures = 0
+
+    # ---- a successful exchange, its status and headers ------------------
+    let hello = http_get(base + "/hello")
+    if not hello.ok:
+        log.info("GET error: " + hello.error)
+    set failures to check("GET succeeds", hello.ok and hello.status == 200, failures)
+    set failures to check("GET returns the body", hello.body == "hello http", failures)
+    set failures to check("GET exposes a header", http_header(hello, "content-type") == "text/plain", failures)
+    set failures to check("header lookup ignores case", http_has_header(hello, "x-test"), failures)
+    set failures to check("an empty-valued header is still present", http_has_header(hello, "x-empty"), failures)
+    set failures to check("an empty-valued header has an empty value", http_header(hello, "x-empty") == "", failures)
+
+    # ---- the status is data, not a transport failure --------------------
+    let missing = http_get(base + "/missing")
+    set failures to check("404 is a successful exchange", missing.ok and missing.status == 404, failures)
+    set failures to check("404 carries its body", missing.body == "nope", failures)
+    set failures to check("http_succeeded rejects 404", not http_succeeded(missing), failures)
+
+    # ---- request body and method ---------------------------------------
+    let posted = http_post(base + "/echo", "payload")
+    set failures to check("POST reaches the server", posted.ok and posted.status == 201, failures)
+    set failures to check("POST body round-trips", posted.body == "payload", failures)
+
+    # ---- redirects are bounded and followed -----------------------------
+    let moved = http_get(base + "/redirect")
+    set failures to check("a redirect is followed", moved.ok and moved.status == 200 and moved.body == "hello http", failures)
+    let escaped = http_get(base + "/redirect-out")
+    set failures to check("a redirect outside the allowlist is refused", not escaped.ok and http_starts(escaped.error, "E_HTTP_DENIED"), failures)
+    let located = http_get(base + "/located")
+    set failures to check("a 200 with Location is not treated as a redirect", located.ok and located.body == "located", failures)
+
+    # ---- an explicit deadline ------------------------------------------
+    let slow = http_request("GET", base + "/slow", "", "", 100)
+    set failures to check("a short deadline refuses the slow path", not slow.ok, failures)
+    set failures to check("a timeout is a typed error", http_starts(slow.error, "E_HTTP_TIMEOUT"), failures)
+
+    # ---- the body ceiling ----------------------------------------------
+    let big = http_get(base + "/big")
+    set failures to check("a body over the ceiling is refused", not big.ok, failures)
+    set failures to check("the ceiling is a typed error", http_starts(big.error, "E_HTTP_TOO_LARGE"), failures)
+
+    # ---- malformed input ------------------------------------------------
+    let bad = http_get("ftp://127.0.0.1/x")
+    set failures to check("a non-http scheme is refused", not bad.ok and http_starts(bad.error, "E_HTTP_SCHEME"), failures)
+
+    if failures == 0:
+        log.info("OK http: 19 checks")
+    return failures
+
+action http_starts(t: text, prefix: text) -> bool:
+    if length of prefix > (length of t):
+        return false
+    let i = 0
+    while i < (length of prefix) bounded 1024:
+        if (t[i] otherwise "") != (prefix[i] otherwise ""):
+            return false
+        set i to i + 1
+    return true

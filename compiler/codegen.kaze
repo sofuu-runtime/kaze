@@ -74,7 +74,7 @@ action get_c_runtime_header():
     set h to h + "            fprintf(stderr, \"kaze-alloc:   %-12s %12zu bytes %10zu calls\\n\", kz_site_name[i], kz_site_bytes[i], kz_site_calls[i]);\n"
     set h to h + "    }\n"
     set h to h + "}\n"
-    set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD, KZ_VAL_POINT } KzValKind;\n"
+    set h to h + "typedef enum { KZ_VAL_NIL = 0, KZ_VAL_BOOL, KZ_VAL_NUM, KZ_VAL_STR, KZ_VAL_LIST, KZ_VAL_RECORD, KZ_VAL_POINT, KZ_VAL_CHAN, KZ_VAL_FIBER } KzValKind;\n"
     set h to h + "struct KzValue;\n"
     set h to h + "typedef struct { size_t len; size_t cap; struct KzValue* items; } KzList;\n"
     set h to h + "typedef struct { const char* type_name; size_t field_count; const char** keys; struct KzValue* values; } KzRecord;\n"
@@ -82,7 +82,7 @@ action get_c_runtime_header():
     set h to h + "typedef struct { kaze_float_t x, y, z; } KzPoint;\n"
     set h to h + "typedef struct KzValue {\n"
     set h to h + "    KzValKind kind;\n"
-    set h to h + "    union { bool boolean; kaze_float_t number; KzStr str; KzList* list; KzRecord* record; KzPoint point; } as;\n"
+    set h to h + "    union { bool boolean; kaze_float_t number; KzStr str; KzList* list; KzRecord* record; KzPoint point; void* ptr; } as;\n"
     set h to h + "} KzValue;\n\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_nil(void) { KzValue v; v.kind = KZ_VAL_NIL; v.as.number = 0.0; return v; }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bool(bool b) { KzValue v; v.kind = KZ_VAL_BOOL; v.as.boolean = b; return v; }\n"
@@ -102,6 +102,8 @@ action get_c_runtime_header():
     set h to h + "        case KZ_VAL_STR: return v.as.str.data && v.as.str.data[0] != '\\0';\n"
     set h to h + "        case KZ_VAL_LIST: return v.as.list && v.as.list->len > 0;\n"
     set h to h + "        case KZ_VAL_RECORD: return true;\n"
+    set h to h + "        case KZ_VAL_CHAN: return v.as.ptr != NULL;\n"
+    set h to h + "        case KZ_VAL_FIBER: return v.as.ptr != NULL;\n"
     set h to h + "        default: return false;\n"
     set h to h + "    }\n"
     set h to h + "}\n\n"
@@ -209,6 +211,226 @@ action get_c_runtime_header():
     set h to h + "    if (v.kind == KZ_VAL_LIST) return \"list\";\n"
     set h to h + "    return \"\";\n"
     set h to h + "}\n\n"
+    set h to h + "/* --- phase 13: deterministic cooperative concurrency ------------------- */\n"
+    set h to h + "/* One OS thread, one linear arena, one run. Tasks switch only where the\n"
+    set h to h + " * program says yield, in round-robin spawn order, so a run is a deterministic\n"
+    set h to h + " * sequence of steps: no wall clock, no scheduler tick, and no two tasks\n"
+    set h to h + " * executing at once. Channels are bounded ring buffers of KzValue: a send\n"
+    set h to h + " * moves the value header and never the data it points at, and a full or empty\n"
+    set h to h + " * channel is a value (false / a fallback), never a block, so a program cannot\n"
+    set h to h + " * deadlock on one. */\n"
+    set h to h + "#define KZ_CHAN_MAX 64\n"
+    set h to h + "#define KZ_TASKS_DEFAULT 8\n"
+    set h to h + "#define KZ_FUEL_DEFAULT 10000\n"
+    set h to h + "#define KZ_FRAME_SLOTS 32\n"
+    set h to h + "#define KZ_FRAME_GUARDS 16\n"
+    set h to h + "\n"
+    set h to h + "typedef struct kz_chan { KzValue* buf; size_t cap, head, tail, len; } kz_chan;\n"
+    set h to h + "typedef struct kz_fiber kz_fiber;\n"
+    set h to h + "struct kz_fiber {\n"
+    set h to h + "    kz_fiber* parent;\n"
+    set h to h + "    kz_fiber* next;\n"
+    set h to h + "    int (*step)(kz_fiber*);\n"
+    set h to h + "    KzValue* slots;\n"
+    set h to h + "    size_t slot_count;\n"
+    set h to h + "    long* guards;\n"
+    set h to h + "    size_t guard_count;\n"
+    set h to h + "    KzValue args;\n"
+    set h to h + "    KzValue ret;\n"
+    set h to h + "    long fuel;\n"
+    set h to h + "    int pc;\n"
+    set h to h + "    int done;\n"
+    set h to h + "    int cancelled;\n"
+    set h to h + "    const char* name;\n"
+    set h to h + "};\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_tasks_head = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_tasks_tail = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_rr_cursor = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_current = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_switch_count = 0;\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_env_num(const char* name, long dflt) {\n"
+    set h to h + "    const char* env = getenv(name);\n"
+    set h to h + "    if (env == NULL || env[0] == '\\0') return dflt;\n"
+    set h to h + "    long v = strtol(env, NULL, 10);\n"
+    set h to h + "    if (v <= 0) return dflt;\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_conc_fail(const char* code, const char* detail) {\n"
+    set h to h + "    fprintf(stderr, \"%s: %s\\n\", code, detail);\n"
+    set h to h + "    exit(70);\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_tasks_declared = 0;   /* the module's tasks bounded */\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_task_ceiling(void) {\n"
+    set h to h + "    long v = kz_tasks_declared;\n"
+    set h to h + "    if (v <= 0) v = kz_env_num(\"KAZE_MAX_TASKS\", KZ_TASKS_DEFAULT);\n"
+    set h to h + "    return v > 256 ? 256 : v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static long kz_live_tasks(void) {\n"
+    set h to h + "    long n = 0;\n"
+    set h to h + "    kz_fiber* f;\n"
+    set h to h + "    for (f = kz_tasks_head; f != NULL; f = f->next)\n"
+    set h to h + "        if (!f->done && !f->cancelled) n += 1;\n"
+    set h to h + "    return n;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_fiber_value(kz_fiber* f) {\n"
+    set h to h + "    KzValue v; v.kind = KZ_VAL_FIBER; v.as.ptr = (void*)f; return v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_fiber_spawn(int (*step)(kz_fiber*), KzValue args, size_t slot_count, size_t guard_count, const char* name, long declared_fuel) {\n"
+    set h to h + "    kz_fiber* f;\n"
+    set h to h + "    size_t i;\n"
+    set h to h + "    if (kz_live_tasks() >= kz_task_ceiling())\n"
+    set h to h + "        kz_conc_fail(\"E_KAZE_TASK_BOUND\", \"the task ceiling is reached; raise KAZE_MAX_TASKS or spawn fewer tasks\");\n"
+    set h to h + "    f = (kz_fiber*)kz_alloc(sizeof(kz_fiber));\n"
+    set h to h + "    f->parent = kz_current;\n"
+    set h to h + "    f->next = NULL;\n"
+    set h to h + "    f->step = step;\n"
+    set h to h + "    f->slot_count = slot_count;\n"
+    set h to h + "    f->slots = (KzValue*)kz_alloc(sizeof(KzValue) * (slot_count ? slot_count : 1));\n"
+    set h to h + "    for (i = 0; i < slot_count; i++) f->slots[i] = kz_nil();\n"
+    set h to h + "    f->guard_count = guard_count;\n"
+    set h to h + "    f->guards = (long*)kz_alloc(sizeof(long) * (guard_count ? guard_count : 1));\n"
+    set h to h + "    for (i = 0; i < guard_count; i++) f->guards[i] = 0;\n"
+    set h to h + "    f->args = args;\n"
+    set h to h + "    if (args.kind == KZ_VAL_LIST && args.as.list != NULL) {\n"
+    set h to h + "        size_t n = args.as.list->len;\n"
+    set h to h + "        if (n > slot_count) n = slot_count;\n"
+    set h to h + "        for (i = 0; i < n; i++) f->slots[i] = args.as.list->items[i];\n"
+    set h to h + "    }\n"
+    set h to h + "    f->ret = kz_nil();\n"
+    set h to h + "    f->fuel = declared_fuel > 0 ? declared_fuel : kz_env_num(\"KAZE_FUEL\", KZ_FUEL_DEFAULT);\n"
+    set h to h + "    if (kz_current != NULL) {\n"
+    set h to h + "        /* A child spends from the parent's budget, never more than half of\n"
+    set h to h + "         * it, so a spawn cannot starve the spawner. */\n"
+    set h to h + "        long share = kz_current->fuel / 2;\n"
+    set h to h + "        if (share < 1) share = 1;\n"
+    set h to h + "        if (f->fuel > share) f->fuel = share;\n"
+    set h to h + "        kz_current->fuel -= f->fuel;\n"
+    set h to h + "    }\n"
+    set h to h + "    f->pc = 0; f->done = 0; f->cancelled = 0; f->name = name;\n"
+    set h to h + "    if (kz_tasks_tail == NULL) { kz_tasks_head = f; kz_tasks_tail = f; }\n"
+    set h to h + "    else { kz_tasks_tail->next = f; kz_tasks_tail = f; }\n"
+    set h to h + "    return kz_fiber_value(f);\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_task_after(kz_fiber* from) {\n"
+    set h to h + "    kz_fiber* f = (from != NULL) ? from->next : kz_tasks_head;\n"
+    set h to h + "    while (f != NULL) { if (!f->done && !f->cancelled) return f; f = f->next; }\n"
+    set h to h + "    f = kz_tasks_head;\n"
+    set h to h + "    while (f != NULL && f != from) { if (!f->done && !f->cancelled) return f; f = f->next; }\n"
+    set h to h + "    if (from != NULL && !from->done && !from->cancelled) return from;\n"
+    set h to h + "    return NULL;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_task_step(kz_fiber* f) {\n"
+    set h to h + "    kz_fiber* prev;\n"
+    set h to h + "    kz_fiber* g;\n"
+    set h to h + "    int st;\n"
+    set h to h + "    if (f->done || f->cancelled) return;\n"
+    set h to h + "    if (f->fuel <= 0) kz_conc_fail(\"E_KAZE_FUEL_EXHAUSTED\", \"a task spent its whole fuel budget\");\n"
+    set h to h + "    f->fuel -= 1;\n"
+    set h to h + "    prev = kz_current;\n"
+    set h to h + "    kz_current = f;\n"
+    set h to h + "    kz_switch_count += 1;\n"
+    set h to h + "    st = f->step(f);\n"
+    set h to h + "    kz_current = prev;\n"
+    set h to h + "    if (st == 0) f->done = 1;\n"
+    set h to h + "    if (f->done) {\n"
+    set h to h + "        /* A parent's exit cancels the children it left running: nothing\n"
+    set h to h + "         * outlives the task that owns it. */\n"
+    set h to h + "        for (g = kz_tasks_head; g != NULL; g = g->next)\n"
+    set h to h + "            if (g->parent == f && !g->done) g->cancelled = 1;\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_sched_drive(kz_fiber* target) {\n"
+    set h to h + "    for (;;) {\n"
+    set h to h + "        kz_fiber* next;\n"
+    set h to h + "        if (target != NULL && (target->done || target->cancelled)) return;\n"
+    set h to h + "        next = kz_task_after(kz_rr_cursor);\n"
+    set h to h + "        if (next == NULL) return;\n"
+    set h to h + "        if (next == kz_current) return;\n"
+    set h to h + "        kz_rr_cursor = next;\n"
+    set h to h + "        kz_task_step(next);\n"
+    set h to h + "    }\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_fiber_join(KzValue v) {\n"
+    set h to h + "    kz_fiber* f;\n"
+    set h to h + "    if (v.kind != KZ_VAL_FIBER || v.as.ptr == NULL) return kz_nil();\n"
+    set h to h + "    f = (kz_fiber*)v.as.ptr;\n"
+    set h to h + "    kz_sched_drive(f);\n"
+    set h to h + "    return f->ret;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_fiber_cancel_value(KzValue v) {\n"
+    set h to h + "    kz_fiber* f;\n"
+    set h to h + "    kz_fiber* g;\n"
+    set h to h + "    if (v.kind != KZ_VAL_FIBER || v.as.ptr == NULL) return;\n"
+    set h to h + "    f = (kz_fiber*)v.as.ptr;\n"
+    set h to h + "    for (g = kz_tasks_head; g != NULL; g = g->next)\n"
+    set h to h + "        if (g->parent == f) g->cancelled = 1;\n"
+    set h to h + "    f->cancelled = 1;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_fiber_run_root(int (*step)(kz_fiber*), size_t slot_count, size_t guard_count, long declared_fuel) {\n"
+    set h to h + "    KzValue v = kz_fiber_spawn(step, kz_nil(), slot_count, guard_count, \"main\", declared_fuel);\n"
+    set h to h + "    return kz_fiber_join(v);\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_chan_new(KzValue depth) {\n"
+    set h to h + "    kz_chan* c;\n"
+    set h to h + "    size_t cap;\n"
+    set h to h + "    KzValue v;\n"
+    set h to h + "    double d = (depth.kind == KZ_VAL_NUM) ? depth.as.number : 0.0;\n"
+    set h to h + "    if (d < 1 || d > KZ_CHAN_MAX) kz_conc_fail(\"E_KAZE_CHANNEL_DEPTH\", \"a channel holds from 1 to 64 values\");\n"
+    set h to h + "    cap = (size_t)d;\n"
+    set h to h + "    c = (kz_chan*)kz_alloc(sizeof(kz_chan));\n"
+    set h to h + "    c->buf = (KzValue*)kz_alloc(sizeof(KzValue) * cap);\n"
+    set h to h + "    c->cap = cap; c->head = 0; c->tail = 0; c->len = 0;\n"
+    set h to h + "    v.kind = KZ_VAL_CHAN; v.as.ptr = (void*)c;\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static bool kz_chan_send(KzValue ch, KzValue v) {\n"
+    set h to h + "    kz_chan* c;\n"
+    set h to h + "    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return false;\n"
+    set h to h + "    c = (kz_chan*)ch.as.ptr;\n"
+    set h to h + "    if (c->len >= c->cap) return false;\n"
+    set h to h + "    c->buf[c->tail] = v;\n"
+    set h to h + "    c->tail = (c->tail + 1) % c->cap;\n"
+    set h to h + "    c->len += 1;\n"
+    set h to h + "    return true;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_chan_recv_or(KzValue ch, KzValue fallback) {\n"
+    set h to h + "    kz_chan* c;\n"
+    set h to h + "    KzValue v;\n"
+    set h to h + "    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return fallback;\n"
+    set h to h + "    c = (kz_chan*)ch.as.ptr;\n"
+    set h to h + "    if (c->len == 0) return fallback;\n"
+    set h to h + "    v = c->buf[c->head];\n"
+    set h to h + "    c->head = (c->head + 1) % c->cap;\n"
+    set h to h + "    c->len -= 1;\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_chan_len(KzValue ch) {\n"
+    set h to h + "    if (ch.kind != KZ_VAL_CHAN || ch.as.ptr == NULL) return kz_num(0);\n"
+    set h to h + "    return kz_num((double)((kz_chan*)ch.as.ptr)->len);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_print_switch_stats(void) {\n"
+    set h to h + "    const char* env = getenv(\"KAZE_SWITCH_STATS\");\n"
+    set h to h + "    if (env == NULL || env[0] == 0 || env[0] == 48) return;\n"
+    set h to h + "    fprintf(stderr, \"kaze-switch: %ld task switches\\n\", kz_switch_count);\n"
+    set h to h + "}\n"
+    set h to h + "\n"
     set h to h + "/* Make room for `need` items. A list may start with no buffer at all, so every\n"
     set h to h + "   reader that indexes items must come through here (or check len first). */\n"
     set h to h + "KZ_MAYBE_UNUSED static inline void kz_list_reserve(KzList* l, size_t need) {\n"
@@ -280,6 +502,27 @@ action get_c_runtime_header():
     set h to h + "    }\n"
     set h to h + "    if (a.kind == KZ_VAL_LIST && b.kind == KZ_VAL_LIST) return kz_list_concat(a, b);\n"
     set h to h + "    return kz_nil();\n"
+    set h to h + "}\n"
+    set h to h + "/* Bitwise operators: Kaze numbers are doubles, so each operand is truncated to\n"
+    set h to h + " * the runtime integer type, and a shift count is masked to 0..63 so no shift is\n"
+    set h to h + " * undefined behaviour. Right shift is logical, which is what hashing and CRCs\n"
+    set h to h + " * want. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_band(KzValue a, KzValue b) {\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) & (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bor(KzValue a, KzValue b) {\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) | (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_bxor(KzValue a, KzValue b) {\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) ^ (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0)));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_shl(KzValue a, KzValue b) {\n"
+    set h to h + "    kaze_int_t n = (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0) & 63;\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_int_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) << n));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_shr(KzValue a, KzValue b) {\n"
+    set h to h + "    kaze_int_t n = (kaze_int_t)((b.kind == KZ_VAL_NUM) ? b.as.number : 0.0) & 63;\n"
+    set h to h + "    return kz_num((kaze_float_t)((kaze_uint_t)((a.kind == KZ_VAL_NUM) ? a.as.number : 0.0) >> n));\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_sub(KzValue a, KzValue b) {\n"
     set h to h + "    if (a.kind == KZ_VAL_POINT && b.kind == KZ_VAL_POINT) return kz_point(kz_num(a.as.point.x - b.as.point.x), kz_num(a.as.point.y - b.as.point.y), kz_num(a.as.point.z - b.as.point.z));\n"
@@ -495,6 +738,25 @@ action get_c_runtime_header():
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"
+    set h to h + "/* Character codes. Kaze text is bytes with a length and indexing yields a\n"
+    set h to h + " * one-character text, so a program had no way to see a byte - which blocks every\n"
+    set h to h + " * hash, every JSON escape and every binary codec. code(c) returns the byte and\n"
+    set h to h + " * character(n) turns one back into text; n is clamped to a byte range so the pair\n"
+    set h to h + " * is total and needs no fallback at the call site. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_code(KzValue v) {\n"
+    set h to h + "    if (v.kind != KZ_VAL_STR || v.as.str.data == NULL || v.as.str.len == 0) return kz_num(0);\n"
+    set h to h + "    return kz_num((kaze_float_t)(unsigned char)v.as.str.data[0]);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_character(KzValue n) {\n"
+    set h to h + "    kaze_int_t c = (kaze_int_t)kz_to_num(n);\n"
+    set h to h + "    if (c < 0 || c > 255) return kz_str(\"\");\n"
+    set h to h + "    char one[2];\n"
+    set h to h + "    one[0] = (char)c;\n"
+    set h to h + "    one[1] = 0;\n"
+    set h to h + "    /* kz_str wraps a pointer without copying and `one` is a stack buffer,\n"
+    set h to h + "     * so the byte is copied into the arena before it escapes. */\n"
+    set h to h + "    return kz_str(kz_str_concat_n(one, 1, \"\", 0));\n"
+    set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
@@ -655,6 +917,16 @@ action emit_bin_op(op, l, r):
         return "kz_mul(" + l + ", " + r + ")"
     if op == "/":
         return "kz_div(" + l + ", " + r + ")"
+    if op == "&":
+        return "kz_band(" + l + ", " + r + ")"
+    if op == "|":
+        return "kz_bor(" + l + ", " + r + ")"
+    if op == "^":
+        return "kz_bxor(" + l + ", " + r + ")"
+    if op == "<<":
+        return "kz_shl(" + l + ", " + r + ")"
+    if op == ">>":
+        return "kz_shr(" + l + ", " + r + ")"
     if op == "%":
         return "kz_mod(" + l + ", " + r + ")"
     if op == "==":
@@ -692,6 +964,10 @@ action emit_c_fallback(node: AstNode):
             return "kz_fb_mod(" + emit_c_expr(child_at(inner, 0)) + ", " + emit_c_expr(child_at(inner, 1)) + ", " + fb_s + ")"
     if inner.kind == "INDEX":
         return "kz_fb_index(" + emit_c_expr(child_at(inner, 0)) + ", " + emit_c_expr(child_at(inner, 1)) + ", " + fb_s + ")"
+    # An empty ring buffer is the receive's failure: the fallback is the value
+    # the program named, and it is the only value read when the channel is empty.
+    if inner.kind == "RECEIVE":
+        return "kz_chan_recv_or(" + emit_c_expr(child_at(inner, 0)) + ", " + fb_s + ")"
     return emit_c_expr(inner)
 
 action emit_c_args(args):
@@ -773,9 +1049,19 @@ action emit_c_call(node: AstNode):
             set arr to "(KzValue[]){ " + arg_str + " }"
         return "kz_cap_call(" + escape_c_str(head) + ", " + escape_c_str(tail) + ", " + cnt + ", " + arr + ")"
 
-    # 3. Pure builtins.
+    # 3. Phase 13: a bounded channel, and a task handle join.
+    if name == "channel":
+        return "kz_chan_new(" + nth_arg(args, 0) + ")"
+    if name == "http_fetch":
+        return "kz_http_request(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ", " + nth_arg(args, 2) + ", " + nth_arg(args, 3) + ", " + nth_arg(args, 4) + ")"
+
+    # 4. Pure builtins.
     if name == "link_lost":
         return "kz_bool(false)"
+    if name == "code":
+        return "kz_code(" + nth_arg(args, 0) + ")"
+    if name == "character":
+        return "kz_character(" + nth_arg(args, 0) + ")"
     if name == "sin":
         return "kz_math_sin(" + nth_arg(args, 0) + ")"
     if name == "cos":
@@ -789,7 +1075,60 @@ action emit_c_call(node: AstNode):
     if name == "min" or name == "max" or name == "abs" or name == "floor" or name == "ceil" or name == "round":
         return "kz_unavailable(" + escape_c_str(name) + ")"
 
-    # 4. A routine written in this program.
+    # 4. Phase 12 tensor builtins. Each argument is evaluated exactly once by the
+    #    call expression it is embedded in.
+    if name == "tensor":
+        return "kz_tensor_wrap(kz_tensor_make(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + "))"
+    if name == "zeros":
+        return "kz_tensor_wrap(kz_tensor_zeros_of(" + nth_arg(args, 0) + "))"
+    if name == "matmul":
+        return "kz_tensor_wrap(kaze_tensor_matmul(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "matmul_t":
+        return "kz_tensor_wrap(kaze_tensor_matmul_t(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "add_bias":
+        return "kz_tensor_wrap(kaze_tensor_add_bias(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "tensor_add":
+        return "kz_tensor_wrap(kaze_tensor_add(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "tensor_sub":
+        return "kz_tensor_wrap(kaze_tensor_sub(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "tensor_mul":
+        return "kz_tensor_wrap(kaze_tensor_mul(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "tensor_div":
+        return "kz_tensor_wrap(kaze_tensor_div(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + "))"
+    if name == "transpose":
+        return "kz_tensor_wrap(kaze_tensor_transpose(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", 0, 1))"
+    if name == "reshape":
+        return "kz_tensor_wrap(kz_tensor_reshape_of(" + tensor_unwrap(child_at(node, 0)) + ", " + nth_arg(args, 1) + "))"
+    if name == "softmax":
+        return "kz_tensor_wrap(kaze_tensor_softmax(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "gelu":
+        return "kz_tensor_wrap(kaze_tensor_gelu(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "silu":
+        return "kz_tensor_wrap(kaze_tensor_silu(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "relu":
+        return "kz_tensor_wrap(kaze_tensor_relu(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "rms_norm":
+        return "kz_tensor_wrap(kaze_tensor_rms_norm(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + ", " + tensor_float(child_at(node, 2)) + "))"
+    if name == "layer_norm":
+        return "kz_tensor_wrap(kaze_tensor_layer_norm(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + ", " + tensor_unwrap(child_at(node, 1)) + ", " + tensor_unwrap(child_at(node, 2)) + ", " + tensor_float(child_at(node, 3)) + "))"
+    if name == "tensor_sum":
+        return "kz_tensor_wrap(kaze_tensor_sum_last(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "tensor_mean":
+        return "kz_tensor_wrap(kaze_tensor_mean_last(&kz_arena, " + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "argmax":
+        return "kz_num((kaze_float_t)kaze_tensor_argmax_last(" + tensor_unwrap(child_at(node, 0)) + "))"
+    if name == "tensor_get":
+        return "kz_num(kaze_tensor_get(" + tensor_unwrap(child_at(node, 0)) + ", kz_i64(" + nth_arg(args, 1) + ")))"
+    if name == "tensor_shape":
+        return "kz_tensor_shape_value(" + tensor_unwrap(child_at(node, 0)) + ")"
+    if name == "cli_text":
+        return "kz_cli_text(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ")"
+    if name == "model_open":
+        return "kz_model_wrap(kaze_llama_open(kz_text_cstr(" + nth_arg(args, 0) + ")))"
+    if name == "model_forward":
+        return "kz_model_forward_value(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ")"
+
+    # 5. A routine written in this program.
     return "kaze_fn_" + sanitize_c_id(name) + "(" + arg_str + ")"
 
 action is_plain_integer(t: string) -> num:
@@ -855,23 +1194,133 @@ action emit_c_expr(node: AstNode):
         if cnt == 0:
             return "kz_list_new(0)"
         return "kz_list_from(" + cnt + ", (KzValue[]){ " + emit_c_args(items) + " })"
+    # A receive with no fallback in reach: the checker has already refused the
+    # unguarded spelling, so this is the value of an unreadable empty read.
+    if k == "RECEIVE":
+        return "kz_chan_recv_or(" + emit_c_expr(child_at(node, 0)) + ", kz_nil())"
+    # join <task> as a value.
+    if k == "JOIN":
+        return "kz_fiber_join(" + emit_c_expr(child_at(node, 0)) + ")"
     if k == "CALL":
         return emit_c_call(node)
     return "kz_nil()"
 
+# ── phase 13: the fiber body transform ─────────────────────────────────
+#
+# A fiber may suspend, and the runtime has no C stacks to suspend: a fiber is a
+# stackless coroutine. The emitter therefore makes one step function per fiber
+# whose locals live in the task's frame instead of on the C stack, and a yield
+# spills every local, records the resume line and returns to the scheduler.
+#
+# The transform stays small because only statements can yield: a body is still
+# one function, and one label per yield line is enough because Kaze puts one
+# statement on a line. Loop counters are hoisted with the locals, because a
+# resume jumps back into the middle of a loop.
+
+record EmitFx:
+    fiber: num
+    slots: list
+    guards: list
+
+action fx_plain():
+    return EmitFx(fiber: 0, slots: [], guards: [])
+
+action slot_of(slots, name) -> num:
+    let i = 0
+    let len = length of slots
+    while i < len bounded 512:
+        if (slots[i] otherwise "") == name:
+            return i
+        set i to i + 1
+    return -1
+
+action guard_of(guards, name) -> num:
+    let i = 0
+    let len = length of guards
+    while i < len bounded 512:
+        if (guards[i] otherwise "") == name:
+            return i
+        set i to i + 1
+    return -1
+
+# Locals in slot order: parameters first (the spawn copies the call's arguments
+# into these slots), then every binding the body introduces.
+action collect_bindings(n: AstNode, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        let nm = ""
+        if n.kind == "LET" or n.kind == "SET" or n.kind == "FOR_EACH":
+            set nm to n.name
+        if n.kind == "SPAWN":
+            set nm to n.val_str
+        if nm != "" and slot_of(acc, nm) < 0:
+            set acc to acc + [nm]
+        for each c in n.children:
+            set acc to collect_bindings(c, acc, depth + 1)
+    return acc
+
+action collect_guards(n: AstNode, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        if n.kind == "WHILE":
+            set acc to acc + ["_kz_loop_l" + n.line]
+        for each c in n.children:
+            set acc to collect_guards(c, acc, depth + 1)
+    return acc
+
+action collect_yield_lines(n: AstNode, out, depth) -> list:
+    recursion bounded 64
+    let acc = out
+    if depth < 60:
+        if n.kind == "YIELD" and slot_of(acc, n.line) < 0:
+            set acc to acc + [n.line]
+        for each c in n.children:
+            set acc to collect_yield_lines(c, acc, depth + 1)
+    return acc
+
+# Fill the hoisted locals from the task's frame at step entry.
+action fx_restore(fx: EmitFx, ind) -> string:
+    let out = ""
+    if fx.fiber == 0:
+        return out
+    for each nm in fx.slots:
+        set out to out + ind + "KzValue " + sanitize_c_id(nm) + " = _kz_task->slots[" + slot_of(fx.slots, nm) + "];\n"
+    for each g in fx.guards:
+        set out to out + ind + "long " + g + " = _kz_task->guards[" + guard_of(fx.guards, g) + "];\n"
+    return out
+
+# Spill them back before handing the task to the scheduler.
+action fx_spill(fx: EmitFx, ind) -> string:
+    let out = ""
+    if fx.fiber == 0:
+        return out
+    for each nm in fx.slots:
+        set out to out + ind + "_kz_task->slots[" + slot_of(fx.slots, nm) + "] = " + sanitize_c_id(nm) + ";\n"
+    for each g in fx.guards:
+        set out to out + ind + "_kz_task->guards[" + guard_of(fx.guards, g) + "] = " + g + ";\n"
+    return out
+
 # ── statements ──────────────────────────────────────────────────────────
 
-action emit_c_stmt(stmt: AstNode, ind):
+action emit_c_stmt(stmt: AstNode, ind, fx: EmitFx):
     recursion bounded 200
     let k = stmt.kind
 
     if k == "LET":
+        if fx.fiber == 1:
+            return ind + sanitize_c_id(stmt.name) + " = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
         return ind + "KzValue " + sanitize_c_id(stmt.name) + " = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
 
     if k == "SET":
         return ind + sanitize_c_id(stmt.name) + " = " + emit_c_expr(child_at(stmt, 0)) + ";\n"
 
     if k == "RETURN":
+        if fx.fiber == 1:
+            if (length of stmt.children) > 0:
+                return ind + "_kz_task->ret = " + emit_c_expr(child_at(stmt, 0)) + "; return 0;\n"
+            return ind + "_kz_task->ret = kz_nil(); return 0;\n"
         if (length of stmt.children) > 0:
             return ind + "return " + emit_c_expr(child_at(stmt, 0)) + ";\n"
         return ind + "return kz_nil();\n"
@@ -886,7 +1335,10 @@ action emit_c_stmt(stmt: AstNode, ind):
             set out to out + ind + "    exit(70);\n"
             set out to out + ind + "}\n"
             set i to i + 1
-        set out to out + ind + "return _kz_ret;\n"
+        if fx.fiber == 1:
+            set out to out + ind + "_kz_task->ret = _kz_ret; return 0;\n"
+        otherwise:
+            set out to out + ind + "return _kz_ret;\n"
         return out
 
     if k == "APPEND_OWN":
@@ -904,6 +1356,8 @@ action emit_c_stmt(stmt: AstNode, ind):
 
     # guard <expr>: an executed assertion. A false invariant stops the run.
     if k == "GUARD":
+        if fx.fiber == 1:
+            return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + stmt.line + " is false\\n\"); exit(70); }\n"
         return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + stmt.line + " is false\\n\"); return kz_nil(); }\n"
 
     if k == "IF":
@@ -912,11 +1366,11 @@ action emit_c_stmt(stmt: AstNode, ind):
         let other_block = child_at(stmt, 2)
         let out = ind + "if (kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
         for each s in then_block.children:
-            set out to out + emit_c_stmt(s, ind + "    ")
+            set out to out + emit_c_stmt(s, ind + "    ", fx)
         if (length of other_block.children) > 0:
             set out to out + ind + "} else {\n"
             for each s in other_block.children:
-                set out to out + emit_c_stmt(s, ind + "    ")
+                set out to out + emit_c_stmt(s, ind + "    ", fx)
         set out to out + ind + "}\n"
         return out
 
@@ -926,6 +1380,17 @@ action emit_c_stmt(stmt: AstNode, ind):
         let body = child_at(stmt, 1)
         let bound = child_at(stmt, 2)
         let guard_id = "_kz_loop_l" + stmt.line
+        if fx.fiber == 1:
+            let fout = ind + "while (kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
+            if bound.val_str == "" or bound.val_str == "?":
+                set fout to fout + ind + "    /* no ceiling declared */\n"
+            otherwise:
+                set fout to fout + ind + "    if (" + guard_id + " >= " + bound.val_str + "L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); exit(70); }\n"
+            set fout to fout + ind + "    " + guard_id + " = " + guard_id + " + 1;\n"
+            for each s in body.children:
+                set fout to fout + emit_c_stmt(s, ind + "    ", fx)
+            set fout to fout + ind + "}\n"
+            return fout
         let out = ind + "{ long " + guard_id + " = 0;\n"
         set out to out + ind + "    while (kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
         if bound.val_str == "" or bound.val_str == "?":
@@ -934,7 +1399,7 @@ action emit_c_stmt(stmt: AstNode, ind):
             set out to out + ind + "        if (" + guard_id + " >= " + bound.val_str + "L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); return kz_nil(); }\n"
         set out to out + ind + "        " + guard_id + " = " + guard_id + " + 1;\n"
         for each s in body.children:
-            set out to out + emit_c_stmt(s, ind + "        ")
+            set out to out + emit_c_stmt(s, ind + "        ", fx)
         set out to out + ind + "    }\n"
         set out to out + ind + "}\n"
         return out
@@ -947,9 +1412,12 @@ action emit_c_stmt(stmt: AstNode, ind):
         set out to out + ind + "    if (_iter_target.kind == KZ_VAL_LIST && _iter_target.as.list) {\n"
         set out to out + ind + "        size_t _len = _iter_target.as.list->len;\n"
         set out to out + ind + "        for (size_t _i = 0; _i < _len; _i++) {\n"
-        set out to out + ind + "            KzValue " + sanitize_c_id(stmt.name) + " = _iter_target.as.list->items[_i];\n"
+        if fx.fiber == 1:
+            set out to out + ind + "            " + sanitize_c_id(stmt.name) + " = _iter_target.as.list->items[_i];\n"
+        otherwise:
+            set out to out + ind + "            KzValue " + sanitize_c_id(stmt.name) + " = _iter_target.as.list->items[_i];\n"
         for each s in body.children:
-            set out to out + emit_c_stmt(s, ind + "            ")
+            set out to out + emit_c_stmt(s, ind + "            ", fx)
         set out to out + ind + "        }\n"
         set out to out + ind + "    }\n"
         set out to out + ind + "}\n"
@@ -962,16 +1430,59 @@ action emit_c_stmt(stmt: AstNode, ind):
         let out = ind + "{\n"
         set out to out + ind + "    /* try block */\n"
         for each s in body.children:
-            set out to out + emit_c_stmt(s, ind + "    ")
+            set out to out + emit_c_stmt(s, ind + "    ", fx)
         if (length of other.children) > 0:
             set out to out + ind + "    if (0) {\n"
             if stmt.name != "":
-                set out to out + ind + "        KzValue " + sanitize_c_id(stmt.name) + " = kz_nil(); (void)" + sanitize_c_id(stmt.name) + ";\n"
+                if fx.fiber == 1:
+                    set out to out + ind + "        " + sanitize_c_id(stmt.name) + " = kz_nil();\n"
+                otherwise:
+                    set out to out + ind + "        KzValue " + sanitize_c_id(stmt.name) + " = kz_nil(); (void)" + sanitize_c_id(stmt.name) + ";\n"
             for each s in other.children:
-                set out to out + emit_c_stmt(s, ind + "        ")
+                set out to out + emit_c_stmt(s, ind + "        ", fx)
             set out to out + ind + "    }\n"
         set out to out + ind + "}\n"
         return out
+
+    # ── phase 13: spawn / yield / join / cancel / send ─────────────────
+    if k == "SPAWN":
+        # The task handle is a value: a plain local in an action, a frame slot
+        # in a fiber whose body spawns.
+        let task = stmt.val_str
+        let target = stmt.name
+        let args_s = "kz_nil()"
+        if (length of stmt.children) > 0:
+            set args_s to "kz_list_from(" + (length of stmt.children) + ", (KzValue[]){ " + emit_c_args(stmt.children) + " })"
+        let tmp = "_kz_args_" + stmt.line
+        let call = "kz_fiber_spawn(&kz_step_" + sanitize_c_id(target) + ", " + tmp + ", kz_slots_" + sanitize_c_id(target) + "(), kz_guards_" + sanitize_c_id(target) + "(), " + escape_c_str(task) + ", kz_fuel_" + sanitize_c_id(target) + "())"
+        let out = ind + "KzValue " + tmp + " = " + args_s + ";\n"
+        if fx.fiber == 1:
+            set out to out + ind + sanitize_c_id(task) + " = " + call + ";\n"
+        otherwise:
+            set out to out + ind + "KzValue " + sanitize_c_id(task) + " = " + call + ";\n"
+            set out to out + ind + "(void)" + sanitize_c_id(task) + ";   /* a task may be fire-and-forget */\n"
+        return out
+
+    if k == "YIELD":
+        # The one suspension point: spill the frame, remember the line, return
+        # to the scheduler. The label below is where the next step resumes.
+        if fx.fiber == 0:
+            return ind + "/* yield outside a fiber: refused before this point */\n"
+        let out = fx_spill(fx, ind)
+        set out to out + ind + "_kz_task->pc = " + stmt.line + ";\n"
+        set out to out + ind + "return 1;\n"
+        set out to out + "kz_L" + stmt.line + ": ;\n"
+        return out
+
+    if k == "JOIN":
+        return ind + "(void)kz_fiber_join(" + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
+    if k == "CANCEL":
+        return ind + "kz_fiber_cancel_value(" + emit_c_expr(child_at(stmt, 0)) + ");\n"
+
+    if k == "SEND":
+        # Children are [value, channel], the order the source writes them in.
+        return ind + "(void)kz_chan_send(" + emit_c_expr(child_at(stmt, 1)) + ", " + emit_c_expr(child_at(stmt, 0)) + ");\n"
 
     return ""
 
@@ -1063,8 +1574,54 @@ action emit_routine(item: AstNode):
         set out to out + "    (void)" + sanitize_c_id(prm.name) + ";   /* a routine need not use every parameter */\n"
     set out to out + emit_requires(item)
     for each s in body.children:
-        set out to out + emit_c_stmt(s, "    ")
+        set out to out + emit_c_stmt(s, "    ", fx_plain())
     set out to out + "    return kz_nil();\n"
+    set out to out + "}\n\n"
+    return out
+
+# A fiber lowers to two symbols: a step function the scheduler calls once per
+# turn, and a tiny accessor carrying the fuel the routine declared.
+action fiber_fuel(item: AstNode) -> string:
+    let contracts = child_at(item, 1)
+    let out = "0"
+    for each c in contracts.children:
+        if c.kind == "FUEL":
+            set out to c.val_str
+    return out
+
+action fiber_ctx(item: AstNode) -> EmitFx:
+    let params = child_at(item, 0)
+    let body = child_at(item, 2)
+    let slots = []
+    for each p in params.children:
+        set slots to slots + [p.name]
+    set slots to collect_bindings(body, slots, 0)
+    let guards = collect_guards(body, [], 0)
+    return EmitFx(fiber: 1, slots: slots, guards: guards)
+
+action emit_fiber(item: AstNode):
+    recursion bounded 200
+    let id = sanitize_c_id(item.name)
+    let fx = fiber_ctx(item)
+    let body = child_at(item, 2)
+    let yields = collect_yield_lines(body, [], 0)
+    let out = "/* fiber '" + item.name + "': one step per turn, resuming at a yield line */\n"
+    set out to out + "static long kz_fuel_" + id + "(void) { return " + fiber_fuel(item) + "L; }\n"
+    set out to out + "static size_t kz_slots_" + id + "(void) { return " + (length of fx.slots) + "; }\n"
+    set out to out + "static size_t kz_guards_" + id + "(void) { return " + (length of fx.guards) + "; }\n"
+    set out to out + "KZ_MAYBE_UNUSED static int kz_step_" + id + "(kz_fiber* _kz_task) {\n"
+    set out to out + "    (void)_kz_task;\n"
+    set out to out + fx_restore(fx, "    ")
+    set out to out + emit_requires(item)
+    set out to out + "    switch (_kz_task->pc) {\n"
+    for each y in yields:
+        set out to out + "        case " + y + ": goto kz_L" + y + ";\n"
+    set out to out + "        default: break;\n"
+    set out to out + "    }\n"
+    for each s in body.children:
+        set out to out + emit_c_stmt(s, "    ", fx)
+    set out to out + "    _kz_task->ret = kz_nil();\n"
+    set out to out + "    return 0;\n"
     set out to out + "}\n\n"
     return out
 
@@ -1076,7 +1633,7 @@ action emit_hook(item: AstNode):
         set kind to "every"
     let out = "static KzValue kz_hook_" + kind + "_" + item.line + "(void) {\n"
     for each s in body.children:
-        set out to out + emit_c_stmt(s, "    ")
+        set out to out + emit_c_stmt(s, "    ", fx_plain())
     set out to out + "    return kz_nil();\n"
     set out to out + "}\n\n"
     return out
@@ -1129,37 +1686,33 @@ action single_routine(items):
         return found
     return none_node()
 
-action emit_c_entry(items):
+# The module's tasks bounded declaration, or 0 when it declares none.
+action tasks_bound_of(config) -> string:
+    let out = "0"
+    for each c in config:
+        if c.kind == "TASKS_BOUND":
+            set out to c.val_str
+    return out
+
+action emit_c_entry(items, config, uses_tensors):
     recursion bounded 200
     let out = "/* --- Main Entry Point --- */\n"
     set out to out + "int main(int argc, char** argv) {\n"
     set out to out + "    /* One arena for the whole run; KAZE_ARENA_BYTES overrides the default. */\n"
     set out to out + "    if (!kaze_arena_init_heap(&kz_arena, kz_arena_bytes())) { fprintf(stderr, \"E_KAZE_OOM: cannot reserve the arena\\n\"); return 70; }\n"
     set out to out + "    atexit(kz_print_alloc_sites);   /* KAZE_ARENA_STATS=1 reports by function */\n"
+    set out to out + "    atexit(kz_print_switch_stats);  /* KAZE_SWITCH_STATS=1 reports task switches */\n"
+    if uses_tensors == 1:
+        set out to out + "    kz_tensor_set_argv(argc, argv);\n"
+    set out to out + "    kz_tasks_declared = " + tasks_bound_of(config) + "L;\n"
     let main_item = find_named(items, "main")
-    if is_routine(main_item) == 0:
+    if is_routine(main_item) == 0 and main_item.kind != "FIBER":
         set main_item to single_routine(items)
-    if is_routine(main_item) == 0:
+    if main_item.kind == "FIBER":
+        # A fiber main is the root task: the scheduler runs it to completion,
+        # and its return value is the program's result.
         set out to out + "    (void)argc; (void)argv;\n"
-        set out to out + "    kz_run_hooks(argc, argv);\n"
-        set out to out + "    printf(\"Kaze module loaded (no main entry)\\n\");\n"
-    otherwise:
-        let params_node = child_at(main_item, 0)
-        let cnt = length of params_node.children
-        if cnt == 0:
-            set out to out + "    (void)argc; (void)argv;\n"
-            set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "();\n"
-        otherwise:
-            let i = 0
-            let call_args = ""
-            while i < cnt bounded 1000:
-                let prm = child_at(params_node, i)
-                set out to out + "    KzValue arg_" + i + " = kz_param(" + escape_c_str(prm.val_str) + ", " + escape_c_str(prm.name) + ", " + escape_c_str(main_item.name) + ", kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + "));\n"
-                if i > 0:
-                    set call_args to call_args + ", "
-                set call_args to call_args + "arg_" + i
-                set i to i + 1
-            set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "(" + call_args + ");\n"
+        set out to out + "    KzValue res = kz_fiber_run_root(&kz_step_" + sanitize_c_id(main_item.name) + ", kz_slots_" + sanitize_c_id(main_item.name) + "(), kz_guards_" + sanitize_c_id(main_item.name) + "(), kz_fuel_" + sanitize_c_id(main_item.name) + "());\n"
         set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
         set out to out + "        char numbuf[64];\n"
         set out to out + "        kz_format_number(numbuf, sizeof numbuf, res.as.number);\n"
@@ -1170,6 +1723,38 @@ action emit_c_entry(items):
         set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
         set out to out + "    }\n"
         set out to out + "    kz_run_hooks(argc, argv);\n"
+    otherwise:
+        if is_routine(main_item) == 0:
+            set out to out + "    (void)argc; (void)argv;\n"
+            set out to out + "    kz_run_hooks(argc, argv);\n"
+            set out to out + "    printf(\"Kaze module loaded (no main entry)\\n\");\n"
+        otherwise:
+            let params_node = child_at(main_item, 0)
+            let cnt = length of params_node.children
+            if cnt == 0:
+                set out to out + "    (void)argc; (void)argv;\n"
+                set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "();\n"
+            otherwise:
+                let i = 0
+                let call_args = ""
+                while i < cnt bounded 1000:
+                    let prm = child_at(params_node, i)
+                    set out to out + "    KzValue arg_" + i + " = kz_param(" + escape_c_str(prm.val_str) + ", " + escape_c_str(prm.name) + ", " + escape_c_str(main_item.name) + ", kz_resolve_cli_arg(argc, argv, " + escape_c_str(prm.name) + ", " + i + "));\n"
+                    if i > 0:
+                        set call_args to call_args + ", "
+                    set call_args to call_args + "arg_" + i
+                    set i to i + 1
+                set out to out + "    KzValue res = kaze_fn_" + sanitize_c_id(main_item.name) + "(" + call_args + ");\n"
+            set out to out + "    if (res.kind == KZ_VAL_NUM) {\n"
+            set out to out + "        char numbuf[64];\n"
+            set out to out + "        kz_format_number(numbuf, sizeof numbuf, res.as.number);\n"
+            set out to out + "        printf(\"%s\\n\", numbuf);\n"
+            set out to out + "    } else if (res.kind == KZ_VAL_STR) {\n"
+            set out to out + "        printf(\"%s\\n\", res.as.str.data ? res.as.str.data : \"\");\n"
+            set out to out + "    } else if (res.kind == KZ_VAL_BOOL) {\n"
+            set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
+            set out to out + "    }\n"
+            set out to out + "    kz_run_hooks(argc, argv);\n"
     set out to out + "    return 0;\n"
     set out to out + "}\n"
     return out
@@ -1534,6 +2119,204 @@ action mark_item(item: AstNode, elided: list) -> AstNode:
         return make_node(item.kind, item.name, item.val_str, item.val_num, [params, contracts, body], item.line)
     return item
 
+# ── Phase 12: tensor emission helpers ─────────────────────────────────
+#
+# Tensor values travel as KzValue numbers holding the tensor handle. A 64-bit
+# host's user-space pointers fit exactly in a double's 53-bit integer range, and
+# the 32-bit target is exact too, so no new KzValue variant is needed and the
+# rest of the emitter is unchanged. Only the builtins below unwrap them.
+
+# Returns [spec, binds, diags] for a call whose name is a tensor builtin.
+action is_tensor_builtin(name: string) -> num:
+    if name == "tensor" or name == "zeros":
+        return 1
+    if name == "matmul" or name == "matmul_t" or name == "add_bias":
+        return 1
+    if name == "tensor_add" or name == "tensor_sub" or name == "tensor_mul" or name == "tensor_div":
+        return 1
+    if name == "transpose" or name == "reshape":
+        return 1
+    if name == "softmax" or name == "rms_norm" or name == "layer_norm":
+        return 1
+    if name == "gelu" or name == "silu" or name == "relu":
+        return 1
+    if name == "tensor_sum" or name == "tensor_mean":
+        return 1
+    if name == "argmax" or name == "tensor_get" or name == "tensor_shape":
+        return 1
+    if name == "model_open" or name == "model_forward":
+        return 1
+    if name == "cli_text":
+        return 1
+    return 0
+
+action tree_has_tensor_call(n: AstNode) -> num:
+    recursion bounded 256
+    if n.kind == "CALL":
+        if is_tensor_builtin(n.name) == 1:
+            return 1
+    for each c in n.children:
+        if tree_has_tensor_call(c) == 1:
+            return 1
+    return 0
+
+action program_uses_tensors(items) -> num:
+    recursion bounded 64
+    for each item in items:
+        if tree_has_tensor_call(item) == 1:
+            return 1
+    return 0
+
+action tree_has_http_call(n: AstNode) -> num:
+    recursion bounded 256
+    if n.kind == "CALL" and n.name == "http_fetch":
+        return 1
+    for each c in n.children:
+        if tree_has_http_call(c) == 1:
+            return 1
+    return 0
+
+action program_uses_http(items) -> num:
+    recursion bounded 64
+    for each item in items:
+        if tree_has_http_call(item) == 1:
+            return 1
+    return 0
+
+action tensor_unwrap(e: AstNode) -> string:
+    recursion bounded 64
+    return "kz_tensor_unwrap(" + emit_c_expr(e) + ")"
+
+action tensor_float(e: AstNode) -> string:
+    recursion bounded 64
+    return "kz_f32(" + emit_c_expr(e) + ")"
+
+# Tensor values in the generated program. A tensor handle travels inside a
+# KzValue number: 64-bit user pointers fit exactly in a double's 53-bit integer
+# range (and 32-bit pointers are exact too). Only the tensor builtins unwrap one,
+# so the rest of the emitter's value model is untouched.
+action get_c_tensor_header():
+    let h = ""
+    set h to h + "#include \"kaze_tensor.h\"\n"
+    set h to h + "\n/* --- Phase 12 tensor bridge --- */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline const char *kz_text_cstr(KzValue v) {\n"
+    set h to h + "    return (v.kind == KZ_VAL_STR && v.as.str.data) ? v.as.str.data : \"\";\n"
+    set h to h + "}\n"
+    set h to h + "static int kz_argc_g = 0;\n"
+    set h to h + "static char **kz_argv_g = NULL;\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_tensor_set_argv(int argc, char **argv) {\n"
+    set h to h + "    kz_argc_g = argc; kz_argv_g = argv;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_cli_text(KzValue name, KzValue fallback) {\n"
+    set h to h + "    const char *want = kz_text_cstr(name);\n"
+    set h to h + "    size_t nlen = strlen(want);\n"
+    set h to h + "    int i;\n"
+    set h to h + "    for (i = 1; i + 1 < kz_argc_g; i++) {\n"
+    set h to h + "        const char *a = kz_argv_g[i];\n"
+    set h to h + "        if (strcmp(a, \"--arg\") == 0) {\n"
+    set h to h + "            const char *v = kz_argv_g[i + 1];\n"
+    set h to h + "            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"
+    set h to h + "                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"
+    set h to h + "        }\n"
+    set h to h + "        if (strncmp(a, \"--arg=\", 6) == 0) {\n"
+    set h to h + "            const char *v = a + 6;\n"
+    set h to h + "            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"
+    set h to h + "                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    return fallback;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_tensor_wrap(kaze_tensor_t *t) {\n"
+    set h to h + "    union { kaze_tensor_t *p; size_t u; } c;\n"
+    set h to h + "    c.p = t; return kz_num((kaze_float_t)c.u);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline kaze_tensor_t *kz_tensor_unwrap(KzValue v) {\n"
+    set h to h + "    union { kaze_tensor_t *p; size_t u; } c;\n"
+    set h to h + "    c.u = (size_t)((v.kind == KZ_VAL_NUM) ? v.as.number : 0.0); return c.p;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline kaze_float_t kz_f32(KzValue v) {\n"
+    set h to h + "    return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline int64_t kz_i64(KzValue v) {\n"
+    set h to h + "    return (int64_t)kz_f32(v);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static int kz_tensor_dims(KzValue shape, int64_t *dims) {\n"
+    set h to h + "    int n, i;\n"
+    set h to h + "    if (shape.kind != KZ_VAL_LIST || shape.as.list == NULL) return 0;\n"
+    set h to h + "    n = (int)shape.as.list->len;\n"
+    set h to h + "    if (n < 1 || n > KAZE_TENSOR_MAX_DIMS) return 0;\n"
+    set h to h + "    for (i = 0; i < n; i++) {\n"
+    set h to h + "        dims[i] = (int64_t)kz_f32(shape.as.list->items[i]);\n"
+    set h to h + "        if (dims[i] < 1) return 0;\n"
+    set h to h + "    }\n"
+    set h to h + "    return n;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_make(KzValue values, KzValue shape) {\n"
+    set h to h + "    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"
+    set h to h + "    int rank = kz_tensor_dims(shape, dims);\n"
+    set h to h + "    kaze_tensor_t *t;\n"
+    set h to h + "    int64_t i, n;\n"
+    set h to h + "    if (rank == 0) return NULL;\n"
+    set h to h + "    t = kaze_tensor_alloc(&kz_arena, KAZE_DTYPE_F32, rank, dims);\n"
+    set h to h + "    if (t == NULL) return NULL;\n"
+    set h to h + "    n = kaze_tensor_numel(t);\n"
+    set h to h + "    for (i = 0; i < n; i++) {\n"
+    set h to h + "        kaze_float_t v = 0.0f;\n"
+    set h to h + "        if (values.kind == KZ_VAL_LIST && values.as.list != NULL && (size_t)i < values.as.list->len)\n"
+    set h to h + "            v = kz_f32(values.as.list->items[i]);\n"
+    set h to h + "        kaze_tensor_set(t, i, v);\n"
+    set h to h + "    }\n"
+    set h to h + "    return t;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_zeros_of(KzValue shape) {\n"
+    set h to h + "    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"
+    set h to h + "    int rank = kz_tensor_dims(shape, dims);\n"
+    set h to h + "    if (rank == 0) return NULL;\n"
+    set h to h + "    return kaze_tensor_zeros(&kz_arena, KAZE_DTYPE_F32, rank, dims);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static kaze_tensor_t *kz_tensor_reshape_of(kaze_tensor_t *t, KzValue shape) {\n"
+    set h to h + "    int64_t dims[KAZE_TENSOR_MAX_DIMS];\n"
+    set h to h + "    int rank = kz_tensor_dims(shape, dims);\n"
+    set h to h + "    if (t == NULL || rank == 0) return NULL;\n"
+    set h to h + "    return kaze_tensor_reshape(&kz_arena, t, rank, dims);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_tensor_shape_value(kaze_tensor_t *t) {\n"
+    set h to h + "    KzValue items[KAZE_TENSOR_MAX_DIMS];\n"
+    set h to h + "    int32_t i, rank = (t == NULL) ? 0 : t->rank;\n"
+    set h to h + "    for (i = 0; i < rank; i++) items[i] = kz_num((kaze_float_t)t->shape[i]);\n"
+    set h to h + "    return kz_list_from((size_t)rank, items);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_model_wrap(kaze_llama_t *m) {\n"
+    set h to h + "    union { kaze_llama_t *p; size_t u; } c;\n"
+    set h to h + "    c.p = m; return kz_num((kaze_float_t)c.u);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline kaze_llama_t *kz_model_unwrap(KzValue v) {\n"
+    set h to h + "    union { kaze_llama_t *p; size_t u; } c;\n"
+    set h to h + "    c.u = (size_t)kz_f32(v); return c.p;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_model_forward_value(KzValue model, KzValue tokens) {\n"
+    set h to h + "    kaze_llama_t *m = kz_model_unwrap(model);\n"
+    set h to h + "    int32_t ids[512];\n"
+    set h to h + "    size_t n = 0, i, vocab;\n"
+    set h to h + "    float *logits;\n"
+    set h to h + "    kaze_tensor_t *t;\n"
+    set h to h + "    int64_t dims[2];\n"
+    set h to h + "    if (m == NULL || tokens.kind != KZ_VAL_LIST || tokens.as.list == NULL) return kz_nil();\n"
+    set h to h + "    for (i = 0; i < tokens.as.list->len && i < 512; i++)\n"
+    set h to h + "        ids[n++] = (int32_t)kz_f32(tokens.as.list->items[i]);\n"
+    set h to h + "    vocab = kaze_llama_n_vocab(m);\n"
+    set h to h + "    logits = (float *)kmalloc(&kz_arena, vocab * sizeof(float));\n"
+    set h to h + "    if (logits == NULL) return kz_nil();\n"
+    set h to h + "    if (!kaze_llama_forward(m, ids, n, 0, logits)) return kz_nil();\n"
+    set h to h + "    dims[0] = 1; dims[1] = (int64_t)vocab;\n"
+    set h to h + "    t = kaze_tensor_alloc(&kz_arena, KAZE_DTYPE_F32, 2, dims);\n"
+    set h to h + "    if (t == NULL) return kz_nil();\n"
+    set h to h + "    memcpy(t->data, logits, vocab * sizeof(float));\n"
+    set h to h + "    return kz_tensor_wrap(t);\n"
+    set h to h + "}\n"
+    set h to h + "\n/* --- End Phase 12 tensor bridge --- */\n"
+    return h
+
 action emit_c_program(prog: AstNode):
     recursion bounded 200
     # Resolve bare telemetry words once, with each routine's declarations in hand.
@@ -1543,6 +2326,14 @@ action emit_c_program(prog: AstNode):
     for each it in raw_items:
         set items to items + [mark_item(it, elided)]
     let out = get_c_runtime_header()
+    let uses_tensors = program_uses_tensors(items)
+    if uses_tensors == 1:
+        set out to out + "\n" + get_c_tensor_header()
+    # The HTTP backend is opt-in and lives in its own header so the compiler
+    # and programs that never call it do not carry libcurl. It is appended
+    # after the prelude because it uses KzValue and the arena string helpers.
+    if program_uses_http(items) == 1:
+        set out to out + "\n#include \"kaze_http.h\"\n"
 
     # 1. Forward declarations.
     set out to out + "/* --- Forward Declarations --- */\n"
@@ -1553,6 +2344,11 @@ action emit_c_program(prog: AstNode):
             if is_routine(item) == 1:
                 let params_node = child_at(item, 0)
                 set out to out + "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
+            if item.kind == "FIBER":
+                set out to out + "KZ_MAYBE_UNUSED static int kz_step_" + sanitize_c_id(item.name) + "(kz_fiber*);\n"
+                set out to out + "static long kz_fuel_" + sanitize_c_id(item.name) + "(void);\n"
+                set out to out + "static size_t kz_slots_" + sanitize_c_id(item.name) + "(void);\n"
+                set out to out + "static size_t kz_guards_" + sanitize_c_id(item.name) + "(void);\n"
 
     # 2. Record constructors.
     set out to out + "\n/* --- Record Constructors --- */\n"
@@ -1567,10 +2363,12 @@ action emit_c_program(prog: AstNode):
         if is_routine(item) == 1:
             set out to out + emit_routine(item)
         otherwise:
+            if item.kind == "FIBER":
+                set out to out + emit_fiber(item)
             if item.kind == "WHEN" or item.kind == "EVERY":
                 set out to out + emit_hook(item)
 
     # 4. Hook driver, then the entry point.
     set out to out + "\n" + emit_hook_driver(items)
-    set out to out + emit_c_entry(items)
+    set out to out + emit_c_entry(items, program_config(prog), uses_tensors)
     return out

@@ -1,0 +1,9 @@
+# Phase 12 inference gate: a pure-Kaze routine opens a local GGUF model, runs the
+# LLaMA-family forward pass through the tensor runtime and returns the argmax of
+# the last token's logits. Compared against llama.cpp in phase12-gates.sh.
+needs: memory, log
+
+action main(t0: number, t1: number):
+    let model = model_open(cli_text("model", ""))
+    let logits = model_forward(model, [t0, t1])
+    return argmax(logits)

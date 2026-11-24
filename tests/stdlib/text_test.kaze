@@ -1,0 +1,175 @@
+# tests/stdlib/text_test.kaze -- the text library, including the Phase 11 gate:
+# 10,000 randomized operations against a plain list-of-characters model.
+#
+# The model is deliberately dumb: a list holding one character per element, joined to
+# compare. Anything the library claims about text can be checked against it without
+# reusing the library's own logic, and the string is capped so the quadratic operations
+# stay cheap.
+
+needs: log
+
+use "./../../lib/text.kaze"
+
+action lcg_next(state) -> num:
+    let s = (state * 1664525 + 1013904223) & 4294967295
+    return s
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action model_text(model) -> text:
+    return text_join(model, "")
+
+action model_drop(model, k) -> list:
+    let out = []
+    let i = 0
+    for each ch in model:
+        if i >= k:
+            set out to out + [ch]
+        set i to i + 1
+    return out
+
+action model_take(model, k) -> list:
+    let out = []
+    let i = 0
+    for each ch in model:
+        if i < k:
+            set out to out + [ch]
+        set i to i + 1
+    return out
+
+# An independent replacement over characters: 'b' becomes two 'c's.
+action model_replace_b(model) -> list:
+    let out = []
+    for each ch in model:
+        if ch == "b":
+            set out to out + ["c"]
+            set out to out + ["c"]
+        otherwise:
+            set out to out + [ch]
+    return out
+
+# An independent trim over characters: drop leading and trailing spaces and tabs.
+action model_trim(model) -> list:
+    let n = length of model
+    let start = 0
+    while start < n bounded 100000:
+        let ch = model[start] otherwise "x"
+        if ch == " " or ch == "\t":
+            set start to start + 1
+        otherwise:
+            return model_drop(model, start)
+    return []
+
+action model_trim_full(model) -> list:
+    let trimmed = model_trim(model)
+    let n = length of trimmed
+    let stop = n
+    while stop > 0 bounded 100000:
+        let ch = trimmed[stop - 1] otherwise "x"
+        if ch == " " or ch == "\t":
+            set stop to stop - 1
+        otherwise:
+            return model_take(trimmed, stop)
+    return []
+
+action main() -> num:
+    let failures = 0
+
+    # ---- shapes ---------------------------------------------------------
+    set failures to check("length counts bytes", text_length("hello") == 5 and text_length("") == 0, failures)
+    set failures to check("char_at reads one character", text_char_at("hello", 1) == "e", failures)
+    set failures to check("char_at clamps both ends", text_char_at("hello", 0 - 1) == "" and text_char_at("hello", 5) == "", failures)
+    set failures to check("index_of finds the first occurrence", text_index_of("banana", "an") == 1, failures)
+    set failures to check("index_of reports absence as -1", text_index_of("banana", "zz") == 0 - 1, failures)
+    set failures to check("index_of of the empty needle is 0", text_index_of("banana", "") == 0, failures)
+    set failures to check("contains agrees with index_of", text_contains("banana", "nan") == 1 and text_contains("banana", "nab") == 0, failures)
+    set failures to check("starts_with", text_starts_with("telemetry", "tele") == 1 and text_starts_with("telemetry", "metry") == 0, failures)
+    set failures to check("ends_with", text_ends_with("telemetry", "metry") == 1 and text_ends_with("telemetry", "tele") == 0, failures)
+
+    # ---- slicing --------------------------------------------------------
+    set failures to check("slice takes a window", text_slice("0123456789", 3, 4) == "3456", failures)
+    set failures to check("slice clamps a negative start", text_slice("0123456789", 0 - 5, 3) == "012", failures)
+    set failures to check("slice clamps a long count", text_slice("0123456789", 8, 99) == "89", failures)
+    set failures to check("slice past the end is empty", text_slice("0123456789", 10, 3) == "" and text_slice("0123456789", 0, 0) == "", failures)
+
+    # ---- split and join -------------------------------------------------
+    let parts = text_split("a,b,,c", ",")
+    set failures to check("split keeps empty fields", (length of parts) == 4 and (parts[2] otherwise "?") == "", failures)
+    set failures to check("split round-trips through join", text_join(text_split("a,b,,c", ","), ",") == "a,b,,c", failures)
+    set failures to check("split with no match is one part", (length of text_split("abc", ",")) == 1, failures)
+    set failures to check("split with an empty separator is the whole text", (length of text_split("abc", "")) == 1 and (text_split("abc", "")[0] otherwise "?") == "abc", failures)
+    set failures to check("join inserts the separator", text_join(["x", "y", "z"], "-") == "x-y-z" and text_join([], "-") == "", failures)
+
+    # ---- transforms -----------------------------------------------------
+    set failures to check("repeat multiplies", text_repeat("ab", 3) == "ababab" and text_repeat("ab", 0) == "", failures)
+    set failures to check("replace rewrites every occurrence", text_replace("a-b-c", "-", "+") == "a+b+c", failures)
+    set failures to check("replace with nothing deletes", text_replace("a-b-c", "-", "") == "abc", failures)
+    set failures to check("replace with an empty needle is identity", text_replace("a-b-c", "", "+") == "a-b-c", failures)
+    set failures to check("trim strips spaces and tabs", text_trim("  " + "\t" + "ab  " + "\t" + " ") == "ab" and text_trim("   ") == "", failures)
+
+    # ---- formatting -----------------------------------------------------
+    set failures to check("format fills in order", text_format("{} + {} = {}", [2, 3, 5]) == "2 + 3 = 5", failures)
+    set failures to check("format renders text and numbers alike", text_format("[{}][{}]", ["alt", 120]) == "[alt][120]", failures)
+    set failures to check("format keeps doubled braces literal", text_format("{{{}}}", [7]) == "{7}" and text_format("{{}}", []) == "{}", failures)
+    set failures to check("format passes a placeholder through when the values run out", text_format("{} {}", [1]) == "1 {}", failures)
+
+    # ---- UTF-8 ----------------------------------------------------------
+    let acute = character(195) + character(169)
+    set failures to check("ascii is valid utf-8", text_utf8_valid("plain ascii") == 1, failures)
+    set failures to check("two-byte sequence is valid", text_utf8_valid("caf" + acute) == 1, failures)
+    set failures to check("a lone continuation byte is not valid", text_utf8_valid(character(169)) == 0, failures)
+    set failures to check("an overlong encoding is not valid", text_utf8_valid(character(192) + character(175)) == 0, failures)
+    set failures to check("a surrogate is not valid", text_utf8_valid(character(237) + character(160) + character(128)) == 0, failures)
+    set failures to check("code points, not bytes", text_utf8_count("caf" + acute) == 4, failures)
+    set failures to check("from_codepoint and codepoint_at agree", text_codepoint_at(text_from_codepoint(233), 0) == 233, failures)
+    set failures to check("from_codepoint refuses a surrogate and out-of-range", text_from_codepoint(55296) == "" and text_from_codepoint(1114112) == "", failures)
+    set failures to check("a four-byte code point round-trips", text_codepoint_at(text_from_codepoint(128512), 0) == 128512, failures)
+
+    # ---- the gate: 10,000 randomized operations against a list model ----
+    let alphabet = ["a", "b", "c", " ", "\t", "x"]
+    let seed = 987654321
+    let s = "abc"
+    let model = ["a", "b", "c"]
+    let mismatches = 0
+    let i = 0
+    while i < 10000 bounded 100000:
+        set seed to lcg_next(seed)
+        let op = ((seed >> 5) % 6) otherwise 0
+        if op == 0:
+            let pick = ((seed >> 11) % (length of alphabet)) otherwise 0
+            let ch = alphabet[pick] otherwise "a"
+            set s to s + ch
+            set model to model + [ch]
+        if op == 1:
+            let k = ((seed >> 13) % 5) otherwise 0
+            set s to text_slice(s, k, length of s)
+            set model to model_drop(model, k)
+        if op == 2:
+            set s to text_join(text_split(s, "x"), "x")
+        if op == 3:
+            set s to text_repeat(s, 2)
+            set model to model + model
+        if op == 4:
+            set s to text_trim(s)
+            set model to model_trim_full(model)
+        if op == 5:
+            set s to text_replace(s, "b", "cc")
+            set model to model_replace_b(model)
+        if (length of s) > 64:
+            set s to text_slice(s, 8, 40)
+            set model to model_take(model_drop(model, 8), 40)
+        if text_length(s) != (length of model):
+            set mismatches to mismatches + 1
+        if s != model_text(model):
+            set mismatches to mismatches + 1
+        set i to i + 1
+    set failures to check("10,000 randomized operations keep text and model in step", mismatches == 0, failures)
+    set failures to check("the final text equals the model", s == model_text(model), failures)
+
+    if failures == 0:
+        log.info("OK text: 38 checks")
+    return failures

@@ -1,0 +1,12 @@
+tasks bounded 3
+
+fiber w() -> int:
+    yield
+    return 1
+
+action main():
+    spawn w() as a
+    spawn w() as b
+    join a
+    join b
+    return 2

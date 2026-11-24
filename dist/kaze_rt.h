@@ -123,7 +123,11 @@ typedef enum kaze_code_t {
     KAZE_ERR_MATH,             /* "E_KAZE_MATH" — a non-finite float result */
     KAZE_ERR_SAFETY_VIOLATION, /* "E_SAFETY_VIOLATION" — watchdog fail-closed */
     KAZE_ERR_BADARG,           /* "E_KAZE_BADARG" — NULL/invalid runtime argument */
-    KAZE_ERR_TYPE              /* "E_KAZE_TYPE" — an operation on a value of the wrong type */
+    KAZE_ERR_TYPE,             /* "E_KAZE_TYPE" — an operation on a value of the wrong type */
+    KAZE_ERR_SHAPE,            /* "E_KAZE_SHAPE_MISMATCH" — tensor shapes do not unify */
+    KAZE_ERR_QUANT,            /* "E_KAZE_QUANT" — a malformed or unsupported quant block */
+    KAZE_ERR_IO,               /* "E_KAZE_IO" — a model file could not be opened or read */
+    KAZE_ERR_FORMAT            /* "E_KAZE_FORMAT" — a weight file is malformed */
 } kaze_code_t;
 
 /* A handler receives the code string and a human message and returns an int
