@@ -42,7 +42,7 @@
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(?:action|routine|check|filter|when|every|try|otherwise|with|let|set|if|else|for|each|in|while|bounded|return|allow|reject|remember|recall|memories|matching|log|send|alert|vector|distance|between|slant|bearing|of|from|length|sin|cos|atan2|sqrt|radians|degrees|and|or|not|requires|ensures|tensor|shape)\\b",
+          "match": "\\b(?:action|routine|record|check|filter|when|every|try|otherwise|with|let|set|if|else|for|each|parallel|in|while|bounded|return|allow|reject|remember|recall|memories|matching|log|send|alert|vector|distance|between|slant|bearing|of|from|length|sin|cos|atan2|sqrt|radians|degrees|and|or|not|requires|ensures|guard|spawn|yield|receive|channel|parallel_map|parallel_filter|tensor|shape)\\b",
           "name": "keyword.control.kaze"
         },
         {
@@ -50,7 +50,7 @@
           "name": "constant.language.kaze"
         },
         {
-          "match": "\\b(?:u8|i32|f32|bool|void|text|num|tensor)\\b",
+          "match": "\\b(?:u8|i32|f32|bool|void|text|num|tensor|list|map|point)\\b",
           "name": "storage.type.primitive.kaze"
         }
       ]
@@ -58,7 +58,7 @@
     "capabilities": {
       "patterns": [
         {
-          "match": "\\b(?:drone|rover|sensor|device|memory|policy|log|alert|fan|mister|lidar)\\b",
+          "match": "\\b(?:drone|rover|sensor|device|memory|policy|log|alert|fan|mister|lidar|regs)\\b",
           "name": "support.class.capability.kaze"
         },
         {
@@ -66,7 +66,7 @@
           "name": "variable.other.telemetry.kaze"
         },
         {
-          "match": "\\b(?:pulse|turn|turn_right|turn_left|arm|disarm|takeoff|fly|goto|land|hold|stop|drive|rtl|set_relay|analog_read)\\b",
+          "match": "\\b(?:pulse|turn|turn_right|turn_left|arm|disarm|takeoff|fly|goto|land|hold|stop|drive|rtl|set_relay|analog_read|mmio_read8|mmio_read16|mmio_read32|mmio_write8|mmio_write16|mmio_write32|mmio_fence)\\b",
           "name": "support.function.capability.kaze"
         },
         {
