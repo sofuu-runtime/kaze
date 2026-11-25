@@ -532,7 +532,7 @@ action jp_literal(st: JState, word: text, v: JVal) -> JState:
 # 10^k for 0 <= k <= 22 exactly: every power of ten up to 1e22 is representable, so
 # this loop adds no error.
 action jp_pow10(k: number) -> number:
-    let r = 1
+    let r = 1.0
     let j = 0
     while j < k bounded 32:
         set r to r * 10
@@ -540,7 +540,7 @@ action jp_pow10(k: number) -> number:
     return r
 
 action jp_inf() -> number:
-    let x = 1
+    let x = 1.0
     let i = 0
     while i < 400 bounded 512:
         set x to x * 10

@@ -544,6 +544,13 @@ action vf_scan_expr(e: AstNode, st: VfState, routine: str) -> VfState:
             set cur to vf_scan_expr(c, cur, routine)
         return vf_st_obl(cur, vf_obligation("div", e.line, routine,
             cur.facts, vf_div_goal(child_at(e, 1), cur.env)))
+    if e.kind == "BIN" and e.name == "and":
+        # The left conjunct holds while the right one is evaluated, which is where
+        # most bounds live: 'while i < n and (t[i] ...)'.
+        let left = vf_scan_expr(child_at(e, 0), cur, routine)
+        let lf = vf_formula_of(child_at(e, 0), left.env)
+        let right = vf_scan_expr(child_at(e, 1), vf_st_facts(left, left.facts + [lf]), routine)
+        return right
     for each c in e.children:
         set cur to vf_scan_expr(c, cur, routine)
     return cur
@@ -598,24 +605,49 @@ action vf_env_with_atoms(env: list, names: list, line: num) -> list:
         set out to vf_env_set(out, n, vf_lin_atom(vf_fresh_atom(n + "#loop", line)))
     return out
 
+action vf_steps_in(node: AstNode, name: str, acc: list) -> list:
+    # Walk every nested statement and classify assignments to 'name':
+    #   [increasing, decreasing, other] counts.
+    recursion bounded 256
+    let pos = acc[0] otherwise 0
+    let neg = acc[1] otherwise 0
+    let other = acc[2] otherwise 0
+    if node.kind == "SET" and node.name == name:
+        let rhs = child_at(node, 0)
+        let counted = 0
+        if rhs.kind == "BIN" and (rhs.name == "+" or rhs.name == "-"):
+            let a = child_at(rhs, 0)
+            let b = child_at(rhs, 1)
+            if a.kind == "IDENT" and a.name == name and b.kind == "NUM":
+                if rhs.name == "+":
+                    set pos to pos + 1
+                otherwise:
+                    set neg to neg + 1
+                set counted to 1
+        if counted == 0:
+            set other to other + 1
+    let cur = [pos, neg, other]
+    for each c in node.children:
+        set cur to vf_steps_in(c, name, cur)
+    return cur
+
 action vf_counter_step(block: AstNode, name: str) -> list:
-    # [found, step] when the body has exactly one assignment of the form
-    # name = name (+|-) constant.
-    let step = 0
-    let found = 0
-    for each s in block.children:
-        if s.kind == "SET" and s.name == name:
-            let rhs = child_at(s, 0)
-            if rhs.kind == "BIN":
-                let a = child_at(rhs, 0)
-                let b = child_at(rhs, 1)
-                if rhs.name == "+" and a.kind == "IDENT" and a.name == name and b.kind == "NUM":
-                    set step to text_to_num(b.val_str)
-                    set found to 1
-                if rhs.name == "-" and a.kind == "IDENT" and a.name == name and b.kind == "NUM":
-                    set step to 0 - text_to_num(b.val_str)
-                    set found to 1
-    return [found, step]
+    # [found, step] when every assignment to 'name' in the body (at any depth) is
+    # name = name (+|-) constant with the same direction. A reset assignment or a
+    # mixed direction means no monotonicity fact is available, and none is assumed.
+    # Looking at top-level statements only was wrong: a counter advanced inside an
+    # 'if' branch is still a counter, and that is how most parsers are written.
+    let counts = vf_steps_in(block, name, [0, 0, 0])
+    let pos = counts[0] otherwise 0
+    let neg = counts[1] otherwise 0
+    let other = counts[2] otherwise 0
+    if other > 0:
+        return [0, 0]
+    if pos > 0 and neg == 0:
+        return [1, 1]
+    if neg > 0 and pos == 0:
+        return [1, 0 - 1]
+    return [0, 0]
 
 action vf_scan_stmt(s: AstNode, st: VfState, routine: str) -> VfState:
     recursion bounded 200
@@ -927,6 +959,21 @@ action vf_fm(cons: list, depth: num) -> num:
                 return 0 - 1
     return vf_fm(combined, depth + 1)
 
+# ── proof engine ───────────────────────────────────────────────────────
+#
+# A proof obligation is unsat(context ∧ ¬goal). The context is a conjunction of
+# facts, and almost every fact is a single comparison; the expensive mistake is to
+# turn the whole conjunction into disjunctive normal form, which multiplies
+# branches (every != is a two-way split) and hits the size cap on exactly the
+# routines worth proving. So the context is flattened into conjuncts, each
+# comparison becomes one or two linear constraints, and anything disjunctive is
+# dropped: losing an assumption can only weaken a proof, never unsoundly
+# strengthen it.
+#
+# Disequalities are kept apart and used as a refutation rule: if the rest of the
+# context forces the difference to be exactly zero, the disequality contradicts it.
+# That is the pattern behind every division proof (guard d != 0, then divide).
+
 action vf_prove(ctx: list, goal: list) -> str:
     # Unknown facts are dropped (weakened to true): a proof that survives losing
     # assumptions is still sound under the real context.
@@ -1136,11 +1183,20 @@ action vf_bound(f: list, name: str) -> list:
         if (length of rest) > 1 or coef == 0:
             return [0 - 1000000000, 1000000000]
         let c = vf_n(rest, 0)
+        # Every comparison direction has to be readable, not just '<' and '<='.
+        # The merge below writes its joined bounds as '>=', and the counter facts
+        # written by the loop walker do too, so a bound query that understood only
+        # the '<' family silently returned "unbounded" and the joined fact was then
+        # dropped - which is why a clamped index lost its lower bound.
         if coef == 1:
             if op == "<=":
                 return [0 - 1000000000, 0 - c]
             if op == "<":
                 return [0 - 1000000000, 0 - c - 1]
+            if op == ">=":
+                return [0 - c, 1000000000]
+            if op == ">":
+                return [1 - c, 1000000000]
             if op == "==":
                 return [0 - c, 0 - c]
         if coef == 0 - 1:
@@ -1148,6 +1204,10 @@ action vf_bound(f: list, name: str) -> list:
                 return [c, 1000000000]
             if op == "<":
                 return [c + 1, 1000000000]
+            if op == ">=":
+                return [0 - 1000000000, c]
+            if op == ">":
+                return [0 - 1000000000, c - 1]
             if op == "==":
                 return [c, c]
         return [0 - 1000000000, 1000000000]

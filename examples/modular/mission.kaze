@@ -8,7 +8,7 @@
 
 use "lib/sensors.kaze"
 
-needs: drone, log
+needs: drone, log, sensor
 
 action main():
     log "mission starting"

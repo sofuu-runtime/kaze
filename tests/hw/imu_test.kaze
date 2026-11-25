@@ -8,6 +8,7 @@
 needs: log
 needs: regs
 use "../../lib/imu.kaze"
+use "../../lib/spi.kaze"
 
 # Register bases, as decimals because the language has no hex literals. Every one matches
 # dist/kaze_board_sim.h; the last two checks are that nothing was read from or written to an

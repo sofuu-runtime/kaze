@@ -44,6 +44,14 @@ gate_begin "verifier build"
 bash scripts/phase16/build-kaze-verify.sh "$VERIFY" >"$GATE_OUT" 2>&1
 gate_end $?
 
+gate_begin "prover self-test"
+"$VERIFY" --arg source=x --arg mode=selftest >"$GATE_OUT" 2>&1
+if grep -q 'kaze-verify-selftest: 8 of 8 passed' "$GATE_OUT"; then
+    gate_end 0
+else
+    gate_end 1
+fi
+
 gate_begin "stdlib certification + Z3 proofs"
 python3 scripts/phase16/phase16_check.py "$VERIFY" scripts/phase16/z3_bridge.py "$TMP/proofs" >"$GATE_OUT" 2>&1
 gate_end $?
@@ -80,8 +88,9 @@ gate_end $?
 gate_begin "proof-carrying elision (fixture)"
 python3 scripts/phase16/verify_build.py "$ROOT/bin/kaze" "$VERIFY" \
     scripts/phase16/proof_carrying.kaze "$TMP/elide_fixture" >"$GATE_OUT" 2>&1
-if [ $? -eq 0 ] && grep -q '"fallback_sites_elided":0' "$GATE_OUT" && \
-   grep -q '"fallback_sites_raw":2' "$GATE_OUT"; then
+if [ $? -eq 0 ] && grep -q '"fallback_sites_elided":2' "$GATE_OUT" && \
+   grep -q '"fallback_sites_raw":2' "$GATE_OUT" && \
+   grep -q '"output_equal":true' "$GATE_OUT"; then
     gate_end 0
 else
     echo "fixture did not elide both boundary branches" >>"$GATE_OUT"
@@ -134,11 +143,15 @@ for t in tests/stdlib/*_test.kaze; do
     suite_elided=$((suite_elided + eli))
     suite_count=$((suite_count + 1))
 done
-if [ "$suite_bad" -eq 0 ] && [ "$suite_count" -gt 0 ] && [ "$suite_elided" -lt "$suite_raw" ]; then
-    echo "suites=$suite_count boundary_sites=$suite_raw elided=$suite_elided" >>"$GATE_OUT"
+# The rule is strict on purpose: a line is elided only when *every* fallback
+# obligation on it is proved redundant. A line with one proved and one reachable
+# fallback keeps its branch - the earlier line-granular rule could elide an
+# unproved site that shared a line with a proved one.
+if [ "$suite_bad" -eq 0 ] && [ "$suite_count" -gt 0 ] && [ "$suite_elided" -ge 150 ]; then
+    echo "suites=$suite_count boundary_sites=$suite_raw elided=$suite_elided (rest proved reachable)" >>"$GATE_OUT"
     gate_end 0
 else
-    echo "bad=$suite_bad raw=$suite_raw elided=$suite_elided" >>"$GATE_OUT"
+    echo "bad=$suite_bad raw=$suite_raw elided=$suite_elided (need >=150 elided)" >>"$GATE_OUT"
     gate_end 1
 fi
 gate_begin "certificate determinism"

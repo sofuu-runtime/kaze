@@ -35,6 +35,8 @@
 # appends to the CRC span when signatures are enabled. Only message transfers
 # are built and parsed.
 
+needs: regs
+
 use "./crc.kaze"
 use "./can.kaze"
 

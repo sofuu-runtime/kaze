@@ -38,7 +38,7 @@ action div(a: number, b: number) -> number:
     return (a / b) otherwise 0
 
 action pow10(n: number) -> number:
-    let r = 1
+    let r = 1.0
     let i = 0
     while i < n bounded 512:
         set r to r * 10

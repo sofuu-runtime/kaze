@@ -6,6 +6,7 @@
 needs: log
 
 use "./../../lib/hmac.kaze"
+use "./../../lib/sha256.kaze"
 
 action check(label, ok, failures) -> num:
     if ok:

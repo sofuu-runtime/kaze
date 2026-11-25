@@ -5,14 +5,69 @@
 #   kaze-verify --arg source=<path> --arg mode=smt2     SMT-LIB2 obligations
 #   kaze-verify --arg source=<path> --arg mode=horn     Horn-clause certificate
 #   kaze-verify --arg source=<path> --arg mode=proof    proof-carrying certificate
+#   kaze-verify --arg mode=selftest                     the prover's own primitives
 
 action vf_mode(word: str) -> str:
-    if word == "smt2" or word == "json" or word == "report" or word == "proof" or word == "horn":
+    if word == "smt2" or word == "json" or word == "report" or word == "proof" or word == "horn" or word == "selftest":
         return word
     return "report"
 
-action main(source: text, mode: text):
+# A self-test of the prover's primitives. Bound extraction and interval joining are
+# what turn a guard into a proof, and when they break the symptom is a library
+# obligation that quietly stops being proved - which is exactly the failure this
+# file exists to prevent, so it is tested here directly.
+action vf_selftest() -> str:
+    let fails = 0
+    let out = "kaze-verify-selftest 1\n"
+    let fz = vf_cmp("==", vf_lin_atom("x"), vf_lin_const(0))
+    let bl = vf_bound(fz, "x")
+    if vf_n(bl, 0) != 0 or vf_n(bl, 1) != 0:
+        set fails to fails + 1
+        set out to out + "FAIL bound of (x == 0) is [" + ("" + vf_n(bl, 0)) + "," + ("" + vf_n(bl, 1)) + "]\n"
+    let iv = vf_interval_of([fz], "x")
+    if vf_n(iv, 0) != 0 or vf_n(iv, 1) != 0:
+        set fails to fails + 1
+        set out to out + "FAIL interval of (x == 0) is [" + ("" + vf_n(iv, 0)) + "," + ("" + vf_n(iv, 1)) + "]\n"
+    let fl = vf_cmp("<", vf_lin_atom("x"), vf_lin_const(5))
+    let bl2 = vf_bound(fl, "x")
+    if vf_n(bl2, 1) != 4:
+        set fails to fails + 1
+        set out to out + "FAIL upper bound of (x < 5) is " + ("" + vf_n(bl2, 1)) + "\n"
+    let fg = vf_cmp(">=", vf_lin_atom("x"), vf_lin_const(3))
+    let bl3 = vf_bound(fg, "x")
+    if vf_n(bl3, 0) != 3:
+        set fails to fails + 1
+        set out to out + "FAIL lower bound of (x >= 3) is " + ("" + vf_n(bl3, 0)) + "\n"
+    # The prover itself on synthetic obligations.
+    let g1 = vf_cmp("<=", vf_lin_const(0), vf_lin_atom("x"))
+    if vf_prove([fg], g1) != "proven":
+        set fails to fails + 1
+        set out to out + "FAIL (x >= 3) does not prove (0 <= x)\n"
+    if vf_prove([], g1) != "unproven":
+        set fails to fails + 1
+        set out to out + "FAIL an empty context proves (0 <= x)\n"
+    let g2 = vf_cmp("!=", vf_lin_atom("x"), vf_lin_const(0))
+    if vf_prove([g2], g2) != "proven":
+        set fails to fails + 1
+        set out to out + "FAIL (x != 0) does not prove itself\n"
+    let sum = vf_lin_add(vf_lin_atom("x"), vf_lin_atom("y"))
+    let g3 = vf_cmp("<=", vf_lin_const(0), sum)
+    if vf_prove([vg_of("x"), vg_of("y")], g3) != "proven":
+        set fails to fails + 1
+        set out to out + "FAIL (0 <= x, 0 <= y) does not prove (0 <= x + y)\n"
+    if fails == 0:
+        set out to out + "kaze-verify-selftest: 8 of 8 passed\n"
+    otherwise:
+        set out to out + "kaze-verify-selftest: " + ("" + fails) + " failed\n"
+    return out
+
+action vg_of(name: str) -> list:
+    return vf_cmp(">=", vf_lin_atom(name), vf_lin_const(0))
+
+action main(source: text, mode: text) -> str:
     let selected = vf_mode(mode)
+    if selected == "selftest":
+        return vf_selftest()
     if (length of source) == 0:
         return "kaze-verify: no source given\n"
     let tokens = tokenize(source)

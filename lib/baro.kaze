@@ -40,6 +40,8 @@
 # no calibration registers), no oversampling or IIR configuration, no FIFO, no
 # interrupt pin and no altitude conversion. It probes, samples and converts.
 
+needs: regs
+
 use "./i2c.kaze"
 
 record BaroSample:

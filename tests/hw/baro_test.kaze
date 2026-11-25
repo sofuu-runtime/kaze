@@ -24,6 +24,7 @@ needs: log
 needs: regs
 
 use "./../../lib/baro.kaze"
+use "./../../lib/i2c.kaze"
 
 action check(label, ok, failures) -> num:
     if ok:
