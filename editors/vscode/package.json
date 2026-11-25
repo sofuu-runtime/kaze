@@ -1,7 +1,7 @@
 {
   "name": "kaze",
   "displayName": "Kaze",
-  "description": "Kaze language support: diagnostics, completion, hover, symbols and formatting through kaze-lsp.",
+  "description": "Kaze 1.0 language support: syntax highlighting, diagnostics, completion, hover, symbols and formatting via the pure-C99 Kaze toolchain.",
   "version": "1.0.0",
   "publisher": "sofuu-runtime",
   "license": "MIT",
@@ -19,7 +19,7 @@
     "kaze",
     "robotics",
     "drone",
-    "dsl",
+    "ai",
     "language-server"
   ],
   "activationEvents": [
@@ -69,7 +69,15 @@
         "kaze.lsp.path": {
           "type": "string",
           "default": "",
-          "description": "Path to the kaze-lsp binary. Empty means 'kaze-lsp' from PATH."
+          "description": "Path to the Kaze host/compiler binary (for example 'kaze-host' or 'kaze'). Leave empty to auto-detect 'bin/kaze-host' in the workspace or 'kaze-host' on PATH."
+        },
+        "kaze.lsp.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Optional extra arguments for the language server command. Leave empty to pass 'lsp' automatically to 'kaze-host' or 'kaze'."
         },
         "kaze.lsp.trace": {
           "type": "boolean",

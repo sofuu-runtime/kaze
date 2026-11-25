@@ -1,22 +1,31 @@
-# Kaze for VS Code / Cursor
+# Kaze 1.0 for VS Code / Cursor
 
 Syntax highlighting, diagnostics, formatting, hover, completion and document
-symbols for `.kaze` files, powered by `kaze-lsp`.
+symbols for `.kaze` files, powered by Kaze's pure-C99 / self-hosted language
+server (`kaze-host lsp`).
 
-The extension is **dependency-free**: it does not use `vscode-languageclient`
-and needs no `npm install`. It speaks the language server's JSON-RPC directly.
+The extension is **dependency-free**: it does not use `vscode-languageclient`,
+needs no `npm install`, and requires **zero Rust toolchain**. It speaks the
+language server's JSON-RPC directly over stdio.
 
-## 1. Build the language server
+## 1. Build the pure-C99 language server
+
+From the repository root (or inside `kaze/`):
 
 ```bash
-cd kaze
-cargo build --release --bin kaze-lsp
+# Build the self-hosted Kaze compiler (under 1 s with cc)
+make kaze-build
+
+# Build the interactive LSP stdio host driver
+cc -O2 -std=c99 kaze/dist/kaze-host.c -o kaze/bin/kaze-host
 ```
 
-Put it on `PATH`, or point the extension at it with the `kaze.lsp.path` setting:
+The extension automatically detects `bin/kaze-host` (or `kaze/bin/kaze-host`) in
+your open workspace folder, or uses `kaze-host` from `PATH`. To specify a
+custom binary path:
 
 ```json
-{ "kaze.lsp.path": "/absolute/path/to/kaze/target/release/kaze-lsp" }
+{ "kaze.lsp.path": "/absolute/path/to/kaze/bin/kaze-host" }
 ```
 
 ## 2. Install the extension
@@ -29,7 +38,7 @@ code --extensionDevelopmentPath=/absolute/path/to/kaze/editors/vscode
 
 or open `editors/vscode` in VS Code and press `F5`.
 
-**A normal install**
+**Normal install (VSIX)**
 
 ```bash
 cd editors/vscode
@@ -45,24 +54,22 @@ Cursor uses the same VSIX through *Extensions → … → Install from VSIX*, or
 
 | Feature | How |
 | :--- | :--- |
-| Syntax highlighting | TextMate grammar (`syntaxes/kaze.tmLanguage.json`) |
-| Diagnostics | Parser, checker and import errors on open/change/save |
-| Format on demand | `Format Document` / `Format Selection` → `kaze fmt` via the server |
-| Hover | Capability signatures, telemetry, keywords, item declarations |
-| Completion | Keywords, families, telemetry, item names, `drone.` operations, `use "…"` modules |
-| Document symbols | `action`/`check`/`filter` and `when`/`every` hooks |
-| Snippets | action, check, filter, when, every, try, use, needs |
+| Syntax highlighting | TextMate grammar (`syntaxes/kaze.tmLanguage.json`) including `record`, `fiber`, `parallel`, `regs`, and tensors |
+| Diagnostics | Real-time compiler diagnostics (`bin/kaze check`) on open and change |
+| Hover & Definition | In-document declarations (`action`, `routine`, `record`) via `kaze-host lsp` |
+| Snippets | `action`, `check`, `filter`, `record`, `fiber`, `parallel`, `requires`, `when`, `every`, `try`, `use`, `needs` |
 
 ## 4. Settings
 
-- `kaze.lsp.path` — path to `kaze-lsp` (empty = from `PATH`).
+- `kaze.lsp.path` — path to `kaze-host` (or `kaze`). Empty = auto-detect in workspace (`bin/kaze-host`) or `PATH`.
+- `kaze.lsp.args` — optional override arguments (defaults to `["lsp"]` for `kaze-host` / `kaze`).
 - `kaze.lsp.trace` — log JSON-RPC traffic to the **Kaze** output channel.
 
 Command **Kaze: Restart Language Server** reloads the server after a rebuild.
 
 ## 5. Tests
 
-The framing helper is plain Node and has no VS Code dependency:
+The framing and server-resolution tests run in plain Node with zero external packages:
 
 ```bash
 node --check extension.js
@@ -70,15 +77,10 @@ node --check lsp.js
 node test/lsp.test.js
 ```
 
-The extension itself is exercised by the language server's Rust tests
-(`tests/lsp.rs`), including the real `kaze-lsp` binary over stdio.
+End-to-end LSP tests against the real pure-C99 and self-hosted binaries run via:
 
-## 6. Honest limits
-
-- Position mapping uses character counts (ASCII-safe; a line with non-ASCII text
-  before the cursor can shift by a few columns).
-- Diagnostics for errors inside an imported module are attached to the open
-  document and prefixed with the imported file name.
-- Sync is full-document: every change resends the buffer.
-- The server is single-threaded; it is fast on scripts, not designed for huge
-  workspaces.
+```bash
+env KAZE_BIN=bin/kaze python3 scripts/host-lsp-smoke.py bin/kaze-host
+env KAZE_BIN=bin/kaze python3 scripts/host-hostile.py bin/kaze-host
+python3 scripts/lsp-smoke.py
+```

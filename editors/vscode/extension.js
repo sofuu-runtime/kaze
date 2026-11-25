@@ -1,13 +1,13 @@
 'use strict';
 
 // A deliberately dependency-free VS Code / Cursor extension. It speaks the
-// Kaze language server's JSON-RPC directly, so there is no npm install step:
-// install the extension folder and put `kaze-lsp` on PATH (or set
-// `kaze.lsp.path`).
+// pure-C99 / Kaze language server's JSON-RPC directly, so there is no npm
+// install step and zero Rust dependency: build `bin/kaze-host` + `bin/kaze`,
+// put `kaze-host` on PATH, or let the extension auto-detect it in your workspace.
 
 const vscode = require('vscode');
 const cp = require('child_process');
-const { encode, createDecoder, completionKind } = require('./lsp');
+const { encode, createDecoder, completionKind, resolveServerSpec } = require('./lsp');
 
 let client = null;
 // A server that has spawned but not finished `initialize`. Restart must stop
@@ -21,9 +21,11 @@ function cfg() {
   return vscode.workspace.getConfiguration('kaze');
 }
 
-function serverCommand() {
-  const configured = String(cfg().get('lsp.path') || '').trim();
-  return configured || 'kaze-lsp';
+function serverSpec() {
+  const configuredPath = String(cfg().get('lsp.path') || '').trim();
+  const configuredArgs = cfg().get('lsp.args');
+  const workspaceRoots = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
+  return resolveServerSpec({ configuredPath, configuredArgs, workspaceRoots });
 }
 
 function tracing() {
@@ -40,8 +42,9 @@ function toRange(range) {
 }
 
 class LspClient {
-  constructor(command, cwd) {
+  constructor(command, args, cwd) {
     this.command = command;
+    this.args = Array.isArray(args) ? args : [];
     this.cwd = cwd;
     this.nextId = 1;
     this.pending = new Map();
@@ -51,7 +54,7 @@ class LspClient {
   start() {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const proc = cp.spawn(this.command, [], {
+      const proc = cp.spawn(this.command, this.args, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -185,17 +188,18 @@ function withTimeout(promise, ms, message) {
 }
 
 async function startServer() {
-  const command = serverCommand();
+  const spec = serverSpec();
+  const displayCmd = [spec.command, ...spec.args].join(' ');
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
-  const next = new LspClient(command, cwd);
+  const next = new LspClient(spec.command, spec.args, cwd);
   starting = next;
   try {
     await next.start();
   } catch (e) {
     if (starting === next) starting = null;
     vscode.window.showWarningMessage(
-      `Kaze: could not start '${command}'. Build it with ` +
-        `'cargo build --release --bin kaze-lsp' or set 'kaze.lsp.path'. (${e.message})`
+      `Kaze: could not start '${displayCmd}'. Build the pure-C99 toolchain with ` +
+        `'cc -O2 -std=c99 dist/kaze-host.c -o bin/kaze-host' and 'make kaze-build', or set 'kaze.lsp.path'. (${e.message})`
     );
     return;
   }
@@ -212,13 +216,13 @@ async function startServer() {
     next.notify('initialized', {});
     client = next;
     if (starting === next) starting = null;
-    output?.appendLine(`kaze-lsp ${init?.serverInfo?.version || 'unknown'} ready (${command})`);
+    output?.appendLine(`kaze-lsp ${init?.serverInfo?.version || '1.0'} ready (${displayCmd})`);
   } catch (e) {
     if (starting === next) starting = null;
     output?.appendLine(`kaze-lsp initialize failed: ${e.message}`);
     vscode.window.showWarningMessage(
-      `Kaze: kaze-lsp started but did not initialize (${e.message}). ` +
-        `Check 'kaze.lsp.path' or rebuild kaze-lsp.`
+      `Kaze: server '${displayCmd}' started but did not initialize (${e.message}). ` +
+        `Check 'kaze.lsp.path' or rebuild bin/kaze-host and bin/kaze.`
     );
     await next.stop();
     return;
@@ -374,7 +378,9 @@ async function activate(context) {
     vscode.workspace.onDidSaveTextDocument(didSave),
     vscode.workspace.onDidCloseTextDocument(didClose),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('kaze.lsp.path')) restart();
+      if (event.affectsConfiguration('kaze.lsp.path') || event.affectsConfiguration('kaze.lsp.args')) {
+        restart();
+      }
     }),
     vscode.languages.registerDocumentFormattingEditProvider('kaze', {
       provideDocumentFormattingEdits: provideFormatting,

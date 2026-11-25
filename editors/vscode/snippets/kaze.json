@@ -28,6 +28,43 @@
     ],
     "description": "A filter that must allow or reject."
   },
+  "Kaze record": {
+    "prefix": "record",
+    "body": [
+      "record ${1:Telemetry}:",
+      "    ${2:alt}: num",
+      "    ${3:ok}: bool",
+      "$0"
+    ],
+    "description": "A typed immutable record."
+  },
+  "Kaze fiber": {
+    "prefix": "fiber",
+    "body": [
+      "fiber ${1:worker}(${2:ch}) fuel ${3:1000}:",
+      "    yield",
+      "$0"
+    ],
+    "description": "A bounded cooperative fiber."
+  },
+  "Kaze parallel for": {
+    "prefix": "parallel",
+    "body": [
+      "parallel for each ${1:item} in ${2:collection}:",
+      "    ${3:transform(item)}",
+      "$0"
+    ],
+    "description": "Pure multicore parallel loop."
+  },
+  "Kaze contract": {
+    "prefix": "requires",
+    "body": [
+      "requires ${1:x > 0}",
+      "ensures ${2:result >= 0}",
+      "$0"
+    ],
+    "description": "Routine precondition and postcondition contracts."
+  },
   "Kaze supervisor hook": {
     "prefix": "when",
     "body": [
@@ -60,10 +97,10 @@
   "Kaze module header": {
     "prefix": "use",
     "body": [
-      "use \"${1:lib/helpers.kaze}\"",
+      "use \"${1:./lib/helpers.kaze}\"",
       "$0"
     ],
-    "description": "Inline another Kaze module at compile time."
+    "description": "Import another Kaze module."
   },
   "Kaze capabilities": {
     "prefix": "needs",

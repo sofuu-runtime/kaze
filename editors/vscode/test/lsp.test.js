@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { encode, createDecoder, completionKind } = require('../lsp');
+const { encode, createDecoder, completionKind, resolveServerSpec } = require('../lsp');
 
 function roundTrip(messages) {
   const out = [];
@@ -44,5 +44,26 @@ assert.strictEqual(completionKind(9), 8); // Module
 assert.strictEqual(completionKind(14), 13); // Keyword
 assert.strictEqual(completionKind(17), 16); // File
 assert.strictEqual(completionKind(undefined), 0);
+
+// Pure-C99 server command resolution (zero Rust binary fallback).
+assert.deepStrictEqual(
+  resolveServerSpec({ workspaceRoots: ['/repo'], existsSync: () => false }),
+  { command: 'kaze-host', args: ['lsp'] }
+);
+assert.deepStrictEqual(
+  resolveServerSpec({
+    workspaceRoots: ['/repo'],
+    existsSync: (p) => p === '/repo/kaze/bin/kaze-host',
+  }),
+  { command: '/repo/kaze/bin/kaze-host', args: ['lsp'] }
+);
+assert.deepStrictEqual(
+  resolveServerSpec({ configuredPath: '/usr/local/bin/kaze' }),
+  { command: '/usr/local/bin/kaze', args: ['lsp'] }
+);
+assert.deepStrictEqual(
+  resolveServerSpec({ configuredPath: '/custom/my-lsp-server' }),
+  { command: '/custom/my-lsp-server', args: [] }
+);
 
 console.log('lsp framing tests passed');

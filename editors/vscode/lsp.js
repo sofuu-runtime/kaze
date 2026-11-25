@@ -1,7 +1,11 @@
 'use strict';
 
-// Content-Length framing for JSON-RPC over stdio. Kept separate from
-// extension.js so it can be tested with plain Node, without the `vscode` API.
+// Content-Length framing and server binary resolution for JSON-RPC over stdio.
+// Kept separate from extension.js so it can be tested with plain Node, without
+// the `vscode` API.
+
+const fs = require('fs');
+const path = require('path');
 
 function encode(message) {
   const body = Buffer.from(JSON.stringify(message), 'utf8');
@@ -45,4 +49,56 @@ function completionKind(lspKind) {
   return kind > 0 ? Math.min(kind - 1, 24) : 0;
 }
 
-module.exports = { encode, createDecoder, completionKind };
+function needsLspSubcommand(cmdPath, pathMod) {
+  const base = pathMod.basename(cmdPath).toLowerCase();
+  return base === 'kaze-host' || base === 'kaze' || base === 'kaze-host.exe' || base === 'kaze.exe';
+}
+
+// Resolve the C99/Kaze language server command and args without Rust.
+// Preference:
+//   1. Explicit `kaze.lsp.path` setting
+//   2. `<workspace>/bin/kaze-host` or `<workspace>/kaze/bin/kaze-host`
+//   3. `kaze-host` on PATH
+function resolveServerSpec({
+  configuredPath = '',
+  configuredArgs = null,
+  workspaceRoots = [],
+  existsSync = fs.existsSync,
+  pathModule = path,
+} = {}) {
+  const explicit = String(configuredPath || '').trim();
+  const hasExplicitArgs = Array.isArray(configuredArgs) && configuredArgs.length > 0;
+  const customArgs = hasExplicitArgs ? configuredArgs.map(String) : null;
+
+  if (explicit) {
+    return {
+      command: explicit,
+      args: customArgs || (needsLspSubcommand(explicit, pathModule) ? ['lsp'] : []),
+    };
+  }
+
+  for (const root of workspaceRoots || []) {
+    if (!root) continue;
+    const candidates = [
+      pathModule.join(root, 'bin', 'kaze-host'),
+      pathModule.join(root, 'kaze', 'bin', 'kaze-host'),
+      pathModule.join(root, 'bin', 'kaze-host.exe'),
+      pathModule.join(root, 'kaze', 'bin', 'kaze-host.exe'),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return {
+          command: candidate,
+          args: customArgs || ['lsp'],
+        };
+      }
+    }
+  }
+
+  return {
+    command: 'kaze-host',
+    args: customArgs || ['lsp'],
+  };
+}
+
+module.exports = { encode, createDecoder, completionKind, resolveServerSpec };
