@@ -1,0 +1,199 @@
+# lib/heap.kaze -- binary min/max heaps over an arena-backed list.
+#
+# A heap is the priority queue a graph search needs: the item at the top is the
+# smallest (min-heap) or largest (max-heap) priority, push and pop cost O(log N)
+# comparisons. The backing store is a plain Kaze list: the children of slot i are
+# 2*i+1 and 2*i+2, so there are no pointers and no per-node allocation.
+#
+# Kaze 1.0 lists are immutable values, so a sift step cannot swap two slots in
+# place. Each push/pop therefore collects the one root-to-leaf (or leaf-to-root)
+# path it moves values along and rebuilds the list once. That is one O(N) copy
+# per operation on top of the O(log N) comparisons; the plan's "O(log N)
+# push/pop" describes the comparator count, and this note is the honest version
+# of the copy cost. map.kaze pays the same O(N) for a put; a persistent flat
+# list has no cheaper structural update.
+#
+# Ties are deterministic: equal priorities pop in insertion order (FIFO) in both
+# modes. Every node carries a monotonic insertion number, so priorities only
+# ever compare as a strict total order and the item value is never compared --
+# items may be numbers, text, records or lists.
+#
+# Empty-operation answers follow the library convention (vector_get, map_get):
+# a read on an empty heap answers 0, and the HeapPopResult carries `ok` so a
+# caller can tell the empty answer from a real entry whose item is 0. ring.kaze's
+# RingRead makes the same move. The plan lists HeapPopResult(heap, item,
+# priority); `ok` is the one added field, and it is what makes heap_pop total.
+
+record HeapNode:
+    priority: number
+    seq: number
+    item: any
+
+record Heap:
+    nodes: list
+    min_mode: bool
+    next_seq: number
+
+record HeapEntry:
+    item: any
+    priority: number
+
+record HeapPopResult:
+    heap: Heap
+    item: any
+    priority: number
+    ok: bool
+
+# The sentinel every index fallback uses. It is never live: the fallbacks exist
+# so the strict checker sees a total expression, and no index they cover can be
+# out of range given the guards in heap_push/heap_pop.
+action heap_empty_node() -> HeapNode:
+    return HeapNode(priority: 0, seq: 0, item: 0)
+
+action heap_create_min() -> Heap:
+    return Heap(nodes: [], min_mode: true, next_seq: 0)
+
+action heap_create_max() -> Heap:
+    return Heap(nodes: [], min_mode: false, next_seq: 0)
+
+action heap_size(h: Heap) -> num:
+    return length of h.nodes
+
+action heap_is_empty(h: Heap) -> bool:
+    return (length of h.nodes) == 0
+
+# Does a rank ahead of b? Min-heaps put the lower priority first, max-heaps the
+# higher priority first; equal priorities put the earlier insertion first. seq is
+# unique, so this is a strict total order and heap_pop is fully deterministic.
+action heap_before(h: Heap, a: HeapNode, b: HeapNode) -> bool:
+    if h.min_mode:
+        if a.priority < b.priority:
+            return true
+        if a.priority > b.priority:
+            return false
+        return a.seq < b.seq
+    otherwise:
+        if a.priority > b.priority:
+            return true
+        if a.priority < b.priority:
+            return false
+        return a.seq < b.seq
+
+# The top entry without removing it. An empty heap answers the zero entry; check
+# heap_is_empty first to tell that from a real item that is 0.
+action heap_peek(h: Heap) -> HeapEntry:
+    if (length of h.nodes) == 0:
+        return HeapEntry(item: 0, priority: 0)
+    let top = h.nodes[0] otherwise heap_empty_node()
+    return HeapEntry(item: top.item, priority: top.priority)
+
+# Insert one item at the given priority. Returns the new heap; the argument heap
+# is unchanged, as every Kaze value is.
+action heap_push(h: Heap, priority: number, item) -> Heap:
+    let node = HeapNode(priority: priority, seq: h.next_seq, item: item)
+    let n = length of h.nodes
+    # Walk from the new leaf up to the last ancestor the node outranks. `chain`
+    # records the hole positions leaf-first, so its last element is where the
+    # node finally sits and every earlier element moves down one level.
+    let chain = [n]
+    let at = n
+    let climbing = 1
+    while climbing == 1 and at > 0 bounded 1000000:
+        # Parent of index at: whole-number half of at-1. `/` is floating
+        # division, so the odd bit is removed first; this keeps the result exact
+        # without a floor() call (the pure-Kaze C emitter does not lower floor).
+        let odd = (at - 1) % 2
+        let parent = ((at - 1) - odd) / 2
+        let pv = h.nodes[parent] otherwise heap_empty_node()
+        if heap_before(h, node, pv):
+            set chain to chain + [parent]
+            set at to parent
+        otherwise:
+            set climbing to 0
+    # One rebuild: a chain slot takes its parent's old value, and the final hole
+    # in the chain takes the new node. The first slot is handled before the loop
+    # and seeds `out` with a one-element list: the C emitter's in-place append
+    # path for `set out to out + [v]` is only entered once the buffer exists, and
+    # a first append into an empty list is avoidable here for free.
+    let first = heap_empty_node()
+    if (chain[(length of chain) - 1] otherwise (0 - 1)) == 0:
+        set first to node
+    otherwise:
+        set first to h.nodes[0] otherwise heap_empty_node()
+    let out = [] + [first]
+    let ci = (length of chain) - 1
+    if (chain[ci] otherwise (0 - 1)) == 0:
+        set ci to ci - 1
+    let k = 1
+    while k <= n bounded 1000000:
+        let v = heap_empty_node()
+        if k < n:
+            set v to h.nodes[k] otherwise heap_empty_node()
+        let chain_at = chain[ci] otherwise (0 - 1)
+        if k == chain_at:
+            let parent_at = chain[ci + 1] otherwise (0 - 1)
+            if parent_at >= 0:
+                set v to h.nodes[parent_at] otherwise heap_empty_node()
+            otherwise:
+                set v to node
+            set ci to ci - 1
+        set out to out + [v]
+        set k to k + 1
+    return Heap(nodes: out, min_mode: h.min_mode, next_seq: h.next_seq + 1)
+
+# Remove and answer the top entry. An empty heap answers ok=false and itself.
+action heap_pop(h: Heap) -> HeapPopResult:
+    let n = length of h.nodes
+    if n == 0:
+        return HeapPopResult(heap: h, item: 0, priority: 0, ok: false)
+    let top = h.nodes[0] otherwise heap_empty_node()
+    if n == 1:
+        let empty = Heap(nodes: [], min_mode: h.min_mode, next_seq: h.next_seq)
+        return HeapPopResult(heap: empty, item: top.item, priority: top.priority, ok: true)
+    let last = h.nodes[n - 1] otherwise heap_empty_node()
+    # Sink `last` from the root. `chain` records the hole positions root-first;
+    # each takes its child's old value and the final hole takes `last`.
+    let chain = [0]
+    let hole = 0
+    let sinking = 1
+    while sinking == 1 bounded 1000000:
+        let left = hole * 2 + 1
+        let right = left + 1
+        if left > n - 2:
+            set sinking to 0
+        otherwise:
+            let pick = left
+            if right < n - 1:
+                let lv = h.nodes[left] otherwise heap_empty_node()
+                let rv = h.nodes[right] otherwise heap_empty_node()
+                if heap_before(h, rv, lv):
+                    set pick to right
+            let cv = h.nodes[pick] otherwise heap_empty_node()
+            if heap_before(h, last, cv):
+                set sinking to 0
+            otherwise:
+                set chain to chain + [pick]
+                set hole to pick
+    # One rebuild over the n-1 live slots; the removed tail is simply not copied.
+    # Slot 0 always heads the chain, so it is resolved first and seeds `out`.
+    let first = last
+    let first_next = chain[1] otherwise (0 - 1)
+    if first_next >= 0:
+        set first to h.nodes[first_next] otherwise heap_empty_node()
+    let out = [] + [first]
+    let k = 1
+    let ci = 1
+    while k < n - 1 bounded 1000000:
+        let v = h.nodes[k] otherwise heap_empty_node()
+        let chain_at = chain[ci] otherwise (0 - 1)
+        if k == chain_at:
+            let child_at = chain[ci + 1] otherwise (0 - 1)
+            if child_at >= 0:
+                set v to h.nodes[child_at] otherwise heap_empty_node()
+            otherwise:
+                set v to last
+            set ci to ci + 1
+        set out to out + [v]
+        set k to k + 1
+    let shorter = Heap(nodes: out, min_mode: h.min_mode, next_seq: h.next_seq)
+    return HeapPopResult(heap: shorter, item: top.item, priority: top.priority, ok: true)

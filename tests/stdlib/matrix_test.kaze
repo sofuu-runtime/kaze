@@ -1,0 +1,121 @@
+# tests/stdlib/matrix_test.kaze -- dense matrix arithmetic, determinant and inverse.
+#
+# Expectations are closed-form (small integer matrices whose determinant and inverse
+# are produced by hand, identity products) except the 3x3 inverse, which is checked
+# by multiplying it back against the input. The randomized comparison against
+# NumPy lives in scripts/phase17/diff_matrix.py.
+
+needs: log
+
+use "./../../lib/matrix.kaze"
+
+action close(a, b) -> bool:
+    let d = a - b
+    if d < 0:
+        set d to 0 - d
+    return d <= 0.000000001
+
+# True when m is the n x n identity within tolerance.
+action near_identity(m: Matrix, n) -> bool:
+    let ok = 1
+    let r = 0
+    while r < n bounded 16:
+        let c = 0
+        while c < n bounded 16:
+            let want = 0
+            if r == c:
+                set want to 1
+            if not close(matrix_get(m, r, c), want):
+                set ok to 0
+            set c to c + 1
+        set r to r + 1
+    return ok == 1
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+
+    # ---- shapes and construction ----------------------------------------------
+    set failures to check("matrix_max_dim is 4096", matrix_max_dim() == 4096, failures)
+    set failures to check("matrix_dim clamps and truncates", matrix_dim(0 - 3) == 0 and matrix_dim(5000) == 4096 and matrix_dim(2.9) == 2, failures)
+    let z = matrix_zeros(2, 3)
+    set failures to check("matrix_zeros has the shape and is zero", z.rows == 2 and z.cols == 3 and matrix_get(z, 1, 2) == 0 and matrix_get(z, 0, 0) == 0, failures)
+    let id3 = matrix_identity(3)
+    set failures to check("matrix_identity has ones on the diagonal", matrix_get(id3, 1, 1) == 1 and matrix_get(id3, 1, 2) == 0 and id3.rows == 3, failures)
+    let a = matrix_from_rows([[1, 2, 3], [4, 5, 6]])
+    set failures to check("matrix_from_rows reads a full matrix", a.rows == 2 and a.cols == 3 and matrix_get(a, 1, 2) == 6, failures)
+    let ragged = matrix_from_rows([[1, 2, 3], [4]])
+    set failures to check("matrix_from_rows pads a short row with zero", ragged.cols == 3 and matrix_get(ragged, 1, 1) == 0 and matrix_get(ragged, 1, 0) == 4, failures)
+    let empty = matrix_from_rows([])
+    set failures to check("matrix_from_rows of nothing is 0x0", empty.rows == 0 and empty.cols == 0 and (length of empty.data) == 0, failures)
+
+    # ---- element access --------------------------------------------------------
+    set failures to check("matrix_get answers 0 outside the shape", matrix_get(a, 5, 0) == 0 and matrix_get(a, 0, 0 - 1) == 0, failures)
+    set failures to check("matrix_get answers 0 for a fractional index", matrix_get(a, 0.5, 0) == 0, failures)
+    let set_a = matrix_set(a, 0, 1, 99)
+    set failures to check("matrix_set replaces one entry", matrix_get(set_a, 0, 1) == 99 and matrix_get(a, 0, 1) == 2, failures)
+    set failures to check("matrix_set outside the shape is a no-op", matrix_get(matrix_set(a, 9, 9, 5), 0, 0) == 1, failures)
+    let row_a = matrix_row(a, 1)
+    set failures to check("matrix_row reads a whole row", (length of row_a) == 3 and (row_a[2] otherwise 0) == 6, failures)
+    set failures to check("matrix_scale multiplies every entry", matrix_get(matrix_scale(a, 2), 1, 2) == 12, failures)
+
+    # ---- transpose, add, multiply ---------------------------------------------
+    let at = matrix_transpose(a)
+    set failures to check("matrix_transpose swaps the shape", at.rows == 3 and at.cols == 2, failures)
+    set failures to check("matrix_transpose moves the entries", matrix_get(at, 2, 1) == 6 and matrix_get(at, 2, 0) == 3, failures)
+    let sum = matrix_add(a, matrix_from_rows([[10, 20, 30], [40, 50, 60]]))
+    set failures to check("matrix_add adds elementwise", matrix_get(sum, 0, 0) == 11 and matrix_get(sum, 1, 2) == 66, failures)
+    let padded = matrix_add(matrix_from_rows([[1, 1], [1, 1]]), matrix_from_rows([[5]]))
+    set failures to check("matrix_add zero-pads a smaller b", matrix_get(padded, 0, 0) == 6 and matrix_get(padded, 1, 1) == 1, failures)
+    let p2 = matrix_multiply(matrix_from_rows([[1, 2], [3, 4]]), matrix_from_rows([[5, 6], [7, 8]]))
+    set failures to check("matrix_multiply multiplies 2x2", matrix_get(p2, 0, 0) == 19 and matrix_get(p2, 0, 1) == 22 and matrix_get(p2, 1, 0) == 43 and matrix_get(p2, 1, 1) == 50, failures)
+    let p3 = matrix_multiply(matrix_from_rows([[1, 2], [3, 4]]), matrix_identity(2))
+    set failures to check("matrix_multiply by the identity is a copy", matrix_get(p3, 0, 0) == 1 and matrix_get(p3, 1, 1) == 4, failures)
+    let rect = matrix_multiply(matrix_from_rows([[1, 2, 3], [4, 5, 6]]), matrix_from_rows([[7, 8], [9, 10], [11, 12]]))
+    set failures to check("matrix_multiply handles rectangular shapes", rect.rows == 2 and rect.cols == 2 and matrix_get(rect, 0, 0) == 58 and matrix_get(rect, 1, 1) == 154, failures)
+    let truncated = matrix_multiply(a, matrix_from_rows([[7, 8], [9, 10]]))
+    set failures to check("matrix_multiply truncates to the shared inner dimension", truncated.rows == 2 and truncated.cols == 2 and matrix_get(truncated, 0, 0) == 25 and matrix_get(truncated, 1, 1) == 82, failures)
+
+    # ---- determinant -----------------------------------------------------------
+    set failures to check("matrix_det of a 2x2", close(matrix_det(matrix_from_rows([[1, 2], [3, 4]])), 0 - 2), failures)
+    set failures to check("matrix_det of a 3x3", close(matrix_det(matrix_from_rows([[6, 1, 1], [4, 0 - 2, 5], [2, 8, 7]])), 0 - 306), failures)
+    set failures to check("matrix_det of the identity is one", close(matrix_det(matrix_identity(4)), 1), failures)
+    set failures to check("matrix_det of a singular matrix is zero", matrix_det(matrix_from_rows([[1, 2], [2, 4]])) == 0, failures)
+    set failures to check("matrix_det of a non-square matrix is zero", matrix_det(a) == 0, failures)
+    set failures to check("matrix_det of the empty matrix is one", matrix_det(matrix_from_rows([])) == 1, failures)
+
+    # ---- inverse ---------------------------------------------------------------
+    let inv2 = matrix_inverse(matrix_from_rows([[4, 7], [2, 6]]))
+    set failures to check("matrix_inverse of a 2x2", inv2.ok and close(matrix_get(inv2.matrix, 0, 0), 0.6) and close(matrix_get(inv2.matrix, 0, 1), 0 - 0.7) and close(matrix_get(inv2.matrix, 1, 0), 0 - 0.2) and close(matrix_get(inv2.matrix, 1, 1), 0.4), failures)
+    let product2 = matrix_multiply(matrix_from_rows([[4, 7], [2, 6]]), inv2.matrix)
+    set failures to check("matrix_inverse multiplies back to the identity", near_identity(product2, 2), failures)
+    let inv1 = matrix_inverse(matrix_from_rows([[4]]))
+    set failures to check("matrix_inverse of a 1x1", inv1.ok and close(matrix_get(inv1.matrix, 0, 0), 0.25), failures)
+    let b3 = matrix_from_rows([[1, 2, 3], [4, 5, 6], [7, 8, 10]])
+    let inv3 = matrix_inverse(b3)
+    set failures to check("matrix_inverse of a 3x3 multiplies back to the identity", inv3.ok and near_identity(matrix_multiply(b3, inv3.matrix), 3), failures)
+    let singular = matrix_inverse(matrix_from_rows([[1, 2], [2, 4]]))
+    set failures to check("matrix_inverse refuses a singular matrix", not singular.ok, failures)
+    let non_square = matrix_inverse(a)
+    set failures to check("matrix_inverse refuses a non-square matrix", not non_square.ok and non_square.matrix.rows == 2 and non_square.matrix.cols == 3, failures)
+
+    # ---- non-finite input is a defined answer ----------------------------------
+    # A NaN dimension clamps to 0, a NaN index reads 0, and a NaN matrix has no
+    # pivot, so both determinant and inverse answer without dividing by NaN.
+    set failures to check("matrix_dim of a non-finite dimension is zero", matrix_dim(sqrt(0 - 1)) == 0, failures)
+    set failures to check("matrix_get with a non-finite index is zero", matrix_get(a, sqrt(0 - 1), 0) == 0, failures)
+    let nan_matrix = Matrix(rows: 2, cols: 2, data: [sqrt(0 - 1), 0, 0, 1])
+    set failures to check("matrix_det of a non-finite matrix is zero", matrix_det(nan_matrix) == 0, failures)
+    set failures to check("matrix_inverse refuses a non-finite matrix", not matrix_inverse(nan_matrix).ok, failures)
+
+    # ---- helpers ---------------------------------------------------------------
+    set failures to check("matrix_flatten undoes matrix_rows", close(matrix_get(Matrix(rows: 2, cols: 3, data: matrix_flatten(matrix_rows(a))), 1, 1), 5), failures)
+
+    if failures == 0:
+        log.info("OK matrix: 38 checks")
+    return failures

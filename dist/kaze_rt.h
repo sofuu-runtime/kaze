@@ -25,6 +25,9 @@
 #ifndef KAZE_RT_H
 #define KAZE_RT_H
 
+/* Canonical Kaze language version implemented by both standalone and embedded engines. */
+#define KAZE_VERSION "1.0"
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>

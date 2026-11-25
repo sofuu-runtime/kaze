@@ -1,0 +1,143 @@
+# lib/hex.kaze -- hexadecimal encoding of bytes.
+#
+# Hexadecimal is the wire form for digests, telemetry frames, sensor IDs and
+# hashes, and this module is the one place a program should convert to and from
+# it. Encoding is lowercase; decoding accepts either case, because RFC 4648 makes
+# the two spellings the same octet.
+#
+# Kaze text cannot carry a 0 byte: there is no escape for it in a string literal,
+# and character(0) is empty text. Binary data therefore crosses this module as a
+# list of numbers 0..255, the convention lib/sha256.kaze already uses. The text
+# front door hex_encode encodes the UTF-8 bytes of a text; hex_encode_bytes
+# handles every byte including 0, and the decode result always carries a byte
+# list, because the decoded data may contain any byte.
+#
+# Every routine is total. hex_encode_byte returns "" for a value that is not a
+# whole number in 0..255 instead of masking it, so a bad sensor reading is
+# visible rather than silently truncated. hex_decode reports malformed input in
+# a result record with a stable error code and the byte offset that failed; it
+# never indexes a string without the loop guard that proves the index safe.
+#
+# Deviations from the module plan, forced by the text representation above: the
+# plan's "-> result" decoder is a HexResult record carrying the decoded bytes as
+# a list, a stable error code and the failing byte offset, and
+# hex_encode_bytes / hex_text_of_bytes are additions because a text parameter
+# cannot carry a 0 byte.
+#
+# The scan loops are bounded at one million iterations, so one call handles
+# about a megabyte of input and a larger value stops with E_KAZE_LOOP_BOUND
+# rather than running until the fuel runs out.
+
+# ok is false on malformed input; bytes is the decoded byte list; err is one of
+# E_HEX_LENGTH (odd number of digits) or E_HEX_CHARACTER (not a hex digit), and
+# at is the byte offset of the failure (0 on success).
+record HexResult:
+    ok: bool
+    bytes: list
+    err: text
+    at: number
+
+action hex_result(ok, bytes, err, at) -> HexResult:
+    return HexResult(ok: ok, bytes: bytes, err: err, at: at)
+
+action hex_ok(bytes) -> HexResult:
+    return hex_result(true, bytes, "", 0)
+
+action hex_fail(err, at) -> HexResult:
+    return hex_result(false, [], err, at)
+
+# One lowercase hex digit for 0..15. Outside that range the answer is "", which a
+# caller that passes a byte value answers itself; hex_encode_byte adds the range
+# check that makes "" impossible for a byte.
+action hex_digit(v) -> text:
+    if v < 0 or v > 15:
+        return ""
+    if v < 10:
+        return character(48 + v)
+    return character(87 + v)
+
+# Two lowercase hex digits for a whole number in 0..255, else "". A fractional or
+# out-of-range value is refused rather than rounded or masked, and the modulo is
+# against the literal 1, which the checker proves non-zero.
+action hex_encode_byte(byte_val) -> text:
+    if byte_val < 0 or byte_val > 255:
+        return ""
+    if (byte_val % 1) != 0:
+        return ""
+    let v = byte_val & 255
+    return hex_digit(v >> 4) + hex_digit(v & 15)
+
+# The hex form of one byte value, or -1 when it is not a hex digit. ASCII codes:
+# '0'..'9' = 48..57, 'A'..'F' = 65..70, 'a'..'f' = 97..102.
+action hex_value(byte_val) -> number:
+    if byte_val >= 48 and byte_val <= 57:
+        return byte_val - 48
+    if byte_val >= 65 and byte_val <= 70:
+        return byte_val - 55
+    if byte_val >= 97 and byte_val <= 102:
+        return byte_val - 87
+    return 0 - 1
+
+# The hex form of each byte of a text, treating the text as its UTF-8 bytes.
+action hex_encode(bytes) -> text:
+    let out = ""
+    let i = 0
+    let n = length of bytes
+    while i < n bounded 1000000:
+        let v = byte_at(bytes, i)
+        set out to out + hex_digit((v >> 4) & 15)
+        set out to out + hex_digit(v & 15)
+        set i to i + 1
+    return out
+
+# The hex form of a list of byte values. Each element is used as its low eight
+# bits so that a caller feeding sensor words still gets a defined answer; the
+# text front door masks the same way.
+action hex_encode_bytes(bytes) -> text:
+    let out = ""
+    let i = 0
+    let n = length of bytes
+    while i < n bounded 1000000:
+        let v = byte_at(bytes, i) & 255
+        set out to out + hex_digit(v >> 4)
+        set out to out + hex_digit(v & 15)
+        set i to i + 1
+    return out
+
+# Decode hexadecimal into a byte list. Odd length is E_HEX_LENGTH at the end of
+# the input; a non-hex character is E_HEX_CHARACTER at its own offset. Whitespace
+# and "0x" prefixes are refused, not skipped: this decoder takes exactly the
+# canonical spelling that hex_encode emits.
+action hex_decode(hex_str) -> HexResult:
+    let n = length of hex_str
+    if (n % 2) != 0:
+        return hex_fail("E_HEX_LENGTH", n)
+    let out = []
+    let i = 0
+    while i < n bounded 1000000:
+        let hi = hex_value(byte_at(hex_str, i))
+        if hi < 0:
+            return hex_fail("E_HEX_CHARACTER", i)
+        let lo = hex_value(byte_at(hex_str, i + 1))
+        if lo < 0:
+            return hex_fail("E_HEX_CHARACTER", i + 1)
+        set out to out + [hi * 16 + lo]
+        set i to i + 2
+    return hex_ok(out)
+
+# The byte list as text when every byte is printable ASCII (0x20..0x7e).
+# Anything else - including the 0 byte a text value cannot carry - yields "" so
+# the caller can tell the conversion was not lossless instead of receiving a
+# truncated string. This is for token-shaped data; a binary digest stays a byte
+# list.
+action hex_text_of_bytes(bytes) -> text:
+    let out = ""
+    let i = 0
+    let n = length of bytes
+    while i < n bounded 1000000:
+        let v = byte_at(bytes, i) & 255
+        if v < 32 or v > 126:
+            return ""
+        set out to out + character(v)
+        set i to i + 1
+    return out

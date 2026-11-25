@@ -1,0 +1,102 @@
+# tests/stdlib/spatial_test.kaze -- spatial kinematics: vectors, quaternions, Euler
+# angles and rigid transforms.
+#
+# Every expectation below is a closed-form value (a 3-4-5 triangle, a 90 degree
+# yaw, a half rotation) rather than a snapshot of this implementation, and the
+# quaternion comparison allows the double cover (q and -q are the same rotation).
+# The randomized cross-check against CPython lives in scripts/phase17/diff_spatial.py.
+
+needs: log
+
+use "./../../lib/spatial.kaze"
+
+action close(a, b) -> bool:
+    let d = a - b
+    if d < 0:
+        set d to 0 - d
+    return d <= 0.000000001
+
+action vclose(a: Vec3, b: Vec3) -> bool:
+    return close(a.x, b.x) and close(a.y, b.y) and close(a.z, b.z)
+
+# Unit quaternions double-cover SO(3): q and -q are the same rotation, so a test
+# accepts either representative.
+action qclose(a: Quat, b: Quat) -> bool:
+    if close(a.w, b.w) and close(a.x, b.x) and close(a.y, b.y) and close(a.z, b.z):
+        return true
+    return close(a.w, 0 - b.w) and close(a.x, 0 - b.x) and close(a.y, 0 - b.y) and close(a.z, 0 - b.z)
+
+action eclose(a: Euler, b: Euler) -> bool:
+    return close(a.roll, b.roll) and close(a.pitch, b.pitch) and close(a.yaw, b.yaw)
+
+action quat_norm_of(q: Quat) -> num:
+    return sqrt(quat_dot(q, q))
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+    let half_pi = 1.5707963267948966
+    let quarter_pi = 0.7853981633974483
+    let root_half = 0.7071067811865476
+    let qz90 = quat_from_axis_angle(Vec3(x: 0, y: 0, z: 1), half_pi)
+    let qz45 = quat_from_axis_angle(Vec3(x: 0, y: 0, z: 1), quarter_pi)
+    let qi = quat_identity()
+
+    # ---- vectors ---------------------------------------------------------------
+    set failures to check("vec3_add adds components", vclose(vec3_add(Vec3(x: 1, y: 2, z: 3), Vec3(x: 4, y: 5, z: 6)), Vec3(x: 5, y: 7, z: 9)), failures)
+    set failures to check("vec3_sub subtracts components", vclose(vec3_sub(Vec3(x: 1, y: 2, z: 3), Vec3(x: 4, y: 5, z: 6)), Vec3(x: 0 - 3, y: 0 - 3, z: 0 - 3)), failures)
+    set failures to check("vec3_scale multiplies by a scalar", vclose(vec3_scale(Vec3(x: 1, y: 2, z: 3), 2.5), Vec3(x: 2.5, y: 5, z: 7.5)), failures)
+    set failures to check("vec3_dot is the scalar product", vec3_dot(Vec3(x: 1, y: 2, z: 3), Vec3(x: 4, y: 5, z: 6)) == 32, failures)
+    set failures to check("vec3_cross is right handed", vclose(vec3_cross(Vec3(x: 1, y: 0, z: 0), Vec3(x: 0, y: 1, z: 0)), Vec3(x: 0, y: 0, z: 1)), failures)
+    set failures to check("vec3_length_sq squares the length", vec3_length_sq(Vec3(x: 1, y: 2, z: 3)) == 14, failures)
+    set failures to check("vec3_norm of a 3-4-5 triangle", close(vec3_norm(Vec3(x: 3, y: 4, z: 0)), 5), failures)
+    set failures to check("vec3_normalize keeps the direction and unit length", vclose(vec3_normalize(Vec3(x: 0, y: 3, z: 4)), Vec3(x: 0, y: 0.6, z: 0.8000000000000001)) and close(vec3_norm(vec3_normalize(Vec3(x: 0, y: 3, z: 4))), 1), failures)
+    set failures to check("vec3_normalize of the zero vector is zero", vclose(vec3_normalize(Vec3(x: 0, y: 0, z: 0)), Vec3(x: 0, y: 0, z: 0)), failures)
+    set failures to check("vec3_distance is the norm of the difference", close(vec3_distance(Vec3(x: 1, y: 1, z: 1), Vec3(x: 4, y: 5, z: 1)), 5), failures)
+
+    # ---- quaternions -----------------------------------------------------------
+    set failures to check("quat_identity is the identity rotation", qclose(quat_identity(), Quat(w: 1, x: 0, y: 0, z: 0)), failures)
+    set failures to check("quat_normalize scales to unit length", qclose(quat_normalize(Quat(w: 0, x: 0, y: 0, z: 2)), Quat(w: 0, x: 0, y: 0, z: 1)), failures)
+    set failures to check("quat_normalize of zero is the identity", qclose(quat_normalize(Quat(w: 0, x: 0, y: 0, z: 0)), quat_identity()), failures)
+    set failures to check("quat_dot is the scalar product", close(quat_dot(Quat(w: 1, x: 2, y: 3, z: 4), Quat(w: 5, x: 6, y: 7, z: 8)), 70), failures)
+    set failures to check("quat_conjugate negates the vector part", qclose(quat_conjugate(Quat(w: 1, x: 2, y: 3, z: 4)), Quat(w: 1, x: 0 - 2, y: 0 - 3, z: 0 - 4)), failures)
+    set failures to check("quat_from_axis_angle about z turns a quarter turn", qclose(quat_from_axis_angle(Vec3(x: 0, y: 0, z: 1), half_pi), Quat(w: root_half, x: 0, y: 0, z: root_half)), failures)
+    set failures to check("quat_from_euler yaw of 90 degrees is that quarter turn", qclose(quat_from_euler(Euler(roll: 0, pitch: 0, yaw: half_pi)), Quat(w: root_half, x: 0, y: 0, z: root_half)), failures)
+    set failures to check("quat_to_euler inverts quat_from_euler", eclose(quat_to_euler(quat_from_euler(Euler(roll: 0.3, pitch: 0.2, yaw: 0 - 0.7))), Euler(roll: 0.3, pitch: 0.2, yaw: 0 - 0.7)), failures)
+    set failures to check("quat_to_euler of a pure pitch", eclose(quat_to_euler(quat_from_axis_angle(Vec3(x: 0, y: 1, z: 0), 0.4)), Euler(roll: 0, pitch: 0.4, yaw: 0)), failures)
+    set failures to check("quat_to_euler reports the gimbal pitch", close(quat_to_euler(quat_from_euler(Euler(roll: 0, pitch: half_pi, yaw: 0))).pitch, half_pi), failures)
+    set failures to check("quat_multiply composes two quarter turns into a half turn", qclose(quat_multiply(qz90, qz90), Quat(w: 0, x: 0, y: 0, z: 1)), failures)
+    set failures to check("quat_multiply does not commute", not qclose(quat_multiply(quat_from_axis_angle(Vec3(x: 1, y: 0, z: 0), half_pi), quat_from_axis_angle(Vec3(x: 0, y: 1, z: 0), half_pi)), quat_multiply(quat_from_axis_angle(Vec3(x: 0, y: 1, z: 0), half_pi), quat_from_axis_angle(Vec3(x: 1, y: 0, z: 0), half_pi))), failures)
+    set failures to check("quat_rotate_vec3 turns x into y for a 90 degree yaw", vclose(quat_rotate_vec3(qz90, Vec3(x: 1, y: 0, z: 0)), Vec3(x: 0, y: 1, z: 0)), failures)
+    set failures to check("quat_rotate_vec3 normalises a scaled quaternion", vclose(quat_rotate_vec3(Quat(w: 1.4142135623730951, x: 0, y: 0, z: 1.4142135623730951), Vec3(x: 1, y: 0, z: 0)), Vec3(x: 0, y: 1, z: 0)), failures)
+
+    # ---- interpolation ---------------------------------------------------------
+    set failures to check("quat_slerp returns its endpoints", qclose(quat_slerp(qi, qz90, 0), qi) and qclose(quat_slerp(qi, qz90, 1), qz90), failures)
+    set failures to check("quat_slerp halfway is the half rotation", qclose(quat_slerp(qi, qz90, 0.5), qz45), failures)
+    set failures to check("quat_slerp clamps t to [0, 1]", qclose(quat_slerp(qi, qz90, 0 - 1), qi) and qclose(quat_slerp(qi, qz90, 2), qz90), failures)
+    set failures to check("quat_slerp takes the shorter arc", qclose(quat_slerp(qi, Quat(w: 0 - root_half, x: 0, y: 0, z: 0 - root_half), 0.5), qz45), failures)
+    set failures to check("quat_slerp of equal quaternions stays put", qclose(quat_slerp(qz90, qz90, 0.5), qz90), failures)
+    set failures to check("quat_slerp stays unit length", close(quat_normalize(quat_slerp(qi, qz90, 0.3)).w, quat_slerp(qi, qz90, 0.3).w), failures)
+
+    # ---- transforms ------------------------------------------------------------
+    set failures to check("transform3d_identity applies as identity", vclose(transform3d_apply(transform3d_identity(), Vec3(x: 1, y: 2, z: 3)), Vec3(x: 1, y: 2, z: 3)), failures)
+    set failures to check("transform3d_apply rotates then translates", vclose(transform3d_apply(Transform3D(translation: Vec3(x: 1, y: 2, z: 3), rotation: qz90), Vec3(x: 1, y: 0, z: 0)), Vec3(x: 1, y: 3, z: 3)), failures)
+    # Non-finite input is a defined answer too: the guards test "not (n > 0)", so a
+    # NaN length normalises to the zero vector instead of dividing by NaN.
+    set failures to check("vec3_normalize of a non-finite vector is the zero vector", vclose(vec3_normalize(Vec3(x: sqrt(0 - 1), y: 1, z: 2)), Vec3(x: 0, y: 0, z: 0)), failures)
+    set failures to check("quat_normalize of a non-finite quaternion is the identity", qclose(quat_normalize(Quat(w: sqrt(0 - 1), x: 0, y: 0, z: 0)), quat_identity()), failures)
+    set failures to check("quat_slerp stays unit length with a non-finite input", close(quat_norm_of(quat_slerp(Quat(w: sqrt(0 - 1), x: 0, y: 0, z: 0), qz90, 0.5)), 1), failures)
+
+    let ta = Transform3D(translation: Vec3(x: 1, y: 0, z: 0), rotation: qz90)
+    let tb = Transform3D(translation: Vec3(x: 0, y: 2, z: 0), rotation: qi)
+    let composed = transform3d_compose(ta, tb)
+    set failures to check("transform3d_compose applies b then a", vclose(transform3d_apply(composed, Vec3(x: 1, y: 0, z: 0)), transform3d_apply(ta, transform3d_apply(tb, Vec3(x: 1, y: 0, z: 0)))), failures)
+
+    if failures == 0:
+        log.info("OK spatial: 36 checks")
+    return failures

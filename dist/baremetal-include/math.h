@@ -24,5 +24,12 @@ double atan2(double y, double x);
 double exp(double x);
 double log(double x);
 double pow(double base, double exponent);
+double log10(double x);
+double atan(double x);
+double ceil(double x);
+double round(double x);
+double trunc(double x);
+double fmin(double a, double b);
+double fmax(double a, double b);
 
 #endif

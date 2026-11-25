@@ -1,0 +1,237 @@
+# tests/stdlib/base64_test.kaze -- lib/base64.kaze against RFC 4648, including the
+# malformed inputs a strict decoder has to refuse, plus a fixed-seed round trip.
+#
+# The expected strings are the RFC 4648 section 10 vectors and hand-computed
+# examples (the encoding of a byte is arithmetic, not a secret); the malformed
+# expectations name the error code and the byte offset the decoder should blame.
+# The property section encodes byte lists with a fixed-seed LCG and checks that
+# standard and URL-safe forms decode back to exactly the same bytes, including 0,
+# which is why the decoder answers with a byte list.
+needs: log
+
+use "./../../lib/base64.kaze"
+
+record Tally:
+    failures: number
+    checks: number
+
+action expect(t: Tally, label: text, ok: bool) -> Tally:
+    if ok:
+        return Tally(failures: t.failures, checks: t.checks + 1)
+    log.info("FAIL " + label)
+    return Tally(failures: t.failures + 1, checks: t.checks + 1)
+
+action same_bytes(a, b) -> bool:
+    if (length of a) != (length of b):
+        return false
+    let i = 0
+    let n = length of a
+    while i < n bounded 1000000:
+        if byte_at(a, i) != byte_at(b, i):
+            return false
+        set i to i + 1
+    return true
+
+action lcg_next(state) -> num:
+    return (state * 1664525 + 1013904223) & 4294967295
+
+action seed_bytes(seed, n) -> list:
+    let out = []
+    let cur = seed
+    let i = 0
+    while i < n bounded 1000000:
+        set cur to lcg_next(cur)
+        set out to out + [cur & 255]
+        set i to i + 1
+    return out
+
+action main() -> num:
+    # A nonzero failure count is a broken run, and the contract assertion turns
+    # that into a nonzero exit status as well as the FAIL lines.
+    ensures result == 0
+    let t = Tally(failures: 0, checks: 0)
+
+    # ---- RFC 4648 section 10 vectors --------------------------------------
+    set t to expect(t, "empty text", base64_encode("") == "")
+    set t to expect(t, "f -> Zg==", base64_encode("f") == "Zg==")
+    set t to expect(t, "fo -> Zm8=", base64_encode("fo") == "Zm8=")
+    set t to expect(t, "foo -> Zm9v", base64_encode("foo") == "Zm9v")
+    set t to expect(t, "foob -> Zm9vYg==", base64_encode("foob") == "Zm9vYg==")
+    set t to expect(t, "fooba -> Zm9vYmE=", base64_encode("fooba") == "Zm9vYmE=")
+    set t to expect(t, "foobar -> Zm9vYmFy", base64_encode("foobar") == "Zm9vYmFy")
+    set t to expect(t, "Man -> TWFu", base64_encode("Man") == "TWFu")
+    set t to expect(t, "Ma -> TWE=", base64_encode("Ma") == "TWE=")
+    set t to expect(t, "M -> TQ==", base64_encode("M") == "TQ==")
+    set t to expect(t, "hello world", base64_encode("hello world") == "aGVsbG8gd29ybGQ=")
+    set t to expect(t, "Hello World!", base64_encode("Hello World!") == "SGVsbG8gV29ybGQh")
+    set t to expect(t, "the quick brown fox", base64_encode("The quick brown fox jumps over the lazy dog") == "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw==")
+    set t to expect(t, "UTF-8 text encodes its bytes", base64_encode(character(195) + character(169)) == "w6k=")
+
+    # ---- the URL-safe alphabet -------------------------------------------
+    set t to expect(t, "url empty", base64_url_encode("") == "")
+    set t to expect(t, "url f", base64_url_encode("f") == "Zg")
+    set t to expect(t, "url fo", base64_url_encode("fo") == "Zm8")
+    set t to expect(t, "url foo", base64_url_encode("foo") == "Zm9v")
+    set t to expect(t, "url foobar", base64_url_encode("foobar") == "Zm9vYmFy")
+    set t to expect(t, "url 0xfb 0xff -> -_8", base64_url_encode_bytes([251, 255]) == "-_8")
+    set t to expect(t, "url 0xfb -> -w", base64_url_encode_bytes([251]) == "-w")
+    set t to expect(t, "url 0xff -> _w", base64_url_encode_bytes([255]) == "_w")
+    set t to expect(t, "standard 0xfb 0xff -> +/8=", base64_encode_bytes([251, 255]) == "+/8=")
+    set t to expect(t, "standard 0xfb -> +w==", base64_encode_bytes([251]) == "+w==")
+    set t to expect(t, "standard 0xff -> /w==", base64_encode_bytes([255]) == "/w==")
+    set t to expect(t, "url output carries no padding", base64_url_encode_bytes([1]) == "AQ")
+    set t to expect(t, "url output uses no + or /", url_charset_ok(base64_url_encode_bytes([0, 251, 255, 62, 63])))
+
+    # ---- byte lists, including 0 -----------------------------------------
+    set t to expect(t, "zero byte encodes", base64_encode_bytes([0]) == "AA==")
+    set t to expect(t, "three bytes encode without padding", base64_encode_bytes([0, 0, 0]) == "AAAA")
+    let all = []
+    let i = 0
+    while i < 256 bounded 1000:
+        set all to all + [i]
+        set i to i + 1
+    let all_std = base64_encode_bytes(all)
+    let all_url = base64_url_encode_bytes(all)
+    set t to expect(t, "256 bytes have the padded length", (length of all_std) == 344)
+    set t to expect(t, "256 url-safe bytes have the unpadded length", (length of all_url) == 342)
+    let all_back = base64_decode(all_std)
+    set t to expect(t, "256 byte round trip through standard", all_back.ok and same_bytes(all_back.bytes, all))
+    let all_url_back = base64_url_decode(all_url)
+    set t to expect(t, "256 byte round trip through url-safe", all_url_back.ok and same_bytes(all_url_back.bytes, all))
+
+    # ---- decode: canonical inputs ----------------------------------------
+    let d0 = base64_decode("")
+    set t to expect(t, "empty decodes", d0.ok and (length of d0.bytes) == 0)
+    set t to expect(t, "empty success has no error", d0.err == "" and d0.at == 0)
+    let d1 = base64_decode("TWFu")
+    set t to expect(t, "TWFu -> Man", d1.ok and same_bytes(d1.bytes, [77, 97, 110]))
+    let d2 = base64_decode("TWE=")
+    set t to expect(t, "TWE= -> Ma", d2.ok and same_bytes(d2.bytes, [77, 97]))
+    let d3 = base64_decode("TQ==")
+    set t to expect(t, "TQ== -> M", d3.ok and same_bytes(d3.bytes, [77]))
+    let d4 = base64_decode("+/8=")
+    set t to expect(t, "+/8= -> fb ff", d4.ok and same_bytes(d4.bytes, [251, 255]))
+    let d5 = base64_decode("AA==")
+    set t to expect(t, "AA== is the zero byte", d5.ok and same_bytes(d5.bytes, [0]))
+    let d6 = base64_decode("Zh==")
+    set t to expect(t, "non-zero pad bits are ignored (RFC 4648 3.5)", d6.ok and same_bytes(d6.bytes, [102]))
+    let d7 = base64_decode("Zm9vYmFy")
+    set t to expect(t, "Zm9vYmFy -> foobar", d7.ok and same_bytes(d7.bytes, [102, 111, 111, 98, 97, 114]))
+
+    # ---- decode: URL-safe inputs -----------------------------------------
+    let u0 = base64_url_decode("")
+    set t to expect(t, "url empty decodes", u0.ok and (length of u0.bytes) == 0)
+    let u1 = base64_url_decode("-_8")
+    set t to expect(t, "url -_8 -> fb ff", u1.ok and same_bytes(u1.bytes, [251, 255]))
+    let u2 = base64_url_decode("-w")
+    set t to expect(t, "url -w -> fb", u2.ok and same_bytes(u2.bytes, [251]))
+    let u3 = base64_url_decode("_w")
+    set t to expect(t, "url _w -> ff", u3.ok and same_bytes(u3.bytes, [255]))
+    let u4 = base64_url_decode("Zg==")
+    set t to expect(t, "url decoder accepts optional padding", u4.ok and same_bytes(u4.bytes, [102]))
+    let u5 = base64_url_decode("-_8=")
+    set t to expect(t, "url decoder accepts padded 3-byte form", u5.ok and same_bytes(u5.bytes, [251, 255]))
+    let u6 = base64_url_decode("Zm9vYmFy")
+    set t to expect(t, "url decoder reads an unpadded full quantum", u6.ok and same_bytes(u6.bytes, [102, 111, 111, 98, 97, 114]))
+
+    # ---- decode: malformed standard input --------------------------------
+    let m1 = base64_decode("Z")
+    set t to expect(t, "length 1 is E_BASE64_LENGTH at 1", (not m1.ok) and m1.err == "E_BASE64_LENGTH" and m1.at == 1)
+    let m2 = base64_decode("Zg")
+    set t to expect(t, "unpadded standard input is E_BASE64_LENGTH", m2.err == "E_BASE64_LENGTH" and m2.at == 2)
+    let m3 = base64_decode("Zg=")
+    set t to expect(t, "short padded input is E_BASE64_LENGTH at 3", m3.err == "E_BASE64_LENGTH" and m3.at == 3)
+    let m4 = base64_decode("Zm9vY")
+    set t to expect(t, "length 5 is E_BASE64_LENGTH", m4.err == "E_BASE64_LENGTH" and m4.at == 5)
+    let m5 = base64_decode("====")
+    set t to expect(t, "four pad characters is E_BASE64_PADDING at 0", m5.err == "E_BASE64_PADDING" and m5.at == 0)
+    let m6 = base64_decode("Z===")
+    set t to expect(t, "three pad characters is E_BASE64_PADDING at 1", m6.err == "E_BASE64_PADDING" and m6.at == 1)
+    let m7 = base64_decode("Z=g=")
+    set t to expect(t, "padding in the middle is E_BASE64_PADDING at 1", m7.err == "E_BASE64_PADDING" and m7.at == 1)
+    let m8 = base64_decode("AB=C")
+    set t to expect(t, "padding before the tail is E_BASE64_PADDING at 2", m8.err == "E_BASE64_PADDING" and m8.at == 2)
+    let m9 = base64_decode("AAAA====")
+    set t to expect(t, "padding after a full quantum is E_BASE64_PADDING at 4", m9.err == "E_BASE64_PADDING" and m9.at == 4)
+    let m10 = base64_decode("Zm$v")
+    set t to expect(t, "bad character is E_BASE64_CHARACTER at 2", m10.err == "E_BASE64_CHARACTER" and m10.at == 2)
+    let m11 = base64_decode("Zm9!")
+    set t to expect(t, "bad character at the end is E_BASE64_CHARACTER at 3", m11.err == "E_BASE64_CHARACTER" and m11.at == 3)
+    let m12 = base64_decode("-_8=")
+    set t to expect(t, "standard decoder refuses the url alphabet", m12.err == "E_BASE64_CHARACTER" and m12.at == 0)
+    set t to expect(t, "a refused decode carries no bytes", (length of m10.bytes) == 0)
+
+    # ---- decode: malformed URL-safe input --------------------------------
+    let n1 = base64_url_decode("Z")
+    set t to expect(t, "url length 1 is E_BASE64_LENGTH at 1", (not n1.ok) and n1.err == "E_BASE64_LENGTH" and n1.at == 1)
+    let n2 = base64_url_decode("Zg=")
+    set t to expect(t, "url padding that completes nothing is E_BASE64_PADDING at 2", n2.err == "E_BASE64_PADDING" and n2.at == 2)
+    let n3 = base64_url_decode("Z===")
+    set t to expect(t, "url three pad characters is E_BASE64_PADDING at 1", n3.err == "E_BASE64_PADDING" and n3.at == 1)
+    let n4 = base64_url_decode("AAAA==")
+    set t to expect(t, "url padding after a full quantum is E_BASE64_PADDING at 4", n4.err == "E_BASE64_PADDING" and n4.at == 4)
+    let n5 = base64_url_decode("+/8=")
+    set t to expect(t, "url decoder refuses the standard alphabet", n5.err == "E_BASE64_CHARACTER" and n5.at == 0)
+    let n6 = base64_url_decode("Zg==")
+    set t to expect(t, "padded url input decodes", n6.ok and same_bytes(n6.bytes, [102]))
+
+    # ---- fixed-seed round-trip property ----------------------------------
+    let cur = 987654
+    let rounds = 0
+    let bad = 0
+    while rounds < 120 bounded 1000:
+        set cur to lcg_next(cur)
+        let n = cur & 64
+        set cur to lcg_next(cur)
+        let xs = seed_bytes(cur, n)
+        let std_text = base64_encode_bytes(xs)
+        let url_text = base64_url_encode_bytes(xs)
+        let std_back = base64_decode(std_text)
+        let url_back = base64_url_decode(url_text)
+        if (not std_back.ok) or (not same_bytes(std_back.bytes, xs)):
+            set bad to bad + 1
+        if (not url_back.ok) or (not same_bytes(url_back.bytes, xs)):
+            set bad to bad + 1
+        let rem = n % 3
+        let groups = (n - rem) / 3
+        let std_tail = 0
+        let url_tail = 0
+        if rem == 1:
+            set std_tail to 4
+            set url_tail to 2
+        if rem == 2:
+            set std_tail to 4
+            set url_tail to 3
+        if (length of std_text) != groups * 4 + std_tail:
+            set bad to bad + 1
+        if (length of url_text) != groups * 4 + url_tail:
+            set bad to bad + 1
+        if url_output_shape_ok(url_text) == false:
+            set bad to bad + 1
+        set rounds to rounds + 1
+    set t to expect(t, "120 seeded round trips are exact in both alphabets", bad == 0)
+    set t to expect(t, "the property loop ran 120 times", rounds == 120)
+
+    if t.failures == 0:
+        log.info("OK base64: " + t.checks + " checks")
+    return t.failures
+
+# A url-safe encoding is only allowed the ALPHA / DIGIT / "-" / "_" alphabet and
+# never carries "=" padding.
+action url_charset_ok(t) -> bool:
+    let i = 0
+    let n = length of t
+    while i < n bounded 10000:
+        let b = byte_at(t, i)
+        let ok = (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (b >= 48 and b <= 57) or b == 45 or b == 95
+        if ok == false:
+            return false
+        set i to i + 1
+    return true
+
+action url_output_shape_ok(t) -> bool:
+    if url_charset_ok(t) == false:
+        return false
+    if (length of t) % 4 == 1:
+        return false
+    return true

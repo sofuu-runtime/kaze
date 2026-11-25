@@ -1,0 +1,87 @@
+# lib/time.kaze -- monotonic and UTC time, ISO 8601 formatting, durations.
+#
+# The clock comes from the two pure builtins clock_monotonic_ns() and
+# clock_utc_seconds(); everything else is arithmetic so the module stays pure.
+# ISO 8601 formatting is the civil-from-days algorithm, valid for UTC
+# timestamps at or after the UNIX epoch.
+
+# Nanoseconds from a monotonic source. Only differences are meaningful.
+action time_monotonic_now() -> num:
+    return clock_monotonic_ns()
+
+# Seconds since the UNIX epoch, UTC.
+action time_utc_now() -> num:
+    return clock_utc_seconds()
+
+# end - start, in the same unit as the inputs (milliseconds by convention).
+action time_duration_ms(start, end) -> num:
+    return end - start
+
+# Exact integer division, floored like Hinnant's civil-from-days requires.
+# The remainder makes the quotient exact, so no fractional part leaks into a
+# date component; a negative remainder means truncation rounded up, so the
+# quotient is corrected down by one. Without that correction a day number
+# before the epoch (for example -719469) produced an invalid month/day.
+action time_idiv(a, b) -> num:
+    if b <= 0:
+        return 0
+    let rem = (a % b) otherwise 0
+    let q = ((a - rem) / b) otherwise 0
+    if rem < 0:
+        return q - 1
+    return q
+
+action time_pad2(n) -> text:
+    if n < 10:
+        return "0" + n
+    return "" + n
+
+action time_pad4(n) -> text:
+    if n < 10:
+        return "000" + n
+    if n < 100:
+        return "00" + n
+    if n < 1000:
+        return "0" + n
+    return "" + n
+
+action time_pad3(n) -> text:
+    if n < 10:
+        return "00" + n
+    if n < 100:
+        return "0" + n
+    return "" + n
+
+# Days since 1970-01-01 to the proleptic Gregorian date, UTC.
+# Howard Hinnant's civil_from_days, with every division carrying a fallback.
+action time_civil_from_days(z0) -> list:
+    let z = z0 + 719468
+    let era = time_idiv(z, 146097)
+    let doe = z - era * 146097
+    let a = doe - time_idiv(doe, 1460) + time_idiv(doe, 36524) - time_idiv(doe, 146096)
+    let yoe = time_idiv(a, 365)
+    let y = yoe + era * 400
+    let doy = doe - (365 * yoe + time_idiv(yoe, 4) - time_idiv(yoe, 100))
+    let mp = time_idiv(5 * doy + 2, 153)
+    let d = doy - time_idiv(153 * mp + 2, 5) + 1
+    let m = mp + 3
+    if mp >= 10:
+        set m to mp - 9
+    let year = y
+    if m <= 2:
+        set year to y + 1
+    return [year, m, d]
+
+# UTC timestamp in seconds -> YYYY-MM-DDTHH:MM:SSZ.
+action time_format_iso8601(timestamp) -> text:
+    guard timestamp >= 0
+    let days = time_idiv(timestamp, 86400)
+    let secs = timestamp - days * 86400
+    let civil = time_civil_from_days(days)
+    let year = civil[0] otherwise 1970
+    let month = civil[1] otherwise 1
+    let day = civil[2] otherwise 1
+    let hour = time_idiv(secs, 3600)
+    let minute = time_idiv(secs - hour * 3600, 60)
+    let second = secs - hour * 3600 - minute * 60
+    return time_pad4(year) + "-" + time_pad2(month) + "-" + time_pad2(day) + "T" + time_pad2(hour) + ":" + time_pad2(minute) + ":" + time_pad2(second) + "Z"

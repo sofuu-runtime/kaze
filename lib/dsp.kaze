@@ -1,0 +1,185 @@
+# lib/dsp.kaze -- sensor-fusion filters: a scalar Kalman filter, a multi-state
+# linear Kalman filter, and the one-pole low-pass filter used to pre-smooth raw
+# sensor streams. These are the estimators an IMU/GPS, barometer or range sensor
+# pipeline needs between the driver and the controller.
+#
+# Conventions and exact equations:
+#
+#   * Kalman1D is a scalar state estimator with no motion model. Its predict step
+#     is p <- p + q; its update is
+#         s = p + r,  k = p / s,  x <- x + k (z - x),  p <- (1 - k) p.
+#     With non-negative q and r that gain lies in [0, 1]; the code clamps it there
+#     and guards s <= 0 (a caller that handed in a negative variance) by returning
+#     the filter unchanged, so no path divides by zero or produces a non-finite state.
+#
+#   * KalmanMultiState is a two-state constant-velocity linear Kalman filter:
+#     state_vector is [position, velocity], covariance_matrix is its 2x2 covariance,
+#     process_noise is the 2x2 Q added on every predict, and measurement_noise is
+#     the scalar variance of a position measurement. This is the IMU-GPS shape:
+#     an inertial velocity drives the predict, a position fix corrects it.
+#     predict uses F = [[1, dt], [0, 1]] and P <- F P F^T + Q. update uses the
+#     position measurement row h = [1, 0].
+#
+#   * kalman_linear_update is the general measurement update for any state length n
+#     and any 1 x n measurement row h (read as zero outside the list):
+#         S = h P h^T + r,  K = P h^T / S,  x <- x + K (z - h x),  P <- P - K h P.
+#     kalman_multi_update is this routine with h = [1, 0]. A measurement with S <= 0
+#     carries no information and returns the filter unchanged.
+#
+#   * A state vector shorter than two entries is read as zero for the missing
+#     entries, and a covariance matrix outside its shape reads as 0, so the filter
+#     is total over any Matrix/state a caller can build. Entries are expected to be
+#     finite; the guards above are what keep a malformed variance from trapping.
+#
+#   * lowpass_filter is the exponential moving average: out = prev + alpha (current - prev),
+#     with alpha clamped to [0, 1]. alpha = 0 holds, alpha = 1 tracks.
+#
+# Helpers beyond the roadmap's list: kalman_multi_new, kalman_multi_new_with,
+# kalman_multi_predict, kalman_multi_step, kalman_linear_update. The roadmap names
+# the KalmanMultiState record without an API; these are the predict/update pair the
+# record exists for, plus the generic row form, documented as a deviation.
+
+use "./matrix.kaze"
+
+record Kalman1D:
+    x: number
+    p: number
+    q: number
+    r: number
+
+record KalmanMultiState:
+    state_vector: list
+    covariance_matrix: Matrix
+    process_noise: Matrix
+    measurement_noise: number
+
+# ---- scalar filter -------------------------------------------------------------
+
+action kalman1d_update(kf: Kalman1D, measurement) -> Kalman1D:
+    let p_pred = kf.p + kf.q
+    let s = p_pred + kf.r
+    if not (s > 0):
+        return kf
+    let k = p_pred / s otherwise 0
+    if k < 0:
+        set k to 0
+    if k > 1:
+        set k to 1
+    let x = kf.x + k * (measurement - kf.x)
+    let p = (1 - k) * p_pred
+    if p < 0:
+        set p to 0
+    return Kalman1D(x: x, p: p, q: kf.q, r: kf.r)
+
+# ---- multi-state filter --------------------------------------------------------
+
+# Initial covariance is the identity: one unit of variance on position and velocity
+# until the first measurements shrink it. Use kalman_multi_new_with to start from a
+# known covariance instead.
+action kalman_multi_new(position, velocity, process_noise: Matrix, measurement_noise) -> KalmanMultiState:
+    return kalman_multi_new_with(position, velocity, matrix_identity(2), process_noise, measurement_noise)
+
+action kalman_multi_new_with(position, velocity, covariance: Matrix, process_noise: Matrix, measurement_noise) -> KalmanMultiState:
+    return KalmanMultiState(state_vector: [position, velocity],
+                            covariance_matrix: covariance,
+                            process_noise: process_noise,
+                            measurement_noise: measurement_noise)
+
+# Constant-velocity predict: position moves by velocity * dt, velocity is constant,
+# and the covariance grows by the process noise Q.
+action kalman_multi_predict(kf: KalmanMultiState, dt) -> KalmanMultiState:
+    let pos = kf.state_vector[0] otherwise 0
+    let vel = kf.state_vector[1] otherwise 0
+    let p00 = matrix_get(kf.covariance_matrix, 0, 0)
+    let p01 = matrix_get(kf.covariance_matrix, 0, 1)
+    let p10 = matrix_get(kf.covariance_matrix, 1, 0)
+    let p11 = matrix_get(kf.covariance_matrix, 1, 1)
+    let c00 = p00 + dt * p10 + dt * (p01 + dt * p11)
+    let c01 = p01 + dt * p11
+    let c10 = p10 + dt * p11
+    let c11 = p11
+    let propagated = matrix_from_rows([[c00, c01], [c10, c11]])
+    return KalmanMultiState(state_vector: [pos + vel * dt, vel],
+                            covariance_matrix: matrix_add(propagated, kf.process_noise),
+                            process_noise: kf.process_noise,
+                            measurement_noise: kf.measurement_noise)
+
+# The general linear measurement update, h is the 1 x n measurement row.
+action kalman_linear_update(kf: KalmanMultiState, h: list, measurement) -> KalmanMultiState:
+    let n = length of kf.state_vector
+    let noise = kf.measurement_noise
+    # pht = P h^T, an n-vector.
+    let pht = []
+    let i = 0
+    while i < n bounded 4096:
+        let total = 0
+        let j = 0
+        while j < n bounded 4096:
+            set total to total + matrix_get(kf.covariance_matrix, i, j) * (h[j] otherwise 0)
+            set j to j + 1
+        set pht to pht + [total]
+        set i to i + 1
+    # hp = h P, an n-vector.
+    let hp = []
+    let j2 = 0
+    while j2 < n bounded 4096:
+        let total = 0
+        let i2 = 0
+        while i2 < n bounded 4096:
+            set total to total + (h[i2] otherwise 0) * matrix_get(kf.covariance_matrix, i2, j2)
+            set i2 to i2 + 1
+        set hp to hp + [total]
+        set j2 to j2 + 1
+    # S = h P h^T + r = h pht + r.
+    let s = noise
+    let i3 = 0
+    while i3 < n bounded 4096:
+        set s to s + (h[i3] otherwise 0) * (pht[i3] otherwise 0)
+        set i3 to i3 + 1
+    if not (s > 0):
+        return kf
+    let predicted = 0
+    let i4 = 0
+    while i4 < n bounded 4096:
+        set predicted to predicted + (h[i4] otherwise 0) * (kf.state_vector[i4] otherwise 0)
+        set i4 to i4 + 1
+    let innovation = measurement - predicted
+    let state = []
+    let i5 = 0
+    while i5 < n bounded 4096:
+        let gain = (pht[i5] otherwise 0) / s otherwise 0
+        set state to state + [(kf.state_vector[i5] otherwise 0) + gain * innovation]
+        set i5 to i5 + 1
+    let rows = []
+    let i6 = 0
+    while i6 < n bounded 4096:
+        let gain = (pht[i6] otherwise 0) / s otherwise 0
+        let row = []
+        let j6 = 0
+        while j6 < n bounded 4096:
+            set row to row + [matrix_get(kf.covariance_matrix, i6, j6) - gain * (hp[j6] otherwise 0)]
+            set j6 to j6 + 1
+        set rows to rows + [row]
+        set i6 to i6 + 1
+    return KalmanMultiState(state_vector: state,
+                            covariance_matrix: matrix_from_rows(rows),
+                            process_noise: kf.process_noise,
+                            measurement_noise: noise)
+
+# Position-measurement update: h = [1, 0].
+action kalman_multi_update(kf: KalmanMultiState, measurement) -> KalmanMultiState:
+    return kalman_linear_update(kf, [1, 0], measurement)
+
+# One full estimator step: predict with dt, then correct with the measurement.
+action kalman_multi_step(kf: KalmanMultiState, dt, measurement) -> KalmanMultiState:
+    return kalman_multi_update(kalman_multi_predict(kf, dt), measurement)
+
+# ---- signal conditioning -------------------------------------------------------
+
+action lowpass_filter(prev, current, alpha) -> num:
+    let a = alpha
+    if a < 0:
+        set a to 0
+    if a > 1:
+        set a to 1
+    return prev + a * (current - prev)

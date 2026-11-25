@@ -1,0 +1,236 @@
+# lib/base64.kaze -- RFC 4648 base64, standard and URL-safe alphabets.
+#
+# Two alphabets and two padding conventions are the whole surface: the standard
+# alphabet with mandatory "=" padding (base64_encode / base64_decode) and the
+# URL-safe alphabet with no padding (base64_url_encode / base64_url_decode), the
+# form that survives a URL path segment or a query value untouched.
+#
+# Bytes are a list of numbers 0..255, the convention lib/sha256.kaze uses: Kaze
+# text cannot carry a 0 byte (there is no escape for it in a literal and
+# character(0) is empty), so a decoder whose result is a byte list is the only
+# honest one for arbitrary payloads. The text front doors (base64_encode, ...)
+# encode the UTF-8 bytes of the text they are given; the _bytes front doors take
+# a byte list and handle every value including 0.
+#
+# Decoding is strict about what the standard requires:
+#   * the standard decoder rejects a length that is not a multiple of four
+#     (E_BASE64_LENGTH), padding anywhere but the tail, more than two pad
+#     characters or a pad count that does not complete the final quantum
+#     (E_BASE64_PADDING), and any byte outside the alphabet (E_BASE64_CHARACTER);
+#   * the URL-safe decoder accepts the same input with or without the optional
+#     "=" padding (RFC 4648 leaves padding optional for the URL alphabet), and
+#     rejects the same malformed shapes under the same codes;
+#   * non-zero pad bits in a final quantum are accepted and ignored. RFC 4648
+#     section 3.5 lets a decoder either reject or ignore them; ignoring them is
+#     what CPython's validate=True decoder does, which is the reference this
+#     module is checked against. A caller that needs canonical form can re-encode
+#     the result and compare.
+#
+# Deviations from the module plan, both forced by the text representation above:
+#   * the plan's "-> result" decoders are Base64Result records carrying the
+#     decoded bytes as a list, a stable error code and the failing byte offset;
+#   * the _bytes front doors (base64_encode_bytes, base64_url_encode_bytes) are
+#     additions, because a text parameter cannot carry a 0 byte and the plan's
+#     text-only signatures would therefore silently lose one.
+#
+# Every routine is total: a decoder reports failure in its result record instead
+# of indexing out of bounds, and every loop declares its ceiling. The encode loop
+# takes three input bytes per iteration (about three megabytes per call) and the
+# decode passes take at most one million encoded bytes per call; past those a run
+# stops with E_KAZE_LOOP_BOUND instead of looping forever.
+
+# ok is false on malformed input; bytes is the decoded byte list; err is one of
+# E_BASE64_LENGTH, E_BASE64_PADDING or E_BASE64_CHARACTER; at is the byte offset
+# of the failure (0 on success).
+record Base64Result:
+    ok: bool
+    bytes: list
+    err: text
+    at: number
+
+action base64_result(ok, bytes, err, at) -> Base64Result:
+    return Base64Result(ok: ok, bytes: bytes, err: err, at: at)
+
+action base64_ok(bytes) -> Base64Result:
+    return base64_result(true, bytes, "", 0)
+
+action base64_fail(err, at) -> Base64Result:
+    return base64_result(false, [], err, at)
+
+# The alphabet is produced arithmetically instead of from a table that would need
+# a fallback for every dynamic index: 0..25 A-Z, 26..51 a-z, 52..61 0-9, 62/63.
+action base64_char(v, url) -> text:
+    if v < 0 or v > 63:
+        return ""
+    if v < 26:
+        return character(65 + v)
+    if v < 52:
+        return character(71 + v)
+    if v < 62:
+        return character(48 + v - 52)
+    if v == 62:
+        if url == 1:
+            return "-"
+        return "+"
+    if url == 1:
+        return "_"
+    return "/"
+
+# The sextet value of one alphabet byte, or -1 when it is not in that alphabet.
+action base64_value(byte_val, url) -> number:
+    if byte_val >= 65 and byte_val <= 90:
+        return byte_val - 65
+    if byte_val >= 97 and byte_val <= 122:
+        return byte_val - 71
+    if byte_val >= 48 and byte_val <= 57:
+        return byte_val + 4
+    if url == 1:
+        if byte_val == 45:
+            return 62
+        if byte_val == 95:
+            return 63
+        return 0 - 1
+    if byte_val == 43:
+        return 62
+    if byte_val == 47:
+        return 63
+    return 0 - 1
+
+# The UTF-8 bytes of a text as a byte list. The text is already a byte string in
+# Kaze, so this is a copy, not a decoding step.
+action base64_bytes_of(text) -> list:
+    let out = []
+    let i = 0
+    let n = length of text
+    while i < n bounded 1000000:
+        set out to out + [byte_at(text, i) & 255]
+        set i to i + 1
+    return out
+
+# Encode a byte list. The two rounds of padding are appended as literal text, so
+# the only allocations inside the loop are the four one-character alphabet
+# characters; a text value cannot carry a 0 byte but base64 output is ASCII, so
+# the result is always a well-formed text.
+action base64_encode_bytes_variant(bytes, url) -> text:
+    let n = length of bytes
+    let out = ""
+    let i = 0
+    while i + 3 <= n bounded 1000000:
+        let b0 = byte_at(bytes, i) & 255
+        let b1 = byte_at(bytes, i + 1) & 255
+        let b2 = byte_at(bytes, i + 2) & 255
+        set out to out + base64_char(b0 >> 2, url)
+        set out to out + base64_char(((b0 & 3) << 4) | (b1 >> 4), url)
+        set out to out + base64_char(((b1 & 15) << 2) | (b2 >> 6), url)
+        set out to out + base64_char(b2 & 63, url)
+        set i to i + 3
+    let rem = n - i
+    if rem == 1:
+        let b0 = byte_at(bytes, i) & 255
+        set out to out + base64_char(b0 >> 2, url)
+        set out to out + base64_char((b0 & 3) << 4, url)
+        if url == 0:
+            set out to out + "=="
+    if rem == 2:
+        let b0 = byte_at(bytes, i) & 255
+        let b1 = byte_at(bytes, i + 1) & 255
+        set out to out + base64_char(b0 >> 2, url)
+        set out to out + base64_char(((b0 & 3) << 4) | (b1 >> 4), url)
+        set out to out + base64_char((b1 & 15) << 2, url)
+        if url == 0:
+            set out to out + "="
+    return out
+
+# The standard alphabet with "=" padding, over the UTF-8 bytes of a text.
+action base64_encode(data) -> text:
+    return base64_encode_bytes_variant(base64_bytes_of(data), 0)
+
+# The URL-safe alphabet with no padding, over the UTF-8 bytes of a text.
+action base64_url_encode(data) -> text:
+    return base64_encode_bytes_variant(base64_bytes_of(data), 1)
+
+# The standard alphabet with "=" padding, over a byte list.
+action base64_encode_bytes(bytes) -> text:
+    return base64_encode_bytes_variant(bytes, 0)
+
+# The URL-safe alphabet with no padding, over a byte list.
+action base64_url_encode_bytes(bytes) -> text:
+    return base64_encode_bytes_variant(bytes, 1)
+
+# Decode one alphabet. Validation is one pass over the encoded data, then decoding
+# is a second pass: the padding count has to be known before the data length is,
+# and the validation pass is what proves every sextet is in range for the decode
+# pass.
+action base64_decode_variant(encoded, url) -> Base64Result:
+    let n = length of encoded
+    if n == 0:
+        return base64_ok([])
+    let rem = n % 4
+    if url == 1:
+        if rem == 1:
+            return base64_fail("E_BASE64_LENGTH", n)
+    otherwise:
+        if rem != 0:
+            return base64_fail("E_BASE64_LENGTH", n)
+
+    # At most two trailing pad characters are legal; count the tail without
+    # indexing past the start of the string.
+    let pad = 0
+    let k = 0
+    while k < 4 and k < n bounded 8:
+        if byte_at(encoded, n - 1 - k) == 61:
+            set pad to pad + 1
+        set k to k + 1
+    if pad > 2:
+        return base64_fail("E_BASE64_PADDING", n - pad)
+    let data_len = n - pad
+    if data_len == 0:
+        return base64_fail("E_BASE64_PADDING", 0)
+    let dr = data_len % 4
+    if pad > 0 and dr != 4 - pad:
+        return base64_fail("E_BASE64_PADDING", data_len)
+    if dr == 1:
+        return base64_fail("E_BASE64_LENGTH", n)
+
+    # Validation: every data byte is an alphabet byte; a pad character before the
+    # tail is a padding error at its own offset.
+    let i = 0
+    while i < data_len bounded 1000000:
+        let b = byte_at(encoded, i)
+        if b == 61:
+            return base64_fail("E_BASE64_PADDING", i)
+        if base64_value(b, url) < 0:
+            return base64_fail("E_BASE64_CHARACTER", i)
+        set i to i + 1
+
+    let out = []
+    let j = 0
+    while j + 4 <= data_len bounded 1000000:
+        let v0 = base64_value(byte_at(encoded, j), url)
+        let v1 = base64_value(byte_at(encoded, j + 1), url)
+        let v2 = base64_value(byte_at(encoded, j + 2), url)
+        let v3 = base64_value(byte_at(encoded, j + 3), url)
+        set out to out + [((v0 << 2) | (v1 >> 4))]
+        set out to out + [(((v1 & 15) << 4) | (v2 >> 2))]
+        set out to out + [(((v2 & 3) << 6) | v3)]
+        set j to j + 4
+    let tail = data_len - j
+    if tail == 2:
+        let v0 = base64_value(byte_at(encoded, j), url)
+        let v1 = base64_value(byte_at(encoded, j + 1), url)
+        set out to out + [((v0 << 2) | (v1 >> 4))]
+    if tail == 3:
+        let v0 = base64_value(byte_at(encoded, j), url)
+        let v1 = base64_value(byte_at(encoded, j + 1), url)
+        let v2 = base64_value(byte_at(encoded, j + 2), url)
+        set out to out + [((v0 << 2) | (v1 >> 4))]
+        set out to out + [(((v1 & 15) << 4) | (v2 >> 2))]
+    return base64_ok(out)
+
+# RFC 4648 standard alphabet, strict "=" padding.
+action base64_decode(encoded) -> Base64Result:
+    return base64_decode_variant(encoded, 0)
+
+# RFC 4648 URL-safe alphabet; padding is accepted but not required.
+action base64_url_decode(encoded) -> Base64Result:
+    return base64_decode_variant(encoded, 1)

@@ -1,0 +1,26 @@
+# Phase 17 benchmark: scalar N-body integration, 1,000,000 steps.
+# The whole hot path is numeric, so the compiler emits it unboxed.
+action integrate(steps: num) -> num:
+    let x = 0.1
+    let y = 0.2
+    let z = 0.3
+    let vx = 0.01
+    let vy = 0.02
+    let vz = 0.03
+    let dt = 0.000001
+    let i = 0
+    while i < steps bounded 2000000:
+        let r2 = x * x + y * y + z * z
+        let inv = (1.0 / sqrt(r2)) otherwise 0
+        let f = inv * inv * inv
+        set vx to vx - x * f * dt
+        set vy to vy - y * f * dt
+        set vz to vz - z * f * dt
+        set x to x + vx * dt
+        set y to y + vy * dt
+        set z to z + vz * dt
+        set i to i + 1
+    return x + y + z
+
+action main() -> num:
+    return integrate(1000000)

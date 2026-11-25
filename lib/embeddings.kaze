@@ -1,0 +1,136 @@
+# lib/embeddings.kaze -- vector similarity and top-k search over embedding lists.
+#
+# An embedding is a plain list of numbers; this module is the comparison layer
+# over those lists: dot product, cosine similarity, Euclidean distance, and a
+# bounded top-k search. It imports lib/heap.kaze, so top-k keeps only the k best
+# candidates in a min-heap instead of sorting every candidate.
+#
+# Unequal dimensions are compared as if the shorter vector were zero-padded to
+# the longer one -- the same convention a padded embedding batch uses. The dot
+# product therefore runs over the shorter length, each norm uses its own vector's
+# full length, and the distance runs over the longer length. Nothing falls off
+# the end and no caller needs an inline length check.
+#
+# The cosine answer is clamped to [-1, 1]: a double dot product can land one ulp
+# outside the range the maths allows, and a similarity that answers 1.0000000002
+# makes a caller's range check fail for no reason.
+#
+# vec_top_k's answer is fully ordered: higher score first, and equal scores by
+# lower candidate index. That is a total order, so the result never depends on
+# heap internals; a tie can never make two runs disagree.
+
+use "./heap.kaze"
+
+# One ranked candidate: its position in the candidate list and its cosine score
+# against the query.
+record VecMatch:
+    index: number
+    score: number
+
+# Dot product over the shorter length; the missing tail coordinates are zeros.
+action vec_dot(a, b) -> number:
+    let n = length of a
+    if (length of b) < n:
+        set n to length of b
+    let total = 0
+    let i = 0
+    while i < n bounded 1000000:
+        let x = a[i] otherwise 0
+        let y = b[i] otherwise 0
+        set total to total + x * y
+        set i to i + 1
+    return total
+
+# Euclidean norm of one embedding; 0 for an empty vector.
+action vec_norm(a) -> number:
+    let total = 0
+    for each x in a:
+        set total to total + x * x
+    return sqrt(total)
+
+# Cosine similarity. A zero-norm vector has no direction, so a pair involving one
+# is answered as 0 rather than as a division.
+action vec_cosine_similarity(a, b) -> number:
+    let na = vec_norm(a)
+    let nb = vec_norm(b)
+    if na <= 0 or nb <= 0:
+        return 0
+    let s = vec_dot(a, b) / (na * nb) otherwise 0
+    if s > 1:
+        return 1
+    if s < 0 - 1:
+        return 0 - 1
+    return s
+
+# Distance between the two vectors, zero-padded to the longer length.
+action vec_euclidean_distance(a, b) -> number:
+    let n = length of a
+    if (length of b) > n:
+        set n to length of b
+    let total = 0
+    let i = 0
+    while i < n bounded 1000000:
+        let d = (a[i] otherwise 0) - (b[i] otherwise 0)
+        set total to total + d * d
+        set i to i + 1
+    return sqrt(total)
+
+# Reverse a short list. top-k drains the min-heap worst-first and needs the
+# ranking the other way round; k is bounded by the caller's k.
+action vec_reverse(xs) -> list:
+    let n = length of xs
+    if n == 0:
+        return []
+    let out = [] + [xs[n - 1] otherwise 0]
+    let k = n - 1
+    while k > 0 bounded 1000000:
+        set k to k - 1
+        set out to out + [xs[k] otherwise 0]
+    return out
+
+# The k candidates most similar to query_vec, best first.
+#
+# candidates is a list of embedding lists. The answer is a list of VecMatch, at
+# most k long (fewer when there are fewer candidates), in the total order above.
+# k is clamped to [0, length of candidates], so a negative or oversized k is
+# answered rather than refused.
+#
+# The heap is a min-heap on score, so its top is the worst ranked entry and
+# heap_pop evicts exactly the entry a bounded top-k wants to drop. Candidates are
+# inserted from the highest index down: among equal scores the heap's FIFO
+# tie-break then evicts the higher index first, which leaves the lower index in
+# the answer, matching the documented tie order.
+action vec_top_k(query_vec, candidates, k) -> list:
+    let total = length of candidates
+    let want = k
+    if want < 0:
+        set want to 0
+    if want > total:
+        set want to total
+    if want == 0:
+        return []
+    let h = heap_create_min()
+    let i = total - 1
+    while i >= 0 bounded 1000000:
+        let c = candidates[i] otherwise []
+        let score = vec_cosine_similarity(query_vec, c)
+        set h to heap_push(h, score, i)
+        if heap_size(h) > want:
+            let dropped = heap_pop(h)
+            set h to dropped.heap
+        set i to i - 1
+    # want >= 1 and want <= total, so the heap kept at least one entry. The
+    # first pop seeds the list so the appends never start from an empty buffer.
+    let live = heap_size(h)
+    if live == 0:
+        return []
+    let first_read = heap_pop(h)
+    set h to first_read.heap
+    let worst_first = [] + [VecMatch(index: first_read.item, score: first_read.priority)]
+    let d = 1
+    while d < live bounded 1000000:
+        let read = heap_pop(h)
+        set h to read.heap
+        set worst_first to worst_first + [VecMatch(index: read.item, score: read.priority)]
+        set d to d + 1
+    return vec_reverse(worst_first)

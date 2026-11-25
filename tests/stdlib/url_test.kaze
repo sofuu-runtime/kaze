@@ -1,0 +1,299 @@
+# tests/stdlib/url_test.kaze -- lib/url.kaze over RFC 3986's component grammar, the
+# percent-encoding contract, and the query helpers.
+#
+# The expected component splits are the ones RFC 3986 section 3 defines, written
+# out by hand. The malformed group pins the strictness the module documents: it
+# reports a stable code and byte offset instead of a half-parsed URL. The
+# round-trip properties use a fixed-seed LCG, so a failure is reproducible.
+needs: log
+
+use "./../../lib/url.kaze"
+
+record Tally:
+    failures: number
+    checks: number
+
+action expect(t: Tally, label: text, ok: bool) -> Tally:
+    if ok:
+        return Tally(failures: t.failures, checks: t.checks + 1)
+    log.info("FAIL " + label)
+    return Tally(failures: t.failures + 1, checks: t.checks + 1)
+
+# All six RFC 3986 components plus the authority flag, compared at once.
+action parts_are(p: UrlParts, scheme, host, port, path, query, fragment, auth) -> bool:
+    if not p.ok:
+        return false
+    if p.scheme != scheme:
+        return false
+    if p.host != host:
+        return false
+    if p.port != port:
+        return false
+    if p.path != path:
+        return false
+    if p.query != query:
+        return false
+    if p.fragment != fragment:
+        return false
+    if p.has_authority != auth:
+        return false
+    return true
+
+# A refusal with a specific code and offset.
+action refused_with(p: UrlParts, err, at) -> bool:
+    if p.ok:
+        return false
+    if p.err != err:
+        return false
+    if p.at != at:
+        return false
+    return true
+
+action lcg_next(state) -> num:
+    return (state * 1664525 + 1013904223) & 4294967295
+
+record RoundTrip:
+    label: text
+    url: text
+
+action main() -> num:
+    # A nonzero failure count is a broken run, and the contract assertion turns
+    # that into a nonzero exit status as well as the FAIL lines.
+    ensures result == 0
+    let t = Tally(failures: 0, checks: 0)
+
+    # ---- absolute URIs ----------------------------------------------------
+    let a = url_parse("https://example.com/path?a=1&b=2#frag")
+    set t to expect(t, "absolute URI splits into its components", parts_are(a, "https", "example.com", 0, "/path", "a=1&b=2", "frag", true))
+    set t to expect(t, "a successful parse has no error", a.err == "" and a.at == 0)
+    set t to expect(t, "format rebuilds an absolute URI", url_format(a) == "https://example.com/path?a=1&b=2#frag")
+    let b = url_parse("http://example.com:8080/x")
+    set t to expect(t, "port is a number", parts_are(b, "http", "example.com", 8080, "/x", "", "", true))
+    set t to expect(t, "format rebuilds a port", url_format(b) == "http://example.com:8080/x")
+    let c = url_parse("http://example.com")
+    set t to expect(t, "empty path and query", parts_are(c, "http", "example.com", 0, "", "", "", true))
+    set t to expect(t, "format of host-only URL", url_format(c) == "http://example.com")
+    let d = url_parse("https://example.com/")
+    set t to expect(t, "root path is kept", parts_are(d, "https", "example.com", 0, "/", "", "", true))
+    let e = url_parse("http://h:65535/")
+    set t to expect(t, "the highest port is accepted", e.ok and e.port == 65535)
+    let f = url_parse("https://example.com/a%2Fb?x=%3D#f%20g")
+    set t to expect(t, "percent-encoding is preserved as written", parts_are(f, "https", "example.com", 0, "/a%2Fb", "x=%3D", "f%20g", true))
+    set t to expect(t, "percent-encoded URL round-trips", url_format(f) == "https://example.com/a%2Fb?x=%3D#f%20g")
+
+    # ---- authority edge cases --------------------------------------------
+    let g = url_parse("file:///etc/hosts")
+    set t to expect(t, "empty host keeps the authority flag", parts_are(g, "file", "", 0, "/etc/hosts", "", "", true))
+    set t to expect(t, "file URL keeps its three slashes", url_format(g) == "file:///etc/hosts")
+    let h = url_parse("file:/etc/hosts")
+    set t to expect(t, "file without an authority has no flag", parts_are(h, "file", "", 0, "/etc/hosts", "", "", false))
+    set t to expect(t, "file URL without authority round-trips", url_format(h) == "file:/etc/hosts")
+    let i = url_parse("http:///path")
+    set t to expect(t, "empty authority is legal generic syntax", parts_are(i, "http", "", 0, "/path", "", "", true))
+    set t to expect(t, "empty authority round-trips", url_format(i) == "http:///path")
+    let j = url_parse("http://")
+    set t to expect(t, "scheme with nothing else", parts_are(j, "http", "", 0, "", "", "", true))
+    set t to expect(t, "scheme plus empty authority formats", url_format(j) == "http://")
+    let k = url_parse("http:")
+    set t to expect(t, "scheme-only URL", parts_are(k, "http", "", 0, "", "", "", false))
+    set t to expect(t, "scheme-only URL formats", url_format(k) == "http:")
+    let l = url_parse("http://[::1]:8080/x")
+    set t to expect(t, "IPv6 literal keeps its brackets in host", parts_are(l, "http", "[::1]", 8080, "/x", "", "", true))
+    set t to expect(t, "IPv6 URL round-trips", url_format(l) == "http://[::1]:8080/x")
+    let m = url_parse("http://[fe80::1]/")
+    set t to expect(t, "bracket-only difference is kept", m.ok and m.host == "[fe80::1]" and m.port == 0)
+
+    # ---- relative references and scheme-less forms -----------------------
+    let n = url_parse("path/to?x=1#f")
+    set t to expect(t, "relative reference", parts_are(n, "", "", 0, "path/to", "x=1", "f", false))
+    set t to expect(t, "relative reference formats", url_format(n) == "path/to?x=1#f")
+    let o = url_parse("//host/path")
+    set t to expect(t, "network-path reference", parts_are(o, "", "host", 0, "/path", "", "", true))
+    set t to expect(t, "network-path reference formats", url_format(o) == "//host/path")
+    let p = url_parse("mailto:user@example.com")
+    set t to expect(t, "opaque path may contain @ and :", parts_are(p, "mailto", "", 0, "user@example.com", "", "", false))
+    set t to expect(t, "opaque path formats", url_format(p) == "mailto:user@example.com")
+    let q = url_parse("")
+    set t to expect(t, "the empty reference parses", q.ok and (length of url_format(q)) == 0)
+    set t to expect(t, "the empty reference has no components", parts_are(q, "", "", 0, "", "", "", false))
+    let r = url_parse("?a=1")
+    set t to expect(t, "query-only reference", parts_are(r, "", "", 0, "", "a=1", "", false) and url_format(r) == "?a=1")
+    let s = url_parse("#f")
+    set t to expect(t, "fragment-only reference", parts_are(s, "", "", 0, "", "", "f", false) and url_format(s) == "#f")
+    let u = url_parse("a:/b")
+    set t to expect(t, "single-letter scheme with root path", parts_are(u, "a", "", 0, "/b", "", "", false))
+    set t to expect(t, "single-letter scheme formats", url_format(u) == "a:/b")
+    let v = url_parse("http://h/p?a=1?2")
+    set t to expect(t, "question mark inside a query is data", v.ok and v.query == "a=1?2")
+    let w = url_parse("http://h/#f?x")
+    set t to expect(t, "question mark inside a fragment is data", w.ok and w.fragment == "f?x")
+    let x = url_parse("http://h/p#f#g")
+    set t to expect(t, "a second hash is refused, not swallowed", refused_with(x, "E_URL_CHARACTER", 12))
+
+    # ---- documented lossy edges ------------------------------------------
+    let y = url_parse("http://h:0/")
+    set t to expect(t, "an explicit port 0 parses", y.ok and y.port == 0)
+    set t to expect(t, "port 0 cannot be re-emitted", url_format(y) == "http://h/")
+    let z = url_parse("http://h:/p")
+    set t to expect(t, "an empty port is read as absent", z.ok and z.port == 0)
+    set t to expect(t, "an empty port is not re-emitted", url_format(z) == "http://h/p")
+    let aa = url_parse("http://h/p?")
+    set t to expect(t, "an empty query parses", aa.ok and aa.query == "")
+    set t to expect(t, "an empty query is not re-emitted", url_format(aa) == "http://h/p")
+    let ab = url_parse("http://h/p#")
+    set t to expect(t, "an empty fragment parses", ab.ok and ab.fragment == "")
+    set t to expect(t, "an empty fragment is not re-emitted", url_format(ab) == "http://h/p")
+
+    # ---- malformed input --------------------------------------------------
+    let bad1 = url_parse("http://user@h/")
+    set t to expect(t, "userinfo without a password is refused", refused_with(bad1, "E_URL_USERINFO", 11))
+    let bad2 = url_parse("http://user:pass@h/")
+    set t to expect(t, "userinfo with a password is refused at the @", refused_with(bad2, "E_URL_USERINFO", 16))
+    let bad3 = url_parse("1http://x")
+    set t to expect(t, "a scheme must start with a letter", refused_with(bad3, "E_URL_SCHEME", 0))
+    let bad4 = url_parse(":x")
+    set t to expect(t, "an empty scheme is refused", refused_with(bad4, "E_URL_SCHEME", 0))
+    let bad5 = url_parse("http://h:abc/")
+    set t to expect(t, "a non-numeric port is refused at its first character", refused_with(bad5, "E_URL_PORT", 9))
+    let bad6 = url_parse("http://h:70000/")
+    set t to expect(t, "a port above 65535 is refused", (not bad6.ok) and bad6.err == "E_URL_PORT" and bad6.at == 13)
+    let bad7 = url_parse("http://h:65536/")
+    set t to expect(t, "port 65536 is out of range", bad7.err == "E_URL_PORT" and bad7.at == 13)
+    let bad8 = url_parse("http://h/%zz")
+    set t to expect(t, "a bad percent escape in the path is E_URL_PERCENT at the %", refused_with(bad8, "E_URL_PERCENT", 9))
+    let bad9 = url_parse("http://h/a b")
+    set t to expect(t, "a raw space in the path is E_URL_CHARACTER", refused_with(bad9, "E_URL_CHARACTER", 10))
+    let bad10 = url_parse("http://[::1")
+    set t to expect(t, "an unclosed IP literal is E_URL_HOST at the bracket", refused_with(bad10, "E_URL_HOST", 7))
+    let bad11 = url_parse("http://[]/")
+    set t = expect(t, "an empty IP literal is E_URL_HOST", refused_with(bad11, "E_URL_HOST", 7))
+    let bad12 = url_parse("http://[::1]x/")
+    set t to expect(t, "junk after an IP literal is E_URL_PORT", refused_with(bad12, "E_URL_PORT", 12))
+    let bad13 = url_parse("http://h/[]")
+    set t to expect(t, "brackets are not path characters", refused_with(bad13, "E_URL_CHARACTER", 9))
+    let bad14 = url_parse("http://h/a%2")
+    set t to expect(t, "a truncated escape is E_URL_PERCENT", refused_with(bad14, "E_URL_PERCENT", 10))
+    let bad15 = url_parse("http://h/p?q=%")
+    set t to expect(t, "a truncated escape in the query is E_URL_PERCENT", refused_with(bad15, "E_URL_PERCENT", 13))
+    let bad16 = url_parse("http://h/p#f%")
+    set t to expect(t, "a truncated escape in the fragment is E_URL_PERCENT", refused_with(bad16, "E_URL_PERCENT", 12))
+    let bad17 = url_parse("//h:bad/")
+    set t to expect(t, "a bad port in a network-path reference", refused_with(bad17, "E_URL_PORT", 4))
+    let bad18 = url_parse("a b")
+    set t to expect(t, "a space in a relative path is refused", refused_with(bad18, "E_URL_CHARACTER", 1))
+    set t to expect(t, "a refused parse carries empty components", bad1.scheme == "" and bad1.host == "" and (length of bad1.path) == 0)
+
+    # ---- url_format on constructed parts ---------------------------------
+    let built = UrlParts(scheme: "https", host: "h", port: 444, path: "/p", query: "q=1", fragment: "f", has_authority: true, ok: true, err: "", at: 0)
+    set t to expect(t, "format uses every component", url_format(built) == "https://h:444/p?q=1#f")
+    let bare = UrlParts(scheme: "", host: "", port: 0, path: "", query: "", fragment: "", has_authority: false, ok: true, err: "", at: 0)
+    set t to expect(t, "format of empty parts is empty", url_format(bare) == "")
+    let opaque = UrlParts(scheme: "mailto", host: "", port: 0, path: "x@y", query: "", fragment: "", has_authority: false, ok: true, err: "", at: 0)
+    set t to expect(t, "format omits an absent authority", url_format(opaque) == "mailto:x@y")
+
+    # ---- round trips over a hand-written corpus --------------------------
+    let corpus = []
+    set corpus to corpus + [RoundTrip(label: "absolute", url: "https://example.com/path?a=1&b=2#frag")]
+    set corpus to corpus + [RoundTrip(label: "port", url: "http://example.com:8080/x")]
+    set corpus to corpus + [RoundTrip(label: "file", url: "file:///etc/hosts")]
+    set corpus to corpus + [RoundTrip(label: "mailto", url: "mailto:user@example.com")]
+    set corpus to corpus + [RoundTrip(label: "relative", url: "path/to?x=1#f")]
+    set corpus to corpus + [RoundTrip(label: "network path", url: "//host/path")]
+    set corpus to corpus + [RoundTrip(label: "ipv6", url: "http://[::1]:8080/x")]
+    set corpus to corpus + [RoundTrip(label: "empty", url: "")]
+    set corpus to corpus + [RoundTrip(label: "query only", url: "?a=1")]
+    set corpus to corpus + [RoundTrip(label: "fragment only", url: "#f")]
+    set t to expect(t, "the hand-written corpus has ten URLs", (length of corpus) == 10)
+
+    # ---- percent-encoding -------------------------------------------------
+    set t to expect(t, "unreserved text is unchanged", url_encode("abcXYZ019-._~") == "abcXYZ019-._~")
+    set t to expect(t, "a space becomes %20", url_encode("a b") == "a%20b")
+    set t to expect(t, "plus is escaped, not a space", url_encode("a+b") == "a%2Bb")
+    set t to expect(t, "reserved delimiters are escaped", url_encode("a/b?c=d&e=f") == "a%2Fb%3Fc%3Dd%26e%3Df")
+    set t to expect(t, "a literal percent is escaped", url_encode("%") == "%25")
+    set t to expect(t, "empty text encodes empty", url_encode("") == "")
+    set t to expect(t, "a high byte is escaped with two digits", url_encode(character(233)) == "%E9")
+    set t to expect(t, "UTF-8 is escaped byte by byte", url_encode(character(195) + character(169)) == "%C3%A9")
+    set t to expect(t, "a space decodes", url_decode("a%20b") == "a b")
+    set t to expect(t, "escapes decode", url_decode("%41%42") == "AB")
+    set t to expect(t, "a slash decodes", url_decode("%2F") == "/")
+    set t to expect(t, "text without escapes is unchanged", url_decode("abc") == "abc")
+    set t to expect(t, "an invalid escape is copied through", url_decode("%zz") == "%zz")
+    set t to expect(t, "a truncated escape is copied through", url_decode("%4") == "%4")
+    set t to expect(t, "a lone percent is copied through", url_decode("%") == "%")
+    set t to expect(t, "a trailing percent in text is copied through", url_decode("50%") == "50%")
+    set t to expect(t, "high bytes decode to their byte", url_decode("%E9") == character(233))
+    set t to expect(t, "UTF-8 escapes decode to their bytes", url_decode("%C3%A9") == character(195) + character(169))
+    set t to expect(t, "a NUL byte cannot be text, so url_decode answers empty", url_decode("%00x") == "")
+    let nul_bytes = url_decode_bytes("%00x")
+    set t to expect(t, "url_decode_bytes keeps the NUL", (length of nul_bytes) == 2 and byte_at(nul_bytes, 0) == 0 and byte_at(nul_bytes, 1) == 120)
+
+    # ---- percent-encoding round-trip property ----------------------------
+    let cur = 20261125
+    let rounds = 0
+    let bad = 0
+    while rounds < 60 bounded 1000:
+        let text = random_printable(cur, 24)
+        set cur to lcg_next(cur)
+        let encoded = url_encode(text)
+        let decoded = url_decode(encoded)
+        if decoded != text:
+            set bad to bad + 1
+        if ascii_only(encoded) == false:
+            set bad to bad + 1
+        set rounds to rounds + 1
+    set t to expect(t, "60 seeded encode/decode round trips are exact", bad == 0)
+
+    # ---- the corpus round trip (separate loop so the label is per URL) ---
+    let corpus_bad = 0
+    for each rt in corpus:
+        let parsed = url_parse(rt.url)
+        if (not parsed.ok) or url_format(parsed) != rt.url:
+            set corpus_bad to corpus_bad + 1
+            log.info("FAIL corpus round trip: " + rt.label)
+    set t to expect(t, "every hand-written URL round-trips", corpus_bad == 0)
+
+    # ---- query strings ----------------------------------------------------
+    let qs = "a=1&b=two&a=3&flag&sp=a%20b&plus=a%2Bb&empty=&enc%20key=9"
+    set t to expect(t, "query get takes the first value", url_query_get(qs, "a") == "1")
+    set t to expect(t, "query get reads a plain value", url_query_get(qs, "b") == "two")
+    set t to expect(t, "query get percent-decodes the value", url_query_get(qs, "sp") == "a b")
+    set t to expect(t, "query get does not turn plus into space", url_query_get(qs, "plus") == "a+b")
+    set t to expect(t, "query get sees an empty value", url_query_get(qs, "empty") == "")
+    set t to expect(t, "query get of a missing key is empty", url_query_get(qs, "missing") == "")
+    set t to expect(t, "query get percent-decodes the key", url_query_get(qs, "enc key") == "9")
+    set t to expect(t, "query has finds a bare flag", url_query_has(qs, "flag"))
+    set t to expect(t, "query has finds a key with an empty value", url_query_has(qs, "empty"))
+    set t to expect(t, "query has misses a key that is not there", not url_query_has(qs, "zz"))
+    set t to expect(t, "query get of an empty query string is empty", url_query_get("", "a") == "")
+    set t to expect(t, "query get does not accept a leading question mark", url_query_get("?a=1", "a") == "")
+    set t to expect(t, "query get compares decoded keys", url_query_get("a%2Bb=5", "a+b") == "5")
+    set t to expect(t, "query has is exact for a prefix", not url_query_has(qs, "a "))
+
+    if t.failures == 0:
+        log.info("OK url: " + t.checks + " checks")
+    return t.failures
+
+# A fixed-seed printable string of length n (bytes 32..126). url_encode must
+# turn every byte into ASCII, and url_decode must restore the exact bytes.
+action random_printable(seed, n) -> text:
+    let out = ""
+    let cur = seed
+    let i = 0
+    while i < n bounded 1000:
+        set cur to lcg_next(cur)
+        set out to out + character(32 + (cur % 95))
+        set i to i + 1
+    return out
+
+# True when every byte is printable ASCII. Anything else would mean url_encode
+# copied a byte through unescaped.
+action ascii_only(t) -> bool:
+    let i = 0
+    let n = length of t
+    while i < n bounded 1000:
+        let b = byte_at(t, i)
+        if b < 32 or b > 126:
+            return false
+        set i to i + 1
+    return true

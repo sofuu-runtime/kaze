@@ -1,0 +1,111 @@
+# tests/stdlib/dsp_test.kaze -- scalar and multi-state Kalman filters plus the
+# one-pole low-pass filter.
+#
+# The first-step expectations (gain 0.6875, posterior 1.375, covariance 0.34375)
+# come from the filter equations by hand; convergence is checked against the
+# steady state the equations must reach; and the multi-state update is checked
+# against the closed-form 2x2 result. The randomized, step-by-step comparison with
+# a NumPy reference is scripts/phase17/diff_dsp.py.
+
+needs: log
+
+use "./../../lib/dsp.kaze"
+use "./../../lib/matrix.kaze"
+
+action close(a, b) -> bool:
+    let d = a - b
+    if d < 0:
+        set d to 0 - d
+    return d <= 0.000000001
+
+action within(a, b, tol) -> bool:
+    let d = a - b
+    if d < 0:
+        set d to 0 - d
+    return d <= tol
+
+# True when the two 2x2 matrices agree within tolerance.
+action same2(a: Matrix, b: Matrix, tol) -> bool:
+    return within(matrix_get(a, 0, 0), matrix_get(b, 0, 0), tol) and within(matrix_get(a, 0, 1), matrix_get(b, 0, 1), tol) and within(matrix_get(a, 1, 0), matrix_get(b, 1, 0), tol) and within(matrix_get(a, 1, 1), matrix_get(b, 1, 1), tol)
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+    let q2 = matrix_from_rows([[0.01, 0], [0, 0.01]])
+    let r2 = 0.5
+
+    # ---- one-pole low-pass -----------------------------------------------------
+    set failures to check("lowpass with alpha 0 holds the previous value", lowpass_filter(3, 10, 0) == 3, failures)
+    set failures to check("lowpass with alpha 1 tracks the current value", lowpass_filter(3, 10, 1) == 10, failures)
+    set failures to check("lowpass with alpha 0.25 moves a quarter of the way", close(lowpass_filter(0, 10, 0.25), 2.5), failures)
+    set failures to check("lowpass clamps a negative alpha", lowpass_filter(3, 10, 0 - 2) == 3, failures)
+    set failures to check("lowpass clamps an alpha above one", lowpass_filter(3, 10, 4) == 10, failures)
+
+    # ---- scalar Kalman filter ---------------------------------------------------
+    let k1 = kalman1d_update(Kalman1D(x: 0, p: 1, q: 0.1, r: 0.5), 2)
+    set failures to check("kalman1d first update x=1.375 p=0.34375", close(k1.x, 1.375) and close(k1.p, 0.34375), failures)
+    set failures to check("kalman1d update reduces uncertainty", k1.p < 1, failures)
+    let clamped = kalman1d_update(Kalman1D(x: 0, p: 1, q: 0, r: 0 - 0.5), 10)
+    set failures to check("kalman1d clamps the gain into [0, 1]", close(clamped.x, 10) and clamped.p == 0, failures)
+    let guarded = kalman1d_update(Kalman1D(x: 5, p: 0, q: 0, r: 0), 9)
+    set failures to check("kalman1d with no information leaves the state alone", guarded.x == 5 and guarded.p == 0, failures)
+    let nan_variance = kalman1d_update(Kalman1D(x: 5, p: sqrt(0 - 1), q: 0, r: 0), 9)
+    set failures to check("kalman1d with a non-finite variance leaves the state alone", nan_variance.x == 5 and nan_variance.p != nan_variance.p, failures)
+    let converged = Kalman1D(x: 0, p: 1, q: 0.01, r: 0.5)
+    let i = 0
+    while i < 60 bounded 100:
+        set converged to kalman1d_update(converged, 10)
+        set i to i + 1
+    set failures to check("kalman1d converges on a constant measurement", within(converged.x, 10, 0.001) and converged.p < 0.1, failures)
+
+    # ---- multi-state filter: construction and predict --------------------------
+    let kf = kalman_multi_new(0, 1, q2, r2)
+    set failures to check("kalman_multi_new starts from the given state", close(kf.state_vector[0] otherwise 0, 0) and close(kf.state_vector[1] otherwise 0, 1), failures)
+    set failures to check("kalman_multi_new starts from unit covariance", same2(kf.covariance_matrix, matrix_identity(2), 0.000000001), failures)
+    let predicted = kalman_multi_predict(kf, 1)
+    set failures to check("kalman_multi_predict advances position by velocity", close(predicted.state_vector[0] otherwise 0, 1) and close(predicted.state_vector[1] otherwise 0, 1), failures)
+    set failures to check("kalman_multi_predict applies F P F^T + Q", same2(predicted.covariance_matrix, matrix_from_rows([[2.01, 1], [1, 1.01]]), 0.000000001), failures)
+
+    # ---- multi-state filter: update and step -----------------------------------
+    let corrected = kalman_multi_predict(kf, 1)
+    set corrected to kalman_multi_update(corrected, 1.2)
+    set failures to check("kalman_multi_update moves the state toward the measurement", close(corrected.state_vector[0] otherwise 0, 1.1601593625498008) and close(corrected.state_vector[1] otherwise 0, 1.0796812749003985), failures)
+    set failures to check("kalman_multi_update computes the posterior covariance", same2(corrected.covariance_matrix, matrix_from_rows([[0.4003984063745021, 0.19920318725099607], [0.19920318725099607, 0.611593625498008]]), 0.000000001), failures)
+    set failures to check("kalman_multi_update shrinks position variance", matrix_get(corrected.covariance_matrix, 0, 0) < matrix_get(kalman_multi_predict(kf, 1).covariance_matrix, 0, 0), failures)
+    set failures to check("kalman_multi_update keeps the covariance symmetric", close(matrix_get(corrected.covariance_matrix, 0, 1), matrix_get(corrected.covariance_matrix, 1, 0)), failures)
+    let step_a = kalman_multi_step(kf, 1, 1.2)
+    set failures to check("kalman_multi_step is predict then update", close(step_a.state_vector[0] otherwise 0, corrected.state_vector[0] otherwise 0) and same2(step_a.covariance_matrix, corrected.covariance_matrix, 0.000000001), failures)
+    let tracked = kalman_multi_new(0, 1, q2, r2)
+    let j = 0
+    while j < 100 bounded 200:
+        set tracked to kalman_multi_step(tracked, 1, 1.2)
+        set j to j + 1
+    set failures to check("kalman_multi_step converges on a fixed position", within(tracked.state_vector[0] otherwise 0, 1.2, 0.000001) and within(tracked.state_vector[1] otherwise 0, 0, 0.000001) and within(matrix_get(tracked.covariance_matrix, 0, 0), 0.21239987, 0.000001), failures)
+
+    # ---- general linear measurement update ------------------------------------
+    let cross = kalman_multi_new_with(0, 0, matrix_from_rows([[1, 0.2], [0.2, 1]]), q2, r2)
+    let position_row = kalman_linear_update(cross, [1, 0], 5)
+    set failures to check("kalman_linear_update with the position row matches kalman_multi_update", close(position_row.state_vector[0] otherwise 0, kalman_multi_update(cross, 5).state_vector[0] otherwise 0) and same2(position_row.covariance_matrix, kalman_multi_update(cross, 5).covariance_matrix, 0.000000001), failures)
+    let velocity_row = kalman_linear_update(cross, [0, 1], 5)
+    set failures to check("kalman_linear_update can measure velocity", close(velocity_row.state_vector[0] otherwise 0, 0.6666666666666666) and close(velocity_row.state_vector[1] otherwise 0, 3.3333333333333335), failures)
+    let no_row = kalman_linear_update(cross, [], 5)
+    set failures to check("kalman_linear_update with an empty row carries no information", close(no_row.state_vector[1] otherwise 0, 0) and same2(no_row.covariance_matrix, cross.covariance_matrix, 0.000000001), failures)
+    set failures to check("kalman_multi_new_with keeps its covariance", same2(kalman_multi_new_with(1, 2, matrix_from_rows([[2, 0.5], [0.5, 3]]), q2, r2).covariance_matrix, matrix_from_rows([[2, 0.5], [0.5, 3]]), 0.000000001), failures)
+    let silent = kalman_multi_new_with(1, 2, matrix_identity(2), q2, 0 - 1)
+    let unchanged = kalman_multi_update(silent, 7)
+    set failures to check("kalman_multi_update with no information leaves the filter alone", close(unchanged.state_vector[0] otherwise 0, 1) and close(unchanged.state_vector[1] otherwise 0, 2) and same2(unchanged.covariance_matrix, silent.covariance_matrix, 0.000000001), failures)
+
+    # ---- predict edge cases ----------------------------------------------------
+    let frozen = kalman_multi_predict(kf, 0)
+    set failures to check("kalman_multi_predict with dt 0 keeps the state and adds Q", close(frozen.state_vector[0] otherwise 0, 0) and close(frozen.state_vector[1] otherwise 0, 1) and close(matrix_get(frozen.covariance_matrix, 0, 0), 1.01), failures)
+    let padded_q = kalman_multi_predict(kalman_multi_new(0, 0, matrix_from_rows([[0.25]]), r2), 0)
+    set failures to check("kalman_multi_predict zero-pads a 1x1 process noise", close(matrix_get(padded_q.covariance_matrix, 0, 0), 1.25) and close(matrix_get(padded_q.covariance_matrix, 1, 1), 1), failures)
+
+    if failures == 0:
+        log.info("OK dsp: 28 checks")
+    return failures

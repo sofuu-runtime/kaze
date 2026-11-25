@@ -1,0 +1,545 @@
+# lib/url.kaze -- RFC 3986 URLs: parse, format, and percent-encode components.
+#
+# A URL is split into the six generic components RFC 3986 section 3 names, plus
+# one flag that says whether an authority was present at all. The flag matters:
+# "file:///etc/hosts" and "file:/etc/hosts" both have an empty host, and only the
+# authority marker distinguishes them, so a formatter can rebuild the first
+# spelling exactly.
+#
+#   scheme: text          "https", "mailto"; "" when absent
+#   host: text            a reg-name, or an IP literal *including* its brackets
+#                         ("[::1]"), so formatting is a copy; "" with an empty
+#                         authority (file:///path)
+#   port: number          the port, or 0 when absent. A colon with no digits is
+#                         read as an absent port (RFC 3986 allows an empty port)
+#                         and an explicit ":0" is not representable.
+#   path, query, fragment the components as written, percent-encoding intact
+#   has_authority: bool   true when the URL had "//" after its scheme (or at the
+#                         start, for a network-path reference)
+#
+# Deviations from the module plan are deliberate and are reported in the Phase 17
+# completion notes:
+#   * UrlParts gains has_authority, ok, err and at. Without the first, a parse
+#     cannot round-trip "file:///x"; without the last three a parse cannot report
+#     the malformed input it is required to reject. The plan's six fields are
+#     unchanged and keep their names.
+#   * userinfo ("user:pass@host") is refused with E_URL_USERINFO instead of
+#     being silently dropped: UrlParts has no field for it, and a formatter that
+#     dropped credentials would be worse than a parser that says it cannot.
+#   * host validation of an IP literal checks the bracket structure and the
+#     character class (hex digits, ':' and '.'), not the full RFC 4291 address
+#     grammar, and IPvFuture and RFC 6874 zone IDs are out of scope. Those are
+#     rejected as E_URL_HOST / E_URL_PERCENT rather than half-parsed.
+#   * percent-encoding is part of parsing: a '%' not followed by two hex digits
+#     anywhere in the path, query, fragment or host is E_URL_PERCENT. Raw bytes
+#     outside the ASCII grammar (a non-ASCII character typed into a path, say)
+#     are refused the same way, because RFC 3986 requires them to be percent-
+#     encoded; call url_encode on the text before inserting it.
+#   * url_decode returns text, which cannot carry a 0 byte. A payload containing
+#     one yields "" (a value that is never the text of anything) instead of a
+#     silently truncated string; url_decode_bytes returns the exact bytes.
+#
+# The scan loops are bounded at one million iterations, so a single parse or
+# encode handles about a megabyte of URL text and a larger value stops with
+# E_KAZE_LOOP_BOUND instead of running out of fuel.
+#
+# Percent-encoding here is RFC 3986 component encoding: the unreserved set
+# ALPHA / DIGIT / "-" / "." / "_" / "~" is left as is, every other byte becomes
+# %HH with uppercase hex. This is not HTML form encoding, so a space is "%20" and
+# "+" is a literal plus; url_query_get compares decoded keys and values with the
+# same rule.
+
+record UrlParts:
+    scheme: text
+    host: text
+    port: number
+    path: text
+    query: text
+    fragment: text
+    has_authority: bool
+    ok: bool
+    err: text
+    at: number
+
+# The authority half of a parse: host and port, or the failure that stopped it.
+record UrlAuthority:
+    ok: bool
+    host: text
+    port: number
+    err: text
+    at: number
+
+action url_parts(scheme, host, port, path, query, fragment, has_authority, ok, err, at) -> UrlParts:
+    return UrlParts(scheme: scheme, host: host, port: port, path: path, query: query, fragment: fragment, has_authority: has_authority, ok: ok, err: err, at: at)
+
+action url_ok(scheme, host, port, path, query, fragment, has_authority) -> UrlParts:
+    return url_parts(scheme, host, port, path, query, fragment, has_authority, true, "", 0)
+
+# Every failure reports empty components. Anything already parsed is available
+# from the caller's own scan; a half-filled record would invite reading fields
+# that were never validated.
+action url_fail(err, at) -> UrlParts:
+    return url_parts("", "", 0, "", "", "", false, false, err, at)
+
+action url_authority_ok(host, port) -> UrlAuthority:
+    return UrlAuthority(ok: true, host: host, port: port, err: "", at: 0)
+
+action url_authority_fail(err, at) -> UrlAuthority:
+    return UrlAuthority(ok: false, host: "", port: 0, err: err, at: at)
+
+action url_is_alpha(b) -> bool:
+    if b >= 65 and b <= 90:
+        return true
+    if b >= 97 and b <= 122:
+        return true
+    return false
+
+action url_is_digit(b) -> bool:
+    if b >= 48 and b <= 57:
+        return true
+    return false
+
+action url_is_hex_digit(b) -> bool:
+    if b >= 48 and b <= 57:
+        return true
+    if b >= 65 and b <= 70:
+        return true
+    if b >= 97 and b <= 102:
+        return true
+    return false
+
+action url_hex_value(b) -> number:
+    if b >= 48 and b <= 57:
+        return b - 48
+    if b >= 65 and b <= 70:
+        return b - 55
+    if b >= 97 and b <= 102:
+        return b - 87
+    return 0 - 1
+
+action url_hex_upper(v) -> text:
+    if v < 0 or v > 15:
+        return ""
+    if v < 10:
+        return character(48 + v)
+    return character(55 + v)
+
+action url_is_scheme_char(b) -> bool:
+    if url_is_alpha(b):
+        return true
+    if url_is_digit(b):
+        return true
+    if b == 43 or b == 45 or b == 46:
+        return true
+    return false
+
+# unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
+action url_is_unreserved(b) -> bool:
+    if url_is_alpha(b):
+        return true
+    if url_is_digit(b):
+        return true
+    if b == 45 or b == 46 or b == 95 or b == 126:
+        return true
+    return false
+
+# sub-delims = "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
+action url_is_sub_delim(b) -> bool:
+    if b == 33 or b == 36 or b == 38 or b == 39 or b == 40 or b == 41:
+        return true
+    if b == 42 or b == 43 or b == 44 or b == 59 or b == 61:
+        return true
+    return false
+
+# What a component may contain, given a kind: 1 = reg-name, 2 = path,
+# 3 = query or fragment. Percent escapes are checked separately by url_scan.
+action url_char_allowed(b, kind) -> bool:
+    if url_is_unreserved(b):
+        return true
+    if url_is_sub_delim(b):
+        return true
+    if kind == 1:
+        return false
+    if b == 58 or b == 64:
+        return true
+    if b == 47:
+        return true
+    if kind == 3 and b == 63:
+        return true
+    return false
+
+# The first byte in [from, to) that is not allowed in a component of that kind,
+# or -1 when the range is clean. A '%' is allowed only with two hex digits after
+# it *inside the range*, so a truncated escape at the end is caught here.
+action url_scan(t, from, to, kind) -> number:
+    let i = from
+    while i < to bounded 1000000:
+        let b = byte_at(t, i)
+        if b == 37:
+            if i + 2 >= to:
+                return i
+            if url_is_hex_digit(byte_at(t, i + 1)) == false:
+                return i
+            if url_is_hex_digit(byte_at(t, i + 2)) == false:
+                return i
+            set i to i + 3
+        otherwise:
+            if url_char_allowed(b, kind) == false:
+                return i
+            set i to i + 1
+    return 0 - 1
+
+# Map a url_scan failure offset to a result: a bad escape is E_URL_PERCENT, and
+# everything else in a path, query or fragment is E_URL_CHARACTER.
+action url_scan_fail(t, idx) -> UrlParts:
+    if byte_at(t, idx) == 37:
+        return url_fail("E_URL_PERCENT", idx)
+    return url_fail("E_URL_CHARACTER", idx)
+
+# The substring [from, to). The caller only ever passes a range it found, and a
+# reversed range answers "" rather than looping.
+action url_slice(t, from, to) -> text:
+    let out = ""
+    let i = from
+    while i < to bounded 1000000:
+        set out to out + character(byte_at(t, i))
+        set i to i + 1
+    return out
+
+action url_scheme_valid(t, stop) -> bool:
+    let i = 0
+    while i < stop bounded 1000000:
+        let b = byte_at(t, i)
+        if i == 0:
+            if url_is_alpha(b) == false:
+                return false
+        otherwise:
+            if url_is_scheme_char(b) == false:
+                return false
+        set i to i + 1
+    return true
+
+# An IP literal's inside must be hex digits, ':' and '.'; the brackets and the
+# non-empty body are checked by the caller.
+action url_is_ipv6_char(b) -> bool:
+    if url_is_hex_digit(b):
+        return true
+    if b == 58 or b == 46:
+        return true
+    return false
+
+# host [":" port] where host is either a reg-name or a bracketed IP literal.
+# a0..a_end is exactly the authority, so no character here can escape it.
+action url_parse_authority(t, a0, a_end) -> UrlAuthority:
+    if a0 == a_end:
+        return url_authority_ok("", 0)
+    # Userinfo is refused before host or port is looked at, so "user:pass@host"
+    # reports the userinfo rather than blaming the colon as a bad port.
+    let at = 0 - 1
+    let u = a0
+    while u < a_end and at < 0 bounded 1000000:
+        if byte_at(t, u) == 64:
+            set at to u
+        set u to u + 1
+    if at >= 0:
+        return url_authority_fail("E_URL_USERINFO", at)
+    if byte_at(t, a0) == 91:
+        let close = 0 - 1
+        let k = a0 + 1
+        while k < a_end and close < 0 bounded 1000000:
+            let b = byte_at(t, k)
+            if b == 93:
+                set close to k
+            otherwise:
+                if b == 37:
+                    return url_authority_fail("E_URL_PERCENT", k)
+                if url_is_ipv6_char(b) == false:
+                    return url_authority_fail("E_URL_HOST", k)
+            set k to k + 1
+        if close < 0:
+            return url_authority_fail("E_URL_HOST", a0)
+        if close == a0 + 1:
+            return url_authority_fail("E_URL_HOST", a0)
+        let host = url_slice(t, a0, close + 1)
+        if close + 1 < a_end:
+            if byte_at(t, close + 1) != 58:
+                return url_authority_fail("E_URL_PORT", close + 1)
+            let p = close + 2
+            let pv = 0
+            while p < a_end bounded 1000000:
+                let pb = byte_at(t, p)
+                if url_is_digit(pb) == false:
+                    return url_authority_fail("E_URL_PORT", p)
+                set pv to pv * 10 + (pb - 48)
+                if pv > 65535:
+                    return url_authority_fail("E_URL_PORT", p)
+                set p to p + 1
+            return url_authority_ok(host, pv)
+        return url_authority_ok(host, 0)
+
+    # reg-name [: port]
+    let host_end = a_end
+    let colon = 0 - 1
+    let k2 = a0
+    while k2 < a_end and colon < 0 bounded 1000000:
+        if byte_at(t, k2) == 58:
+            set colon to k2
+        set k2 to k2 + 1
+    if colon >= 0:
+        set host_end to colon
+    let bad = url_scan(t, a0, host_end, 1)
+    if bad >= 0:
+        let bb = byte_at(t, bad)
+        if bb == 64:
+            return url_authority_fail("E_URL_USERINFO", bad)
+        if bb == 37:
+            return url_authority_fail("E_URL_PERCENT", bad)
+        return url_authority_fail("E_URL_HOST", bad)
+    let host = url_slice(t, a0, host_end)
+    if colon >= 0:
+        let p2 = colon + 1
+        let pv2 = 0
+        while p2 < a_end bounded 1000000:
+            let pb2 = byte_at(t, p2)
+            if url_is_digit(pb2) == false:
+                return url_authority_fail("E_URL_PORT", p2)
+            set pv2 to pv2 * 10 + (pb2 - 48)
+            if pv2 > 65535:
+                return url_authority_fail("E_URL_PORT", p2)
+            set p2 to p2 + 1
+        return url_authority_ok(host, pv2)
+    return url_authority_ok(host, 0)
+
+# Parse an absolute URI or a relative reference. The result is total: malformed
+# input comes back with ok == false, a stable err code and the byte offset.
+action url_parse(url) -> UrlParts:
+    let n = length of url
+    let scheme = ""
+    let host = ""
+    let port = 0
+    let path = ""
+    let query = ""
+    let fragment = ""
+    let has_authority = false
+    let i = 0
+
+    # The scheme, if any, is the prefix before the first ':', '/', '?' or '#'.
+    # A ':' after any of those three is part of the path or the query instead.
+    let first = n
+    let first_b = 0
+    let located = false
+    let j = 0
+    while j < n and located == false bounded 1000000:
+        let b = byte_at(url, j)
+        if b == 58 or b == 47 or b == 63 or b == 35:
+            set first to j
+            set first_b to b
+            set located to true
+        otherwise:
+            set j to j + 1
+    if located and first_b == 58:
+        if first == 0:
+            return url_fail("E_URL_SCHEME", 0)
+        if url_scheme_valid(url, first) == false:
+            return url_fail("E_URL_SCHEME", 0)
+        set scheme to url_slice(url, 0, first)
+        set i to first + 1
+
+    # An authority exists only when "//" follows the scheme (or starts a
+    # network-path reference). It runs to the next '/', '?' or '#'.
+    if i + 1 < n and byte_at(url, i) == 47 and byte_at(url, i + 1) == 47:
+        set has_authority to true
+        set i to i + 2
+        let a0 = i
+        let a_end = n
+        let found_end = false
+        let k = i
+        while k < n and found_end == false bounded 1000000:
+            let cb = byte_at(url, k)
+            if cb == 47 or cb == 63 or cb == 35:
+                set a_end to k
+                set found_end to true
+            otherwise:
+                set k to k + 1
+        let authority = url_parse_authority(url, a0, a_end)
+        if authority.ok == false:
+            return url_fail(authority.err, authority.at)
+        set host to authority.host
+        set port to authority.port
+        set i to a_end
+
+    # Path runs to '?', '#' or the end; the first '#' starts the fragment, and
+    # the first '?' before it starts the query.
+    let qmark = 0 - 1
+    let hash = 0 - 1
+    let found_hash = false
+    let k2 = i
+    while k2 < n and found_hash == false bounded 1000000:
+        let b2 = byte_at(url, k2)
+        if b2 == 63 and qmark < 0:
+            set qmark to k2
+        if b2 == 35:
+            set hash to k2
+            set found_hash to true
+        set k2 to k2 + 1
+    let path_end = n
+    if qmark >= 0:
+        set path_end to qmark
+    otherwise:
+        if hash >= 0:
+            set path_end to hash
+    let pbad = url_scan(url, i, path_end, 2)
+    if pbad >= 0:
+        return url_scan_fail(url, pbad)
+    set path to url_slice(url, i, path_end)
+
+    if qmark >= 0:
+        let q_end = n
+        if hash >= 0:
+            set q_end to hash
+        let qbad = url_scan(url, qmark + 1, q_end, 3)
+        if qbad >= 0:
+            return url_scan_fail(url, qbad)
+        set query to url_slice(url, qmark + 1, q_end)
+
+    if hash >= 0:
+        let fbad = url_scan(url, hash + 1, n, 3)
+        if fbad >= 0:
+            return url_scan_fail(url, fbad)
+        set fragment to url_slice(url, hash + 1, n)
+
+    return url_ok(scheme, host, port, path, query, fragment, has_authority)
+
+# Rebuild the URL from its parts. The authority is written exactly when the
+# parse found one, so "file:///x" round-trips; the port is written when it is
+# positive (an explicit ":0" is not representable and an empty port reads as
+# absent). An empty query or fragment is not representable either: "?" and "#"
+# with nothing after them disappear, which is the one lossy edge of the record.
+action url_format(parts: UrlParts) -> text:
+    let out = ""
+    if parts.scheme != "":
+        set out to out + parts.scheme + ":"
+    if parts.has_authority:
+        set out to out + "//" + parts.host
+        if parts.port > 0:
+            set out to out + ":" + ("" + parts.port)
+    set out to out + parts.path
+    if parts.query != "":
+        set out to out + "?" + parts.query
+    if parts.fragment != "":
+        set out to out + "#" + parts.fragment
+    return out
+
+# Percent-encode every byte outside the RFC 3986 unreserved set, with uppercase
+# hex. The text is treated as its UTF-8 bytes, so a non-ASCII character becomes
+# the escapes of its encoding.
+action url_encode(text) -> text:
+    let out = ""
+    let i = 0
+    let n = length of text
+    while i < n bounded 1000000:
+        let b = byte_at(text, i)
+        if url_is_unreserved(b):
+            set out to out + character(b)
+        otherwise:
+            set out to out + "%" + url_hex_upper(b >> 4) + url_hex_upper(b & 15)
+        set i to i + 1
+    return out
+
+# The exact bytes a percent-encoded text decodes to. A '%' not followed by two
+# hex digits is copied through as a literal percent sign, the behaviour RFC 3986
+# recommends for a non-conforming escape; nothing is dropped and nothing panics.
+action url_decode_bytes(text) -> list:
+    let out = []
+    let i = 0
+    let n = length of text
+    while i < n bounded 1000000:
+        let b = byte_at(text, i)
+        if b == 37 and i + 2 < n:
+            if url_is_hex_digit(byte_at(text, i + 1)) and url_is_hex_digit(byte_at(text, i + 2)):
+                set out to out + [url_hex_value(byte_at(text, i + 1)) * 16 + url_hex_value(byte_at(text, i + 2))]
+                set i to i + 3
+            otherwise:
+                set out to out + [b]
+                set i to i + 1
+        otherwise:
+            set out to out + [b]
+            set i to i + 1
+    return out
+
+# The decoded text, or "" when the payload contains a 0 byte (text cannot carry
+# one; url_decode_bytes returns the exact bytes, including a 0).
+action url_decode(text) -> text:
+    let bytes = url_decode_bytes(text)
+    let out = ""
+    let i = 0
+    let n = length of bytes
+    while i < n bounded 1000000:
+        let v = byte_at(bytes, i) & 255
+        if v == 0:
+            return ""
+        set out to out + character(v)
+        set i to i + 1
+    return out
+
+# The index where the pair containing key starts, or -1. The key and the value
+# are percent-decoded before the comparison, so "a%20b" and "a b" name the same
+# parameter; "+" is a literal plus, not a space.
+action url_query_find(query_str, key) -> number:
+    let n = length of query_str
+    let start = 0
+    let scanning = true
+    while scanning and start <= n bounded 1000000:
+        let end = url_query_pair_end(query_str, start)
+        let eq = 0 - 1
+        let k = start
+        while k < end and eq < 0 bounded 1000000:
+            if byte_at(query_str, k) == 61:
+                set eq to k
+            set k to k + 1
+        let key_end = end
+        if eq >= 0:
+            set key_end to eq
+        let name = url_decode(url_slice(query_str, start, key_end))
+        if name == key:
+            return start
+        if end >= n:
+            set scanning to false
+        otherwise:
+            set start to end + 1
+    return 0 - 1
+
+# The first '&' at or after from, or the end of the query string.
+action url_query_pair_end(query_str, from) -> number:
+    let n = length of query_str
+    let i = from
+    let done = false
+    while i < n and done == false bounded 1000000:
+        if byte_at(query_str, i) == 38:
+            set done to true
+        otherwise:
+            set i to i + 1
+    return i
+
+# The first value for key, percent-decoded. A missing key and a key with an empty
+# value both answer "", exactly as the plan's signature says; url_query_has tells
+# the two apart.
+action url_query_get(query_str, key) -> text:
+    let start = url_query_find(query_str, key)
+    if start < 0:
+        return ""
+    let end = url_query_pair_end(query_str, start)
+    let eq = 0 - 1
+    let k = start
+    while k < end and eq < 0 bounded 1000000:
+        if byte_at(query_str, k) == 61:
+            set eq to k
+        set k to k + 1
+    if eq < 0:
+        return ""
+    return url_decode(url_slice(query_str, eq + 1, end))
+
+action url_query_has(query_str, key) -> bool:
+    if url_query_find(query_str, key) >= 0:
+        return true
+    return false

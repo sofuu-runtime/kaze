@@ -1,0 +1,33 @@
+# tests/stdlib/time_test.kaze -- clock reading, durations and ISO 8601.
+needs: log
+
+use "./../../lib/time.kaze"
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action main() -> num:
+    let failures = 0
+    set failures to check("epoch formats as 1970-01-01T00:00:00Z", time_format_iso8601(0) == "1970-01-01T00:00:00Z", failures)
+    set failures to check("2023-11-14T22:13:20Z", time_format_iso8601(1700000000) == "2023-11-14T22:13:20Z", failures)
+    set failures to check("2033-05-18T03:33:20Z", time_format_iso8601(2000000000) == "2033-05-18T03:33:20Z", failures)
+    set failures to check("2000-02-29 leap day", time_format_iso8601(951782400) == "2000-02-29T00:00:00Z", failures)
+    set failures to check("ISO text has 20 characters", (length of time_format_iso8601(1700000000)) == 20, failures)
+    set failures to check("duration in milliseconds", time_duration_ms(1000, 2500) == 1500, failures)
+    set failures to check("duration may be negative", time_duration_ms(2500, 1000) == 0 - 1500, failures)
+
+    let t1 = time_monotonic_now()
+    let t2 = time_monotonic_now()
+    set failures to check("monotonic clock does not go backwards", t2 >= t1, failures)
+    set failures to check("monotonic clock is nanosecond scale", t1 > 1000000, failures)
+
+    let utc = time_utc_now()
+    set failures to check("UTC clock is after 2024", utc > 1704067200, failures)
+    set failures to check("UTC clock is before 2100", utc < 4102444800, failures)
+
+    if failures == 0:
+        log.info("OK time: 11 checks")
+    return failures

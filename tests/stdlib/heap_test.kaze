@@ -1,0 +1,237 @@
+# tests/stdlib/heap_test.kaze -- the binary heap, including a Phase 17 gate:
+# 10,000 randomized operations (5,000 per mode) against a plain sorted-list
+# reference model.
+#
+# The reference model is a list kept in rank order by insertion; it shares no
+# code with the heap. A pop is compared on priority and item (the item is the
+# insertion number, so it also pins the FIFO tie-break), and the live size is
+# compared on every iteration. The generator is a fixed-seed LCG so a failure is
+# reproducible.
+
+needs: log
+
+use "./../../lib/heap.kaze"
+
+action lcg_next(state) -> num:
+    let s = (state * 1664525 + 1013904223) & 4294967295
+    return s
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+# Insert a rank key into a plain ascending list. The randomized gate's model is
+# this list; it never calls into lib/heap.kaze. The first output slot is resolved
+# before the loop and seeds the list, so the appends never start from an empty
+# buffer (the C emitter's in-place append path is only entered once it exists).
+action model_insert(xs, key) -> list:
+    let n = length of xs
+    if n == 0:
+        return [key]
+    let first = xs[0] otherwise 0
+    let head = first
+    let key_done = 0
+    let skip = 0
+    if key < first:
+        set head to key
+        set key_done to 1
+    otherwise:
+        set skip to 1
+    let out = [] + [head]
+    let at = 0
+    for each v in xs:
+        if at >= skip:
+            if key_done == 0 and key < v:
+                set out to out + [key]
+                set key_done to 1
+            set out to out + [v]
+        set at to at + 1
+    if key_done == 0:
+        set out to out + [key]
+    return out
+
+action model_remove_first(xs) -> list:
+    let n = length of xs
+    if n <= 1:
+        return []
+    let out = [] + [xs[1] otherwise 0]
+    let k = 2
+    while k < n bounded 1000000:
+        set out to out + [xs[k] otherwise 0]
+        set k to k + 1
+    return out
+
+action main() -> num:
+    let failures = 0
+
+    # ---- the API surface: empty answers, ordering, ties, functional semantics ----
+    let empty = heap_create_min()
+    set failures to check("a new min heap is empty", heap_is_empty(empty) and heap_size(empty) == 0, failures)
+    let gone = heap_pop(empty)
+    set failures to check("pop on an empty heap is marked not ok", gone.ok == false and heap_size(gone.heap) == 0, failures)
+    let zero = heap_peek(empty)
+    set failures to check("peek on an empty heap answers the zero entry", zero.priority == 0 and zero.item == 0, failures)
+
+    let h = heap_create_min()
+    set h to heap_push(h, 3, "c")
+    set h to heap_push(h, 1, "a")
+    set h to heap_push(h, 2, "b")
+    set failures to check("size counts pushes", heap_size(h) == 3, failures)
+    let top = heap_peek(h)
+    set failures to check("peek reports the smallest priority", top.priority == 1 and top.item == "a", failures)
+    set failures to check("peek does not remove", heap_size(h) == 3, failures)
+    let bigger = heap_push(h, 0, "z")
+    set failures to check("push leaves its argument heap unchanged", heap_size(h) == 3 and heap_size(bigger) == 4, failures)
+    let first = heap_pop(h)
+    set h to first.heap
+    let second = heap_pop(h)
+    set h to second.heap
+    let third = heap_pop(h)
+    set h to third.heap
+    set failures to check("min pops in ascending priority order", first.priority == 1 and second.priority == 2 and third.priority == 3, failures)
+    set failures to check("draining empties the heap", heap_is_empty(h) and heap_size(h) == 0, failures)
+    let after = heap_pop(h)
+    set failures to check("a drained heap still answers ok=false", after.ok == false, failures)
+
+    let fifo = heap_create_min()
+    set fifo to heap_push(fifo, 5, "one")
+    set fifo to heap_push(fifo, 5, "two")
+    set fifo to heap_push(fifo, 5, "three")
+    let f1 = heap_pop(fifo)
+    set fifo to f1.heap
+    let f2 = heap_pop(fifo)
+    set fifo to f2.heap
+    let f3 = heap_pop(fifo)
+    set failures to check("equal min priorities pop in insertion order", f1.item == "one" and f2.item == "two" and f3.item == "three", failures)
+
+    let mx = heap_create_max()
+    set mx to heap_push(mx, 3, "c")
+    set mx to heap_push(mx, 1, "a")
+    set mx to heap_push(mx, 2, "b")
+    let mtop = heap_peek(mx)
+    set failures to check("max peek reports the largest priority", mtop.priority == 3 and mtop.item == "c", failures)
+    let m1 = heap_pop(mx)
+    set mx to m1.heap
+    let m2 = heap_pop(mx)
+    set mx to m2.heap
+    let m3 = heap_pop(mx)
+    set failures to check("max pops in descending priority order", m1.priority == 3 and m2.priority == 2 and m3.priority == 1, failures)
+
+    let mt = heap_create_max()
+    set mt to heap_push(mt, 7, "x")
+    set mt to heap_push(mt, 7, "y")
+    let mt1 = heap_pop(mt)
+    set mt to mt1.heap
+    let mt2 = heap_pop(mt)
+    set failures to check("equal max priorities pop in insertion order", mt1.item == "x" and mt2.item == "y", failures)
+
+    let fl = heap_create_min()
+    set fl to heap_push(fl, 0 - 2.5, 1)
+    set fl to heap_push(fl, 1024, 2)
+    set fl to heap_push(fl, 1.5, 3)
+    set fl to heap_push(fl, 0 - 2.5, 4)
+    let fl1 = heap_pop(fl)
+    set fl to fl1.heap
+    let fl2 = heap_pop(fl)
+    set fl to fl2.heap
+    let fl3 = heap_pop(fl)
+    set fl to fl3.heap
+    let fl4 = heap_pop(fl)
+    set failures to check("fractional priorities order exactly and ties stay FIFO",
+                          fl1.priority == 0 - 2.5 and fl1.item == 1 and fl2.priority == 0 - 2.5 and fl2.item == 4 and fl3.priority == 1.5 and fl4.priority == 1024, failures)
+
+    # ---- gate 1: 5,000 randomized min-heap operations against the model ----------
+    let seed = 12345
+    let live = heap_create_min()
+    let model = []
+    let seq = 0
+    let mismatches = 0
+    let i = 0
+    while i < 5000 bounded 100000:
+        set seed to lcg_next(seed)
+        let op = seed & 3
+        if op < 2:
+            set seed to lcg_next(seed)
+            let priority = (seed >> 8) % 100
+            set live to heap_push(live, priority, seq)
+            set model to model_insert(model, priority * 1000000 + seq)
+            set seq to seq + 1
+        otherwise:
+            if (length of model) > 0:
+                let expected_key = model[0] otherwise 0
+                let expected_item = expected_key % 1000000
+                let expected_priority = (expected_key - expected_item) / 1000000
+                let read = heap_pop(live)
+                set live to read.heap
+                if read.ok == false or read.priority != expected_priority or read.item != expected_item:
+                    set mismatches to mismatches + 1
+                set model to model_remove_first(model)
+            otherwise:
+                let read = heap_pop(live)
+                if read.ok == true:
+                    set mismatches to mismatches + 1
+        if heap_size(live) != (length of model):
+            set mismatches to mismatches + 1
+        set i to i + 1
+    while (length of model) > 0 bounded 100000:
+        let expected_key = model[0] otherwise 0
+        let expected_item = expected_key % 1000000
+        let expected_priority = (expected_key - expected_item) / 1000000
+        let read = heap_pop(live)
+        set live to read.heap
+        if read.ok == false or read.priority != expected_priority or read.item != expected_item:
+            set mismatches to mismatches + 1
+        set model to model_remove_first(model)
+    set failures to check("5,000 randomized min-heap operations match a sorted-list model", mismatches == 0, failures)
+    set failures to check("the randomized min heap drains to empty", heap_is_empty(live), failures)
+
+    # ---- gate 2: 5,000 randomized max-heap operations against the model ----------
+    set seed to 98765
+    let live_max = heap_create_max()
+    set model to []
+    set seq to 0
+    set mismatches to 0
+    set i to 0
+    while i < 5000 bounded 100000:
+        set seed to lcg_next(seed)
+        let op = seed & 3
+        if op < 2:
+            set seed to lcg_next(seed)
+            let priority = (seed >> 8) % 100
+            set live_max to heap_push(live_max, priority, seq)
+            set model to model_insert(model, (99 - priority) * 1000000 + seq)
+            set seq to seq + 1
+        otherwise:
+            if (length of model) > 0:
+                let expected_key = model[0] otherwise 0
+                let expected_item = expected_key % 1000000
+                let rank = (expected_key - expected_item) / 1000000
+                let read = heap_pop(live_max)
+                set live_max to read.heap
+                if read.ok == false or read.priority != 99 - rank or read.item != expected_item:
+                    set mismatches to mismatches + 1
+                set model to model_remove_first(model)
+            otherwise:
+                let read = heap_pop(live_max)
+                if read.ok == true:
+                    set mismatches to mismatches + 1
+        if heap_size(live_max) != (length of model):
+            set mismatches to mismatches + 1
+        set i to i + 1
+    while (length of model) > 0 bounded 100000:
+        let expected_key = model[0] otherwise 0
+        let expected_item = expected_key % 1000000
+        let rank = (expected_key - expected_item) / 1000000
+        let read = heap_pop(live_max)
+        set live_max to read.heap
+        if read.ok == false or read.priority != 99 - rank or read.item != expected_item:
+            set mismatches to mismatches + 1
+        set model to model_remove_first(model)
+    set failures to check("5,000 randomized max-heap operations match a sorted-list model", mismatches == 0, failures)
+    set failures to check("the randomized max heap drains to empty", heap_is_empty(live_max), failures)
+
+    if failures == 0:
+        log.info("OK heap: 19 checks")
+    return failures

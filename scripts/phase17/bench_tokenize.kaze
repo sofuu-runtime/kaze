@@ -1,0 +1,29 @@
+# Phase 17 benchmark: single-pass JSON/text tokenizer over a multi-megabyte
+# document. Bytes come through a zero-copy view; the scan runs unboxed.
+needs: memory
+
+action scan(t: text) -> num:
+    let n = length of t
+    let i = 0
+    let tokens = 0
+    let hash = 0
+    let in_string = 0
+    while i < n bounded 20000000:
+        let c = byte_at(t, i)
+        if c == 34:
+            set tokens to tokens + 1
+            if in_string == 0:
+                set in_string to 1
+            otherwise:
+                set in_string to 0
+        otherwise:
+            if in_string == 1:
+                set hash to (hash * 33 + c) & 4294967295
+            otherwise:
+                if c == 123 or c == 125 or c == 91 or c == 93 or c == 44 or c == 58:
+                    set tokens to tokens + 1
+        set i to i + 1
+    return tokens * 1000003 + hash
+
+action main(input: text) -> num:
+    return scan(input)

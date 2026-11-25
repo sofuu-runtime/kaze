@@ -1,0 +1,213 @@
+# lib/spatial.kaze -- 3D kinematics: vectors, quaternions, Euler angles and rigid
+# transforms. This is the maths a drone, rover or arm needs before any hardware is
+# touched: frame composition, heading extraction, and interpolation between attitudes.
+#
+# Conventions, fixed here once and never varied:
+#
+#   * Angles are radians everywhere, because sin/cos read radians (see SPEC 3.7).
+#   * Quaternions are Hamilton quaternions, scalar first: q = w + xi + yj + zk.
+#     Rotations use unit quaternions; a routine that needs a unit quaternion
+#     normalises its input, so a caller that accumulated rounding cannot drift.
+#   * quat_from_euler takes roll about X, pitch about Y, yaw about Z in the
+#     aerospace/ROS ZYX order: the rotation matrix is Rz(yaw) * Ry(pitch) * Rx(roll),
+#     which as a Hamilton product is qz * qy * qx. quat_to_euler inverts exactly
+#     that composition. Pitch is reported in [-pi/2, pi/2].
+#   * A zero-length vector has no direction, so vec3_normalize answers the zero
+#     vector; a zero quaternion normalises to the identity. Both are total: no
+#     division by zero, no NaN, and the tests pin the behaviour.
+#   * slerp takes the shorter arc (it flips q2 when the dot product is negative),
+#     clamps t to [0, 1], and falls back to a normalised lerp when the two
+#     quaternions are within about 1.8 degrees, where the great-circle form is
+#     numerically unstable.
+#
+# Helpers beyond the roadmap's list (vec3_scale, vec3_length_sq, vec3_distance,
+# quat_dot, quat_normalize, quat_from_axis_angle, transform3d_identity/apply/compose)
+# exist because the listed operations are defined in terms of them; they are public
+# so a caller composes frames without re-deriving the same arithmetic.
+
+record Vec3:
+    x: number
+    y: number
+    z: number
+
+record Quat:
+    w: number
+    x: number
+    y: number
+    z: number
+
+record Euler:
+    roll: number
+    pitch: number
+    yaw: number
+
+record Transform3D:
+    translation: Vec3
+    rotation: Quat
+
+# ---- vectors -------------------------------------------------------------------
+
+action vec3_add(a: Vec3, b: Vec3) -> Vec3:
+    return Vec3(x: a.x + b.x, y: a.y + b.y, z: a.z + b.z)
+
+action vec3_sub(a: Vec3, b: Vec3) -> Vec3:
+    return Vec3(x: a.x - b.x, y: a.y - b.y, z: a.z - b.z)
+
+# Scalar multiplication. A negative scalar is a direction reversal, which is why
+# there is no separate vec3_negate in the interface.
+action vec3_scale(a: Vec3, s) -> Vec3:
+    return Vec3(x: a.x * s, y: a.y * s, z: a.z * s)
+
+action vec3_dot(a: Vec3, b: Vec3) -> num:
+    return a.x * b.x + a.y * b.y + a.z * b.z
+
+# Right-handed cross product: x cross y = z.
+action vec3_cross(a: Vec3, b: Vec3) -> Vec3:
+    return Vec3(x: a.y * b.z - a.z * b.y,
+                 y: a.z * b.x - a.x * b.z,
+                 z: a.x * b.y - a.y * b.x)
+
+# Squared length. Cheaper than vec3_norm where only an ordering is needed, and
+# exact for integer inputs.
+action vec3_length_sq(a: Vec3) -> num:
+    return a.x * a.x + a.y * a.y + a.z * a.z
+
+action vec3_norm(a: Vec3) -> num:
+    return sqrt(vec3_length_sq(a))
+
+# The unit vector in a's direction, or the zero vector when a has no direction.
+# The guard is written as "not (n > 0)" so a non-finite length (NaN from a
+# non-finite component) also takes the defined answer instead of dividing by NaN.
+action vec3_normalize(a: Vec3) -> Vec3:
+    let n = vec3_norm(a)
+    if not (n > 0):
+        return Vec3(x: 0, y: 0, z: 0)
+    let inv = 1 / n otherwise 0
+    return vec3_scale(a, inv)
+
+action vec3_distance(a: Vec3, b: Vec3) -> num:
+    return vec3_norm(vec3_sub(a, b))
+
+# ---- quaternions ---------------------------------------------------------------
+
+action quat_identity() -> Quat:
+    return Quat(w: 1, x: 0, y: 0, z: 0)
+
+action quat_dot(a: Quat, b: Quat) -> num:
+    return a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z
+
+# A unit quaternion, or the identity when q carries no direction at all.
+action quat_normalize(q: Quat) -> Quat:
+    let n = sqrt(quat_dot(q, q))
+    if not (n > 0):
+        return quat_identity()
+    let inv = 1 / n otherwise 0
+    return Quat(w: q.w * inv, x: q.x * inv, y: q.y * inv, z: q.z * inv)
+
+# Hamilton product: applying the result rotates by q2 first, then by q1.
+action quat_multiply(q1: Quat, q2: Quat) -> Quat:
+    return Quat(w: q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z,
+                 x: q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,
+                 y: q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,
+                 z: q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w)
+
+# The inverse rotation for a unit quaternion (the conjugate is the inverse; a
+# non-unit input is normalised first by the routines that consume it).
+action quat_conjugate(q: Quat) -> Quat:
+    return Quat(w: q.w, x: 0 - q.x, y: 0 - q.y, z: 0 - q.z)
+
+# Rotation of angle radians about axis. The axis is normalised, so any non-zero
+# vector works. A zero axis carries no rotation and answers the identity.
+action quat_from_axis_angle(axis: Vec3, angle) -> Quat:
+    let u = vec3_normalize(axis)
+    if u.x == 0 and u.y == 0 and u.z == 0:
+        return quat_identity()
+    let half = angle * 0.5
+    let s = sin(half)
+    return Quat(w: cos(half), x: u.x * s, y: u.y * s, z: u.z * s)
+
+# ZYX composition: R = Rz(yaw) * Ry(pitch) * Rx(roll). Each factor is a unit
+# quaternion, so no normalisation is needed afterwards.
+action quat_from_euler(e: Euler) -> Quat:
+    let rx = quat_from_axis_angle(Vec3(x: 1, y: 0, z: 0), e.roll)
+    let ry = quat_from_axis_angle(Vec3(x: 0, y: 1, z: 0), e.pitch)
+    let rz = quat_from_axis_angle(Vec3(x: 0, y: 0, z: 1), e.yaw)
+    return quat_multiply(rz, quat_multiply(ry, rx))
+
+# The inverse of quat_from_euler. The input is normalised first. The pitch term
+# uses asin(x) = atan2(x, sqrt(1 - x*x)); x is clamped to [-1, 1] because rounding
+# can push a gimbal-locked value a hair past the domain of the square root.
+action quat_to_euler(q: Quat) -> Euler:
+    let n = quat_normalize(q)
+    let sin_roll = 2 * (n.w * n.x + n.y * n.z)
+    let cos_roll = 1 - 2 * (n.x * n.x + n.y * n.y)
+    let sin_pitch = 2 * (n.w * n.y - n.z * n.x)
+    if sin_pitch > 1:
+        set sin_pitch to 1
+    if sin_pitch < 0 - 1:
+        set sin_pitch to 0 - 1
+    let cos_pitch = sqrt(1 - sin_pitch * sin_pitch)
+    let sin_yaw = 2 * (n.w * n.z + n.x * n.y)
+    let cos_yaw = 1 - 2 * (n.y * n.y + n.z * n.z)
+    return Euler(roll: atan2(sin_roll, cos_roll),
+                 pitch: atan2(sin_pitch, cos_pitch),
+                 yaw: atan2(sin_yaw, cos_yaw))
+
+# Rotate v by q: v' = q * v * conj(q). The quaternion is normalised so the result
+# is a pure rotation (no scaling) even when q drifted from unit length.
+action quat_rotate_vec3(q: Quat, v: Vec3) -> Vec3:
+    let u = quat_normalize(q)
+    let axis = Vec3(x: u.x, y: u.y, z: u.z)
+    let t = vec3_scale(vec3_cross(axis, v), 2)
+    return vec3_add(vec3_add(v, vec3_scale(t, u.w)), vec3_cross(axis, t))
+
+# Spherical linear interpolation on the shorter arc. t is clamped to [0, 1].
+# Within 0.9995 dot product (about 1.8 degrees) a normalised lerp is used, which
+# is the standard guard against the sin(theta) denominator going to zero.
+action quat_slerp(q1: Quat, q2: Quat, t) -> Quat:
+    let a = quat_normalize(q1)
+    let b = quat_normalize(q2)
+    let u = t
+    if u < 0:
+        set u to 0
+    if u > 1:
+        set u to 1
+    let d = quat_dot(a, b)
+    let c = b
+    if d < 0:
+        set c to Quat(w: 0 - b.w, x: 0 - b.x, y: 0 - b.y, z: 0 - b.z)
+        set d to 0 - d
+    if d > 1:
+        set d to 1
+    if d > 0.9995:
+        let mix = Quat(w: a.w * (1 - u) + c.w * u,
+                       x: a.x * (1 - u) + c.x * u,
+                       y: a.y * (1 - u) + c.y * u,
+                       z: a.z * (1 - u) + c.z * u)
+        return quat_normalize(mix)
+    let theta = atan2(sqrt(1 - d * d), d)
+    let s = sin(theta)
+    if not (s > 0):
+        return a
+    let inv_s = 1 / s otherwise 0
+    let wa = sin((1 - u) * theta) * inv_s
+    let wb = sin(u * theta) * inv_s
+    return quat_normalize(Quat(w: a.w * wa + c.w * wb,
+                               x: a.x * wa + c.x * wb,
+                               y: a.y * wa + c.y * wb,
+                               z: a.z * wa + c.z * wb))
+
+# ---- rigid transforms ----------------------------------------------------------
+
+action transform3d_identity() -> Transform3D:
+    return Transform3D(translation: Vec3(x: 0, y: 0, z: 0), rotation: quat_identity())
+
+# Move a point from the transform's child frame into its parent frame:
+# parent = rotation * child + translation.
+action transform3d_apply(t: Transform3D, v: Vec3) -> Vec3:
+    return vec3_add(quat_rotate_vec3(t.rotation, v), t.translation)
+
+# Compose two transforms: the result applies b first, then a.
+action transform3d_compose(a: Transform3D, b: Transform3D) -> Transform3D:
+    return Transform3D(translation: vec3_add(a.translation, quat_rotate_vec3(a.rotation, b.translation)),
+                       rotation: quat_multiply(a.rotation, b.rotation))

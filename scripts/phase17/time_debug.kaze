@@ -1,0 +1,13 @@
+needs: log
+use "../../lib/time.kaze"
+
+action main() -> text:
+    log.info("v0=" + time_format_iso8601(0))
+    log.info("v1=" + time_format_iso8601(1700000000))
+    log.info("v2=" + time_format_iso8601(2000000000))
+    log.info("v3=" + time_format_iso8601(951782400))
+    let c0 = time_civil_from_days(0)
+    let c1 = time_civil_from_days(19723)
+    log.info("c0=" + c0)
+    log.info("c1=" + c1)
+    return time_format_iso8601(0)

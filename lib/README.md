@@ -56,6 +56,29 @@ private/reserved IPs (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
 granted. Structured response headers are accessible via `http_header_map`. An HTTP
 error status is data (`ok` is true, `status` is 404), not a transport failure.
 
+### Encodings, time, spatial maths and vector search (Phase 17)
+
+Added by Phase 17. Each has a differential harness under `scripts/phase17/` that
+generates seeded cases and compares every answer with CPython or NumPy; run one
+with `python3 scripts/phase17/diff_<module>.py` and add `KAZE_ASAN=1` to build
+the harness under the sanitizers.
+
+| Module | Provides | Checked against |
+| :--- | :--- | :--- |
+| `lib/base64.kaze` | `base64_encode/decode`, URL-safe alphabet, strict padding contract | CPython `base64`, 1,225 cases |
+| `lib/hex.kaze` | `hex_encode/decode`, byte/hex both ways | CPython `binascii`, 764 cases |
+| `lib/url.kaze` | RFC 3986 parsing into `UrlParts`, percent encode/decode, query building | CPython `urllib.parse`, 898 cases |
+| `lib/time.kaze` | monotonic and UTC clock, `time_duration_ms`, ISO 8601 formatting | CPython `datetime`/`date`, 16,959 cases |
+| `lib/spatial.kaze` | `Vec3`, `Quat`, `Euler`, `Transform3D`, quaternion SLERP, 6-DoF rotation | NumPy, 100 cases |
+| `lib/matrix.kaze` | LU determinant, Gauss-Jordan inverse with partial pivoting and a singular guard | NumPy `linalg`, 120 cases |
+| `lib/dsp.kaze` | 1-D Kalman, multi-state filter, IIR low-pass | NumPy, 102 cases |
+| `lib/heap.kaze` | arena-backed binary min/max priority queue | CPython `heapq`, 2,022 cases |
+| `lib/embeddings.kaze` | `vec_dot`, cosine similarity, euclidean distance, `vec_top_k` | NumPy, 474 cases |
+
+`lib/time.kaze` divides with floor semantics because Hinnant's
+civil-from-days requires it; a truncating division returned an invalid date for
+day numbers before the epoch (`time_civil_from_days(-719469)` is `0000-02-29`).
+
 ### Pervasive Multicore Parallelism
 
 Pure collection transformations can be dispatched across worker threads with guaranteed data-race freedom:
@@ -105,7 +128,7 @@ kaze run mission.kaze --entry eight_point_survey \
 ```
 
 `--entry eight_point_survey` runs the library routine; the safety hooks run on
-every tick. A library routine is never the implicit entry (v0.5 entry rules).
+every tick. A library routine is never the implicit entry (Kaze 1.0 entry rules).
 
 ## Guardrail
 

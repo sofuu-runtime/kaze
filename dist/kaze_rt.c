@@ -68,16 +68,26 @@ static int kaze_stderr_handler(const char *code, const char *message)
     return 1;
 }
 
-static kaze_fallback_fn kaze_active_handler = kaze_stderr_handler;
+/* Zero-initialised on purpose. An initialised pointer here is file-backed
+ * writable data, which on macOS costs a whole 16 KB __DATA page in every
+ * binary that links this runtime. NULL means "the stderr handler" and is
+ * resolved where the handler is called, so the default behaves exactly as
+ * before while the segment stays zero-fill. */
+static kaze_fallback_fn kaze_active_handler;
+
+static kaze_fallback_fn kaze_resolve_handler(void)
+{
+    return (kaze_active_handler != NULL) ? kaze_active_handler : kaze_stderr_handler;
+}
 
 void kaze_set_fallback_handler(kaze_fallback_fn fn)
 {
-    kaze_active_handler = (fn != NULL) ? fn : kaze_stderr_handler;
+    kaze_active_handler = fn;
 }
 
 kaze_fallback_fn kaze_get_fallback_handler(void)
 {
-    return kaze_active_handler;
+    return kaze_resolve_handler();
 }
 
 int kaze_default_fallback(const char *code, const char *message)
@@ -119,7 +129,7 @@ const char *kaze_code_name(kaze_code_t code)
 
 int kaze_trap(kaze_code_t code, const char *message)
 {
-    return kaze_active_handler(kaze_code_name(code), message);
+    return kaze_resolve_handler()(kaze_code_name(code), message);
 }
 
 /* A trap message that names the operands. snprintf into a small stack buffer

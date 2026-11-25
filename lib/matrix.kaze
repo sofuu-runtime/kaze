@@ -1,0 +1,388 @@
+# lib/matrix.kaze -- dense real matrices over Kaze lists.
+#
+# A Matrix is row-major: data[r * cols + c], with rows and cols the declared shape.
+# The routines here never assume data is exactly rows * cols long: a read outside
+# the shape answers 0, and a short data list therefore behaves like zero padding.
+# That is what makes the shape-mismatch rules below total instead of fallible:
+#
+#   * matrix_add takes the shape of a and reads b with the same read rule, so b
+#     entries outside its shape count as 0. A larger b is truncated to a's frame.
+#   * matrix_multiply multiplies an a.rows x a.cols by a b.rows x b.cols over the
+#     shared inner dimension min(a.cols, b.rows); missing inner entries count as 0.
+#     The result is a.rows x b.cols. This is the ordinary zero-padded product, not
+#     an error path, so a caller that needs a shape check compares shapes first.
+#   * matrix_det answers 0 for a non-square matrix and 1 for the empty 0x0 matrix
+#     (the empty product). matrix_inverse reports non-square and singular matrices
+#     through MatrixResult(ok: false) instead of inventing a matrix; on failure the
+#     matrix field is a zero matrix of the input's (clamped) shape.
+#
+# Dimensions are clamped once, in matrix_dim: negative becomes 0, more than 4096
+# becomes 4096, a fraction truncates toward zero, and NaN becomes 0. Every loop in
+# this module is bounded by 4096 per dimension, so the clamp is what keeps the
+# bounds honest. matrix_det uses LU decomposition with partial pivoting; matrix_inverse
+# uses Gauss-Jordan elimination with partial pivoting on the augmented [A | I].
+# Both stop early and answer 0 / ok:false when no non-zero pivot exists, so a
+# singular matrix never divides by zero.
+#
+# Helpers beyond the roadmap's list: matrix_max_dim, matrix_dim, matrix_get,
+# matrix_set, matrix_from_rows, matrix_scale, matrix_abs, matrix_row,
+# matrix_row_at, matrix_row_cell, matrix_rows, matrix_replace_row, matrix_flatten.
+# They are the pieces the listed operations are built from; exposing them keeps a
+# caller from re-deriving the same index arithmetic and keeps the fallback rules in
+# one file.
+
+record Matrix:
+    rows: number
+    cols: number
+    data: list
+
+# The result of matrix_inverse: on failure the matrix field is a zero matrix of
+# the input's shape, so a caller that logs the shape still sees a shape.
+record MatrixResult:
+    ok: bool
+    matrix: Matrix
+
+# The largest dimension any routine here handles, and the clamp applied to every
+# user-supplied dimension.
+action matrix_max_dim() -> num:
+    return 4096
+
+# A dimension as this module uses it: a whole number in [0, 4096].
+action matrix_dim(n) -> num:
+    if not (n > 0):
+        return 0
+    if n > 4096:
+        return 4096
+    return n - (n % 1)
+
+# ---- construction and element access -------------------------------------------
+
+action matrix_zeros(rows, cols) -> Matrix:
+    let r = matrix_dim(rows)
+    let c = matrix_dim(cols)
+    let data = []
+    let i = 0
+    while i < r * c bounded 16777216:
+        set data to data + [0]
+        set i to i + 1
+    return Matrix(rows: r, cols: c, data: data)
+
+action matrix_identity(n) -> Matrix:
+    let d = matrix_dim(n)
+    let data = []
+    let r = 0
+    while r < d bounded 4096:
+        let c = 0
+        while c < d bounded 4096:
+            let v = 0
+            if r == c:
+                set v to 1
+            set data to data + [v]
+            set c to c + 1
+        set r to r + 1
+    return Matrix(rows: d, cols: d, data: data)
+
+# Build from a list of row lists. Column count is the length of the longest row,
+# and a shorter row is zero-padded on the right; an empty list builds the 0x0
+# matrix.
+action matrix_from_rows(row_lists) -> Matrix:
+    let r = length of row_lists
+    let c = 0
+    for each row in row_lists:
+        if (length of row) > c:
+            set c to length of row
+    if r > 4096:
+        set r to 4096
+    if c > 4096:
+        set c to 4096
+    let data = []
+    let i = 0
+    while i < r bounded 4096:
+        let row = row_lists[i] otherwise []
+        let j = 0
+        while j < c bounded 4096:
+            let v = row[j] otherwise 0
+            set data to data + [v]
+            set j to j + 1
+        set i to i + 1
+    return Matrix(rows: r, cols: c, data: data)
+
+# The (r, c) entry, or 0 when the position is outside the shape. A fractional or
+# non-finite index answers 0 rather than being silently truncated, so the two
+# engines cannot disagree about what data[1.5] meant.
+action matrix_get(m: Matrix, r, c) -> num:
+    if not (r >= 0) or not (c >= 0):
+        return 0
+    if r >= m.rows or c >= m.cols:
+        return 0
+    if (r - (r % 1)) != r or (c - (c % 1)) != c:
+        return 0
+    let idx = r * m.cols + c
+    let v = m.data[idx] otherwise 0
+    return v
+
+# A copy with the (r, c) entry replaced. An out-of-shape position returns m
+# unchanged, matching the read rule above.
+action matrix_set(m: Matrix, r, c, v) -> Matrix:
+    if not (r >= 0) or not (c >= 0):
+        return m
+    if r >= m.rows or c >= m.cols:
+        return m
+    if (r - (r % 1)) != r or (c - (c % 1)) != c:
+        return m
+    let idx = r * m.cols + c
+    let data = []
+    let k = 0
+    for each x in m.data:
+        if k == idx:
+            set data to data + [v]
+        otherwise:
+            set data to data + [x]
+        set k to k + 1
+    return Matrix(rows: m.rows, cols: m.cols, data: data)
+
+# Row r as a list, or an empty list outside the shape. Internal callers use it to
+# keep the elimination loops reading whole rows instead of recomputing r * cols + c.
+action matrix_row(m: Matrix, r) -> list:
+    let out = []
+    let cols = matrix_dim(m.cols)
+    if not (r >= 0) or r >= matrix_dim(m.rows):
+        return out
+    let c = 0
+    while c < cols bounded 4096:
+        set out to out + [matrix_get(m, r, c)]
+        set c to c + 1
+    return out
+
+# ---- arithmetic ----------------------------------------------------------------
+
+action matrix_scale(m: Matrix, s) -> Matrix:
+    let data = []
+    for each v in m.data:
+        set data to data + [v * s]
+    return Matrix(rows: m.rows, cols: m.cols, data: data)
+
+action matrix_add(a: Matrix, b: Matrix) -> Matrix:
+    let rows = matrix_dim(a.rows)
+    let cols = matrix_dim(a.cols)
+    let data = []
+    let r = 0
+    while r < rows bounded 4096:
+        let c = 0
+        while c < cols bounded 4096:
+            set data to data + [matrix_get(a, r, c) + matrix_get(b, r, c)]
+            set c to c + 1
+        set r to r + 1
+    return Matrix(rows: rows, cols: cols, data: data)
+
+action matrix_transpose(m: Matrix) -> Matrix:
+    let rows = matrix_dim(m.rows)
+    let cols = matrix_dim(m.cols)
+    let data = []
+    let c = 0
+    while c < cols bounded 4096:
+        let r = 0
+        while r < rows bounded 4096:
+            set data to data + [matrix_get(m, r, c)]
+            set r to r + 1
+        set c to c + 1
+    return Matrix(rows: cols, cols: rows, data: data)
+
+action matrix_multiply(a: Matrix, b: Matrix) -> Matrix:
+    let rows = matrix_dim(a.rows)
+    let cols = matrix_dim(b.cols)
+    let inner = matrix_dim(a.cols)
+    if matrix_dim(b.rows) < inner:
+        set inner to matrix_dim(b.rows)
+    let data = []
+    let r = 0
+    while r < rows bounded 4096:
+        let c = 0
+        while c < cols bounded 4096:
+            let total = 0
+            let k = 0
+            while k < inner bounded 4096:
+                set total to total + matrix_get(a, r, k) * matrix_get(b, k, c)
+                set k to k + 1
+            set data to data + [total]
+            set c to c + 1
+        set r to r + 1
+    return Matrix(rows: rows, cols: cols, data: data)
+
+# ---- determinant and inverse ---------------------------------------------------
+
+action matrix_abs(x) -> num:
+    if x < 0:
+        return 0 - x
+    return x
+
+# Rows as a list of row lists. The elimination routines work on this shape because
+# replacing one row then costs O(cols) instead of rebuilding the whole flat matrix.
+action matrix_rows(m: Matrix) -> list:
+    let rows = []
+    let n = matrix_dim(m.rows)
+    let r = 0
+    while r < n bounded 4096:
+        set rows to rows + [matrix_row(m, r)]
+        set r to r + 1
+    return rows
+
+# Position i of a row-list, or an empty list outside it.
+action matrix_row_at(rows, i) -> list:
+    let row = rows[i] otherwise []
+    return row
+
+# Entry (r, c) of a row-list.
+action matrix_row_cell(rows, r, c) -> num:
+    let row = rows[r] otherwise []
+    let v = row[c] otherwise 0
+    return v
+
+action matrix_replace_row(rows, i, replacement) -> list:
+    let out = []
+    let k = 0
+    for each row in rows:
+        if k == i:
+            set out to out + [replacement]
+        otherwise:
+            set out to out + [row]
+        set k to k + 1
+    return out
+
+# Flatten a row-list back into the row-major data list of a Matrix.
+action matrix_flatten(rows) -> list:
+    let data = []
+    for each row in rows:
+        for each v in row:
+            set data to data + [v]
+    return data
+
+# Determinant by LU decomposition with partial pivoting. The forward elimination
+# is only there to expose the next pivot; det is the product of the pivots times
+# the swap parity, which is what the elimination leaves on the diagonal.
+action matrix_det(m: Matrix) -> num:
+    let n = matrix_dim(m.rows)
+    if n != matrix_dim(m.cols):
+        return 0
+    if n == 0:
+        return 1
+    let rows = matrix_rows(m)
+    let det = 1
+    let col = 0
+    while col < n bounded 4096:
+        let pivot = col
+        let best = matrix_abs(matrix_row_cell(rows, col, col))
+        let r = col + 1
+        while r < n bounded 4096:
+            let v = matrix_abs(matrix_row_cell(rows, r, col))
+            if v > best:
+                set best to v
+                set pivot to r
+            set r to r + 1
+        if not (best > 0):
+            return 0
+        if pivot != col:
+            let saved = matrix_row_at(rows, pivot)
+            set rows to matrix_replace_row(rows, pivot, matrix_row_at(rows, col))
+            set rows to matrix_replace_row(rows, col, saved)
+            set det to 0 - det
+        let prow = matrix_row_at(rows, col)
+        let p = prow[col] otherwise 0
+        set det to det * p
+        let i = col + 1
+        while i < n bounded 4096:
+            let irow = matrix_row_at(rows, i)
+            let factor = (irow[col] otherwise 0) / p otherwise 0
+            let newrow = []
+            let j = 0
+            while j < n bounded 4096:
+                let nv = irow[j] otherwise 0
+                if j == col:
+                    set nv to 0
+                if j > col:
+                    set nv to nv - factor * (prow[j] otherwise 0)
+                set newrow to newrow + [nv]
+                set j to j + 1
+            set rows to matrix_replace_row(rows, i, newrow)
+            set i to i + 1
+        set col to col + 1
+    return det
+
+# Gauss-Jordan elimination on the augmented [A | I] with partial pivoting. The
+# pivot row is normalised to a unit pivot, then every other row is reduced against
+# it, so the right half becomes A^-1. A column with no non-zero pivot is singular,
+# detected before any division.
+action matrix_inverse(m: Matrix) -> MatrixResult:
+    let rows = matrix_dim(m.rows)
+    let cols = matrix_dim(m.cols)
+    if rows != cols:
+        return MatrixResult(ok: false, matrix: matrix_zeros(rows, cols))
+    if rows == 0:
+        return MatrixResult(ok: false, matrix: matrix_zeros(0, 0))
+    let aug = []
+    let r = 0
+    while r < rows bounded 4096:
+        let row = []
+        let c = 0
+        while c < rows bounded 4096:
+            set row to row + [matrix_get(m, r, c)]
+            set c to c + 1
+        set c to 0
+        while c < rows bounded 4096:
+            let v = 0
+            if r == c:
+                set v to 1
+            set row to row + [v]
+            set c to c + 1
+        set aug to aug + [row]
+        set r to r + 1
+    let width = rows * 2
+    let col = 0
+    while col < rows bounded 4096:
+        let pivot = col
+        let best = matrix_abs(matrix_row_cell(aug, col, col))
+        let rr = col + 1
+        while rr < rows bounded 4096:
+            let v = matrix_abs(matrix_row_cell(aug, rr, col))
+            if v > best:
+                set best to v
+                set pivot to rr
+            set rr to rr + 1
+        if not (best > 0):
+            return MatrixResult(ok: false, matrix: matrix_zeros(rows, rows))
+        if pivot != col:
+            let saved = matrix_row_at(aug, pivot)
+            set aug to matrix_replace_row(aug, pivot, matrix_row_at(aug, col))
+            set aug to matrix_replace_row(aug, col, saved)
+        let prow = matrix_row_at(aug, col)
+        let p = prow[col] otherwise 0
+        let inv = 1 / p otherwise 0
+        let unit = []
+        let j = 0
+        while j < width bounded 8192:
+            set unit to unit + [(prow[j] otherwise 0) * inv]
+            set j to j + 1
+        set aug to matrix_replace_row(aug, col, unit)
+        let other = 0
+        while other < rows bounded 4096:
+            if other != col:
+                let irow = matrix_row_at(aug, other)
+                let factor = irow[col] otherwise 0
+                let newrow = []
+                let j2 = 0
+                while j2 < width bounded 8192:
+                    set newrow to newrow + [(irow[j2] otherwise 0) - factor * (unit[j2] otherwise 0)]
+                    set j2 to j2 + 1
+                set aug to matrix_replace_row(aug, other, newrow)
+            set other to other + 1
+        set col to col + 1
+    let data = []
+    let r2 = 0
+    while r2 < rows bounded 4096:
+        let finalrow = matrix_row_at(aug, r2)
+        let c2 = 0
+        while c2 < rows bounded 4096:
+            set data to data + [finalrow[rows + c2] otherwise 0]
+            set c2 to c2 + 1
+        set r2 to r2 + 1
+    return MatrixResult(ok: true, matrix: Matrix(rows: rows, cols: rows, data: data))

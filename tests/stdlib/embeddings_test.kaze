@@ -1,0 +1,199 @@
+# tests/stdlib/embeddings_test.kaze -- embedding similarity and top-k search,
+# including a fixed-seed randomized gate: 200 rounds of vec_top_k against a plain
+# insertion-ranked reference list.
+#
+# The reference ranks (score descending, index ascending) with its own list
+# insert; it shares no code with the heap-backed search. Scores are also pinned
+# against decimal constants computed outside Kaze for the hand-written cases.
+
+needs: log
+
+use "./../../lib/embeddings.kaze"
+
+record RefMatch:
+    index: number
+    score: number
+
+action lcg_next(state) -> num:
+    let s = (state * 1664525 + 1013904223) & 4294967295
+    return s
+
+action check(label, ok, failures) -> num:
+    if ok:
+        return failures
+    log.info("FAIL " + label)
+    return failures + 1
+
+action num_abs(x) -> number:
+    if x < 0:
+        return 0 - x
+    return x
+
+action approx(a, b) -> bool:
+    return num_abs(a - b) <= 0.000000000001
+
+# Is a ranked ahead of b? Higher score first; equal scores by lower index.
+action rank_before(a: RefMatch, b: RefMatch) -> bool:
+    if a.score > b.score:
+        return true
+    if a.score < b.score:
+        return false
+    return a.index < b.index
+
+# Insert one match into the sorted reference list. The first output slot is
+# resolved before the loop and seeds the list, so the appends never start from an
+# empty buffer (the C emitter's in-place append path is only entered once it
+# exists).
+action rank_insert(xs, item: RefMatch) -> list:
+    let n = length of xs
+    if n == 0:
+        return [item]
+    let first = xs[0] otherwise RefMatch(index: 0 - 1, score: 0)
+    let head = first
+    let item_done = 0
+    let skip = 0
+    if rank_before(item, first):
+        set head to item
+        set item_done to 1
+    otherwise:
+        set skip to 1
+    let out = [] + [head]
+    let at = 0
+    for each m in xs:
+        if at >= skip:
+            if item_done == 0 and rank_before(item, m):
+                set out to out + [item]
+                set item_done to 1
+            set out to out + [m]
+        set at to at + 1
+    if item_done == 0:
+        set out to out + [item]
+    return out
+
+action main() -> num:
+    let failures = 0
+
+    # ---- the arithmetic surface ----
+    set failures to check("dot product adds the products", vec_dot([1, 2, 3], [4, 5, 6]) == 32, failures)
+    set failures to check("dot product zero-pads the shorter vector", vec_dot([1, 2], [3, 4, 5]) == 11, failures)
+    set failures to check("dot product of an empty vector is 0", vec_dot([], [1, 2]) == 0, failures)
+    set failures to check("norm of the 3-4-5 vector is 5", vec_norm([3, 4]) == 5, failures)
+    set failures to check("norm of an empty vector is 0", vec_norm([]) == 0, failures)
+    set failures to check("cosine of a vector with itself is 1", approx(vec_cosine_similarity([1, 2, 3], [1, 2, 3]), 1), failures)
+    set failures to check("cosine of orthogonal vectors is 0", vec_cosine_similarity([1, 0], [0, 1]) == 0, failures)
+    set failures to check("cosine of opposite vectors is -1", approx(vec_cosine_similarity([1, 2], [0 - 1, 0 - 2]), 0 - 1), failures)
+    set failures to check("cosine with a zero vector is 0, not a division", vec_cosine_similarity([0, 0], [1, 2]) == 0 and vec_cosine_similarity([1, 2], []) == 0, failures)
+    set failures to check("cosine is scale invariant", approx(vec_cosine_similarity([1, 2, 3], [4, 5, 6]), vec_cosine_similarity([2, 4, 6], [4, 5, 6])), failures)
+    set failures to check("cosine matches an independently computed constant", approx(vec_cosine_similarity([1, 2, 3], [4, 5, 6]), 0.9746318461970798), failures)
+    set failures to check("cosine zero-pads the shorter vector", approx(vec_cosine_similarity([1], [1, 2]), 0.4472135954999579), failures)
+    set failures to check("euclidean distance of 3-4-5 offset is 5", vec_euclidean_distance([0, 0], [3, 4]) == 5, failures)
+    set failures to check("euclidean distance zero-pads the shorter vector", vec_euclidean_distance([1, 2], [1, 2, 0]) == 0, failures)
+    set failures to check("euclidean distance matches an independently computed constant", approx(vec_euclidean_distance([1, 2, 3], [4, 6, 8]), 7.0710678118654755), failures)
+    set failures to check("euclidean distance is symmetric", vec_euclidean_distance([0 - 1, 2.5, 3], [4, 0, 0 - 2]) == vec_euclidean_distance([4, 0, 0 - 2], [0 - 1, 2.5, 3]), failures)
+
+    # ---- top-k ordering, clamping and tie rules ----
+    let q = [1, 0]
+    let cands = [[1, 0], [0, 1], [1, 1], [0.5, 0], [2, 0]]
+    let best = vec_top_k(q, cands, 1)
+    let b0 = best[0] otherwise RefMatch(index: 0 - 1, score: 0)
+    set failures to check("top-1 keeps the best candidate", (length of best) == 1 and b0.index == 0 and b0.score == 1, failures)
+    set failures to check("top-k of 0 is empty", (length of vec_top_k(q, cands, 0)) == 0, failures)
+    set failures to check("negative k clamps to empty", (length of vec_top_k(q, cands, 0 - 3)) == 0, failures)
+    set failures to check("k larger than the candidate count returns every candidate", (length of vec_top_k(q, cands, 99)) == 5, failures)
+    set failures to check("top-k of an empty candidate list is empty", (length of vec_top_k(q, [], 2)) == 0, failures)
+    let top3 = vec_top_k(q, cands, 3)
+    let t0 = top3[0] otherwise RefMatch(index: 0 - 1, score: 0)
+    let t1 = top3[1] otherwise RefMatch(index: 0 - 1, score: 0)
+    let t2 = top3[2] otherwise RefMatch(index: 0 - 1, score: 0)
+    set failures to check("equal top scores order by lower index", t0.index == 0 and t1.index == 3 and t2.index == 4, failures)
+    set failures to check("top-3 scores are the cosine scores", t0.score == 1 and t1.score == 1 and t2.score == 1, failures)
+    let exact_tie = vec_top_k([1, 0], [[1, 0], [2, 0], [3, 0]], 2)
+    let e0 = exact_tie[0] otherwise RefMatch(index: 0 - 1, score: 0)
+    let e1 = exact_tie[1] otherwise RefMatch(index: 0 - 1, score: 0)
+    set failures to check("an exact score tie keeps the lower indexes", e0.index == 0 and e1.index == 1, failures)
+    let zero_q = vec_top_k([0, 0], [[1, 0], [0, 1], [3, 4]], 2)
+    let z0 = zero_q[0] otherwise RefMatch(index: 0 - 1, score: 0)
+    let z1 = zero_q[1] otherwise RefMatch(index: 0 - 1, score: 0)
+    set failures to check("a zero query ranks every candidate 0 by index", z0.index == 0 and z1.index == 1 and z0.score == 0, failures)
+
+    # Every returned score must be the cosine of the returned index, and the
+    # answer must be sorted best-first.
+    let sorted_ok = 1
+    let score_ok = 1
+    let checked = 0
+    let prev = 2
+    for each m in top3:
+        if m.score > prev:
+            set sorted_ok to 0
+        set prev to m.score
+        let c = cands[m.index] otherwise []
+        if vec_cosine_similarity(q, c) != m.score:
+            set score_ok to 0
+        set checked to checked + 1
+    set failures to check("top-k returns the cosine score it ranked", score_ok == 1 and checked == 3, failures)
+    set failures to check("top-k is sorted best-first", sorted_ok == 1, failures)
+
+    # ---- gate: 200 randomized top-k rounds against an independent ranking --------
+    let seed = 24680
+    let mismatches = 0
+    let round = 0
+    while round < 200 bounded 1000:
+        set seed to lcg_next(seed)
+        let dim = 2 + seed % 5
+        set seed to lcg_next(seed)
+        let count = 1 + seed % 20
+        let candidates = []
+        let j = 0
+        while j < count bounded 100:
+            # The first coordinate seeds the vector (dim >= 2), and the first
+            # candidate seeds the candidate list; both appends then grow a live
+            # buffer instead of starting from an empty one.
+            set seed to lcg_next(seed)
+            let vec = [((seed >> 8) % 7) - 3]
+            let d = 1
+            while d < dim bounded 100:
+                set seed to lcg_next(seed)
+                let coord = ((seed >> 8) % 7) - 3
+                set vec to vec + [coord]
+                set d to d + 1
+            if j == 0:
+                set candidates to [vec]
+            otherwise:
+                set candidates to candidates + [vec]
+            set j to j + 1
+        set seed to lcg_next(seed)
+        let query = [((seed >> 8) % 7) - 3]
+        let qd = 1
+        while qd < dim bounded 100:
+            set seed to lcg_next(seed)
+            let qcoord = ((seed >> 8) % 7) - 3
+            set query to query + [qcoord]
+            set qd to qd + 1
+        set seed to lcg_next(seed)
+        let want = seed % 7
+        let ranked = []
+        let k = 0
+        for each c in candidates:
+            let score = vec_cosine_similarity(query, c)
+            set ranked to rank_insert(ranked, RefMatch(index: k, score: score))
+            set k to k + 1
+        let expected = want
+        if expected > count:
+            set expected to count
+        let got = vec_top_k(query, candidates, want)
+        if (length of got) != expected:
+            set mismatches to mismatches + 1
+        let at = 0
+        for each m in got:
+            if at < expected:
+                let ref = ranked[at] otherwise RefMatch(index: 0 - 1, score: 0)
+                if m.index != ref.index or m.score != ref.score:
+                    set mismatches to mismatches + 1
+            set at to at + 1
+        set round to round + 1
+    set failures to check("200 randomized top-k rounds match an insertion-ranked reference", mismatches == 0, failures)
+    set failures to check("the randomized gate ran 200 rounds", round == 200, failures)
+
+    if failures == 0:
+        log.info("OK embeddings: 29 checks")
+    return failures

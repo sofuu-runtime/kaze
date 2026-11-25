@@ -388,6 +388,14 @@ double pow(double b, double e) {
 
 void* realloc(void* ptr, size_t size) { (void)ptr; (void)size; return 0; }
 
+/* Monotonic from boot: the board has no calendar (see baremetal-include/time.h). */
+time_t time(time_t* out) {
+    static time_t ticks;
+    ticks += 1;
+    if (out != 0) *out = ticks;
+    return ticks;
+}
+
 int atoi(const char* s) { return (int)strtol(s, 0, 10); }
 
 long strtol(const char* s, char** end, int base) {
@@ -414,6 +422,19 @@ long strtol(const char* s, char** end, int base) {
     if (end != 0) *end = (char*)p;
     return neg ? -v : v;
 }
+
+/* The rest of what an emitted program may reach for, all defined in terms of the
+ * routines above so there is one implementation of each idea on the board. */
+double ceil(double x) { return -floor(-x); }
+double trunc(double x) { return x < 0.0 ? -floor(-x) : floor(x); }
+double round(double x) {
+    if (x != x) return x;
+    return x < 0.0 ? -floor(-x + 0.5) : floor(x + 0.5);
+}
+double log10(double x) { return log(x) / 2.30258509299404568402; }
+double atan(double x) { return atan2(x, 1.0); }
+double fmin(double a, double b) { return (a < b || a != a) ? a : b; }
+double fmax(double a, double b) { return (a > b || a != a) ? a : b; }
 
 char* getenv(const char* name) { (void)name; return 0; }
 int puts(const char* s) { kaze_board_write(s); kaze_board_write("\n"); return 0; }
