@@ -1,0 +1,5 @@
+action main() -> num:
+    let i = 0
+    while i >= 0 bounded 3:
+        set i to i + 1
+    return i

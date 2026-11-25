@@ -263,13 +263,18 @@ action emit_item_machine(item: AstNode, depth):
         let fields = ""
         for each f in item.children:
             set fields to fields + " (" + f.name + " " + f.val_str + ")"
-        return ind + "(record " + quoted(item.name) + "\n" + ind + "  (fields" + fields + "))\n"
+        let rec = "(record " + quoted(item.name) + "\n" + ind + "  (fields" + fields + "))"
+        if item_is_pub(item) == 1:
+            return ind + "(pub " + rec + ")\n"
+        return ind + rec + "\n"
     if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
         let body = child_at(item, 2)
         set out to ind + "(" + item_keyword(item) + " " + quoted(item.name) + "\n"
         set out to out + ind + "  " + emit_params_machine(item) + "\n"
         set out to out + ind + "  " + emit_contracts_machine(item) + "\n"
         set out to out + ind + "  (body" + emit_stmts_machine(body.children) + "))\n"
+        if item_is_pub(item) == 1:
+            set out to ind + "(pub " + out + ")\n"
         return out
     if item.kind == "WHEN":
         let body = child_at(item, 1)
@@ -283,7 +288,17 @@ action emit_machine(prog: AstNode):
     recursion bounded 200
     let out = "(kaze\n  (format 1)\n"
     for each u in kids_of(program_uses(prog)):
-        set out to out + "  (use " + quoted(u.name) + ")\n"
+        let symbols = use_symbols(u)
+        if (length of symbols) > 0:
+            let names = ""
+            for each s in symbols:
+                set names to names + " " + s.name
+            set out to out + "  (use (selects" + names + ") (from " + quoted(u.name) + "))\n"
+        otherwise:
+            if use_alias(u) != "":
+                set out to out + "  (use " + quoted(u.name) + " (as " + use_alias(u) + "))\n"
+            otherwise:
+                set out to out + "  (use " + quoted(u.name) + ")\n"
     let needs_node = program_needs(prog)
     if (length of needs_node.children) > 0:
         let parts = ""
@@ -480,13 +495,16 @@ action lower_contracts(form: AstNode):
 action lower_item(form: AstNode):
     recursion bounded 200
     let h = m_head(form)
+    if h == "pub":
+        let inner = lower_item(m_arg(form, 0))
+        return with_pub(inner, 1)
     if h == "record":
         let fields = []
         let fields_form = m_arg(form, 1)
         if m_head(fields_form) == "fields":
             for each f in drop_first(fields_form.children):
                 if f.kind == "L":
-                    set fields to fields + [make_field_def(m_text(m_arg(f, 0)), m_text(m_arg(f, 1)), f.line)]
+                    set fields to fields + [make_field_def(m_text(child_at(f, 0)), m_text(child_at(f, 1)), f.line)]
                 otherwise:
                     set fields to fields + [make_field_def(m_text(f), "any", f.line)]
         return make_record_item(m_text(m_arg(form, 0)), fields, form.line)
@@ -534,7 +552,26 @@ action lower_program(root: AstNode):
         if form.kind != "L":
             set h to "kaze"
         if h == "use":
-            set uses to uses + [make_node("USE", m_text(m_arg(form, 0)), "", 0, [], form.line)]
+            let spec = ""
+            let alias = ""
+            let symbols = []
+            let a0 = m_arg(form, 0)
+            let a1 = m_arg(form, 1)
+            if a0.kind == "L" and m_head(a0) == "selects":
+                for each c in drop_first(a0.children):
+                    set symbols to symbols + [make_symbol(m_text(c), c.line)]
+                if m_head(a1) == "from":
+                    set spec to m_text(m_arg(a1, 0))
+            otherwise:
+                set spec to m_text(a0)
+                if a1.kind == "L" and m_head(a1) == "as":
+                    set alias to m_text(m_arg(a1, 0))
+            let form_kind = 0
+            if alias != "":
+                set form_kind to 1
+            if (length of symbols) > 0:
+                set form_kind to 2
+            set uses to uses + [make_use(spec, alias, symbols, form_kind, form.line)]
         otherwise:
             if h == "needs":
                 for each c in drop_first(form.children):
@@ -753,13 +790,16 @@ action emit_params_human(item: AstNode):
 action emit_item_human(item: AstNode, depth):
     recursion bounded 200
     let ind = h_pad(depth)
+    let pub = ""
+    if item_is_pub(item) == 1:
+        set pub to "pub "
     if item.kind == "RECORD":
-        let out = ind + "record " + item.name + ":\n"
+        let out = ind + pub + "record " + item.name + ":\n"
         for each f in item.children:
             set out to out + ind + "    " + f.name + ": " + f.val_str + "\n"
         return out
     if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
-        let head = ind + item_keyword(item) + " " + item.name + "(" + emit_params_human(item) + ")"
+        let head = ind + pub + item_keyword(item) + " " + item.name + "(" + emit_params_human(item) + ")"
         if item.val_str != "":
             set head to head + " -> " + item.val_str
         let out = head + ":\n"
@@ -787,7 +827,21 @@ action emit_human(prog: AstNode):
     recursion bounded 200
     let out = ""
     for each u in kids_of(program_uses(prog)):
-        set out to out + "use " + quoted(u.name) + "\n"
+        let symbols = use_symbols(u)
+        if (length of symbols) > 0:
+            let names = ""
+            let first = 1
+            for each s in symbols:
+                if first == 0:
+                    set names to names + ", "
+                set names to names + s.name
+                set first to 0
+            set out to out + "use { " + names + " } from " + quoted(u.name) + "\n"
+        otherwise:
+            if use_alias(u) != "":
+                set out to out + "use " + quoted(u.name) + " as " + use_alias(u) + "\n"
+            otherwise:
+                set out to out + "use " + quoted(u.name) + "\n"
     let needs_node = program_needs(prog)
     if (length of needs_node.children) > 0:
         let parts = ""

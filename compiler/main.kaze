@@ -10,6 +10,9 @@
 #   <bin> to-machine <file.kaze>   emit the canonical machine S-expression form
 #   <bin> to-human <file.kaze>     read machine S-expressions, print human syntax
 #   <bin> lsp [session]            serve a framed LSP session (see lsp.kaze)
+#   <bin> module-manifest <file>   print the resolved module DAG for the host
+#   <bin> emit-c-unit <file> <tag> emit one module as its own translation unit
+#   <bin> version | --version      print the Kaze language version (kaze 1.0)
 #
 # The first parameter is the mode so that the single-argument form keeps
 # working: when the first positional argument is not a mode name, it is the
@@ -20,16 +23,25 @@ use "./ast.kaze"
 use "./lexer.kaze"
 use "./parser.kaze"
 use "./checker.kaze"
+use "./module.kaze"
 use "./isa.kaze"
 use "./machine.kaze"
 use "./codegen.kaze"
+use "./ir.kaze"
+use "./qbe_codegen.kaze"
 use "./lsp.kaze"
 
 action mode_of(word):
     if word == "check" or word == "emit-c" or word == "to-machine" or word == "to-human":
         return word
+    if word == "emit-ir" or word == "emit-qbe" or word == "emit-ir-c":
+        return word
     if word == "fmt" or word == "compile" or word == "lsp" or word == "surface":
         return word
+    if word == "module-manifest" or word == "emit-c-unit":
+        return word
+    if word == "version" or word == "--version" or word == "-V":
+        return "version"
     return ""
 
 # Human syntax and machine syntax are detected the same way the reference
@@ -53,6 +65,92 @@ action compile(src):
     let program = parse_source(src)
     return emit_c_program(program)
 
+# The file the host read for this invocation. The compiler has no ambient
+# filesystem capability, so the path comes from the same argument reader that
+# produced `src`; a source pasted on the command line has no path and keeps the
+# legacy one-file behaviour.
+action root_path() -> text:
+    return source_path()
+
+action program_has_uses(prog: AstNode) -> num:
+    return length of (program_uses(prog)).children
+
+action report_all(diags) -> text:
+    if (length of diags) > 0:
+        let status = exit_code(1)
+    return render_diags(diags)
+
+action check_source(src) -> text:
+    let program = parse_source(src)
+    let path = root_path()
+    if program_has_uses(program) > 0 and path != "":
+        return report_all(mz_check_all(path))
+    return report_all(check_program(program))
+
+# Emit C for the whole dependency DAG. A module graph with any diagnostic
+# still produces C, but it is a single #error so the host reports the same
+# failure the checker did instead of compiling a half-resolved program.
+action emit_c_source(src) -> text:
+    let program = parse_source(src)
+    let path = root_path()
+    if program_has_uses(program) == 0 or path == "":
+        return emit_c_program(program)
+    let prepared = mz_prepare(path)
+    let mods = prepared[0] otherwise []
+    let diags = prepared[1] otherwise []
+    if (length of diags) == 0:
+        set diags to mz_check_modules(mods)
+    if (length of diags) > 0:
+        let status = exit_code(1)
+        return mz_error_c(diags)
+    return emit_c_program(mz_merged_program(mods))
+
+action compile_diag_text(diags) -> text:
+    let out = "compile: " + bc_num_text(length of diags) + " diagnostic(s); no module written\n"
+    for each d in diags:
+        set out to out + render_diag(d) + "\n"
+    return out
+
+# One module as its own C translation unit. The tag is the module identity the
+# manifest published; a missing tag is a host bug, said plainly.
+action emit_c_unit_source(src, tag) -> text:
+    let path = root_path()
+    let chosen = tag
+    if chosen == "":
+        set chosen to env_text("KAZE_MODULE_TAG", "")
+    if path == "" or chosen == "":
+        return mz_error_c([diag_in("E_KAZE_MODULE_UNIT", 1, "emit-c-unit needs a source path and a module tag", path)])
+    let prepared = mz_prepare(path)
+    let mods = prepared[0] otherwise []
+    let diags = prepared[1] otherwise []
+    if (length of diags) == 0:
+        set diags to mz_check_modules(mods)
+    if (length of diags) > 0:
+        let status = exit_code(1)
+        return mz_error_c(diags)
+    let module = mz_find_tag(mods, chosen)
+    if module.path == "":
+        return mz_error_c([diag_in("E_KAZE_MODULE_UNIT", 1, "no module with tag '" + chosen + "' in this program", path)])
+    let extras = mz_public_items(mods, chosen)
+    return emit_c_unit(mz_unit_program(module, mods), extras, module.root)
+
+# Same closure rule as emit-c, but the bytecode writer refuses a program with
+# an unresolved import instead of silently writing a module that cannot run.
+action compile_source(src) -> text:
+    let program = parse_source(src)
+    let path = root_path()
+    if program_has_uses(program) > 0 and path != "":
+        let prepared = mz_prepare(path)
+        let mods = prepared[0] otherwise []
+        let diags = prepared[1] otherwise []
+        if (length of diags) == 0:
+            set diags to mz_check_modules(mods)
+        if (length of diags) > 0:
+            let status = exit_code(1)
+            return compile_diag_text(diags)
+        set program to mz_merged_program(mods)
+    return compile_program(program)
+
 # Print the language surface as one family.verb per line, sorted, so the drift check can
 # diff it against the embedded product engine (scripts/kaze-drift-check.sh).
 action surface_text() -> text:
@@ -70,7 +168,69 @@ action surface_text() -> text:
         set out to out + "\nopcode " + o
     return out
 
-action main(mode, src):
+action native_diag_text(program: AstNode) -> text:
+    let lowered = ir_lower_program(program)
+    let out = ""
+    for each e in lowered.errors:
+        set out to out + "native: " + e + "\n"
+    if out == "":
+        return "native: ok\n"
+    return "native: " + (length of lowered.errors) + " diagnostic(s)\n" + out
+
+# IR lowering takes one flat program. For an entry file that has imports,
+# resolve and check the module DAG first so qualified and selective names arrive
+# mangled, exactly as they do on the C path. A source text with no path keeps
+# the legacy one-file behaviour.
+action module_source_program(src: string) -> list:
+    let program = parse_source(src)
+    let path = root_path()
+    if program_has_uses(program) == 0 or path == "":
+        return [program, []]
+    let prepared = mz_prepare(path)
+    let mods = prepared[0] otherwise []
+    let diags = prepared[1] otherwise []
+    if (length of diags) == 0:
+        set diags to mz_check_modules(mods)
+    if (length of diags) > 0:
+        return [program, diags]
+    return [mz_merged_program(mods), []]
+
+action backend_diag_text(diags: list) -> string:
+    let out = ""
+    for each d in diags:
+        set out to out + render_diag(d) + "\n"
+    if (length of diags) > 0:
+        let status = exit_code(1)
+    return out
+
+action emit_ir_source(src: string) -> string:
+    let prepared = module_source_program(src)
+    let diags = prepared[1] otherwise []
+    if (length of diags) > 0:
+        return backend_diag_text(diags)
+    return ir_render(ir_lower_program(prepared[0] otherwise parse_source(src)))
+
+action emit_qbe_source(src: string) -> string:
+    # `emit_qbe` writes diagnostics into its result, and a diagnostic is not
+    # IL. Reflect that in the process status so a shell pipeline cannot mistake
+    # E_KAZE_BACKEND_UNSUPPORTED for a successful empty program.
+    let prepared = module_source_program(src)
+    let diags = prepared[1] otherwise []
+    if (length of diags) > 0:
+        return backend_diag_text(diags)
+    let out = emit_qbe(ir_lower_program(prepared[0] otherwise parse_source(src)))
+    if ir_prefix(out, "E_KAZE_"):
+        let status = exit_code(1)
+    return out
+
+action emit_ir_c_source(src: string) -> string:
+    let prepared = module_source_program(src)
+    let diags = prepared[1] otherwise []
+    if (length of diags) > 0:
+        return backend_diag_text(diags)
+    return ir_emit_c(ir_lower_program(prepared[0] otherwise parse_source(src)))
+
+action main(mode, src, backend, extra):
     let selected = mode_of(mode)
     if selected == "lsp":
         # The second parameter is the session: a path the runtime reads, or the
@@ -93,15 +253,41 @@ action main(mode, src):
             return "/* Kaze Compiler — No input provided */\n"
         if length of mode == 0:
             return "/* Kaze Compiler — No input provided */\n"
+        if backend == "native":
+            return emit_qbe_source(mode)
         return compile(mode)
     if selected == "check":
-        let program = parse_source(src)
-        return render_diags(check_program(program))
+        if backend == "native":
+            let prepared = module_source_program(src)
+            let diags = prepared[1] otherwise []
+            if (length of diags) > 0:
+                return check_source(src)
+            return check_source(src) + native_diag_text(prepared[0] otherwise parse_source(src))
+        return check_source(src)
+    if selected == "module-manifest":
+        let path = root_path()
+        if path == "":
+            let status = exit_code(1)
+            return "E\tE_KAZE_MODULE_NOT_FOUND at line 1: module-manifest needs a source path\n"
+        return mz_manifest(path)
+    if selected == "emit-c-unit":
+        let tag = backend
+        if tag == "":
+            set tag to extra
+        return emit_c_unit_source(src, tag)
+    if selected == "emit-ir":
+        return emit_ir_source(src)
+    if selected == "emit-qbe":
+        return emit_qbe_source(src)
+    if selected == "emit-ir-c":
+        return emit_ir_c_source(src)
     if selected == "to-machine":
         let program = parse_source(src)
         return emit_machine(program)
     if selected == "surface":
         return surface_text()
+    if selected == "version":
+        return "kaze " + kaze_version()
 
     if selected == "to-human":
         let program = parse_machine(src)
@@ -110,8 +296,10 @@ action main(mode, src):
         let program = parse_source(src)
         return emit_human(program)
     if selected == "compile":
-        return compile_module(src)
-    return compile(src)
+        return compile_source(src)
+    if backend == "native":
+        return emit_qbe_source(src)
+    return emit_c_source(src)
 
 # ── compile: the bytecode module writer ─────────────────────────────────
 #
@@ -1513,21 +1701,16 @@ action bc_nodes_of(n: AstNode, want, out) -> list:
         set acc to bc_nodes_of(c, want, acc)
     return acc
 
-action compile_module(src):
-    let program = parse_source(src)
+action compile_program(program: AstNode) -> text:
     let conc = bc_concurrency_line(program)
     if conc > 0:
-        return "compile: E_KAZE_FIBER_BYTECODE at line " + conc + ": a fiber suspends, and module format 5 has no suspension point; emit the program as C (emit-c) to run it
-"
+        return "compile: E_KAZE_FIBER_BYTECODE at line " + conc + ": a fiber suspends, and module format 5 has no suspension point; emit the program as C (emit-c) to run it\n"
     let unread = bc_first_unknown(program)
     if (length of unread) > 0:
         return "compile: the parser could not read this source (line " + unread + "); no module written\n"
     let diags = check_program(program)
     if (length of diags) > 0:
-        let out = "compile: " + bc_num_text(length of diags) + " diagnostic(s); no module written\n"
-        for each d in diags:
-            set out to out + render_diag(d) + "\n"
-        return out
+        return compile_diag_text(diags)
     let r = bc_module(program)
     if (length of (r[0] otherwise "")) > 0:
         return "compile: " + (r[0] otherwise "") + "\n"

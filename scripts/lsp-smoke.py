@@ -267,14 +267,22 @@ def median_ms(binary, payload, workdir, trials=3):
 def build_stage1(repo_root):
     """Build the pure-Kaze compiler from the monolith; used by --build."""
     kaze_dir = os.path.join(repo_root, "kaze")
-    compiler = os.path.join(kaze_dir, "target", "debug", "kaze")
     monolith = os.path.join(kaze_dir, "compiler", "kaze_self.kaze")
-    if not os.path.exists(compiler):
-        raise SystemExit("lsp-smoke: --build needs %s" % compiler)
+    candidates = [
+        os.environ.get("KAZE_LSP_COMPILER"),
+        os.path.join(kaze_dir, "bin", "kaze-bootstrap"),
+        os.path.join(kaze_dir, "bin", "kaze"),
+        os.path.join(kaze_dir, "target", "debug", "kaze"),
+    ]
+    compiler = next((c for c in candidates if c and os.path.exists(c)), None)
+    if compiler is None:
+        raise SystemExit("lsp-smoke: --build needs bin/kaze-bootstrap or bin/kaze")
     out_dir = tempfile.mkdtemp(prefix="kaze-lsp-build-")
     c_path = os.path.join(out_dir, "stage1.c")
     bin_path = os.path.join(out_dir, "stage1")
-    subprocess.run([compiler, "emit-c", monolith, "-o", c_path], cwd=kaze_dir, check=True)
+    with open(c_path, "wb") as handle:
+        subprocess.run([compiler, "emit-c", monolith], cwd=kaze_dir,
+                       stdout=handle, check=True)
     subprocess.run(["cc", "-std=c99", "-O2", "-w", "-I", os.path.join(kaze_dir, "dist"),
                     c_path, os.path.join(kaze_dir, "dist", "kaze_rt.c"), "-o", bin_path], check=True)
     return bin_path

@@ -1,0 +1,9 @@
+# The C99 append-ownership proof lets `out = out + [x]` grow in place. This
+# must stay linear and must survive twenty thousand appends.
+action main() -> num:
+    let out = []
+    let i = 0
+    while i < 20000 bounded 100000:
+        set out to out + [i % 10]
+        set i to i + 1
+    return length of out

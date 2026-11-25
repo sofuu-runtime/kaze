@@ -1,0 +1,6 @@
+# The C99 emitter rounds every bitwise result to a double. A native backend
+# that keeps the low bit alive would print 1 here instead of 0.
+action main() -> num:
+    let a = (1 << 60) | 1
+    let b = a & 1
+    return b

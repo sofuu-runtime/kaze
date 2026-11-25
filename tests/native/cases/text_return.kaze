@@ -1,0 +1,5 @@
+action greeting(name: text) -> text:
+    return name
+
+action main() -> text:
+    return greeting("hello from native")

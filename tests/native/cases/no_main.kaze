@@ -1,0 +1,8 @@
+# A unit with more than one action and no main is valid in the C99 backend: it
+# prints "Kaze module loaded (no main entry)" and exits 0. The native wrapper
+# must do the same instead of requiring a main routine.
+action helper(x: num) -> num:
+    return x + 1
+
+action other() -> num:
+    return helper(41)

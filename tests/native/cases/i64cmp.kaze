@@ -1,0 +1,5 @@
+# Same rounding rule visible through a comparison.
+action main() -> bool:
+    let a = 1 << 60
+    let b = (1 << 60) | 1
+    return a == b

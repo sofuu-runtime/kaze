@@ -1,0 +1,4 @@
+action main() -> num:
+    let x = 4
+    guard x > 2
+    return x

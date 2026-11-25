@@ -1,0 +1,5 @@
+action divide(a: num, b: num) -> num:
+    return a / b
+
+action main() -> num:
+    return divide(1, 0)

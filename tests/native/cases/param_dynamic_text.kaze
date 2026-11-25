@@ -1,0 +1,7 @@
+# An unannotated parameter is a dynamic value on the C99 path, not a number.
+# Text concatenation must see the resolved text.
+action echo(d) -> text:
+    return "v=" + d
+
+action main(d) -> text:
+    return echo(d)

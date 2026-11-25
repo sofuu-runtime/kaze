@@ -1,0 +1,8 @@
+action main() -> num:
+    let a = 0.1 + 0.2
+    let b = 1.0 / 3.0
+    let c = 1000 + 0.5
+    log a
+    log b
+    log c
+    return a

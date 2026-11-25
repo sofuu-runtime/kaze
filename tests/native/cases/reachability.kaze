@@ -1,0 +1,15 @@
+# A reachable-only lowering pass: `main` calls helper, and the unsupported
+# record routine is never entered. Before reachability filtering every action in
+# the bundle had to be scalar, so an unused library routine stopped the program.
+record Tally:
+    failures: number
+    checks: number
+
+action unused(t: Tally) -> Tally:
+    return t
+
+action helper(x: num) -> num:
+    return x + 1
+
+action main() -> num:
+    return helper(41)

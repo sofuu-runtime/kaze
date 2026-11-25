@@ -1,0 +1,8 @@
+# Scalar arithmetic and a scalar call across two routines.
+action add(a: num, b: num) -> num:
+    return a + b
+
+action main() -> num:
+    let x = add(2, 3)
+    let y = add(x, 0.5)
+    return y * 4

@@ -1,0 +1,5 @@
+# The native wrapper passes bool and text parameters without boxing.
+action main(flag: bool, name: text) -> text:
+    if flag:
+        return name
+    return "off"

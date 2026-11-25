@@ -1,0 +1,4 @@
+# A typed scalar parameter is resolved from --arg and divided with a fallback.
+action main(d: num):
+    let share = 12 / d otherwise 0
+    return share

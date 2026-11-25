@@ -1,0 +1,12 @@
+# A nested let may reuse a name with a different type. Each binding needs its
+# own storage; sharing one flat slot made the native IR store a pointer into a
+# number slot (and corrupted the outer value).
+action pick(flag: bool) -> num:
+    let x = 41
+    if flag:
+        let x = [1, 2, 3]
+        return (length of x) * 10 + 1
+    return x + 1
+
+action main() -> num:
+    return pick(true) * 1000 + pick(false)

@@ -1,0 +1,590 @@
+# qbe_codegen.kaze -- lower the shared Kaze IR to QBE SSA.
+#
+# This is Step 11.2's front half. It consumes compiler/ir.kaze, never the AST,
+# so the C99 reference emitter and the native emitter lower the same
+# instructions. QBE's own C99 compiler (dist/qbe/) turns the text below into
+# assembly; the driver then uses `as` and `ld` only.
+#
+# The subset is the unboxed scalar IR: f64, i64, bool and scalar calls. Slots
+# are stack cells (`alloc8`), which is QBE's documented way to avoid phi
+# bookkeeping; QBE's load/copy/fold passes promote them when it can.
+use "./ir.kaze"
+
+action qbe_ty(t: string) -> string:
+    if t == "f64":
+        return "d"
+    if t == "i64":
+        return "l"
+    if t == "bool":
+        return "w"
+    if t == "str":
+        return "l"
+    if t == "val":
+        return "l"
+    return ""
+
+action qbe_zero(t: string) -> string:
+    if t == "f64":
+        return "d_0"
+    if t == "i64":
+        return "0"
+    if t == "bool":
+        return "0"
+    if t == "str":
+        return "0"
+    if t == "val":
+        return "0"
+    return ""
+
+action qbe_sanitize(n: string) -> string:
+    let out = ""
+    let i = 0
+    while i < (length of n) bounded 256:
+        let ch = n[i] otherwise ""
+        if (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == "_":
+            set out to out + ch
+        otherwise:
+            set out to out + "_"
+        set i to i + 1
+    return out
+
+action qbe_slot(name: string) -> string:
+    return "%s_" + qbe_sanitize(name)
+
+action qbe_label(name: string) -> string:
+    return "@" + qbe_sanitize(name)
+
+action qbe_fn(name: string) -> string:
+    return "$kaze_fn_" + qbe_sanitize(name)
+
+action qbe_escape(s: string) -> string:
+    let out = ""
+    let i = 0
+    while i < (length of s) bounded 512:
+        let ch = s[i] otherwise ""
+        if ch == "\"":
+            set out to out + "\\\""
+        otherwise:
+            if ch == "\\":
+                set out to out + "\\\\"
+            otherwise:
+                if ch == "\n":
+                    set out to out + "\\n"
+                otherwise:
+                    if ch == "\t":
+                        set out to out + "\\t"
+                    otherwise:
+                        set out to out + ch
+        set i to i + 1
+    return out
+
+# ── message table ───────────────────────────────────────────────────────
+
+action qbe_msgs_add(msgs, text: string) -> list:
+    for each m in msgs:
+        if m == text:
+            return msgs
+    return msgs + [text]
+
+action qbe_collect_msgs(prog: IRProgram) -> list:
+    let msgs = []
+    for each f in prog.funcs:
+        for each ins in f.body:
+            if ins.op == "trap":
+                set msgs to qbe_msgs_add(msgs, ins.a)
+            if ins.op == "guard":
+                set msgs to qbe_msgs_add(msgs, ins.b)
+    return msgs
+
+action qbe_msg_index(msgs, text: string) -> num:
+    let i = 0
+    for each m in msgs:
+        if m == text:
+            return i
+        set i to i + 1
+    return 0
+
+action qbe_msg_sym(msgs, text: string) -> string:
+    return "$kz_msg" + ir_num_text(qbe_msg_index(msgs, text))
+
+# ── string literals ─────────────────────────────────────────────────────
+
+action qbe_strs_add(strs, text: string) -> list:
+    for each s in strs:
+        if s == text:
+            return strs
+    return strs + [text]
+
+action qbe_collect_strs(prog: IRProgram) -> list:
+    let strs = []
+    for each f in prog.funcs:
+        for each ins in f.body:
+            if ins.op == "const_str":
+                set strs to qbe_strs_add(strs, ins.a)
+    return strs
+
+action qbe_str_index(strs, text: string) -> num:
+    let i = 0
+    for each s in strs:
+        if s == text:
+            return i
+        set i to i + 1
+    return 0
+
+action qbe_str_sym(strs, text: string) -> string:
+    return "$kz_str" + ir_num_text(qbe_str_index(strs, text))
+
+# ── instruction rendering ───────────────────────────────────────────────
+
+action qbe_split_args(s: string) -> list:
+    let out = []
+    let cur = ""
+    let i = 0
+    while i < (length of s) bounded 512:
+        let c = s[i] otherwise ""
+        if c == " ":
+            if cur != "":
+                set out to out + [cur]
+                set cur to ""
+        otherwise:
+            set cur to cur + c
+        set i to i + 1
+    if cur != "":
+        set out to out + [cur]
+    return out
+
+action qbe_arg_ty(part: string) -> string:
+    let i = 0
+    let n = length of part
+    while i < n bounded 256:
+        if (part[i] otherwise "") == ":":
+            return qbe_ty(qbe_slice(part, 0, i))
+        set i to i + 1
+    return "d"
+
+action qbe_arg_val(part: string) -> string:
+    let i = 0
+    let n = length of part
+    while i < n bounded 256:
+        if (part[i] otherwise "") == ":":
+            return qbe_slice(part, i + 1, n)
+        set i to i + 1
+    return part
+
+action qbe_slice(s: string, from, to) -> string:
+    let out = ""
+    let i = from
+    while i < to bounded 512:
+        set out to out + (s[i] otherwise "")
+        set i to i + 1
+    return out
+
+action qbe_call_args(s: string) -> string:
+    let out = ""
+    let first = 1
+    for each part in qbe_split_args(s):
+        if first == 0:
+            set out to out + ", "
+        set out to out + qbe_arg_ty(part) + " " + qbe_arg_val(part)
+        set first to 0
+    return out
+
+action qbe_slot_type(slots, name: string) -> string:
+    for each s in slots:
+        if (s[0] otherwise "") == name:
+            return s[1] otherwise "f64"
+    return "f64"
+
+action qbe_slots_with_params(f: IRFunc) -> list:
+    let slots = []
+    for each p in f.params:
+        set slots to slots + [[p[0] otherwise "", p[1] otherwise "f64"]]
+    for each s in f.slots:
+        let name = s[0] otherwise ""
+        let found = 0
+        for each old in slots:
+            if (old[0] otherwise "") == name:
+                set found to 1
+        if found == 0:
+            set slots to slots + [[name, s[1] otherwise "f64"]]
+    return slots
+
+action qbe_op_ty(op: string) -> string:
+    if op == "add_f64" or op == "sub_f64" or op == "mul_f64" or op == "div_f64" or op == "mod_f64":
+        return "f64"
+    if op == "add_i64" or op == "band_i64" or op == "bor_i64" or op == "bxor_i64" or op == "shl_i64" or op == "shr_i64":
+        return "i64"
+    if op == "cmp_eq_f64" or op == "cmp_ne_f64" or op == "cmp_lt_f64" or op == "cmp_le_f64" or op == "cmp_gt_f64" or op == "cmp_ge_f64" or op == "cmp_ge_i64":
+        return "bool"
+    if op == "and_bool" or op == "or_bool" or op == "not_bool":
+        return "bool"
+    if op == "i64_to_f64" or op == "bool_to_f64":
+        return "f64"
+    if op == "f64_to_i64" or op == "bool_to_i64":
+        return "i64"
+    if op == "f64_to_bool" or op == "i64_to_bool":
+        return "bool"
+    if op == "val_from_f64" or op == "val_from_bool" or op == "val_from_str" or op == "list_new" or op == "val_add" or op == "val_add_own" or op == "val_index" or op == "val_index_fb" or op == "val_field" or op == "iter_at":
+        return "val"
+    if op == "val_to_f64" or op == "val_len" or op == "len_str":
+        return "f64"
+    if op == "record_new":
+        return "val"
+    if op == "val_to_bool" or op == "val_eq" or op == "val_ne" or op == "val_lt" or op == "val_le" or op == "val_gt" or op == "val_ge":
+        return "bool"
+    if op == "val_to_str":
+        return "str"
+    if op == "iter_len":
+        return "i64"
+    return ""
+
+action qbe_stmt(ins: IRInstr, slots, msgs, strs, uid, fret) -> string:
+    let op = ins.op
+    let d = ins.dst
+    let a = ins.a
+    let b = ins.b
+    if op == "const_f64":
+        return "    " + d + " =d copy d_" + a + "\n"
+    if op == "const_i64":
+        return "    " + d + " =l copy " + a + "\n"
+    if op == "const_bool":
+        return "    " + d + " =w copy " + a + "\n"
+    if op == "const_str":
+        return "    " + d + " =l copy " + qbe_str_sym(strs, a) + "\n"
+    if op == "log_str":
+        return "    call $kaze_native_log_str(l " + a + ")\n"
+    if op == "alert_str":
+        return "    call $kaze_native_alert_str(l " + a + ")\n"
+    if op == "log_f64":
+        return "    call $kaze_native_log_f64(d " + a + ")\n"
+    if op == "alert_f64":
+        return "    call $kaze_native_alert_f64(d " + a + ")\n"
+    if op == "log_bool":
+        return "    call $kaze_native_log_bool(w " + a + ")\n"
+    if op == "alert_bool":
+        return "    call $kaze_native_alert_bool(w " + a + ")\n"
+    if op == "log_val":
+        return "    call $kaze_native_log_val(l " + a + ")\n"
+    if op == "alert_val":
+        return "    call $kaze_native_alert_val(l " + a + ")\n"
+    if op == "load":
+        let ty = qbe_slot_type(slots, a)
+        return "    " + d + " =" + qbe_ty(ty) + " load" + qbe_ty(ty) + " " + qbe_slot(a) + "\n"
+    if op == "store":
+        let ty = qbe_slot_type(slots, a)
+        if qbe_ty(ty) == "":
+            return "    # QBE: unit store\n"
+        return "    store" + qbe_ty(ty) + " " + b + ", " + qbe_slot(a) + "\n"
+    if op == "copy":
+        return "    " + d + " =" + qbe_ty(b) + " copy " + a + "\n"
+    if op == "add_f64":
+        return "    " + d + " =d add " + a + ", " + b + "\n"
+    if op == "sub_f64":
+        return "    " + d + " =d sub " + a + ", " + b + "\n"
+    if op == "mul_f64":
+        return "    " + d + " =d mul " + a + ", " + b + "\n"
+    if op == "div_f64":
+        return "    " + d + " =d div " + a + ", " + b + "\n"
+    if op == "mod_f64":
+        return "    " + d + " =d call $fmod(d " + a + ", d " + b + ")\n"
+    if op == "add_i64":
+        return "    " + d + " =l add " + a + ", " + b + "\n"
+    if op == "band_i64":
+        return "    " + d + " =l and " + a + ", " + b + "\n"
+    if op == "bor_i64":
+        return "    " + d + " =l or " + a + ", " + b + "\n"
+    if op == "bxor_i64":
+        return "    " + d + " =l xor " + a + ", " + b + "\n"
+    if op == "shl_i64":
+        return "    " + d + " =l shl " + a + ", " + b + "\n"
+    if op == "shr_i64":
+        return "    " + d + " =l shr " + a + ", " + b + "\n"
+    if op == "cmp_eq_f64":
+        return "    " + d + " =w ceqd " + a + ", " + b + "\n"
+    if op == "cmp_ne_f64":
+        return "    " + d + " =w cned " + a + ", " + b + "\n"
+    if op == "cmp_lt_f64":
+        return "    " + d + " =w cltd " + a + ", " + b + "\n"
+    if op == "cmp_le_f64":
+        return "    " + d + " =w cled " + a + ", " + b + "\n"
+    if op == "cmp_gt_f64":
+        return "    " + d + " =w cgtd " + a + ", " + b + "\n"
+    if op == "cmp_ge_f64":
+        return "    " + d + " =w cged " + a + ", " + b + "\n"
+    if op == "cmp_eq_i64":
+        return "    " + d + " =w ceql " + a + ", " + b + "\n"
+    if op == "cmp_ne_i64":
+        return "    " + d + " =w cnel " + a + ", " + b + "\n"
+    if op == "cmp_lt_i64":
+        return "    " + d + " =w csltl " + a + ", " + b + "\n"
+    if op == "cmp_le_i64":
+        return "    " + d + " =w cslel " + a + ", " + b + "\n"
+    if op == "cmp_gt_i64":
+        return "    " + d + " =w csgtl " + a + ", " + b + "\n"
+    if op == "cmp_ge_i64":
+        return "    " + d + " =w csgel " + a + ", " + b + "\n"
+    if op == "and_bool":
+        return "    " + d + " =w and " + a + ", " + b + "\n"
+    if op == "or_bool":
+        return "    " + d + " =w or " + a + ", " + b + "\n"
+    if op == "not_bool":
+        return "    " + d + " =w xor " + a + ", 1\n"
+    if op == "i64_to_f64":
+        return "    " + d + " =d sltof " + a + "\n"
+    if op == "bool_to_f64":
+        return "    " + d + " =d uwtof " + a + "\n"
+    if op == "f64_to_i64":
+        return "    " + d + " =l dtosi " + a + "\n"
+    if op == "bool_to_i64":
+        return "    " + d + " =l extuw " + a + "\n"
+    if op == "f64_to_bool":
+        return "    " + d + " =w cned " + a + ", d_0\n"
+    if op == "i64_to_bool":
+        return "    " + d + " =w cnel " + a + ", 0\n"
+    if op == "const_nil":
+        return "    " + d + " =l copy 0\n"
+    if op == "val_from_f64":
+        return "    " + d + " =l call $kz_nv_num(d " + a + ")\n"
+    if op == "val_from_bool":
+        return "    " + d + " =l call $kz_nv_bool(w " + a + ")\n"
+    if op == "val_from_str":
+        return "    " + d + " =l call $kz_nv_str(l " + a + ")\n"
+    if op == "val_character":
+        return "    " + d + " =l call $kz_nv_character(d " + a + ")\n"
+    if op == "record_new":
+        return "    " + d + " =l call $kz_nv_record_new(l " + a + ", l " + b + ")\n"
+    if op == "record_set":
+        return "    call $kz_nv_record_set(l " + a + ", l " + b + ", l " + ins.c + ")\n"
+    if op == "val_to_f64":
+        return "    " + d + " =d call $kz_nv_to_f64(l " + a + ")\n"
+    if op == "val_to_bool":
+        return "    " + d + " =w call $kz_nv_truthy(l " + a + ")\n"
+    if op == "val_to_str":
+        return "    " + d + " =l call $kaze_native_value_text(l " + a + ")\n"
+    if op == "val_add":
+        return "    " + d + " =l call $kz_nv_add(l " + a + ", l " + b + ")\n"
+    if op == "val_add_own":
+        return "    " + d + " =l call $kz_nv_add_own(l " + a + ", l " + b + ")\n"
+    if op == "val_eq":
+        return "    " + d + " =w call $kz_nv_eq(l " + a + ", l " + b + ")\n"
+    if op == "val_ne":
+        return "    " + d + " =w call $kz_nv_ne(l " + a + ", l " + b + ")\n"
+    if op == "val_lt":
+        return "    " + d + " =w call $kz_nv_lt(l " + a + ", l " + b + ")\n"
+    if op == "val_le":
+        return "    " + d + " =w call $kz_nv_le(l " + a + ", l " + b + ")\n"
+    if op == "val_gt":
+        return "    " + d + " =w call $kz_nv_gt(l " + a + ", l " + b + ")\n"
+    if op == "val_ge":
+        return "    " + d + " =w call $kz_nv_ge(l " + a + ", l " + b + ")\n"
+    if op == "list_new":
+        return "    " + d + " =l call $kz_nv_list_new(l " + a + ")\n"
+    if op == "list_set":
+        return "    call $kz_nv_list_set(l " + a + ", l " + b + ", l " + ins.c + ")\n"
+    if op == "val_index":
+        return "    " + d + " =l call $kz_nv_index(l " + a + ", d " + b + ")\n"
+    if op == "val_index_fb":
+        return "    " + d + " =l call $kz_nv_index_fb(l " + a + ", l " + b + ", l " + ins.c + ")\n"
+    if op == "val_field":
+        return "    " + d + " =l call $kz_nv_field(l " + a + ", l " + b + ")\n"
+    if op == "val_len":
+        return "    " + d + " =d call $kz_nv_len(l " + a + ")\n"
+    if op == "len_str":
+        return "    " + d + " =d call $kaze_native_str_len(l " + a + ")\n"
+    if op == "iter_len":
+        return "    " + d + " =l call $kz_nv_iter_len(l " + a + ")\n"
+    if op == "iter_at":
+        return "    " + d + " =l call $kz_nv_iter_at(l " + a + ", l " + b + ")\n"
+    if op == "label":
+        return qbe_label(a) + "\n"
+    if op == "br":
+        return "    jmp " + qbe_label(a) + "\n"
+    if op == "br_if":
+        let fall = "@kz_f" + ir_num_text(uid)
+        return "    jnz " + a + ", " + qbe_label(b) + ", " + fall + "\n" + fall + "\n"
+    if op == "ret":
+        if a == "":
+            return "    ret\n"
+        return "    ret " + a + "\n"
+    if op == "ret_void":
+        return "    ret\n"
+    if op == "trap":
+        let sym = qbe_msg_sym(msgs, a)
+        let tail = "    ret\n"
+        if fret != "void":
+            set tail to "    ret " + qbe_zero(fret) + "\n"
+        return "    call $kaze_native_trap(l " + sym + ")\n" + tail
+    if op == "guard":
+        let bad = "@kz_g" + ir_num_text(uid) + "_bad"
+        let ok = "@kz_g" + ir_num_text(uid) + "_ok"
+        let sym = qbe_msg_sym(msgs, b)
+        let tail = "    ret\n"
+        if fret != "void":
+            set tail to "    ret " + qbe_zero(fret) + "\n"
+        let line = "    jnz " + a + ", " + ok + ", " + bad + "\n" + bad + "\n"
+        set line to line + "    call $kaze_native_trap(l " + sym + ")\n" + tail + ok + "\n"
+        return line
+    if (length of op) > 3 and ir_prefix(op, "rt:"):
+        let name = ir_after(op, 3)
+        let args = qbe_call_args(ins.c)
+        let call = "    " + d + " =d call $" + name + "(" + args + ")\n"
+        return call
+    if op == "call":
+        let name = qbe_fn(a)
+        let args = qbe_call_args(ins.c)
+        if b == "void":
+            return "    call " + name + "(" + args + ")\n"
+        return "    " + d + " =" + qbe_ty(b) + " call " + name + "(" + args + ")\n"
+    return "    # QBE: unhandled op " + op + "\n"
+
+# ── functions and programs ──────────────────────────────────────────────
+
+action qbe_params(f: IRFunc) -> string:
+    let out = ""
+    let first = 1
+    for each p in f.params:
+        if first == 0:
+            set out to out + ", "
+        let ty = p[1] otherwise "f64"
+        let name = p[0] otherwise ""
+        set out to out + qbe_ty(ty) + " %p_" + qbe_sanitize(name)
+        set first to 0
+    return out
+
+action qbe_func(f: IRFunc, msgs, strs) -> string:
+    let ret = qbe_ty(f.ret)
+    let head = "function "
+    if ret != "":
+        set head to head + ret + " "
+    set head to head + qbe_fn(f.name) + "(" + qbe_params(f) + ") {\n"
+    let out = head + "@start\n"
+    let slots = qbe_slots_with_params(f)
+    let seen = []
+    for each p in f.params:
+        let name = p[0] otherwise ""
+        let ty = p[1] otherwise "f64"
+        set out to out + "    " + qbe_slot(name) + " =l alloc8 8\n"
+        set out to out + "    store" + qbe_ty(ty) + " %p_" + qbe_sanitize(name) + ", " + qbe_slot(name) + "\n"
+        set seen to seen + [name]
+    for each s in slots:
+        let name = s[0] otherwise ""
+        let found = 0
+        for each old in seen:
+            if old == name:
+                set found to 1
+        if found == 0:
+            set out to out + "    " + qbe_slot(name) + " =l alloc8 8\n"
+            set seen to seen + [name]
+    let uid = 0
+    let last = ""
+    for each ins in f.body:
+        set out to out + qbe_stmt(ins, slots, msgs, strs, uid, f.ret)
+        set uid to uid + 1
+        set last to ins.op
+    if last != "ret" and last != "ret_void" and last != "br":
+        if f.ret == "void":
+            set out to out + "    ret\n"
+        otherwise:
+            set out to out + "    ret " + qbe_zero(f.ret) + "\n"
+    set out to out + "}\n\n"
+    return out
+
+action qbe_single_func(funcs) -> IRFunc:
+    let found = IRFunc(name: "", params: [], ret: "void", slots: [], body: [])
+    let count = 0
+    for each f in funcs:
+        if count == 0:
+            set found to f
+        set count to count + 1
+    if count == 1:
+        return found
+    return IRFunc(name: "", params: [], ret: "void", slots: [], body: [])
+
+action qbe_main_wrapper(prog: IRProgram) -> string:
+    let m = ir_func_named(prog.funcs, "main")
+    if m.name == "":
+        # The C99 entry point falls back to the only action in the unit; a
+        # library with zero or several actions prints the module-loaded line.
+        set m to qbe_single_func(prog.funcs)
+    if m.name == "":
+        let out = "data $kz_nomain = { b \"Kaze module loaded (no main entry)\", b 0 }\n"
+        set out to out + "export function w $main() {\n@start\n"
+        set out to out + "    call $kaze_native_print_str(l $kz_nomain)\n    ret 0\n}\n"
+        return out
+    let param_count = length of m.params
+    let out = ""
+    if param_count > 0:
+        let di = 0
+        for each p in m.params:
+            set out to out + "data $kz_pname" + ir_num_text(di) + " = { b \"" + qbe_escape(p[0] otherwise "") + "\", b 0 }\n"
+            set out to out + "data $kz_ptype" + ir_num_text(di) + " = { b \"" + qbe_escape(p[2] otherwise "") + "\", b 0 }\n"
+            set di to di + 1
+        set out to out + "data $kz_pmain = { b \"" + qbe_escape(m.name) + "\", b 0 }\n"
+        set out to out + "export function w $main(w %argc, l %argv) {\n@start\n"
+    otherwise:
+        set out to out + "export function w $main() {\n@start\n"
+    let callargs = ""
+    let ai = 0
+    for each p in m.params:
+        let pty = p[1] otherwise "f64"
+        let idx = ir_num_text(ai)
+        let base = "w %argc, l %argv, l $kz_pname" + idx + ", l $kz_pmain, l $kz_ptype" + idx + ", l " + idx
+        if pty == "str":
+            set out to out + "    %a" + idx + " =l call $kaze_native_param_str(" + base + ")\n"
+        otherwise:
+            if pty == "bool":
+                set out to out + "    %a" + idx + " =w call $kaze_native_param_bool(" + base + ")\n"
+            otherwise:
+                if pty == "i64":
+                    set out to out + "    %a" + idx + " =l call $kaze_native_param_i64(" + base + ")\n"
+                otherwise:
+                    if pty == "val":
+                        set out to out + "    %a" + idx + " =l call $kaze_native_param_val(" + base + ")\n"
+                    otherwise:
+                        set out to out + "    %a" + idx + " =d call $kaze_native_param_f64(" + base + ")\n"
+        if callargs != "":
+            set callargs to callargs + ", "
+        set callargs to callargs + qbe_ty(pty) + " %a" + idx
+        set ai to ai + 1
+    if m.ret == "void":
+        set out to out + "    call " + qbe_fn(m.name) + "(" + callargs + ")\n"
+    otherwise:
+        set out to out + "    %kz_r =" + qbe_ty(m.ret) + " call " + qbe_fn(m.name) + "(" + callargs + ")\n"
+        if m.ret == "f64":
+            set out to out + "    call $kaze_native_print_f64(d %kz_r)\n"
+        otherwise:
+            if m.ret == "i64":
+                set out to out + "    call $kaze_native_print_i64(l %kz_r)\n"
+            otherwise:
+                if m.ret == "str":
+                    set out to out + "    call $kaze_native_print_str(l %kz_r)\n"
+                otherwise:
+                    if m.ret == "val":
+                        set out to out + "    call $kaze_native_print_val(l %kz_r)\n"
+                    otherwise:
+                        set out to out + "    call $kaze_native_print_bool(w %kz_r)\n"
+    set out to out + "    ret 0\n}\n"
+    return out
+
+action emit_qbe(prog: IRProgram) -> string:
+    if (length of prog.errors) > 0:
+        let out = ""
+        for each e in prog.errors:
+            set out to out + e + "\n"
+        return out
+    let msgs = qbe_collect_msgs(prog)
+    let out = "# Generated by Kaze IR -> QBE (Step 11.2)\n"
+    let i = 0
+    for each m in msgs:
+        set out to out + "data $kz_msg" + ir_num_text(i) + " = { b \"" + qbe_escape(m) + "\", b 0 }\n"
+        set i to i + 1
+    let strs = qbe_collect_strs(prog)
+    let si = 0
+    for each text in strs:
+        set out to out + "data $kz_str" + ir_num_text(si) + " = { b \"" + qbe_escape(text) + "\", b 0 }\n"
+        set si to si + 1
+    set out to out + "\n"
+    for each f in prog.funcs:
+        set out to out + qbe_func(f, msgs, strs) + "\n"
+    set out to out + qbe_main_wrapper(prog)
+    return out

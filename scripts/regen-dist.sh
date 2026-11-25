@@ -11,11 +11,14 @@ cd "$(dirname "$0")/.." || exit 2
 ROOT=$(pwd)
 CC=${CC:-cc}
 OUT="$ROOT/dist/kaze.c"
-NEW="$ROOT/dist/kaze.c.new"
 BOOT="$ROOT/bin/kaze-bootstrap"
 
 [ -f "$OUT" ] || { echo "regen-dist: $OUT is missing; it is the bootstrap" >&2; exit 1; }
 mkdir -p "$ROOT/bin"
+# A unique candidate path lets two compiler workstreams regenerate at once;
+# with a fixed .new name the slower one adopts a file the faster one moved.
+NEW=$(mktemp "$OUT.XXXXXX")
+trap 'rm -f "$NEW" "$NEW.bin" "$NEW.err"' EXIT
 
 if ! "$CC" -O2 -w -I "$ROOT/dist" "$OUT" "$ROOT/dist/kaze_rt.c" -lm -o "$BOOT"; then
     echo "regen-dist: the C in dist/ does not build" >&2

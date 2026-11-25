@@ -1,0 +1,4 @@
+# No main: the C99 entry point runs the only action in the unit. The native
+# wrapper must select the same entry and resolve its parameter by name.
+action helper(x: num) -> num:
+    return x + 1

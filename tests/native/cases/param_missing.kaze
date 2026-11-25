@@ -1,0 +1,3 @@
+# No .args file: a typed parameter with no value is E_KAZE_PARAM on both backends.
+action main(d: num):
+    return d

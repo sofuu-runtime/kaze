@@ -1,0 +1,5 @@
+action main() -> bool:
+    let a = true
+    let b = false
+    let c = not b and (3 < 4) or (2 == 2)
+    return a and c

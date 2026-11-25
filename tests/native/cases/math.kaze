@@ -1,0 +1,6 @@
+action main() -> num:
+    let a = sqrt(81)
+    let b = sin(30 in radians)
+    let c = cos(0)
+    let d = atan2(1, 1)
+    return a + (b * 100) + c + (d * 10)

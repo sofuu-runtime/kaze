@@ -1,0 +1,1946 @@
+# ir.kaze -- the shared low-level IR for the native and C99 backends.
+#
+# This is the Step 11.1 slice: an explicit, unboxed representation for the
+# scalar subset of Kaze. It has f64 numbers, i64 bit patterns, bools and
+# slot-allocated locals; expressions become three-address temporaries and
+# control flow is written as labels plus branches.
+#
+# Every strictness rule is lowered here, before a backend sees the program:
+#
+#   * a division or remainder by a dynamic divisor compares the divisor with
+#     zero and branches to the inline `otherwise` value, or to a trap when the
+#     source has no fallback;
+#   * a bounded `while` gets an i64 counter and a trap branch;
+#   * `guard` becomes an explicit conditional trap.
+#
+# The IR is deliberately smaller than the C99 emitter. Constructs outside the
+# scalar subset are refused with E_KAZE_BACKEND_UNSUPPORTED instead of being
+# approximated; the legacy emitter remains the authoritative fallback.
+#
+# Kaze numbers are doubles even when a parameter is written `int` (the C99
+# emitter stores every number in a double). `int` is therefore an f64 in the
+# ABI, while i64 is used where the language is genuinely bit-oriented:
+# bitwise operators and loop counters. That keeps `2.5 / 2` and `2 ** 60 + 1`
+# bit-for-bit identical to --backend=c99.
+use "./ast.kaze"
+
+record IRInstr:
+    op: str
+    dst: str
+    a: str
+    b: str
+    c: str
+
+record IRFunc:
+    name: str
+    params: list      # [[name, type], ...]
+    ret: str          # "f64", "i64", "bool", "void"
+    slots: list       # [[name, type], ...]
+    body: list        # [IRInstr, ...]
+
+record IRProgram:
+    funcs: list
+    errors: list
+
+# ret and sigs travel with the generator so every helper does not have to
+# thread them through its own parameter list.
+record IRGen:
+    temp: num
+    label: num
+    slots: list
+    env: list
+    body: list
+    errors: list
+    ret: str
+    sigs: list
+
+# ── small helpers ───────────────────────────────────────────────────────
+
+action ir_num_text(n) -> string:
+    recursion bounded 32
+    let v = n
+    if v < 0:
+        return "-" + ir_num_text(0 - v)
+    if v < 10:
+        return "0123456789"[v] otherwise "0"
+    return ir_num_text((v - (v % 10)) / 10) + ir_num_text(v % 10)
+
+action ir_is_digits(s: string) -> num:
+    recursion bounded 32
+    if s == "":
+        return 0
+    let i = 0
+    let ok = 1
+    while i < (length of s) bounded 64:
+        let c = s[i] otherwise "?"
+        if c < "0" or c > "9":
+            if c != "-" or i != 0:
+                set ok to 0
+        set i to i + 1
+    return ok
+
+action ir_type_word(w: string) -> string:
+    # Empty means "untyped", which the language treats as a number.
+    if w == "" or w == "num" or w == "number" or w == "float" or w == "int":
+        return "f64"
+    if w == "length" or w == "percent":
+        return "f64"
+    if w == "bool":
+        return "bool"
+    if w == "text" or w == "str" or w == "message":
+        return "str"
+    if w == "seconds" or w == "time" or w == "meters" or w == "degrees" or w == "angle":
+        return "f64"
+    if w == "kg" or w == "gram" or w == "Celsius" or w == "celsius" or w == "Kelvin" or w == "kelvin":
+        return "f64"
+    if w == "km" or w == "cm" or w == "mm" or w == "ms" or w == "hours" or w == "minutes":
+        return "f64"
+    if w == "list" or w == "record" or w == "value" or w == "any" or w == "map":
+        return "val"
+    # A record name is an ordinary identifier; the runtime carries records,
+    # points and capabilities as dynamic values, so an unknown declared type
+    # is a value rather than a lowering failure.
+    return "val"
+
+action ir_c_type(t: string) -> string:
+    if t == "f64":
+        return "double"
+    if t == "i64":
+        return "int64_t"
+    if t == "bool":
+        return "bool"
+    if t == "str":
+        return "const char*"
+    if t == "val":
+        return "KzIrVal*"
+    return "void"
+
+action ir_tune(g: IRGen, temp, label, slots, env, body, errors) -> IRGen:
+    return IRGen(temp: temp, label: label, slots: slots, env: env,
+                 body: body, errors: errors, ret: g.ret, sigs: g.sigs)
+
+action ir_gen_new(env, ret, sigs) -> IRGen:
+    return IRGen(temp: 0, label: 0, slots: [], env: env, body: [],
+                 errors: [], ret: ret, sigs: sigs)
+
+action ir_expr(op, dst, a, b, c) -> IRInstr:
+    return IRInstr(op: op, dst: dst, a: a, b: b, c: c)
+
+action ir_temp(g: IRGen) -> list:
+    let name = "%t" + ir_num_text(g.temp)
+    return [ir_tune(g, g.temp + 1, g.label, g.slots, g.env, g.body, g.errors), name]
+
+action ir_label(g: IRGen) -> list:
+    let name = "L" + ir_num_text(g.label)
+    return [ir_tune(g, g.temp, g.label + 1, g.slots, g.env, g.body, g.errors), name]
+
+action ir_emit(g: IRGen, op, dst, a, b, c) -> IRGen:
+    return ir_tune(g, g.temp, g.label, g.slots, g.env,
+                   g.body + [ir_expr(op, dst, a, b, c)], g.errors)
+
+action ir_fail(g: IRGen, msg) -> IRGen:
+    return ir_tune(g, g.temp, g.label, g.slots, g.env, g.body, g.errors + [msg])
+
+action ir_env_get(env, name: string) -> string:
+    let i = (length of env) - 1
+    while i >= 0 bounded 10000:
+        let e = env[i] otherwise []
+        if (e[0] otherwise "") == name:
+            return e[1] otherwise ""
+        set i to i - 1
+    return ""
+
+action ir_env_set(env, name: string, ty: string) -> list:
+    let out = []
+    let done = 0
+    for each e in env:
+        let n = e[0] otherwise ""
+        if n == name and done == 0:
+            set out to out + [[name, ty]]
+            set done to 1
+        otherwise:
+            set out to out + [e]
+    if done == 0:
+        set out to out + [[name, ty]]
+    return out
+
+# A let/set binding also names its storage.  Shadowed names need their own
+# slot: a flat slot table cannot hold two types (or two values) under one name.
+action ir_env_bind(env, name: string, ty: string, slot: string) -> list:
+    return env + [[name, ty, slot]]
+
+action ir_env_slot(env, name: string) -> string:
+    let i = (length of env) - 1
+    while i >= 0 bounded 10000:
+        let e = env[i] otherwise []
+        if (e[0] otherwise "") == name:
+            return e[2] otherwise name
+        set i to i - 1
+    return name
+
+action ir_slot_add(slots, name: string, ty: string) -> list:
+    for each s in slots:
+        if (s[0] otherwise "") == name:
+            return slots
+    return slots + [[name, ty]]
+
+action ir_slot_type(slots, name: string) -> string:
+    for each s in slots:
+        if (s[0] otherwise "") == name:
+            return s[1] otherwise ""
+    return ""
+
+# ── signatures ──────────────────────────────────────────────────────────
+
+action ir_sig_find(sigs, name: string) -> list:
+    for each s in sigs:
+        if (s[0] otherwise "") == name:
+            return s
+    return []
+
+action ir_param_types(item: AstNode) -> list:
+    let out = []
+    for each p in (child_at(item, 0)).children:
+        let ty = ir_type_word(p.val_str)
+        if p.val_str == "":
+            # The C99 entry point hands an unannotated parameter the dynamic
+            # value it resolved, so the native ABI must not unbox it.
+            set ty to "val"
+        if ty == "":
+            set ty to "?"
+        set out to out + [[p.name, ty]]
+    return out
+
+action ir_sig_ret(sigs, name: string) -> string:
+    let s = ir_sig_find(sigs, name)
+    if (length of s) == 0:
+        return ""
+    return s[2] otherwise ""
+
+# A conservative syntactic type for return inference. It is only consulted
+# when a routine has no `-> type`; the checker has already validated the body.
+action ir_expr_type(e: AstNode, env, sigs) -> string:
+    recursion bounded 128
+    let k = e.kind
+    if k == "NUM":
+        return "f64"
+    if k == "BOOL":
+        return "bool"
+    if k == "STR":
+        return "str"
+    if k == "LIST" or k == "INDEX" or k == "FIELD":
+        return "val"
+    if k == "LEN":
+        return "f64"
+    if k == "IDENT":
+        return ir_env_get(env, e.name)
+    if k == "BIN":
+        if e.name == "not" or e.name == "and" or e.name == "or":
+            return "bool"
+        if e.name == "+":
+            # A text operand makes the C99 path concatenate, so `+` is dynamic
+            # whenever a side is text or an already-dynamic value.
+            let lt = ir_expr_type(child_at(e, 0), env, sigs)
+            let rt = ir_expr_type(child_at(e, 1), env, sigs)
+            if lt == "str" or rt == "str" or lt == "val" or rt == "val":
+                return "val"
+            return "f64"
+        if e.name == "-" or e.name == "*" or e.name == "/" or e.name == "%":
+            return "f64"
+        if e.name == "&" or e.name == "|" or e.name == "^" or e.name == "<<" or e.name == ">>":
+            # The C99 emitter rounds every bitwise result back to a double
+            # before it is used again, so a bitwise value is an f64 here too.
+            return "f64"
+        if e.name == "==" or e.name == "!=" or e.name == "<" or e.name == "<=" or e.name == ">" or e.name == ">=":
+            return "bool"
+        return ""
+    if k == "FALLBACK":
+        return ir_expr_type(child_at(e, 0), env, sigs)
+    if k == "IN_UNIT":
+        return "f64"
+    if k == "CALL":
+        if e.name == "sqrt" or e.name == "sin" or e.name == "cos" or e.name == "tan" or e.name == "atan2":
+            return "f64"
+        if e.name == "clock_monotonic_ns" or e.name == "clock_utc_seconds":
+            return "f64"
+        if ir_is_type_name(e.name) == 1:
+            return "val"
+        return ir_sig_ret(sigs, e.name)
+    return ""
+
+action ir_scan_returns(stmts, env, sigs, out) -> list:
+    recursion bounded 128
+    let cur = env
+    let acc = out
+    for each s in stmts:
+        let k = s.kind
+        if k == "LET":
+            let ty = ir_expr_type(child_at(s, 0), cur, sigs)
+            if ty != "":
+                set cur to ir_env_set(cur, s.name, ty)
+        if k == "RETURN":
+            if (length of s.children) > 0:
+                let ty = ir_expr_type(child_at(s, 0), cur, sigs)
+                if ty == "":
+                    set ty to "?"
+                set acc to acc + [ty]
+        if k == "IF":
+            set acc to ir_scan_returns((child_at(s, 1)).children, cur, sigs, acc)
+            set acc to ir_scan_returns((child_at(s, 2)).children, cur, sigs, acc)
+        if k == "WHILE":
+            set acc to ir_scan_returns((child_at(s, 1)).children, cur, sigs, acc)
+        if k == "FOR_EACH" or k == "PARALLEL_FOR":
+            set cur to ir_env_set(cur, s.name, "val")
+            set acc to ir_scan_returns((child_at(s, 1)).children, cur, sigs, acc)
+    return acc
+
+action ir_infer_ret(item: AstNode, sigs) -> string:
+    let env = []
+    for each p in (child_at(item, 0)).children:
+        let ty = ir_type_word(p.val_str)
+        if p.val_str == "":
+            set ty to "val"
+        if ty == "":
+            set ty to "f64"
+        set env to ir_env_set(env, p.name, ty)
+    let types = ir_scan_returns((child_at(item, 2)).children, env, sigs, [])
+    if (length of types) == 0:
+        return "void"
+    # `?` is "callee not inferred yet": ignore it while any concrete return
+    # exists, so mutually recursive bool routines are not forced to f64 by the
+    # first pass. A routine with only unknown returns stays `?` and the caller
+    # revisits it after another routine makes progress.
+    let known = []
+    for each t in types:
+        if t != "?":
+            set known to known + [t]
+    if (length of known) == 0:
+        return "?"
+    let first = known[0] otherwise "f64"
+    let same = 1
+    for each t in known:
+        if t != first:
+            set same to 0
+    if same == 1 and first != "":
+        return first
+    return "f64"
+
+action ir_collect_sigs(items) -> list:
+    let sigs = []
+    for each item in items:
+        if item.kind == "ACTION":
+            let declared = ""
+            let fixed = 1
+            if item.val_str != "":
+                set declared to ir_type_word(item.val_str)
+                if declared == "":
+                    set declared to "?"
+            otherwise:
+                set fixed to 0
+            set sigs to sigs + [[item.name, ir_param_types(item), declared, fixed]]
+    # Unannotated routines are inferred to a fixed point: a forward call to a
+    # routine whose return type is still unknown must be revisited once that
+    # callee has a type, otherwise `main` stays f64 and prints `1` where the
+    # C99 entry prints `true`. Bounded because mutual recursion can be cyclic.
+    let round = 0
+    let changed = 1
+    while changed == 1 and round < 32 bounded 64:
+        set changed to 0
+        let next = []
+        for each s in sigs:
+            let ret = s[2] otherwise ""
+            let fixed = s[3] otherwise 0
+            if fixed == 0:
+                let item = ir_action_named(items, s[0] otherwise "")
+                if item.kind == "ACTION":
+                    let inferred = ir_infer_ret(item, sigs)
+                    if inferred != ret:
+                        set ret to inferred
+                        set changed to 1
+            set next to next + [[s[0] otherwise "", s[1] otherwise [], ret, fixed]]
+        set sigs to next
+        set round to round + 1
+    let final = []
+    for each s in sigs:
+        let ret = s[2] otherwise ""
+        if ret == "?":
+            set ret to "f64"
+        set final to final + [[s[0] otherwise "", s[1] otherwise [], ret, s[3] otherwise 0]]
+    return final
+
+action ir_action_named(items, name: string) -> AstNode:
+    for each item in items:
+        if item.kind == "ACTION" and item.name == name:
+            return item
+    return none_node()
+
+# ── expression lowering ─────────────────────────────────────────────────
+
+# Coerce an operand to a type, inserting a conversion only when needed.
+action ir_coerce(g: IRGen, operand, from_ty, to_ty) -> list:
+    recursion bounded 32
+    if from_ty == to_ty:
+        return [g, operand, to_ty]
+    if to_ty == "" or to_ty == "void":
+        return [g, operand, from_ty]
+    let r = ir_temp(g)
+    let g1 = r[0] otherwise g
+    let dst = r[1] otherwise ""
+    let op = ""
+    if to_ty == "f64" and from_ty == "i64":
+        set op to "i64_to_f64"
+    if to_ty == "f64" and from_ty == "bool":
+        set op to "bool_to_f64"
+    if to_ty == "i64" and from_ty == "f64":
+        set op to "f64_to_i64"
+    if to_ty == "i64" and from_ty == "bool":
+        set op to "bool_to_i64"
+    if to_ty == "bool" and from_ty == "f64":
+        set op to "f64_to_bool"
+    if to_ty == "bool" and from_ty == "i64":
+        set op to "i64_to_bool"
+    if to_ty == "val" and from_ty == "f64":
+        set op to "val_from_f64"
+    if to_ty == "val" and from_ty == "bool":
+        set op to "val_from_bool"
+    if to_ty == "val" and from_ty == "str":
+        set op to "val_from_str"
+    if to_ty == "f64" and from_ty == "val":
+        set op to "val_to_f64"
+    if to_ty == "bool" and from_ty == "val":
+        set op to "val_to_bool"
+    if to_ty == "str" and from_ty == "val":
+        set op to "val_to_str"
+    if to_ty == "i64" and from_ty == "val":
+        let c = ir_coerce(g1, operand, "val", "f64")
+        return ir_coerce(c[0] otherwise g1, c[1] otherwise operand, "f64", "i64")
+    if to_ty == "val" and from_ty == "i64":
+        let c = ir_coerce(g1, operand, "i64", "f64")
+        return ir_coerce(c[0] otherwise g1, c[1] otherwise operand, "f64", "val")
+    if op == "":
+        return [ir_fail(g1, "E_KAZE_IR_INVALID: cannot convert " + from_ty + " to " + to_ty), operand, to_ty]
+    return [ir_emit(g1, op, dst, operand, "", ""), dst, to_ty]
+
+action ir_coerce_bool(g: IRGen, operand, ty) -> list:
+    recursion bounded 16
+    if ty == "bool":
+        return [g, operand, "bool"]
+    return ir_coerce(g, operand, ty, "bool")
+
+action ir_const_f64(g: IRGen, text) -> list:
+    let r = ir_temp(g)
+    let g1 = r[0] otherwise g
+    let dst = r[1] otherwise ""
+    return [ir_emit(g1, "const_f64", dst, text, "", ""), dst]
+
+action ir_const_i64(g: IRGen, text) -> list:
+    let r = ir_temp(g)
+    let g1 = r[0] otherwise g
+    let dst = r[1] otherwise ""
+    return [ir_emit(g1, "const_i64", dst, text, "", ""), dst]
+
+action ir_bin_op_name(op, ty) -> string:
+    if op == "+":
+        return "add_f64"
+    if op == "-":
+        return "sub_f64"
+    if op == "*":
+        return "mul_f64"
+    if op == "/":
+        return "div_f64"
+    if op == "%":
+        return "mod_f64"
+    if op == "&":
+        return "band_i64"
+    if op == "|":
+        return "bor_i64"
+    if op == "^":
+        return "bxor_i64"
+    if op == "<<":
+        return "shl_i64"
+    if op == ">>":
+        return "shr_i64"
+    if op == "==":
+        return "cmp_eq_f64"
+    if op == "!=":
+        return "cmp_ne_f64"
+    if op == "<":
+        return "cmp_lt_f64"
+    if op == "<=":
+        return "cmp_le_f64"
+    if op == ">":
+        return "cmp_gt_f64"
+    if op == ">=":
+        return "cmp_ge_f64"
+    if op == "and":
+        return "and_bool"
+    if op == "or":
+        return "or_bool"
+    return ""
+
+action ir_cmp_i64_name(op: string) -> string:
+    if op == "==":
+        return "cmp_eq_i64"
+    if op == "!=":
+        return "cmp_ne_i64"
+    if op == "<":
+        return "cmp_lt_i64"
+    if op == "<=":
+        return "cmp_le_i64"
+    if op == ">":
+        return "cmp_gt_i64"
+    if op == ">=":
+        return "cmp_ge_i64"
+    return ""
+
+action ir_lower_bin(e: AstNode, g: IRGen, items, want) -> list:
+    recursion bounded 128
+    let op = e.name
+    if op == "not":
+        let a = ir_lower_expr(child_at(e, 0), g, items, "bool")
+        let g1 = a[0] otherwise g
+        let x = a[1] otherwise ""
+        let c1 = ir_coerce_bool(g1, x, a[2] otherwise "")
+        let g2 = c1[0] otherwise g1
+        let bv = c1[1] otherwise ""
+        let r = ir_temp(g2)
+        let g3 = r[0] otherwise g2
+        let dst = r[1] otherwise ""
+        return [ir_emit(g3, "not_bool", dst, bv, "", ""), dst, "bool"]
+    if op == "and" or op == "or":
+        let a = ir_lower_expr(child_at(e, 0), g, items, "bool")
+        let g1 = a[0] otherwise g
+        let c1 = ir_coerce_bool(g1, a[1] otherwise "", a[2] otherwise "")
+        let g2 = c1[0] otherwise g1
+        let left = c1[1] otherwise ""
+        let b = ir_lower_expr(child_at(e, 1), g2, items, "bool")
+        let g3 = b[0] otherwise g2
+        let c2 = ir_coerce_bool(g3, b[1] otherwise "", b[2] otherwise "")
+        let g4 = c2[0] otherwise g3
+        let right = c2[1] otherwise ""
+        let r = ir_temp(g4)
+        let g5 = r[0] otherwise g4
+        let dst = r[1] otherwise ""
+        let name = "and_bool"
+        if op == "or":
+            set name to "or_bool"
+        return [ir_emit(g5, name, dst, left, right, ""), dst, "bool"]
+    if op == "/" or op == "%":
+        return ir_lower_div(e, g, items, "")
+    if op == "&" or op == "|" or op == "^" or op == "<<" or op == ">>":
+        let a = ir_lower_expr(child_at(e, 0), g, items, "i64")
+        let g1 = a[0] otherwise g
+        let c1 = ir_coerce(g1, a[1] otherwise "", a[2] otherwise "", "i64")
+        let g2 = c1[0] otherwise g1
+        let left = c1[1] otherwise ""
+        let b = ir_lower_expr(child_at(e, 1), g2, items, "i64")
+        let g3 = b[0] otherwise g2
+        let c2 = ir_coerce(g3, b[1] otherwise "", b[2] otherwise "", "i64")
+        let g4 = c2[0] otherwise g3
+        let right = c2[1] otherwise ""
+        let r = ir_temp(g4)
+        let g5 = r[0] otherwise g4
+        let dst = r[1] otherwise ""
+        let g6 = ir_emit(g5, ir_bin_op_name(op, "i64"), dst, left, right, "")
+        let fr = ir_temp(g6)
+        let g7 = fr[0] otherwise g6
+        let fdst = fr[1] otherwise ""
+        return [ir_emit(g7, "i64_to_f64", fdst, dst, "", ""), fdst, "f64"]
+    if op == "+" or op == "-" or op == "*":
+        let a = ir_lower_expr(child_at(e, 0), g, items, "")
+        let g1 = a[0] otherwise g
+        let aty = a[2] otherwise ""
+        let b = ir_lower_expr(child_at(e, 1), g1, items, "")
+        let g2 = b[0] otherwise g1
+        let bty = b[2] otherwise ""
+        if op == "+" and (aty == "val" or bty == "val" or aty == "str" or bty == "str"):
+            # C99's kz_add concatenates when either side is text and is nil
+            # for shapes it cannot add, so `+` must stay dynamic here.
+            let ca = ir_coerce(g2, a[1] otherwise "", aty, "val")
+            let g3 = ca[0] otherwise g2
+            let cb = ir_coerce(g3, b[1] otherwise "", bty, "val")
+            let g4 = cb[0] otherwise g3
+            let r = ir_temp(g4)
+            let g5 = r[0] otherwise g4
+            let dst = r[1] otherwise ""
+            return [ir_emit(g5, "val_add", dst, ca[1] otherwise "", cb[1] otherwise "", ""), dst, "val"]
+        let c1 = ir_coerce(g2, a[1] otherwise "", aty, "f64")
+        let g3 = c1[0] otherwise g2
+        let left = c1[1] otherwise ""
+        let c2 = ir_coerce(g3, b[1] otherwise "", bty, "f64")
+        let g4 = c2[0] otherwise g3
+        let right = c2[1] otherwise ""
+        let r = ir_temp(g4)
+        let g5 = r[0] otherwise g4
+        let dst = r[1] otherwise ""
+        return [ir_emit(g5, ir_bin_op_name(op, "f64"), dst, left, right, ""), dst, "f64"]
+    if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=":
+        # Compare through f64, exactly as the C99 emitter does: a bitwise
+        # result is stored in a double there, so 2**60 and 2**60 + 1 compare
+        # equal on the authoritative path.  Exact i64 comparisons would make
+        # the native backend disagree with it. Text and dynamic values use the
+        # runtime comparator, which compares bytes and refuses mixed shapes.
+        let a = ir_lower_expr(child_at(e, 0), g, items, "")
+        let g1 = a[0] otherwise g
+        let aty = a[2] otherwise ""
+        let b = ir_lower_expr(child_at(e, 1), g1, items, "")
+        let g2 = b[0] otherwise g1
+        let bty = b[2] otherwise ""
+        let r = ir_temp(g2)
+        let g3 = r[0] otherwise g2
+        let dst = r[1] otherwise ""
+        if aty == "str" or bty == "str" or aty == "val" or bty == "val":
+            let ca = ir_coerce(g3, a[1] otherwise "", aty, "val")
+            let g4 = ca[0] otherwise g3
+            let cb = ir_coerce(g4, b[1] otherwise "", bty, "val")
+            let g5 = cb[0] otherwise g4
+            let name = "val_eq"
+            if op == "!=":
+                set name to "val_ne"
+            if op == "<":
+                set name to "val_lt"
+            if op == "<=":
+                set name to "val_le"
+            if op == ">":
+                set name to "val_gt"
+            if op == ">=":
+                set name to "val_ge"
+            return [ir_emit(g5, name, dst, ca[1] otherwise "", cb[1] otherwise "", ""), dst, "bool"]
+        let c1 = ir_coerce(g3, a[1] otherwise "", aty, "f64")
+        let g4 = c1[0] otherwise g3
+        let left = c1[1] otherwise ""
+        let c2 = ir_coerce(g4, b[1] otherwise "", bty, "f64")
+        let g5 = c2[0] otherwise g4
+        let right = c2[1] otherwise ""
+        return [ir_emit(g5, ir_bin_op_name(op, "bool"), dst, left, right, ""), dst, "bool"]
+    return [ir_fail(g, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(e.line) + ": operator '" + op + "' has no scalar lowering"), "", ""]
+
+# A division with a literal non-zero divisor cannot trap, so no guard is
+# emitted. Everything else gets an explicit branch into the fallback.
+action ir_lower_div(e: AstNode, g: IRGen, items, fallback) -> list:
+    recursion bounded 64
+    let left = ir_lower_expr(child_at(e, 0), g, items, "f64")
+    let g1 = left[0] otherwise g
+    let c1 = ir_coerce(g1, left[1] otherwise "", left[2] otherwise "", "f64")
+    let g2 = c1[0] otherwise g1
+    let a = c1[1] otherwise ""
+    let right = ir_lower_expr(child_at(e, 1), g2, items, "f64")
+    let g3 = right[0] otherwise g2
+    let c2 = ir_coerce(g3, right[1] otherwise "", right[2] otherwise "", "f64")
+    let g4 = c2[0] otherwise g3
+    let b = c2[1] otherwise ""
+    let divisor = child_at(e, 1)
+    let literal_ok = 0
+    if divisor.kind == "NUM" and ir_is_digits(divisor.val_str) == 1:
+        if divisor.val_str != "0":
+            set literal_ok to 1
+    let name = "div_f64"
+    if e.name == "%":
+        set name to "mod_f64"
+    if literal_ok == 1 or fallback == "":
+        # The C99 scalar path uses IEEE division directly when it has no
+        # `otherwise` value: divide(1, 0) prints inf there, and remainder 0
+        # prints NaN. The checker reports the missing fallback separately.
+        let r = ir_temp(g4)
+        let g5 = r[0] otherwise g4
+        let dst = r[1] otherwise ""
+        return [ir_emit(g5, name, dst, a, b, ""), dst, "f64"]
+    let n = g4.label
+    let slot = "__kz_div" + ir_num_text(n)
+    let zero_r = ir_temp(g4)
+    let g5 = zero_r[0] otherwise g4
+    let zero = zero_r[1] otherwise ""
+    let g6 = ir_emit(g5, "cmp_eq_f64", zero, b, "0", "")
+    let lr1 = ir_label(g6)
+    let g7 = lr1[0] otherwise g6
+    let bad = lr1[1] otherwise ""
+    let lr2 = ir_label(g7)
+    let g8 = lr2[0] otherwise g7
+    let done = lr2[1] otherwise ""
+    let g9 = ir_emit(g8, "br_if", "", zero, bad, "")
+    let vr = ir_temp(g9)
+    let g10 = vr[0] otherwise g9
+    let val = vr[1] otherwise ""
+    let g11 = ir_emit(g10, name, val, a, b, "")
+    let g12 = ir_emit(g11, "store", "", slot, val, "")
+    let g13 = ir_emit(g12, "br", "", done, "", "")
+    let g14 = ir_emit(g13, "label", "", bad, "", "")
+    let g15 = g14
+    if fallback != "":
+        let fb = ir_lower_expr(fallback, g15, items, "f64")
+        let g16 = fb[0] otherwise g15
+        let c3 = ir_coerce(g16, fb[1] otherwise "", fb[2] otherwise "", "f64")
+        let g17 = c3[0] otherwise g16
+        let fv = c3[1] otherwise ""
+        set g15 to ir_emit(g17, "store", "", slot, fv, "")
+        set g15 to ir_emit(g15, "br", "", done, "", "")
+    otherwise:
+        let msg = "E_KAZE_DIV0: division by zero"
+        if e.name == "%":
+            set msg to "E_KAZE_DIV0: remainder by zero"
+        set g15 to ir_emit(g15, "trap", "", msg, "", "")
+    let g18 = ir_emit(g15, "label", "", done, "", "")
+    let g19 = IRGen(temp: g18.temp, label: g18.label,
+                     slots: ir_slot_add(g18.slots, slot, "f64"),
+                     env: g18.env, body: g18.body, errors: g18.errors,
+                     ret: g18.ret, sigs: g18.sigs)
+    let out_r = ir_temp(g19)
+    let g20 = out_r[0] otherwise g19
+    let out = out_r[1] otherwise ""
+    return [ir_emit(g20, "load", out, slot, "", ""), out, "f64"]
+
+action ir_log_style(name: string) -> string:
+    if name == "alert" or ir_prefix(name, "alert."):
+        return "alert"
+    if name == "log" or ir_prefix(name, "log."):
+        return "log"
+    return ""
+
+# `log "text"`, `log value`, and `alert ...` are effects, not calls with a
+# declared signature. Lower them to one runtime print per value shape so the
+# native and C99 reference emitters agree on the prefix and formatting.
+action ir_lower_log(e: AstNode, g: IRGen, items) -> list:
+    recursion bounded 64
+    let style = ir_log_style(e.name)
+    if style == "":
+        return [ir_fail(g, "E_KAZE_IR_INVALID: not a log effect"), "", ""]
+    if (length of e.children) == 0:
+        return [ir_fail(g, "E_KAZE_IR_INVALID: log needs a value"), "", ""]
+    let r = ir_lower_expr(child_at(e, 0), g, items, "")
+    let g1 = r[0] otherwise g
+    let v = r[1] otherwise ""
+    let ty = r[2] otherwise ""
+    if ty == "f64" or ty == "i64":
+        let c = ir_coerce(g1, v, ty, "f64")
+        let g2 = c[0] otherwise g1
+        return [ir_emit(g2, style + "_f64", "", c[1] otherwise "", "", ""), "", "void"]
+    if ty == "bool":
+        return [ir_emit(g1, style + "_bool", "", v, "", ""), "", "void"]
+    if ty == "str":
+        return [ir_emit(g1, style + "_str", "", v, "", ""), "", "void"]
+    if ty == "val":
+        return [ir_emit(g1, style + "_val", "", v, "", ""), "", "void"]
+    return [ir_fail(g1, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(e.line) + ": log of a non-scalar value"), "", ""]
+
+action ir_math_name(name: string) -> num:
+    if name == "sqrt" or name == "sin" or name == "cos" or name == "tan" or name == "atan2":
+        return 1
+    return 0
+
+action ir_is_type_name(name: string) -> num:
+    if (length of name) == 0:
+        return 0
+    let c = name[0] otherwise "?"
+    if c >= "A" and c <= "Z":
+        return 1
+    return 0
+
+action ir_record_item(items, name: string) -> AstNode:
+    for each item in items:
+        if item.kind == "RECORD" and item.name == name:
+            return item
+    return none_node()
+
+# A capitalised call is a record constructor, exactly as in the C99 emitter.
+# Named arguments carry their own key; positional arguments take the key from
+# the record declaration, in order.
+action ir_lower_record(rec_item: AstNode, e: AstNode, g: IRGen, items) -> list:
+    let fields = rec_item.children
+    let tnr = ir_temp(g)
+    let g1 = tnr[0] otherwise g
+    let tname = tnr[1] otherwise ""
+    let g2 = ir_emit(g1, "const_str", tname, rec_item.name, "", "")
+    let nr = ir_temp(g2)
+    let g3 = nr[0] otherwise g2
+    let rec = nr[1] otherwise ""
+    let g4 = ir_emit(g3, "record_new", rec, tname, ir_num_text(length of e.children), "")
+    let g5 = g4
+    let i = 0
+    for each a in e.children:
+        let key = a.name
+        let valnode = a
+        if a.kind == "NAMED_ARG":
+            set valnode to child_at(a, 0)
+        otherwise:
+            if i < (length of fields):
+                let f = node_at(fields, i)
+                set key to f.name
+        let r = ir_lower_expr(valnode, g5, items, "val")
+        set g5 to r[0] otherwise g5
+        let c = ir_coerce(g5, r[1] otherwise "", r[2] otherwise "", "val")
+        set g5 to c[0] otherwise g5
+        let kr = ir_temp(g5)
+        let g6 = kr[0] otherwise g5
+        let ktmp = kr[1] otherwise ""
+        let g7 = ir_emit(g6, "const_str", ktmp, key, "", "")
+        set g5 to ir_emit(g7, "record_set", "", rec, ktmp, c[1] otherwise "")
+        set i to i + 1
+    return [g5, rec, "val"]
+
+# parallel_map(list, fn) and parallel_filter(list, fn) are deterministic on
+# the C99 path (the runtime preserves input order). Lower them to an ordered
+# loop that calls the routine once per item; the native result is then the
+# same list, without needing fibers or worker threads.
+action ir_lower_parallel(e: AstNode, g: IRGen, items, keep: num) -> list:
+    let target = ir_lower_expr(child_at(e, 0), g, items, "val")
+    let g1 = target[0] otherwise g
+    let tc = ir_coerce(g1, target[1] otherwise "", target[2] otherwise "", "val")
+    let g2 = tc[0] otherwise g1
+    let fn = (child_at(e, 1)).name
+    let sig = ir_sig_find(g2.sigs, fn)
+    let fret = "val"
+    let pty = "val"
+    if (length of sig) > 0:
+        set fret to sig[2] otherwise "val"
+        let params = sig[1] otherwise []
+        if (length of params) > 0:
+            let p0 = params[0] otherwise []
+            set pty to p0[1] otherwise "val"
+    if fret == "" or fret == "?":
+        set fret to "val"
+    let rr = ir_temp(g2)
+    let g3 = rr[0] otherwise g2
+    let res = rr[1] otherwise ""
+    let g4 = ir_emit(g3, "list_new", res, "0", "", "")
+    let counter = "__kz_par" + ir_num_text(g4.label)
+    let g5 = IRGen(temp: g4.temp, label: g4.label,
+                   slots: ir_slot_add(g4.slots, counter, "i64"),
+                   env: g4.env, body: g4.body, errors: g4.errors,
+                   ret: g4.ret, sigs: g4.sigs)
+    let g6 = ir_emit(g5, "store", "", counter, "0", "")
+    let nr = ir_temp(g6)
+    let g7 = nr[0] otherwise g6
+    let count = nr[1] otherwise ""
+    let g8 = ir_emit(g7, "iter_len", count, tc[1] otherwise "", "", "")
+    let l0 = ir_label(g8)
+    let g9 = l0[0] otherwise g8
+    let cond_l = l0[1] otherwise ""
+    let l1 = ir_label(g9)
+    let g10 = l1[0] otherwise g9
+    let body_l = l1[1] otherwise ""
+    let l2 = ir_label(g10)
+    let g11 = l2[0] otherwise g10
+    let end_l = l2[1] otherwise ""
+    let g12 = ir_emit(g11, "label", "", cond_l, "", "")
+    let ir = ir_temp(g12)
+    let g13 = ir[0] otherwise g12
+    let idx = ir[1] otherwise ""
+    let g14 = ir_emit(g13, "load", idx, counter, "", "")
+    let cr = ir_temp(g14)
+    let g15 = cr[0] otherwise g14
+    let cmp = cr[1] otherwise ""
+    let g16 = ir_emit(g15, "cmp_lt_i64", cmp, idx, count, "")
+    let g17 = ir_emit(g16, "br_if", "", cmp, body_l, "")
+    let g18 = ir_emit(g17, "br", "", end_l, "", "")
+    let g19 = ir_emit(g18, "label", "", body_l, "", "")
+    let ar = ir_temp(g19)
+    let g20 = ar[0] otherwise g19
+    let item = ar[1] otherwise ""
+    let g21 = ir_emit(g20, "iter_at", item, tc[1] otherwise "", idx, "")
+    let ac = ir_coerce(g21, item, "val", pty)
+    let g22 = ac[0] otherwise g21
+    let callr = ir_temp(g22)
+    let g23 = callr[0] otherwise g22
+    let callv = callr[1] otherwise ""
+    let g24 = ir_emit(g23, "call", callv, fn, fret, pty + ":" + (ac[1] otherwise ""))
+    let g25 = g24
+    if keep == 1:
+        # Filter: append the original item only when the predicate is true.
+        let bc = ir_coerce(g24, callv, fret, "bool")
+        let g26 = bc[0] otherwise g24
+        let l3 = ir_label(g26)
+        let g27 = l3[0] otherwise g26
+        let keep_l = l3[1] otherwise ""
+        let l4 = ir_label(g27)
+        let g28 = l4[0] otherwise g27
+        let skip_l = l4[1] otherwise ""
+        let g29 = ir_emit(g28, "br_if", "", bc[1] otherwise "", keep_l, "")
+        let g30 = ir_emit(g29, "br", "", skip_l, "", "")
+        let g31 = ir_emit(g30, "label", "", keep_l, "", "")
+        let olr = ir_temp(g31)
+        let g32 = olr[0] otherwise g31
+        let olen = olr[1] otherwise ""
+        let g33 = ir_emit(g32, "iter_len", olen, res, "", "")
+        let g34 = ir_emit(g33, "list_set", "", res, olen, item)
+        let g35 = ir_emit(g34, "label", "", skip_l, "", "")
+        set g25 to g35
+    otherwise:
+        # Map: the result list is dense, so idx is its insertion point.
+        let vc = ir_coerce(g24, callv, fret, "val")
+        let g26 = vc[0] otherwise g24
+        let g27 = ir_emit(g26, "list_set", "", res, idx, vc[1] otherwise "")
+        set g25 to g27
+    let ir2 = ir_temp(g25)
+    let g36 = ir2[0] otherwise g25
+    let next = ir2[1] otherwise ""
+    let g37 = ir_emit(g36, "add_i64", next, idx, "1", "")
+    let g38 = ir_emit(g37, "store", "", counter, next, "")
+    let g39 = ir_emit(g38, "br", "", cond_l, "", "")
+    let g40 = ir_emit(g39, "label", "", end_l, "", "")
+    return [g40, res, "val"]
+
+action ir_lower_call(e: AstNode, g: IRGen, items, want) -> list:
+    recursion bounded 64
+    let name = e.name
+    let g1 = g
+    let args = []
+    if ir_log_style(name) != "":
+        return ir_lower_log(e, g1, items)
+    if (name == "parallel_map" or name == "parallel_filter") and (length of e.children) == 2:
+        let keep = 0
+        if name == "parallel_filter":
+            set keep to 1
+        return ir_lower_parallel(e, g1, items, keep)
+    if name == "code" and (length of e.children) == 1:
+        let r = ir_lower_expr(child_at(e, 0), g1, items, "val")
+        set g1 to r[0] otherwise g1
+        let c = ir_coerce(g1, r[1] otherwise "", r[2] otherwise "", "val")
+        set g1 to c[0] otherwise g1
+        let t = ir_temp(g1)
+        let g2 = t[0] otherwise g1
+        let dst = t[1] otherwise ""
+        return [ir_emit(g2, "rt:kaze_native_code", dst, "", "f64", "val:" + (c[1] otherwise "")), dst, "f64"]
+    if name == "byte_at" and (length of e.children) == 2:
+        let a = ir_lower_expr(child_at(e, 0), g1, items, "val")
+        set g1 to a[0] otherwise g1
+        let ca = ir_coerce(g1, a[1] otherwise "", a[2] otherwise "", "val")
+        set g1 to ca[0] otherwise g1
+        let b = ir_lower_expr(child_at(e, 1), g1, items, "val")
+        set g1 to b[0] otherwise g1
+        let cb = ir_coerce(g1, b[1] otherwise "", b[2] otherwise "", "val")
+        set g1 to cb[0] otherwise g1
+        let t = ir_temp(g1)
+        let g2 = t[0] otherwise g1
+        let dst = t[1] otherwise ""
+        return [ir_emit(g2, "rt:kaze_native_byte_at", dst, "", "f64", "val:" + (ca[1] otherwise "") + " val:" + (cb[1] otherwise "")), dst, "f64"]
+    if name == "character" and (length of e.children) == 1:
+        let r = ir_lower_expr(child_at(e, 0), g1, items, "f64")
+        set g1 to r[0] otherwise g1
+        let c = ir_coerce(g1, r[1] otherwise "", r[2] otherwise "", "f64")
+        set g1 to c[0] otherwise g1
+        let t = ir_temp(g1)
+        let g2 = t[0] otherwise g1
+        let dst = t[1] otherwise ""
+        return [ir_emit(g2, "val_character", dst, c[1] otherwise "", "", ""), dst, "val"]
+    if name == "clock_monotonic_ns" and (length of e.children) == 0:
+        let t = ir_temp(g1)
+        let g2 = t[0] otherwise g1
+        let dst = t[1] otherwise ""
+        return [ir_emit(g2, "rt:kaze_native_clock_monotonic_ns", dst, "", "f64", ""), dst, "f64"]
+    if name == "clock_utc_seconds" and (length of e.children) == 0:
+        let t = ir_temp(g1)
+        let g2 = t[0] otherwise g1
+        let dst = t[1] otherwise ""
+        return [ir_emit(g2, "rt:kaze_native_clock_utc_seconds", dst, "", "f64", ""), dst, "f64"]
+    let rec_item = ir_record_item(items, name)
+    if rec_item.kind == "RECORD":
+        return ir_lower_record(rec_item, e, g1, items)
+    if ir_math_name(name) == 1:
+        for each a in e.children:
+            let r = ir_lower_expr(a, g1, items, "f64")
+            set g1 to r[0] otherwise g1
+            let c = ir_coerce(g1, r[1] otherwise "", r[2] otherwise "", "f64")
+            set g1 to c[0] otherwise g1
+            set args to args + ["f64:" + (c[1] otherwise "")]
+        let r2 = ir_temp(g1)
+        let g2 = r2[0] otherwise g1
+        let dst = r2[1] otherwise ""
+        return [ir_emit(g2, "rt:" + name, dst, "", "f64", ir_join_args(args)), dst, "f64"]
+    let sig = ir_sig_find(g1.sigs, name)
+    if (length of sig) == 0:
+        return [ir_fail(g1, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(e.line) + ": call to '" + name + "' has no scalar implementation"), "", ""]
+    let params = sig[1] otherwise []
+    if (length of params) != (length of e.children):
+        return [ir_fail(g1, "E_KAZE_IR_INVALID: line " + ir_num_text(e.line) + ": '" + name + "' arity mismatch"), "", ""]
+    let i = 0
+    while i < (length of e.children) bounded 256:
+        let p = params[i] otherwise []
+        let pty = p[1] otherwise ""
+        if pty == "?":
+            return [ir_fail(g1, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(e.line) + ": parameter '" + (p[0] otherwise "") + "' of '" + name + "' has a non-scalar type"), "", ""]
+        let r = ir_lower_expr(node_at(e.children, i), g1, items, pty)
+        set g1 to r[0] otherwise g1
+        let c = ir_coerce(g1, r[1] otherwise "", r[2] otherwise "", pty)
+        set g1 to c[0] otherwise g1
+        set args to args + [pty + ":" + (c[1] otherwise "")]
+        set i to i + 1
+    let ret = sig[2] otherwise ""
+    if ret == "" or ret == "?":
+        return [ir_fail(g1, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(e.line) + ": call to '" + name + "' has no scalar return type"), "", ""]
+    let r2 = ir_temp(g1)
+    let g2 = r2[0] otherwise g1
+    let dst = r2[1] otherwise ""
+    let g3 = ir_emit(g2, "call", dst, name, ret, ir_join_args(args))
+    return [g3, dst, ret]
+
+action ir_join_args(args) -> string:
+    let out = ""
+    let first = 1
+    for each a in args:
+        if first == 0:
+            set out to out + " "
+        set out to out + a
+        set first to 0
+    return out
+
+action ir_lower_expr(e: AstNode, g: IRGen, items, want) -> list:
+    recursion bounded 128
+    let k = e.kind
+    if k == "NUM":
+        if want == "i64" and ir_is_digits(e.val_str) == 1:
+            let r = ir_const_i64(g, e.val_str)
+            return [r[0] otherwise g, r[1] otherwise "", "i64"]
+        let r = ir_const_f64(g, e.val_str)
+        let g1 = r[0] otherwise g
+        let v = r[1] otherwise ""
+        if want == "i64":
+            let c = ir_coerce(g1, v, "f64", "i64")
+            return [c[0] otherwise g1, c[1] otherwise "", "i64"]
+        if want == "bool":
+            let c = ir_coerce(g1, v, "f64", "bool")
+            return [c[0] otherwise g1, c[1] otherwise "", "bool"]
+        return [g1, v, "f64"]
+    if k == "BOOL":
+        let v = "0"
+        if e.val_str == "true":
+            set v to "1"
+        let r = ir_temp(g)
+        let g1 = r[0] otherwise g
+        let dst = r[1] otherwise ""
+        return [ir_emit(g1, "const_bool", dst, v, "", ""), dst, "bool"]
+    if k == "IDENT":
+        let ty = ir_env_get(g.env, e.name)
+        if ty == "":
+            return [ir_fail(g, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(e.line) + ": '" + e.name + "' is not a scalar local"), "", ""]
+        let r = ir_temp(g)
+        let g1 = r[0] otherwise g
+        let dst = r[1] otherwise ""
+        return [ir_emit(g1, "load", dst, ir_env_slot(g.env, e.name), "", ""), dst, ty]
+    if k == "STR":
+        let r = ir_temp(g)
+        let g1 = r[0] otherwise g
+        let dst = r[1] otherwise ""
+        return [ir_emit(g1, "const_str", dst, e.val_str, "", ""), dst, "str"]
+    if k == "LIST":
+        let lr = ir_temp(g)
+        let g1 = lr[0] otherwise g
+        let lst = lr[1] otherwise ""
+        let g2 = ir_emit(g1, "list_new", lst, ir_num_text(length of e.children), "", "")
+        let i = 0
+        for each item in e.children:
+            let r = ir_lower_expr(item, g2, items, "val")
+            set g2 to r[0] otherwise g2
+            let c = ir_coerce(g2, r[1] otherwise "", r[2] otherwise "", "val")
+            set g2 to c[0] otherwise g2
+            set g2 to ir_emit(g2, "list_set", "", lst, ir_num_text(i), c[1] otherwise "")
+            set i to i + 1
+        return [g2, lst, "val"]
+    if k == "INDEX":
+        let cr = ir_lower_expr(child_at(e, 0), g, items, "val")
+        let g1 = cr[0] otherwise g
+        let cc = ir_coerce(g1, cr[1] otherwise "", cr[2] otherwise "", "val")
+        let g2 = cc[0] otherwise g1
+        let ir = ir_lower_expr(child_at(e, 1), g2, items, "f64")
+        let g3 = ir[0] otherwise g2
+        let ic = ir_coerce(g3, ir[1] otherwise "", ir[2] otherwise "", "f64")
+        let g4 = ic[0] otherwise g3
+        let r = ir_temp(g4)
+        let g5 = r[0] otherwise g4
+        let dst = r[1] otherwise ""
+        return [ir_emit(g5, "val_index", dst, cc[1] otherwise "", ic[1] otherwise "", ""), dst, "val"]
+    if k == "FIELD":
+        let br = ir_lower_expr(child_at(e, 0), g, items, "val")
+        let g1 = br[0] otherwise g
+        let bc = ir_coerce(g1, br[1] otherwise "", br[2] otherwise "", "val")
+        let g2 = bc[0] otherwise g1
+        let nr = ir_temp(g2)
+        let g3 = nr[0] otherwise g2
+        let name = nr[1] otherwise ""
+        let g4 = ir_emit(g3, "const_str", name, e.name, "", "")
+        let r = ir_temp(g4)
+        let g5 = r[0] otherwise g4
+        let dst = r[1] otherwise ""
+        return [ir_emit(g5, "val_field", dst, bc[1] otherwise "", name, ""), dst, "val"]
+    if k == "LEN":
+        let r = ir_lower_expr(child_at(e, 0), g, items, "")
+        let g1 = r[0] otherwise g
+        let ty = r[2] otherwise ""
+        let t = ir_temp(g1)
+        let g2 = t[0] otherwise g1
+        let dst = t[1] otherwise ""
+        if ty == "str":
+            return [ir_emit(g2, "len_str", dst, r[1] otherwise "", "", ""), dst, "f64"]
+        let c = ir_coerce(g2, r[1] otherwise "", ty, "val")
+        let g3 = c[0] otherwise g2
+        return [ir_emit(g3, "val_len", dst, c[1] otherwise "", "", ""), dst, "f64"]
+    if k == "BIN":
+        return ir_lower_bin(e, g, items, want)
+    if k == "FALLBACK":
+        let inner = child_at(e, 0)
+        if inner.kind == "BIN" and (inner.name == "/" or inner.name == "%"):
+            return ir_lower_div(inner, g, items, child_at(e, 1))
+        if inner.kind == "INDEX":
+            let cr = ir_lower_expr(child_at(inner, 0), g, items, "val")
+            let g1 = cr[0] otherwise g
+            let cc = ir_coerce(g1, cr[1] otherwise "", cr[2] otherwise "", "val")
+            let g2 = cc[0] otherwise g1
+            let ir = ir_lower_expr(child_at(inner, 1), g2, items, "val")
+            let g3 = ir[0] otherwise g2
+            let ic = ir_coerce(g3, ir[1] otherwise "", ir[2] otherwise "", "val")
+            let g4 = ic[0] otherwise g3
+            let fr = ir_lower_expr(child_at(e, 1), g4, items, "val")
+            let g5 = fr[0] otherwise g4
+            let fc = ir_coerce(g5, fr[1] otherwise "", fr[2] otherwise "", "val")
+            let g6 = fc[0] otherwise g5
+            let r = ir_temp(g6)
+            let g7 = r[0] otherwise g6
+            let dst = r[1] otherwise ""
+            return [ir_emit(g7, "val_index_fb", dst, cc[1] otherwise "", ic[1] otherwise "", fc[1] otherwise ""), dst, "val"]
+        return ir_lower_expr(inner, g, items, want)
+    if k == "CALL":
+        return ir_lower_call(e, g, items, want)
+    if k == "IN_UNIT":
+        let r = ir_lower_expr(child_at(e, 0), g, items, "f64")
+        let g1 = r[0] otherwise g
+        let c = ir_coerce(g1, r[1] otherwise "", r[2] otherwise "", "f64")
+        let g2 = c[0] otherwise g1
+        let v = c[1] otherwise ""
+        let factor = "57.29577951308232"
+        if e.name == "radians":
+            set factor to "0.017453292519943295"
+        let cr = ir_const_f64(g2, factor)
+        let g3 = cr[0] otherwise g2
+        let f = cr[1] otherwise ""
+        let tr = ir_temp(g3)
+        let g4 = tr[0] otherwise g3
+        let dst = tr[1] otherwise ""
+        return [ir_emit(g4, "mul_f64", dst, v, f, ""), dst, "f64"]
+    return [ir_fail(g, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(e.line) + ": expression '" + k + "' is outside the scalar subset"), "", ""]
+
+# ── statement lowering ──────────────────────────────────────────────────
+
+action ir_lower_stmts(stmts, g: IRGen, items) -> list:
+    recursion bounded 256
+    let g1 = g
+    let returned = 0
+    for each s in stmts:
+        if returned == 0:
+            let r = ir_lower_stmt(s, g1, items)
+            set g1 to r[0] otherwise g1
+            set returned to r[1] otherwise 0
+    return [g1, returned]
+
+action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
+    recursion bounded 256
+    let k = s.kind
+    if k == "BLOCK":
+        return ir_lower_stmts(s.children, g, items)
+    if k == "LET":
+        let r = ir_lower_expr(child_at(s, 0), g, items, "")
+        let g1 = r[0] otherwise g
+        let v = r[1] otherwise ""
+        let ty = r[2] otherwise ""
+        if ty == "" or ty == "void":
+            # A unit value has no slot. Binding it to a fake type produced
+            # `store %t, %slot` with no QBE width.
+            return [g1, 0]
+        let slot = s.name
+        if ir_slot_type(g1.slots, slot) != "":
+            # A shadowing let gets fresh storage; reusing the outer slot would
+            # overwrite a value (and possibly a type) that is still live.
+            set slot to s.name + "$" + ir_num_text(g1.temp)
+        let g2 = IRGen(temp: g1.temp, label: g1.label,
+                       slots: ir_slot_add(g1.slots, slot, ty),
+                       env: ir_env_bind(g1.env, s.name, ty, slot),
+                       body: g1.body, errors: g1.errors,
+                       ret: g1.ret, sigs: g1.sigs)
+        return [ir_emit(g2, "store", "", slot, v, ""), 0]
+    if k == "APPEND_OWN" or k == "APPEND_LIST_OWN":
+        # The C99 pass rewrote `x = x + rest` here because every other use of x
+        # is a return. Keep that proof: append in place instead of copying the
+        # whole list on every element.
+        let want = ir_env_get(g.env, s.name)
+        if want == "":
+            return [ir_fail(g, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(s.line) + ": append to non-scalar '" + s.name + "'"), 0]
+        let slot = ir_env_slot(g.env, s.name)
+        let lr = ir_temp(g)
+        let g1 = lr[0] otherwise g
+        let slotv = lr[1] otherwise ""
+        let g2 = ir_emit(g1, "load", slotv, slot, "", "")
+        let lc = ir_coerce(g2, slotv, want, "val")
+        let g3 = lc[0] otherwise g2
+        let r = ir_lower_expr(child_at(s, 0), g3, items, "val")
+        let g4 = r[0] otherwise g3
+        let rc = ir_coerce(g4, r[1] otherwise "", r[2] otherwise "", "val")
+        let g5 = rc[0] otherwise g4
+        let ar = ir_temp(g5)
+        let g6 = ar[0] otherwise g5
+        let added = ar[1] otherwise ""
+        let g7 = ir_emit(g6, "val_add_own", added, lc[1] otherwise "", rc[1] otherwise "", "")
+        let bc = ir_coerce(g7, added, "val", want)
+        let g8 = bc[0] otherwise g7
+        return [ir_emit(g8, "store", "", slot, bc[1] otherwise "", ""), 0]
+    if k == "SET":
+        let want = ir_env_get(g.env, s.name)
+        if want == "":
+            return [ir_fail(g, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(s.line) + ": set of non-scalar '" + s.name + "'"), 0]
+        let r = ir_lower_expr(child_at(s, 0), g, items, want)
+        let g1 = r[0] otherwise g
+        let c = ir_coerce(g1, r[1] otherwise "", r[2] otherwise "", want)
+        let g2 = c[0] otherwise g1
+        return [ir_emit(g2, "store", "", ir_env_slot(g.env, s.name), c[1] otherwise "", ""), 0]
+    if k == "EXPR":
+        let r = ir_lower_expr(child_at(s, 0), g, items, "")
+        return [r[0] otherwise g, 0]
+    if k == "RETURN" or k == "RETURN_CHECKED":
+        if (length of s.children) == 0:
+            return [ir_emit(g, "ret_void", "", "", "", ""), 1]
+        let r = ir_lower_expr(child_at(s, 0), g, items, g.ret)
+        let g1 = r[0] otherwise g
+        let v = r[1] otherwise ""
+        let ty = r[2] otherwise ""
+        if g.ret == "void":
+            # Evaluate the expression for its effects, then return unit. A void
+            # call as the tail expression must not become `ret %t`.
+            return [ir_emit(g1, "ret_void", "", "", "", ""), 1]
+        let g2 = g1
+        if ty == "void":
+            # A declared scalar routine that returns a unit call is 0 in the
+            # C99 emitter; give the backend a value instead of a widthless ret.
+            let zr = ir_const_f64(g1, "0")
+            set g2 to zr[0] otherwise g1
+            set v to zr[1] otherwise ""
+            set ty to "f64"
+        let c = ir_coerce(g2, v, ty, g.ret)
+        let g3 = c[0] otherwise g2
+        return [ir_emit(g3, "ret", "", c[1] otherwise "", g.ret, ""), 1]
+    if k == "GUARD":
+        let r = ir_lower_expr(child_at(s, 0), g, items, "bool")
+        let g1 = r[0] otherwise g
+        let c = ir_coerce_bool(g1, r[1] otherwise "", r[2] otherwise "")
+        let g2 = c[0] otherwise g1
+        let msg = "E_KAZE_GUARD: the invariant at line " + ir_num_text(s.line) + " is false"
+        return [ir_emit(g2, "guard", "", c[1] otherwise "", msg, ""), 0]
+    if k == "IF":
+        let cond = ir_lower_expr(child_at(s, 0), g, items, "bool")
+        let g1 = cond[0] otherwise g
+        let c = ir_coerce_bool(g1, cond[1] otherwise "", cond[2] otherwise "")
+        let g2 = c[0] otherwise g1
+        let l1 = ir_label(g2)
+        let g3 = l1[0] otherwise g2
+        let then_l = l1[1] otherwise ""
+        let l2 = ir_label(g3)
+        let g4 = l2[0] otherwise g3
+        let else_l = l2[1] otherwise ""
+        let l3 = ir_label(g4)
+        let g5 = l3[0] otherwise g4
+        let end_l = l3[1] otherwise ""
+        let g6 = ir_emit(g5, "br_if", "", c[1] otherwise "", then_l, "")
+        let g7 = ir_emit(g6, "br", "", else_l, "", "")
+        let g8 = ir_emit(g7, "label", "", then_l, "", "")
+        let rt = ir_lower_stmts((child_at(s, 1)).children, g8, items)
+        let g9 = rt[0] otherwise g8
+        let tr = rt[1] otherwise 0
+        let g10 = g9
+        if tr == 0:
+            set g10 to ir_emit(g9, "br", "", end_l, "", "")
+        let g11 = ir_emit(g10, "label", "", else_l, "", "")
+        # The else branch starts from the environment before the if; a let in
+        # the then branch is out of scope here.
+        let g11e = IRGen(temp: g11.temp, label: g11.label, slots: g11.slots,
+                         env: g.env, body: g11.body, errors: g11.errors,
+                         ret: g11.ret, sigs: g11.sigs)
+        let rf = ir_lower_stmts((child_at(s, 2)).children, g11e, items)
+        let g12 = rf[0] otherwise g11e
+        let fr = rf[1] otherwise 0
+        let g13 = g12
+        if fr == 0:
+            set g13 to ir_emit(g12, "br", "", end_l, "", "")
+        let g14 = ir_emit(g13, "label", "", end_l, "", "")
+        let ret = 0
+        if tr == 1 and fr == 1:
+            set ret to 1
+        # Bindings made inside either branch are scoped to it.
+        let g15 = IRGen(temp: g14.temp, label: g14.label, slots: g14.slots,
+                        env: g.env, body: g14.body, errors: g14.errors,
+                        ret: g14.ret, sigs: g14.sigs)
+        return [g15, ret]
+    if k == "FOR_EACH" or k == "PARALLEL_FOR":
+        let target = ir_lower_expr(child_at(s, 0), g, items, "val")
+        let g1 = target[0] otherwise g
+        let tc = ir_coerce(g1, target[1] otherwise "", target[2] otherwise "", "val")
+        let g2 = tc[0] otherwise g1
+        let counter = "__kz_iter" + ir_num_text(g2.label)
+        let l0 = ir_label(g2)
+        let g3 = l0[0] otherwise g2
+        let cond_l = l0[1] otherwise ""
+        let l1 = ir_label(g3)
+        let g4 = l1[0] otherwise g3
+        let body_l = l1[1] otherwise ""
+        let l2 = ir_label(g4)
+        let g5 = l2[0] otherwise g4
+        let end_l = l2[1] otherwise ""
+        let iter_slot = s.name
+        if ir_slot_type(g5.slots, iter_slot) != "":
+            set iter_slot to s.name + "$" + ir_num_text(g5.temp)
+        let g6 = IRGen(temp: g5.temp, label: g5.label,
+                       slots: ir_slot_add(ir_slot_add(g5.slots, counter, "i64"), iter_slot, "val"),
+                       env: ir_env_bind(g5.env, s.name, "val", iter_slot),
+                       body: g5.body, errors: g5.errors, ret: g5.ret, sigs: g5.sigs)
+        let g7 = ir_emit(g6, "store", "", counter, "0", "")
+        let nr = ir_temp(g7)
+        let g8 = nr[0] otherwise g7
+        let count = nr[1] otherwise ""
+        let g9 = ir_emit(g8, "iter_len", count, tc[1] otherwise "", "", "")
+        let g10 = ir_emit(g9, "label", "", cond_l, "", "")
+        let ir = ir_temp(g10)
+        let g11 = ir[0] otherwise g10
+        let idx = ir[1] otherwise ""
+        let g12 = ir_emit(g11, "load", idx, counter, "", "")
+        let cr = ir_temp(g12)
+        let g13 = cr[0] otherwise g12
+        let cmp = cr[1] otherwise ""
+        let g14 = ir_emit(g13, "cmp_lt_i64", cmp, idx, count, "")
+        let g15 = ir_emit(g14, "br_if", "", cmp, body_l, "")
+        let g16 = ir_emit(g15, "br", "", end_l, "", "")
+        let g17 = ir_emit(g16, "label", "", body_l, "", "")
+        let ar = ir_temp(g17)
+        let g18 = ar[0] otherwise g17
+        let item = ar[1] otherwise ""
+        let g19 = ir_emit(g18, "iter_at", item, tc[1] otherwise "", idx, "")
+        let g20 = ir_emit(g19, "store", "", iter_slot, item, "")
+        let rb = ir_lower_stmts((child_at(s, 1)).children, g20, items)
+        let g21 = rb[0] otherwise g20
+        let ir2 = ir_temp(g21)
+        let g22 = ir2[0] otherwise g21
+        let next = ir2[1] otherwise ""
+        let g23 = ir_emit(g22, "add_i64", next, idx, "1", "")
+        let g24 = ir_emit(g23, "store", "", counter, next, "")
+        let g25 = ir_emit(g24, "br", "", cond_l, "", "")
+        let g26 = ir_emit(g25, "label", "", end_l, "", "")
+        let g27 = IRGen(temp: g26.temp, label: g26.label, slots: g26.slots,
+                        env: g.env, body: g26.body, errors: g26.errors,
+                        ret: g26.ret, sigs: g26.sigs)
+        return [g27, 0]
+    if k == "WHILE":
+        let guard_name = "__kz_loop" + ir_num_text(g.label)
+        let l0 = ir_label(g)
+        let g1 = l0[0] otherwise g
+        let cond_l = l0[1] otherwise ""
+        let l1 = ir_label(g1)
+        let g2 = l1[0] otherwise g1
+        let body_l = l1[1] otherwise ""
+        let l2 = ir_label(g2)
+        let g3 = l2[0] otherwise g2
+        let trap_l = l2[1] otherwise ""
+        let l3 = ir_label(g3)
+        let g4 = l3[0] otherwise g3
+        let end_l = l3[1] otherwise ""
+        let g5 = IRGen(temp: g4.temp, label: g4.label,
+                       slots: ir_slot_add(g4.slots, guard_name, "i64"),
+                       env: g4.env, body: g4.body, errors: g4.errors,
+                       ret: g4.ret, sigs: g4.sigs)
+        let g6 = ir_emit(g5, "store", "", guard_name, "0", "")
+        let g7 = ir_emit(g6, "label", "", cond_l, "", "")
+        let cond = ir_lower_expr(child_at(s, 0), g7, items, "bool")
+        let g8 = cond[0] otherwise g7
+        let c = ir_coerce_bool(g8, cond[1] otherwise "", cond[2] otherwise "")
+        let g9 = c[0] otherwise g8
+        let g10 = ir_emit(g9, "br_if", "", c[1] otherwise "", body_l, "")
+        let g11 = ir_emit(g10, "br", "", end_l, "", "")
+        let g12 = ir_emit(g11, "label", "", body_l, "", "")
+        let bound = child_at(s, 2)
+        let g13 = g12
+        if bound.val_str != "" and bound.val_str != "?":
+            let ar = ir_temp(g13)
+            let g14 = ar[0] otherwise g13
+            let count = ar[1] otherwise ""
+            let g15 = ir_emit(g14, "load", count, guard_name, "", "")
+            let cr = ir_temp(g15)
+            let g16 = cr[0] otherwise g15
+            let cmp = cr[1] otherwise ""
+            let g17 = ir_emit(g16, "cmp_ge_i64", cmp, count, bound.val_str, "")
+            let g18 = ir_emit(g17, "br_if", "", cmp, trap_l, "")
+            let okr = ir_label(g18)
+            let g19 = okr[0] otherwise g18
+            let ok_l = okr[1] otherwise ""
+            let g20 = ir_emit(g19, "br", "", ok_l, "", "")
+            let g21 = ir_emit(g20, "label", "", ok_l, "", "")
+            let incr = ir_temp(g21)
+            let g22 = incr[0] otherwise g21
+            let next = incr[1] otherwise ""
+            let g23 = ir_emit(g22, "add_i64", next, count, "1", "")
+            let g24 = ir_emit(g23, "store", "", guard_name, next, "")
+            set g13 to g24
+        otherwise:
+            let ar = ir_temp(g13)
+            let g14 = ar[0] otherwise g13
+            let count = ar[1] otherwise ""
+            let g15 = ir_emit(g14, "load", count, guard_name, "", "")
+            let incr = ir_temp(g15)
+            let g16 = incr[0] otherwise g15
+            let next = incr[1] otherwise ""
+            let g17 = ir_emit(g16, "add_i64", next, count, "1", "")
+            let g18 = ir_emit(g17, "store", "", guard_name, next, "")
+            set g13 to g18
+        let body = ir_lower_stmts((child_at(s, 1)).children, g13, items)
+        let g25 = body[0] otherwise g13
+        let g26 = g25
+        if (body[1] otherwise 0) == 0:
+            set g26 to ir_emit(g25, "br", "", cond_l, "", "")
+        let g27 = ir_emit(g26, "label", "", trap_l, "", "")
+        let g28 = ir_emit(g27, "trap", "", "E_KAZE_LOOP_BOUND: loop exceeded its declared bound", "", "")
+        let g29 = ir_emit(g28, "label", "", end_l, "", "")
+        let g30 = IRGen(temp: g29.temp, label: g29.label, slots: g29.slots,
+                        env: g.env, body: g29.body, errors: g29.errors,
+                        ret: g29.ret, sigs: g29.sigs)
+        return [g30, 0]
+    return [ir_fail(g, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(s.line) + ": statement '" + k + "' is outside the scalar subset"), 0]
+
+# ── functions and programs ──────────────────────────────────────────────
+
+action ir_zero(g: IRGen) -> list:
+    let r = ir_const_f64(g, "0")
+    return [r[0] otherwise g, r[1] otherwise ""]
+
+action ir_lower_func(item: AstNode, items, sigs) -> list:
+    recursion bounded 64
+    let params = []
+    let env = []
+    for each p in (child_at(item, 0)).children:
+        let ty = ir_type_word(p.val_str)
+        if p.val_str == "":
+            # The entry point resolves an unannotated parameter dynamically;
+            # keep the same shape through every call in the program.
+            set ty to "val"
+        if ty == "":
+            return [[], ["E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(p.line) + ": parameter '" + p.name + "' has a non-scalar type"]]
+        set params to params + [[p.name, ty, p.val_str]]
+        set env to ir_env_set(env, p.name, ty)
+    let ret = ir_sig_ret(sigs, item.name)
+    if ret == "?":
+        return [[], ["E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(item.line) + ": routine '" + item.name + "' has a non-scalar return type"]]
+    if ret == "":
+        set ret to "void"
+    let g0 = ir_gen_new(env, ret, sigs)
+    # Reuse the C99 emitter's append-ownership proof. `out = out + [x]` is then
+    # appended in place and stays linear, while `a + a` or an aliased list still
+    # goes through value-semantics kz_nv_add and gets a fresh list.
+    let raw_body = child_at(item, 2)
+    let body = rewrite_appends(raw_body, append_plan(raw_body))
+    let r = ir_lower_stmts(body.children, g0, items)
+    let g1 = r[0] otherwise g0
+    let returned = r[1] otherwise 0
+    let g2 = g1
+    if returned == 0:
+        if ret == "void":
+            set g2 to ir_emit(g1, "ret_void", "", "", "", "")
+        otherwise:
+            if ret == "val":
+                let nr = ir_temp(g1)
+                let g3 = nr[0] otherwise g1
+                let nil = nr[1] otherwise ""
+                let g4 = ir_emit(g3, "const_nil", nil, "", "", "")
+                set g2 to ir_emit(g4, "ret", "", nil, ret, "")
+            otherwise:
+                let z = ir_zero(g1)
+                let g3 = z[0] otherwise g1
+                let v = z[1] otherwise ""
+                let c = ir_coerce(g3, v, "f64", ret)
+                set g2 to ir_emit(c[0] otherwise g3, "ret", "", c[1] otherwise "", ret, "")
+    let fn = IRFunc(name: item.name, params: params, ret: ret, slots: g2.slots, body: g2.body)
+    return [[fn], g2.errors]
+
+action ir_names_add(names, name: string) -> list:
+    for each n in names:
+        if n == name:
+            return names
+    return names + [name]
+
+# Calls and spawns are the two ways one routine can enter another.  Record
+# constructors and runtime builtins also appear as CALL nodes; they are kept in
+# the list and filtered against the action table afterwards.
+action ir_calls_collect(n: AstNode, out) -> list:
+    recursion bounded 256
+    let acc = out
+    if n.kind == "CALL" or n.kind == "SPAWN":
+        set acc to ir_names_add(acc, n.name)
+    if n.kind == "CALL" and (n.name == "parallel_map" or n.name == "parallel_filter") and (length of n.children) == 2:
+        # The second argument names a routine but is not a CALL node.
+        let f = child_at(n, 1)
+        if f.kind == "IDENT":
+            set acc to ir_names_add(acc, f.name)
+    for each c in n.children:
+        set acc to ir_calls_collect(c, acc)
+    return acc
+
+# Only routines reachable from `main` are lowered.  An imported module can use
+# lists, records or capabilities that the scalar IR does not model yet; if
+# `main` never calls those routines they must not stop the program from
+# compiling.  With no `main` the old lower-everything behavior is kept so the
+# "native output needs a main routine" diagnostic still points at the real
+# problem instead of an empty module.
+action ir_reachable_actions(items) -> list:
+    let main_item = ir_action_named(items, "main")
+    if main_item.kind != "ACTION":
+        # C99 runs the only action when a unit has no main. Lower exactly that
+        # one so an unused helper with a dynamic type cannot block the entry.
+        let single = ""
+        let count = 0
+        for each item in items:
+            if item.kind == "ACTION":
+                set single to item.name
+                set count to count + 1
+        if count == 1:
+            return [single]
+        return []
+    let reachable = ["main"]
+    let pending = ["main"]
+    let i = 0
+    while i < (length of pending) bounded 4096:
+        let name = pending[i] otherwise ""
+        let item = ir_action_named(items, name)
+        if item.kind == "ACTION":
+            for each called in ir_calls_collect(child_at(item, 2), []):
+                if ir_action_named(items, called).kind == "ACTION":
+                    let found = 0
+                    for each old in reachable:
+                        if old == called:
+                            set found to 1
+                    if found == 0:
+                        set reachable to reachable + [called]
+                        set pending to pending + [called]
+        set i to i + 1
+    return reachable
+
+action ir_lower_program(prog: AstNode) -> IRProgram:
+    recursion bounded 32
+    let items = program_items(prog)
+    let sigs = ir_collect_sigs(items)
+    let reachable = ir_reachable_actions(items)
+    let funcs = []
+    let errors = []
+    let seen = []
+    for each item in items:
+        if item.kind == "ACTION":
+            let skip = 0
+            if (length of reachable) > 0:
+                set skip to 1
+                for each r in reachable:
+                    if r == item.name:
+                        set skip to 0
+            let fs = []
+            let errs = []
+            if skip == 0:
+                let r = ir_lower_func(item, items, sigs)
+                set fs to r[0] otherwise []
+                set errs to r[1] otherwise []
+            set errors to errors + errs
+            for each f in fs:
+                for each old in seen:
+                    if old == f.name:
+                        set errors to errors + ["E_KAZE_IR_INVALID: duplicate routine '" + f.name + "'"]
+                set seen to seen + [f.name]
+                set funcs to funcs + [f]
+    return IRProgram(funcs: funcs, errors: errors)
+
+action ir_func_named(funcs, name: string) -> IRFunc:
+    for each f in funcs:
+        if f.name == name:
+            return f
+    return IRFunc(name: "", params: [], ret: "void", slots: [], body: [])
+
+# ── textual form (for diagnostics and the report) ───────────────────────
+
+action ir_render(prog: IRProgram) -> string:
+    let out = ""
+    for each e in prog.errors:
+        set out to out + "error: " + e + "\n"
+    for each f in prog.funcs:
+        let ps = ""
+        for each p in f.params:
+            if ps != "":
+                set ps to ps + " "
+            set ps to ps + (p[0] otherwise "") + ":" + (p[1] otherwise "")
+        set out to out + "func " + f.name + "(" + ps + ") -> " + f.ret + " {\n"
+        for each s in f.slots:
+            set out to out + "  slot " + (s[0] otherwise "") + " : " + (s[1] otherwise "") + "\n"
+        for each ins in f.body:
+            set out to out + "  " + ins.op
+            if ins.dst != "":
+                set out to out + " " + ins.dst
+            if ins.a != "":
+                set out to out + " " + ins.a
+            if ins.b != "":
+                set out to out + " " + ins.b
+            if ins.c != "":
+                set out to out + " " + ins.c
+            set out to out + "\n"
+        set out to out + "}\n"
+    return out
+
+# ── C99 reference emitter ───────────────────────────────────────────────
+
+action ir_sanitize(n: string) -> string:
+    let out = ""
+    let i = 0
+    while i < (length of n) bounded 256:
+        let ch = n[i] otherwise ""
+        if (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or (ch >= "0" and ch <= "9") or ch == "_":
+            set out to out + ch
+        otherwise:
+            set out to out + "_"
+        set i to i + 1
+    return out
+
+action ir_c_name(n: string) -> string:
+    if n == "":
+        return ""
+    if (n[0] otherwise "") == "%":
+        return "kz_t_" + ir_sanitize(ir_tail(n))
+    if (n[0] otherwise "") == "L":
+        return "kz_" + ir_sanitize(n)
+    return "kz_s_" + ir_sanitize(n)
+
+action ir_tail(n: string) -> string:
+    let out = ""
+    let i = 1
+    while i < (length of n) bounded 256:
+        set out to out + (n[i] otherwise "")
+        set i to i + 1
+    return out
+
+action ir_c_arg_operand(part: string) -> string:
+    let i = 0
+    let n = length of part
+    while i < n bounded 256:
+        if (part[i] otherwise "") == ":":
+            let out = ""
+            let j = i + 1
+            while j < n bounded 256:
+                set out to out + (part[j] otherwise "")
+                set j to j + 1
+            return ir_c_name(out)
+        set i to i + 1
+    return ir_c_name(part)
+
+action ir_split_args(s: string) -> list:
+    let out = []
+    let cur = ""
+    let i = 0
+    while i < (length of s) bounded 512:
+        let c = s[i] otherwise ""
+        if c == " ":
+            if cur != "":
+                set out to out + [cur]
+                set cur to ""
+        otherwise:
+            set cur to cur + c
+        set i to i + 1
+    if cur != "":
+        set out to out + [cur]
+    return out
+
+action ir_c_call_args(s: string) -> string:
+    let out = ""
+    let first = 1
+    for each part in ir_split_args(s):
+        if first == 0:
+            set out to out + ", "
+        set out to out + ir_c_arg_operand(part)
+        set first to 0
+    return out
+
+action ir_c_value(n: string) -> string:
+    if n == "":
+        return "0"
+    if (n[0] otherwise "") == "%":
+        return ir_c_name(n)
+    return n
+
+action ir_c_decl(dst: string, ty: string, value: string) -> string:
+    return "    " + ir_c_type(ty) + " " + ir_c_name(dst) + " = " + value + ";\n"
+
+action ir_c_stmt(ins: IRInstr) -> string:
+    let op = ins.op
+    let d = ir_c_name(ins.dst)
+    let a = ir_c_value(ins.a)
+    let b = ir_c_value(ins.b)
+    if op == "const_f64":
+        return ir_c_decl(ins.dst, "f64", ins.a)
+    if op == "const_i64":
+        return ir_c_decl(ins.dst, "i64", ins.a)
+    if op == "const_bool":
+        if ins.a == "1":
+            return ir_c_decl(ins.dst, "bool", "true")
+        return ir_c_decl(ins.dst, "bool", "false")
+    if op == "const_str":
+        return ir_c_decl(ins.dst, "str", ir_c_string(ins.a))
+    if op == "log_str":
+        return "    printf(\"[info] %s\\n\", " + a + " ? " + a + " : \"\");\n"
+    if op == "alert_str":
+        return "    fprintf(stderr, \"[alert] %s\\n\", " + a + " ? " + a + " : \"\");\n"
+    if op == "log_f64":
+        return "    printf(\"[info] \"); kz_ir_print_f64(" + a + ");\n"
+    if op == "alert_f64":
+        return "    fprintf(stderr, \"[alert] \"); kz_ir_print_f64_err(" + a + ");\n"
+    if op == "log_bool":
+        return "    printf(\"[info] %s\\n\", (" + a + ") ? \"true\" : \"false\");\n"
+    if op == "alert_bool":
+        return "    fprintf(stderr, \"[alert] %s\\n\", (" + a + ") ? \"true\" : \"false\");\n"
+    if op == "load":
+        return ir_c_decl(ins.dst, ins_type_of_load(ins), ir_c_name(ins.a))
+    if op == "store":
+        return "    " + ir_c_name(ins.a) + " = " + b + ";\n"
+    if op == "copy":
+        return ir_c_decl(ins.dst, ins.b, a)
+    if op == "add_f64":
+        return ir_c_decl(ins.dst, "f64", a + " + " + b)
+    if op == "sub_f64":
+        return ir_c_decl(ins.dst, "f64", a + " - " + b)
+    if op == "mul_f64":
+        return ir_c_decl(ins.dst, "f64", a + " * " + b)
+    if op == "div_f64":
+        return ir_c_decl(ins.dst, "f64", a + " / " + b)
+    if op == "mod_f64":
+        return ir_c_decl(ins.dst, "f64", "fmod(" + a + ", " + b + ")")
+    if op == "add_i64":
+        return ir_c_decl(ins.dst, "i64", a + " + " + b)
+    if op == "band_i64":
+        return ir_c_decl(ins.dst, "i64", a + " & " + b)
+    if op == "bor_i64":
+        return ir_c_decl(ins.dst, "i64", a + " | " + b)
+    if op == "bxor_i64":
+        return ir_c_decl(ins.dst, "i64", a + " ^ " + b)
+    if op == "shl_i64":
+        return ir_c_decl(ins.dst, "i64", a + " << (" + b + " & 63)")
+    if op == "shr_i64":
+        return ir_c_decl(ins.dst, "i64", "(int64_t)((uint64_t)" + a + " >> (" + b + " & 63))")
+    if op == "cmp_eq_f64":
+        return ir_c_decl(ins.dst, "bool", a + " == " + b)
+    if op == "cmp_ne_f64":
+        return ir_c_decl(ins.dst, "bool", a + " != " + b)
+    if op == "cmp_lt_f64":
+        return ir_c_decl(ins.dst, "bool", a + " < " + b)
+    if op == "cmp_le_f64":
+        return ir_c_decl(ins.dst, "bool", a + " <= " + b)
+    if op == "cmp_gt_f64":
+        return ir_c_decl(ins.dst, "bool", a + " > " + b)
+    if op == "cmp_ge_f64":
+        return ir_c_decl(ins.dst, "bool", a + " >= " + b)
+    if op == "cmp_eq_i64":
+        return ir_c_decl(ins.dst, "bool", a + " == " + b)
+    if op == "cmp_ne_i64":
+        return ir_c_decl(ins.dst, "bool", a + " != " + b)
+    if op == "cmp_lt_i64":
+        return ir_c_decl(ins.dst, "bool", a + " < " + b)
+    if op == "cmp_le_i64":
+        return ir_c_decl(ins.dst, "bool", a + " <= " + b)
+    if op == "cmp_gt_i64":
+        return ir_c_decl(ins.dst, "bool", a + " > " + b)
+    if op == "cmp_ge_i64":
+        return ir_c_decl(ins.dst, "bool", a + " >= " + b)
+    if op == "and_bool":
+        return ir_c_decl(ins.dst, "bool", a + " && " + b)
+    if op == "or_bool":
+        return ir_c_decl(ins.dst, "bool", a + " || " + b)
+    if op == "not_bool":
+        return ir_c_decl(ins.dst, "bool", "!" + a)
+    if op == "i64_to_f64":
+        return ir_c_decl(ins.dst, "f64", "(double)" + a)
+    if op == "bool_to_f64":
+        return ir_c_decl(ins.dst, "f64", a + " ? 1.0 : 0.0")
+    if op == "f64_to_i64":
+        return ir_c_decl(ins.dst, "i64", "(int64_t)" + a)
+    if op == "bool_to_i64":
+        return ir_c_decl(ins.dst, "i64", a + " ? 1 : 0")
+    if op == "f64_to_bool":
+        return ir_c_decl(ins.dst, "bool", a + " != 0.0")
+    if op == "i64_to_bool":
+        return ir_c_decl(ins.dst, "bool", a + " != 0")
+    if op == "label":
+        return ir_c_name(ins.a) + ": ;\n"
+    if op == "br":
+        return "    goto " + ir_c_name(ins.a) + ";\n"
+    if op == "br_if":
+        return "    if (" + a + ") goto " + ir_c_name(ins.b) + ";\n"
+    if op == "ret":
+        return "    return " + a + ";\n"
+    if op == "ret_void":
+        return "    return;\n"
+    if op == "trap":
+        return "    fprintf(stderr, \"%s\\n\", " + ir_c_string(ins.a) + "); exit(70);\n"
+    if op == "guard":
+        return "    if (!(" + a + ")) { fprintf(stderr, \"%s\\n\", " + ir_c_string(ins.b) + "); exit(70); }\n"
+    if (length of op) > 3 and ir_prefix(op, "rt:"):
+        let name = ir_after(op, 3)
+        return ir_c_decl(ins.dst, ins.b, name + "(" + ir_c_call_args(ins.c) + ")")
+    if op == "call":
+        let name = "kaze_fn_" + ir_sanitize(ins.a)
+        let ty = ins.b
+        if ty == "void":
+            return "    " + name + "(" + ir_c_call_args(ins.c) + ");\n"
+        return ir_c_decl(ins.dst, ty, name + "(" + ir_c_call_args(ins.c) + ")")
+    return "    /* IR: unhandled op " + op + " */\n"
+
+action ir_prefix(s: string, p: string) -> num:
+    if (length of s) < (length of p):
+        return 0
+    let i = 0
+    while i < (length of p) bounded 64:
+        if (s[i] otherwise "") != (p[i] otherwise ""):
+            return 0
+        set i to i + 1
+    return 1
+
+action ir_after(s: string, k) -> string:
+    let out = ""
+    let i = k
+    while i < (length of s) bounded 256:
+        set out to out + (s[i] otherwise "")
+        set i to i + 1
+    return out
+
+action ir_c_string(s: string) -> string:
+    let out = "\""
+    let i = 0
+    while i < (length of s) bounded 512:
+        let ch = s[i] otherwise ""
+        if ch == "\"":
+            set out to out + "\\\""
+        otherwise:
+            if ch == "\\":
+                set out to out + "\\\\"
+            otherwise:
+                if ch == "\n":
+                    set out to out + "\\n"
+                otherwise:
+                    if ch == "\t":
+                        set out to out + "\\t"
+                    otherwise:
+                        set out to out + ch
+        set i to i + 1
+    return out + "\""
+
+# The load type is carried by the slot list in a full backend. The textual
+# instruction does not repeat it, so this helper is replaced by the slot type
+# map in ir_c_func. Kept for the renderer's instruction-only signature.
+action ins_type_of_load(ins: IRInstr) -> string:
+    return "f64"
+
+action ir_c_func(f: IRFunc) -> string:
+    let params = ""
+    let first = 1
+    for each p in f.params:
+        if first == 0:
+            set params to params + ", "
+        set params to params + ir_c_type(p[1] otherwise "f64") + " " + ir_c_name(p[0] otherwise "")
+        set first to 0
+    if first == 1:
+        set params to "void"
+    let ret = ir_c_type(f.ret)
+    if ret == "":
+        set ret to "void"
+    let out = "static " + ret + " kaze_fn_" + ir_sanitize(f.name) + "(" + params + ") {\n"
+    for each s in f.slots:
+        set out to out + "    " + ir_c_type(s[1] otherwise "f64") + " " + ir_c_name(s[0] otherwise "") + " = 0;\n"
+    for each ins in f.body:
+        if ins.op == "load":
+            let ty = ir_func_slot_type(f, ins.a)
+            set out to out + "    " + ir_c_type(ty) + " " + ir_c_name(ins.dst) + " = " + ir_c_name(ins.a) + ";\n"
+        otherwise:
+            set out to out + ir_c_stmt(ins)
+    set out to out + "}\n"
+    return out
+
+action ir_func_slot_type(f: IRFunc, name: string) -> string:
+    for each p in f.params:
+        if (p[0] otherwise "") == name:
+            return p[1] otherwise "f64"
+    for each s in f.slots:
+        if (s[0] otherwise "") == name:
+            return s[1] otherwise "f64"
+    return "f64"
+
+action ir_c_proto(f: IRFunc) -> string:
+    let params = ""
+    let first = 1
+    for each p in f.params:
+        if first == 0:
+            set params to params + ", "
+        set params to params + ir_c_type(p[1] otherwise "f64") + " " + ir_c_name(p[0] otherwise "")
+        set first to 0
+    if first == 1:
+        set params to "void"
+    let ret = ir_c_type(f.ret)
+    if ret == "":
+        set ret to "void"
+    return "static " + ret + " kaze_fn_" + ir_sanitize(f.name) + "(" + params + ");\n"
+
+action ir_c_prelude() -> string:
+    let out = "/* Generated by Kaze IR -> C99 (Step 11.1 reference) */\n"
+    set out to out + "#include <stdint.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <math.h>\n\n"
+    set out to out + "static void kz_ir_print_f64(double v) {\n"
+    set out to out + "    char buf[64];\n"
+    set out to out + "    if (isnan(v)) { snprintf(buf, sizeof buf, \"NaN\"); }\n"
+    set out to out + "    else if (isinf(v)) { snprintf(buf, sizeof buf, v > 0 ? \"inf\" : \"-inf\"); }\n"
+    set out to out + "    else if (floor(v) == v && fabs(v) < 1e17) { snprintf(buf, sizeof buf, \"%.0f\", v); }\n"
+    set out to out + "    else {\n"
+    set out to out + "        int prec = 15;\n"
+    set out to out + "        for (; prec <= 17; prec++) {\n"
+    set out to out + "            snprintf(buf, sizeof buf, \"%.*g\", prec, v);\n"
+    set out to out + "            if (strtod(buf, NULL) == v) break;\n"
+    set out to out + "        }\n"
+    set out to out + "        if (prec > 17) snprintf(buf, sizeof buf, \"%.17g\", v);\n"
+    set out to out + "    }\n"
+    set out to out + "    printf(\"%s\\n\", buf);\n"
+    set out to out + "}\n"
+    set out to out + "static void kz_ir_print_f64_err(double v) {\n"
+    set out to out + "    char buf[64];\n"
+    set out to out + "    if (isnan(v)) { snprintf(buf, sizeof buf, \"NaN\"); }\n"
+    set out to out + "    else if (isinf(v)) { snprintf(buf, sizeof buf, v > 0 ? \"inf\" : \"-inf\"); }\n"
+    set out to out + "    else if (floor(v) == v && fabs(v) < 1e17) { snprintf(buf, sizeof buf, \"%.0f\", v); }\n"
+    set out to out + "    else {\n"
+    set out to out + "        int prec = 15;\n"
+    set out to out + "        for (; prec <= 17; prec++) {\n"
+    set out to out + "            snprintf(buf, sizeof buf, \"%.*g\", prec, v);\n"
+    set out to out + "            if (strtod(buf, NULL) == v) break;\n"
+    set out to out + "        }\n"
+    set out to out + "        if (prec > 17) snprintf(buf, sizeof buf, \"%.17g\", v);\n"
+    set out to out + "    }\n"
+    set out to out + "    fprintf(stderr, \"%s\\n\", buf);\n"
+    set out to out + "}\n\n"
+    return out
+
+action ir_emit_c(prog: IRProgram) -> string:
+    let out = ir_c_prelude()
+    for each e in prog.errors:
+        set out to out + "/* " + e + " */\n"
+    if (length of prog.errors) > 0:
+        set out to out + "int main(void) { return 1; }\n"
+        return out
+    for each f in prog.funcs:
+        set out to out + ir_c_proto(f)
+    set out to out + "\n"
+    for each f in prog.funcs:
+        set out to out + ir_c_func(f) + "\n"
+    let m = ir_func_named(prog.funcs, "main")
+    set out to out + "int main(void) {\n"
+    if m.name == "":
+        set out to out + "    printf(\"Kaze module loaded (no main entry)\\n\");\n    return 0;\n}\n"
+        return out
+    if m.ret == "f64":
+        set out to out + "    double r = kaze_fn_main();\n    kz_ir_print_f64(r);\n"
+    otherwise:
+        if m.ret == "i64":
+            set out to out + "    int64_t r = kaze_fn_main();\n    kz_ir_print_f64((double)r);\n"
+        otherwise:
+            if m.ret == "bool":
+                set out to out + "    bool r = kaze_fn_main();\n    printf(\"%s\\n\", r ? \"true\" : \"false\");\n"
+            otherwise:
+                if m.ret == "str":
+                    set out to out + "    const char* r = kaze_fn_main();\n    printf(\"%s\\n\", r ? r : \"\");\n"
+                otherwise:
+                    set out to out + "    kaze_fn_main();\n"
+    set out to out + "    return 0;\n}\n"
+    return out

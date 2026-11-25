@@ -1,0 +1,7 @@
+# `a + a` must terminate and must not grow the left operand. The native
+# runtime once appended in place, so b->len grew while it was iterated and the
+# program ate memory until the OS killed it.
+action main() -> num:
+    let a = [1, 2, 3]
+    let b = a + a
+    return (length of a) * 100 + (length of b)

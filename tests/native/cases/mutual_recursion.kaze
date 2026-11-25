@@ -1,0 +1,14 @@
+action is_even(n: num) -> bool:
+    recursion bounded 64
+    if n == 0:
+        return true
+    return is_odd(n - 1)
+
+action is_odd(n: num) -> bool:
+    recursion bounded 64
+    if n == 0:
+        return false
+    return is_even(n - 1)
+
+action main() -> bool:
+    return is_even(20)

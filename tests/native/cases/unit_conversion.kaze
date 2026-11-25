@@ -1,0 +1,4 @@
+action main() -> num:
+    let d = 30 in radians
+    let back = 180 in degrees
+    return sin(d) + (back / 1000)

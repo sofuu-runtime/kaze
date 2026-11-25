@@ -1,0 +1,8 @@
+# Negative zero keeps its sign. The native number cache interned -0.0 under
+# the same slot as +0.0, so JSON's "-0" came back as "0".
+action neg(x: num) -> num:
+    return x * (0 - 1)
+
+action main() -> text:
+    let z = neg(0)
+    return "" + z

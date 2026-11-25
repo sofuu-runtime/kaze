@@ -1,0 +1,5 @@
+action ratio(a: num, b: num) -> num:
+    return a / b otherwise 0
+
+action main() -> num:
+    return ratio(10, 4) + ratio(1, 0) * 100

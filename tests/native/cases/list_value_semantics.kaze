@@ -1,0 +1,6 @@
+# `+` on lists copies, so another binding must not see later appends.
+action main() -> num:
+    let a = [1, 2]
+    let b = a
+    let c = a + [3]
+    return (length of a) * 100 + (length of b) * 10 + (length of c)

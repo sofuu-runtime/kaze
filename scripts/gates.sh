@@ -35,17 +35,21 @@ if [ "${1:-}" = '--list' ]; then
 fi
 
 run 'bootstrap + fixed point' bash scripts/kaze-bootstrap-verify.sh
+run 'multi-file modules (phase 13)' bash scripts/module-gates.sh
 run 'verdict parity' bash scripts/golden-check.sh
 run 'bytecode writer' env KAZE_BIN="$ROOT/bin/kaze" python3 scripts/bytecode-check.py
 run 'conformance harness' bash scripts/self-test.sh
 run 'interactive LSP' env KAZE_BIN="$ROOT/bin/kaze" python3 scripts/host-lsp-smoke.py "$ROOT/bin/kaze-host"
 run 'hostile client' env KAZE_BIN="$ROOT/bin/kaze" python3 scripts/host-hostile.py "$ROOT/bin/kaze-host"
-run 'batch LSP' python3 scripts/lsp-smoke.py
+run 'batch LSP' python3 scripts/lsp-smoke.py --build
 run 'standard library suites' bash scripts/stdlib-test.sh
 run 'arena-only allocation' bash scripts/alloc-audit.sh
 run 'json vs cpython (rfc 8259)' python3 scripts/json-conformance-diff.py
 run 'hardware buses (phase 14)' bash scripts/phase14-gates.sh
+run 'formal verification (phase 16)' bash scripts/phase16-gates.sh
+run 'unboxing, views, dce (phase 17)' env KAZE_P17_SKIP_FIXPOINT=1 bash scripts/phase17-gates.sh
 run 'formatter' bash scripts/fmt-check.sh
+run 'native backend' bash scripts/backend-diff.sh --full
 run 'phase 7 strict gates' bash scripts/phase7-gates.sh
 run 'concurrency (phase 13)' bash scripts/phase13-gates.sh
 run 'tooling' bash scripts/tooling-smoke.sh

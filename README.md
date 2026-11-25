@@ -13,19 +13,48 @@ action main():
     return 2 + 3
 ```
 
-With any standard C99 compiler (clang or gcc), build and run the standalone Kaze implementation from the `kaze` directory:
+With any standard C99 compiler (clang or gcc), build the unified Kaze CLI from
+the `kaze` directory. The one executable owns checking, running, building,
+formatting and verification; it needs no sibling compiler binary at run time.
 
 ```bash
-# Build the self-hosted Kaze engine
-cc -std=c99 -O3 -o bin/kaze dist/kaze.c
+# Build bin/kaze, with the compiler, verifier and runtime embedded
+bash scripts/build-cli.sh
 
 # Check and run
 ./bin/kaze check hello.kaze
 ./bin/kaze run hello.kaze
+
+# Desktop fast path: QBE SSA -> assembly -> link, no C compiler in the hot path
+bash scripts/build-native.sh
+./bin/kaze run --backend=native hello.kaze
 ```
 
 Here, `hello.kaze` contains the example above. It returns `5` and needs no
 external capabilities.
+
+To install it for use outside the checkout:
+
+```bash
+bash scripts/install.sh                 # ~/.local, no sudo
+PREFIX=/usr/local bash scripts/install.sh
+```
+
+The installed tree is self-contained (`bin/kaze`, `lib/kaze/*.a`,
+`share/kaze/std`, `share/kaze/grammars`). `scripts/install.sh --uninstall`
+removes it again.
+
+The same command surface works in-tree and after installation:
+
+```bash
+kaze check src/main.kaze --json   # diagnostics; exit 1 on E_KAZE_*
+kaze fmt --check src              # exit 1 when a file would change
+kaze test                         # every tests/**/*_test.kaze suite
+kaze verify src/main.kaze         # contracts and proof obligations
+```
+
+`bash scripts/cli-dx-gates.sh` exercises the installed binary from an isolated
+prefix with every `KAZE_*` variable cleared.
 
 ## The language, shortly
 
@@ -59,6 +88,7 @@ action duty_check(duty: percent) -> bool:
 - **Zero-Heap Standard Library**: Arena-backed linear collections (`lib/vector.kaze`, `lib/map.kaze`, `lib/text.kaze`, `lib/ring.kaze`), RFC 8259 JSON parser, binary wire protocols (Protobuf, MAVLink, CRC), and cryptographic suites (SHA-256, SHA-512, HMAC, Ed25519).
 - **Bounded Text & Secure Network**: A non-backtracking regular-expression engine (`lib/regex.kaze`) with capture groups `(...)`, group extraction APIs, `$0`..`$9` replacement, Unicode escapes (`\uHHHH`, `\u{...}`), and step budget protection; and an HTTP/HTTPS client (`lib/http.kaze`) over explicit host grants, destination allowlists, pre-DNS and post-connect IP validation against SSRF / DNS rebinding, structured header mapping, and verified TLS.
 - **Native AI Tensors & Multicore GGUF Runtime**: Zero-copy mmap ingestion of GGUF and SafeTensors model weights, quantized matrix math (Q4_K, Q8_0), multicore row-partitioned parallel GEMM (`dist/kaze_tensor.c`), LLaMA forward pass achieving strict parity with `llama.cpp` (logit abs diff < 1e-4), reverse-mode autograd tape, and Apple Silicon Metal MSL GPU shaders.
+- **Unboxed Scalar Code Generation & Binary Slicing**: Numeric routines are emitted with unboxed C locals and operators (`double`, `long long`, `uint8_t`) instead of 32-byte tagged values, with whole-program dead-code elimination from `main`, supervisor hooks and fibers. Text parameters and byte reads go through a `kz_str_view_t` view, so a scan allocates once at the file boundary and never per byte. Measured against `clang -O3` C99 with identical IEEE semantics: N-body 1,000,000 steps at **0.98x**, 7.9 MB JSON tokenization at **0.90x**, with bit-identical output; `examples/hello.kaze` builds to a **34 KB** stripped binary. Gates: `bash scripts/phase17-gates.sh`.
 - **Pervasive Multicore Parallelism**: First-class `parallel for each`, `parallel_map`, and `parallel_filter` primitives powered by compile-time capability purity verification (`needs: []`). Dynamic work-stealing thread pool over worker-isolated bump arenas with $O(1)$ block chain adoption (`kaze_arena_adopt`), zero allocation contention, 0 memory leaks under AddressSanitizer, and up to $54.8\times$ multicore speedup.
 - **Deterministic Concurrency**: Single-threaded cooperative fibers, bounded tasks, and channel synchronization with sub-50ns context switching and zero data races.
 - **Production Hardware Buses & Bare-Metal Real-Time**: Memory-mapped register abstraction (`needs: regs`), 400 Hz PWM, 600 kHz DShot ESC driver, SysTick timebase, 1–8 kHz SPI IMU burst polling (0 overruns across 1,000,000 cycles), I2C barometer, bxCAN / DroneCAN (UAVCAN v0), UART DMA, and board support packages for STM32H7 (Pixhawk) and RP2040 (Raspberry Pi Pico) targeting bare-metal ARM Cortex-M with 20 ns PWM jitter.
@@ -85,6 +115,7 @@ Kaze implementation; their supported features and artifacts may differ.
 - [Hardware buses and bare-metal real-time report](docs/PHASE-14-REPORT.md)
 - [SITL physics simulator and digital twin report](docs/PHASE-15-REPORT.md)
 - [Formal verification and SMT solver report](docs/PHASE-16-REPORT.md)
+- [Unboxing, zero-copy views, dead-code elimination and stdlib expansion report](docs/PHASE-17-REPORT.md)
 - [Pervasive parallelism, performance and stdlib master plan](docs/PLAN-KAZE-PERVASIVE-PARALLELISM-PERFORMANCE-STDLIB.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Version alignment plan](docs/VERSION-ALIGNMENT.md)

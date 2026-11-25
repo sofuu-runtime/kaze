@@ -1,0 +1,15 @@
+action classify(n: num) -> num:
+    if n < 0:
+        return 0 - 1
+    otherwise:
+        if n == 0:
+            return 0
+    return 1
+
+action main() -> num:
+    let total = 0
+    let i = -3
+    while i < 3 bounded 100:
+        set total to total + classify(i)
+        set i to i + 1
+    return total

@@ -1,0 +1,1117 @@
+# module.kaze — the native multi-file module loader, resolver and interface
+# builder.
+#
+# The compiler used to read exactly one file and treat `use` as "someone else
+# will paste this in". That made imports a Python text-gluing problem and left
+# every imported name in one global namespace. This module replaces that with a
+# compiler-native dependency DAG:
+#
+#   * `use "./sensors/imu.kaze" as imu`       qualified namespace
+#   * `use { Vec3, quat_slerp } from "std/spatial"`  selective names
+#   * `use "./legacy.kaze"`                   legacy one-namespace import
+#
+# It resolves `./`, `../`, `@/` (the directory with kaze.toml) and `std/`, reads
+# the sources through the host's source_* intrinsics, rejects cycles and every
+# module-not-found with a deterministic diagnostic, and then rewrites each
+# module's calls to collision-free C names. The existing checker still does the
+# language rules, one module at a time, so a module's `needs:` envelope is
+# never widened by what its importer happens to require.
+use "./ast.kaze"
+use "./lexer.kaze"
+use "./parser.kaze"
+use "./checker.kaze"
+
+# ── records ──────────────────────────────────────────────────────────────
+
+# One loaded source file. `items` is the parsed module; `rewritten` is the same
+# module after import resolution and symbol mangling. Keeping both lets the
+# interface hash describe the source while code generation uses the rewritten
+# tree.
+record KzModule:
+    path: text
+    tag: text
+    prog: AstNode
+    items: list
+    rewritten: list
+    needs: list
+    uses: list
+    root: num
+
+action no_module() -> KzModule:
+    return KzModule(path: "", tag: "", prog: none_node(), items: [], rewritten: [], needs: [], uses: [], root: 0)
+
+# ── small text helpers ───────────────────────────────────────────────────
+
+action mz_len(s: string) -> num:
+    return length of s
+
+action mz_char(s: string, i: num) -> string:
+    if i >= 0 and i < (length of s):
+        return (s[i] otherwise "")
+    return ""
+
+action mz_starts(s: string, pre: string) -> num:
+    if (length of pre) > (length of s):
+        return 0
+    let i = 0
+    let ok = 1
+    while i < (length of pre) bounded 10000:
+        if mz_char(s, i) != mz_char(pre, i):
+            set ok to 0
+            set i to length of pre
+        otherwise:
+            set i to i + 1
+    return ok
+
+action mz_ends(s: string, suf: string) -> num:
+    if (length of suf) > (length of s):
+        return 0
+    let off = (length of s) - (length of suf)
+    return mz_starts(mz_slice(s, off, length of s), suf)
+
+action mz_slice(s: string, start: num, stop: num) -> string:
+    let out = ""
+    let i = start
+    if i < 0:
+        set i to 0
+    let n = length of s
+    while i < stop and i < n bounded 1000000:
+        set out to out + mz_char(s, i)
+        set i to i + 1
+    return out
+
+action mz_index(s: string, ch: string, from: num) -> num:
+    let i = from
+    let n = length of s
+    let found = 0 - 1
+    while i < n bounded 1000000:
+        if mz_char(s, i) == ch:
+            set found to i
+            set i to n
+        otherwise:
+            set i to i + 1
+    return found
+
+# The parent of a path. "a/b.kaze" -> "a", "a.kaze" -> ".", "/a" -> "/".
+action mz_dirname(path: string) -> string:
+    let i = (length of path) - 1
+    let found = 0 - 1
+    while i >= 0 bounded 1000000:
+        if mz_char(path, i) == "/":
+            set found to i
+            set i to 0 - 1
+        otherwise:
+            set i to i - 1
+    if found < 0:
+        return "."
+    if found == 0:
+        return "/"
+    return mz_slice(path, 0, found)
+
+action mz_basename(path: string) -> string:
+    let i = (length of path) - 1
+    let found = 0 - 1
+    while i >= 0 bounded 1000000:
+        if mz_char(path, i) == "/":
+            set found to i
+            set i to 0 - 1
+        otherwise:
+            set i to i - 1
+    return mz_slice(path, found + 1, length of path)
+
+action mz_join(a: string, b: string) -> string:
+    if mz_starts(b, "/"):
+        return b
+    if a == "" or a == ".":
+        return b
+    if mz_ends(a, "/"):
+        return a + b
+    return a + "/" + b
+
+# Lexical normalisation. The loader never needs the real file system identity
+# for correctness: it only needs one spelling per file so DFS can recognise a
+# repeated module. `.` and `..` are folded here, before anything is read.
+action mz_normalize(path: string) -> string:
+    let absolute = 0
+    if mz_starts(path, "/"):
+        set absolute to 1
+    let parts = []
+    let cur = ""
+    let i = 0
+    let n = length of path
+    while i <= n bounded 1000000:
+        let c = ""
+        if i < n:
+            set c to mz_char(path, i)
+        if i == n or c == "/":
+            if cur == "..":
+                if (length of parts) > 0:
+                    if (parts[(length of parts) - 1] otherwise "") != "..":
+                        set parts to mz_drop_last(parts)
+                    otherwise:
+                        if absolute == 0:
+                            set parts to parts + [".."]
+                otherwise:
+                    if absolute == 0:
+                        set parts to parts + [".."]
+            otherwise:
+                if cur != "" and cur != ".":
+                    set parts to parts + [cur]
+            set cur to ""
+        otherwise:
+            set cur to cur + c
+        set i to i + 1
+    let out = ""
+    let first = 1
+    for each p in parts:
+        if first == 0:
+            set out to out + "/"
+        set out to out + p
+        set first to 0
+    if absolute == 1:
+        set out to "/" + out
+    if out == "":
+        return "."
+    return out
+
+action mz_drop_last(items):
+    let out = []
+    let i = 0
+    while i < (length of items) - 1 bounded 1000000:
+        set out to out + [(items[i] otherwise "")]
+        set i to i + 1
+    return out
+
+# ── deterministic module identity ────────────────────────────────────────
+
+# A 31-bit string hash (djb2). Products stay below 2^53, so the result is the
+# same on every host and every build; the mangled C name is a function of the
+# canonical source path alone.
+action mz_hash(s: string) -> num:
+    let h = 5381
+    let i = 0
+    let n = length of s
+    while i < n bounded 1000000:
+        set h to ((h * 33) + (code(mz_char(s, i)))) & 2147483647
+        set i to i + 1
+    return h
+
+action mz_hex_digit(n: num) -> string:
+    return ("0123456789abcdef"[n] otherwise "0")
+
+action mz_hex8(n: num) -> string:
+    let v = n
+    let out = ""
+    let i = 0
+    while i < 8 bounded 100:
+        let nib = v % 16
+        set out to mz_hex_digit(nib) + out
+        set v to (v - nib) / 16
+        set i to i + 1
+    return out
+
+action mz_tag(path: string) -> string:
+    return mz_hex8(mz_hash(mz_normalize(path)))
+
+# ── path resolution ──────────────────────────────────────────────────────
+
+# The repo's standard library is found by walking up from the importing file,
+# so a checkout works without installation or environment setup. An installed
+# tree can name itself explicitly or use the conventional PREFIX path.
+action mz_std_candidates(name: string, from_dir: string) -> list:
+    let out = []
+    let explicit = env_text("KAZE_STD_DIR", "")
+    if explicit != "":
+        set out to out + [mz_join(explicit, name)]
+    let d = from_dir
+    let guard = 0
+    while guard < 64 bounded 64:
+        set out to out + [mz_join(d, "lib/" + name)]
+        set out to out + [mz_join(d, "kaze/lib/" + name)]
+        if d == "." or d == "/" or d == "":
+            set guard to 64
+        otherwise:
+            set d to mz_dirname(d)
+            set guard to guard + 1
+    set out to out + ["lib/" + name]
+    set out to out + ["/usr/local/share/kaze/std/" + name]
+    set out to out + ["/usr/share/kaze/std/" + name]
+    return out
+
+# The nearest directory with a kaze.toml is the project root `@/` denotes.
+action mz_project_root(from_dir: string) -> string:
+    let explicit = env_text("KAZE_PROJECT_ROOT", "")
+    if explicit != "":
+        return mz_normalize(explicit)
+    let d = from_dir
+    let guard = 0
+    while guard < 64 bounded 64:
+        if source_exists(mz_join(d, "kaze.toml")):
+            return d
+        if d == "." or d == "/" or d == "":
+            set guard to 64
+        otherwise:
+            set d to mz_dirname(d)
+            set guard to guard + 1
+    return ""
+
+action mz_with_extension(name: string) -> string:
+    if mz_ends(name, ".kaze"):
+        return name
+    return name + ".kaze"
+
+# Resolve one `use` spec against the directory of the file that wrote it.
+# Returns "" when nothing exists; the caller owns the diagnostic so it can
+# name the import line.
+action mz_resolve(spec: string, from_dir: string) -> string:
+    if spec == "":
+        return ""
+    if mz_starts(spec, "std/"):
+        let name = mz_with_extension(mz_slice(spec, 4, length of spec))
+        for each cand in mz_std_candidates(name, from_dir):
+            if source_exists(cand):
+                return mz_normalize(cand)
+        return ""
+    if mz_starts(spec, "@/"):
+        let root = mz_project_root(from_dir)
+        if root == "":
+            return ""
+        let rel = mz_with_extension(mz_slice(spec, 2, length of spec))
+        return mz_normalize(mz_join(root, rel))
+    let direct = mz_normalize(mz_join(from_dir, spec))
+    if source_exists(direct):
+        return direct
+    let extended = mz_normalize(mz_join(from_dir, mz_with_extension(spec)))
+    if source_exists(extended):
+        return extended
+    return ""
+
+# ── loading ──────────────────────────────────────────────────────────────
+
+action mz_find(mods: list, path: string) -> KzModule:
+    let out = no_module()
+    for each m in mods:
+        if m.path == path:
+            set out to m
+    return out
+
+action mz_find_tag(mods: list, tag: string) -> KzModule:
+    let out = no_module()
+    for each m in mods:
+        if m.tag == tag:
+            set out to m
+    return out
+
+action mz_list_has(items: list, want: string) -> num:
+    let found = 0
+    for each x in items:
+        if x == want:
+            set found to 1
+    return found
+
+action mz_cycle_text(stack: list, repeated: string) -> string:
+    let out = ""
+    let seen = 0
+    for each p in stack:
+        if p == repeated:
+            set seen to 1
+        if seen == 1:
+            if out != "":
+                set out to out + " -> "
+            set out to out + p
+    if out != "":
+        set out to out + " -> "
+    return out + repeated
+
+action mz_alias_conflict(uses: list) -> num:
+    let seen = []
+    let bad = 0
+    for each u in uses:
+        let a = use_alias(u)
+        if a != "":
+            if mz_list_has(seen, a) == 1:
+                set bad to 1
+            set seen to seen + [a]
+    return bad
+
+# Depth-first load. Dependencies are appended before their importer, which is
+# the topological order the merger and the manifest both want.
+action mz_load_one(path: string, stack: list, mods: list, diags: list, root: num) -> list:
+    recursion bounded 256
+    let cur_mods = mods
+    let cur_diags = diags
+    let norm = mz_normalize(path)
+    if mz_list_has(stack, norm) == 1:
+        return [cur_mods, cur_diags + [diag_in("E_KAZE_CYCLIC_IMPORT", 1, "cyclic module dependency: " + mz_cycle_text(stack, norm), norm)]]
+    let existing = mz_find(cur_mods, norm)
+    if existing.path != "":
+        return [cur_mods, cur_diags]
+    if not source_exists(norm):
+        return [cur_mods, cur_diags + [diag_in("E_KAZE_MODULE_NOT_FOUND", 1, "module not found: " + norm, norm)]]
+    let src = source_read(norm)
+    let prog = parse_program(tokenize(src))
+    let uses = (program_uses(prog)).children
+    if mz_alias_conflict(uses) == 1:
+        set cur_diags to cur_diags + [diag_in("E_KAZE_ALIAS_CONFLICT", 1, "two imports in this module share one alias", norm)]
+    let base = mz_dirname(norm)
+    let next_stack = stack + [norm]
+    for each u in uses:
+        let spec = u.name
+        if spec == "":
+            set cur_diags to cur_diags + [diag_in("E_KAZE_MODULE_NOT_FOUND", u.line, "use needs a module path, such as \"./lib.kaze\" or \"std/json\"", norm)]
+        otherwise:
+            let target = mz_resolve(spec, base)
+            if target == "":
+                set cur_diags to cur_diags + [diag_in("E_KAZE_MODULE_NOT_FOUND", u.line, "'" + spec + "' was imported from " + norm + " but no such module exists", norm)]
+            otherwise:
+                if mz_list_has(next_stack, target) == 1:
+                    set cur_diags to cur_diags + [diag_in("E_KAZE_CYCLIC_IMPORT", u.line, "cyclic module dependency: " + mz_cycle_text(next_stack, target), norm)]
+                otherwise:
+                    let r = mz_load_one(target, next_stack, cur_mods, cur_diags, 0)
+                    set cur_mods to r[0] otherwise cur_mods
+                    set cur_diags to r[1] otherwise cur_diags
+    let needs = []
+    for each nd in (program_needs(prog)).children:
+        set needs to needs + [nd.name]
+    let mod = KzModule(path: norm, tag: mz_tag(norm), prog: prog, items: program_items(prog), rewritten: [], needs: needs, uses: uses, root: root)
+    return [cur_mods + [mod], cur_diags]
+
+# Load the entry file and its transitive imports. The root is last; every
+# dependency precedes the module that mentions it.
+action mz_load(root_path: string) -> list:
+    if root_path == "":
+        return [[], []]
+    return mz_load_one(mz_normalize(root_path), [], [], [], 1)
+
+# ── import lookup and validation ─────────────────────────────────────────
+
+action mz_has_pub(module: KzModule) -> num:
+    let found = 0
+    for each it in module.items:
+        if item_is_pub(it) == 1:
+            set found to 1
+    return found
+
+# A module with no `pub` at all is a legacy module: every top-level declaration
+# is exported, exactly as before the visibility keyword existed. Once one item
+# is marked public the module is strict and everything else is private.
+action mz_exported(module: KzModule, name: string) -> AstNode:
+    let strict = mz_has_pub(module)
+    let out = none_node()
+    for each it in module.items:
+        if it.name == name:
+            if strict == 0 or item_is_pub(it) == 1:
+                set out to it
+    return out
+
+action mz_any_named(module: KzModule, name: string) -> AstNode:
+    let out = none_node()
+    for each it in module.items:
+        if it.name == name:
+            set out to it
+    return out
+
+action mz_exported_items(module: KzModule) -> list:
+    let strict = mz_has_pub(module)
+    let out = []
+    for each it in module.items:
+        if strict == 0 or item_is_pub(it) == 1:
+            set out to out + [it]
+    return out
+
+action mz_use_target(module: KzModule, u: AstNode, mods: list) -> KzModule:
+    let target = mz_resolve(u.name, mz_dirname(module.path))
+    if target == "":
+        return no_module()
+    return mz_find(mods, target)
+
+action mz_print_path(module: KzModule) -> string:
+    return module.path
+
+# Diagnostics that belong to the import statement itself: a selected name the
+# target does not export, or a selected name that exists but is private.
+action mz_validate_imports(module: KzModule, mods: list) -> list:
+    let out = []
+    for each u in module.uses:
+        let target = mz_use_target(module, u, mods)
+        if target.path != "":
+            for each s in use_symbols(u):
+                let name = s.name
+                let any = mz_any_named(target, name)
+                if any.kind == "NONE":
+                    set out to out + [diag_in("E_KAZE_UNKNOWN_NAME", s.line, "module '" + mz_basename(u.name) + "' has no symbol '" + name + "'", module.path)]
+                otherwise:
+                    let exp = mz_exported(target, name)
+                    if exp.kind == "NONE":
+                        set out to out + [diag_in("E_KAZE_PRIVATE_SYMBOL", s.line, "'" + name + "' is private to '" + mz_basename(u.name) + "'; mark it pub to export it", module.path)]
+    return out
+
+# ── symbol naming ────────────────────────────────────────────────────────
+
+action mz_c_name(module: KzModule, item: AstNode) -> string:
+    if item.kind == "RECORD":
+        # A record constructor call is recognised by its upper-case first letter
+        # in the checker and emitter, so the mangled spelling keeps it.
+        return "KzM_" + module.tag + "__" + item.name
+    if module.root == 1 and item.name == "main":
+        return "main"
+    return "kz_m_" + module.tag + "__" + item.name
+
+# Finds the public item `name` re-exported by one of `module`'s imports. The
+# return is [item, target-module, how] where how is "", "selective", "bare" or
+# "alias"; ambiguous is reported separately.
+action mz_import_lookup(module: KzModule, name: string, mods: list) -> list:
+    # Selective names win over bare imports, and both lose to a local item.
+    for each u in module.uses:
+        for each s in use_symbols(u):
+            if s.name == name:
+                let target = mz_use_target(module, u, mods)
+                let it = mz_exported(target, name)
+                if it.kind != "NONE":
+                    return [it, target, "selective", 1]
+    let found = none_node()
+    let found_mod = no_module()
+    let count = 0
+    for each u in module.uses:
+        if use_alias(u) == "" and (length of use_symbols(u)) == 0:
+            let target = mz_use_target(module, u, mods)
+            let it = mz_exported(target, name)
+            if it.kind != "NONE":
+                if found.kind == "NONE":
+                    set found to it
+                    set found_mod to target
+                    set count to 1
+                otherwise:
+                    if found.name != it.name or found_mod.tag != target.tag:
+                        set count to count + 1
+    return [found, found_mod, "bare", count]
+
+# ── resolution and rewriting ─────────────────────────────────────────────
+
+action mz_routine_kind(k: string) -> num:
+    if k == "ACTION" or k == "CHECK" or k == "FILTER" or k == "FIBER":
+        return 1
+    return 0
+
+# Resolve one source-level name to the C name the merged program will use.
+# Returns [new-name, target-module, target-item, diagnostics]. A dotted name
+# that is not an import alias stays untouched: that is a capability call such
+# as log.info or drone.arm, and the existing checker owns it.
+action mz_resolve_name(module: KzModule, name: string, line: num, mods: list) -> list:
+    if has_dot(name) == 1:
+        let head = head_words(name)
+        let tail = tail_words(name)
+        let target = no_module()
+        for each u in module.uses:
+            if use_alias(u) == head:
+                set target to mz_use_target(module, u, mods)
+        if target.path != "":
+            let it = mz_exported(target, tail)
+            if it.kind != "NONE":
+                return [mz_c_name(target, it), target, it, []]
+            let any = mz_any_named(target, tail)
+            if any.kind != "NONE":
+                return [mz_c_name(target, any), target, any, [diag_in("E_KAZE_PRIVATE_SYMBOL", line, "'" + tail + "' is private to '" + mz_basename(target.path) + "'; mark it pub to export it", module.path)]]
+            return [name, target, none_node(), [diag_in("E_KAZE_UNKNOWN_NAME", line, "module '" + head + "' has no symbol '" + tail + "'", module.path)]]
+        return [name, no_module(), none_node(), []]
+    let local = mz_any_named(module, name)
+    if local.kind != "NONE":
+        return [mz_c_name(module, local), module, local, []]
+    # A selected name that exists but is private still gets its mangled spelling
+    # so the import diagnostic is the only error: the caller should not also see
+    # a bogus unknown-name diagnostic for a symbol that plainly exists.
+    for each u in module.uses:
+        for each sym in use_symbols(u):
+            if sym.name == name:
+                let target = mz_use_target(module, u, mods)
+                if target.path != "":
+                    let any = mz_any_named(target, name)
+                    if any.kind != "NONE":
+                        if mz_exported(target, name).kind == "NONE":
+                            # The import-line diagnostic already names the
+                            # privacy violation; this return only keeps the
+                            # call's spelling resolvable for the checker.
+                            return [mz_c_name(target, any), target, any, []]
+    let found = mz_import_lookup(module, name, mods)
+    let it = found[0] otherwise none_node()
+    let target = found[1] otherwise no_module()
+    let count = 0
+    if (length of found) > 3:
+        set count to found[3] otherwise 0
+    if it.kind != "NONE":
+        let out = []
+        if count > 1:
+            set out to out + [diag_in("E_KAZE_AMBIGUOUS_SYMBOL", line, "'" + name + "' is exported by more than one imported module", module.path)]
+        return [mz_c_name(target, it), target, it, out]
+    return [name, no_module(), none_node(), []]
+
+action mz_callee_families(module: KzModule, item: AstNode) -> list:
+    let words = module.needs + routine_needs(item)
+    let out = []
+    for each w in words:
+        let f = family_of_word(w)
+        if mz_list_has(out, f) == 0:
+            set out to out + [f]
+    return out
+
+action mz_caller_families(cur_needs: list) -> list:
+    let out = []
+    for each w in cur_needs:
+        let f = family_of_word(w)
+        if mz_list_has(out, f) == 0:
+            set out to out + [f]
+    return out
+
+# The argument bound to parameter position `pos`, honouring a named argument.
+action mz_arg_for(call: AstNode, pname: string, pos: num) -> AstNode:
+    let named = none_node()
+    let plain = []
+    for each a in call.children:
+        if a.kind == "NAMED_ARG":
+            if a.name == pname:
+                set named to child_at(a, 0)
+        otherwise:
+            set plain to plain + [a]
+    if named.kind != "NONE":
+        return named
+    if pos >= 0 and pos < (length of plain):
+        return (plain[pos] otherwise none_node())
+    return none_node()
+
+action mz_arg_unit(arg: AstNode) -> string:
+    if arg.kind == "NUM":
+        return unit_word(arg.name)
+    if arg.kind == "IN_UNIT":
+        return unit_word(arg.name)
+    return ""
+
+action mz_tensor_arg_spec(arg: AstNode) -> list:
+    if arg.kind == "CALL":
+        if arg.name == "tensor":
+            return spec_of_list_dims(child_at(arg, 1))
+        if arg.name == "zeros":
+            return spec_of_list_dims(child_at(arg, 0))
+        if arg.name == "reshape":
+            return spec_of_list_dims(child_at(arg, 1))
+    return []
+
+# Cross-module contracts the checker cannot see from one file: the callee's
+# units, tensor shapes and capability envelope travel with its exported
+# signature. A mismatch is refused at the call site, before code generation.
+action mz_check_callee(module: KzModule, target: KzModule, item: AstNode, call: AstNode, cur_needs: list) -> list:
+    let out = []
+    if mz_routine_kind(item.kind) == 0:
+        return out
+    # Capability attenuation: an importer may not borrow authority it did not
+    # declare. The callee's module-level and routine-level needs both count.
+    let want_fams = mz_callee_families(target, item)
+    let have_fams = mz_caller_families(cur_needs)
+    for each f in want_fams:
+        if mz_list_has(have_fams, f) == 0:
+            set out to out + [diag_in("E_KAZE_CAP_DENIED", call.line, "calling '" + mz_basename(target.path) + "." + item.name + "' needs '" + f + "'; declare it in this module's needs: line", module.path)]
+    let params = (child_at(item, 0)).children
+    let i = 0
+    for each p in params:
+        let arg = mz_arg_for(call, p.name, i)
+        if arg.kind != "NONE":
+            let want_unit = dimension_of_unit(unit_word(p.val_str))
+            if want_unit != "":
+                let got_unit = dimension_of_unit(mz_arg_unit(arg))
+                if got_unit != "" and got_unit != want_unit:
+                    set out to out + [diag_in("E_KAZE_UNIT_MISMATCH", call.line, "'" + item.name + "' expects " + p.val_str + " for '" + p.name + "' but the argument is " + mz_arg_unit(arg) + " (" + got_unit + " vs " + want_unit + ")", module.path)]
+            let want_shape = tensor_spec_of_type(p.val_str)
+            if (length of want_shape) > 0:
+                let got_shape = mz_tensor_arg_spec(arg)
+                if (length of got_shape) > 0:
+                    if specs_compatible(want_shape, got_shape) == 0:
+                        set out to out + [diag_in("E_KAZE_SHAPE_MISMATCH", call.line, "'" + item.name + "' expects " + render_spec(want_shape) + " for '" + p.name + "' but the argument is " + render_spec(got_shape), module.path)]
+        set i to i + 1
+    return out
+
+action mz_rewrite_parallel_worker(arg: AstNode, module: KzModule, mods: list) -> AstNode:
+    if arg.kind != "STR":
+        return arg
+    let name = arg.val_str
+    let found = mz_import_lookup(module, name, mods)
+    let it = found[0] otherwise none_node()
+    if it.kind != "NONE":
+        let target = found[1] otherwise no_module()
+        return make_str(mz_c_name(target, it), arg.line)
+    let local = mz_any_named(module, name)
+    if local.kind != "NONE":
+        return make_str(mz_c_name(module, local), arg.line)
+    return arg
+
+action mz_rewrite_call(e: AstNode, module: KzModule, mods: list, cur_needs: list) -> list:
+    recursion bounded 256
+    let rn = mz_resolve_name(module, e.name, e.line, mods)
+    let new_name = (rn[0] otherwise e.name)
+    let target = (rn[1] otherwise no_module())
+    let callee = (rn[2] otherwise none_node())
+    let out = (rn[3] otherwise [])
+    if callee.kind != "NONE" and target.path != "" and target.tag != module.tag:
+        set out to out + mz_check_callee(module, target, callee, e, cur_needs)
+    let args = []
+    let i = 0
+    for each a in e.children:
+        if (e.name == "parallel_map" or e.name == "parallel_filter") and i == 1:
+            set args to args + [mz_rewrite_parallel_worker(a, module, mods)]
+        otherwise:
+            let r = mz_rewrite_expr(a, module, mods, cur_needs)
+            set args to args + [r[0] otherwise none_node()]
+            set out to out + (r[1] otherwise [])
+        set i to i + 1
+    return [make_call(new_name, args, e.line), out]
+
+action mz_rewrite_expr(e: AstNode, module: KzModule, mods: list, cur_needs: list) -> list:
+    recursion bounded 256
+    let k = e.kind
+    if k == "CALL":
+        return mz_rewrite_call(e, module, mods, cur_needs)
+    if k == "SPAWN":
+        let rn = mz_resolve_name(module, e.name, e.line, mods)
+        let args = []
+        let out = (rn[3] otherwise [])
+        for each a in e.children:
+            let r = mz_rewrite_expr(a, module, mods, cur_needs)
+            set args to args + [r[0] otherwise none_node()]
+            set out to out + (r[1] otherwise [])
+        let node = make_node("SPAWN", (rn[0] otherwise e.name), e.val_str, e.val_num, args, e.line)
+        return [node, out]
+    let kids = []
+    let out = []
+    for each c in e.children:
+        let r = mz_rewrite_expr(c, module, mods, cur_needs)
+        set kids to kids + [r[0] otherwise none_node()]
+        set out to out + (r[1] otherwise [])
+    return [make_node(k, e.name, e.val_str, e.val_num, kids, e.line), out]
+
+# A type annotation is metadata for the checker, but a record type spelled with
+# another module's name has to point at that module's mangled record so a later
+# constructor or shape pass agrees with the definition.
+action mz_rewrite_type(ty: string, module: KzModule, mods: list) -> string:
+    if ty == "" or mz_starts(ty, "tensor<") == 1 or mz_starts(ty, "untrusted<") == 1:
+        return ty
+    if has_dot(ty) == 1:
+        let head = head_words(ty)
+        let tail = tail_words(ty)
+        let target = no_module()
+        for each u in module.uses:
+            if use_alias(u) == head:
+                set target to mz_use_target(module, u, mods)
+        if target.path != "":
+            let it = mz_exported(target, tail)
+            if it.kind == "RECORD":
+                return mz_c_name(target, it)
+        return ty
+    let local = mz_any_named(module, ty)
+    if local.kind == "RECORD":
+        return mz_c_name(module, local)
+    let found = mz_import_lookup(module, ty, mods)
+    let it = found[0] otherwise none_node()
+    if it.kind == "RECORD":
+        let target = found[1] otherwise no_module()
+        return mz_c_name(target, it)
+    return ty
+
+action mz_rewrite_item(item: AstNode, module: KzModule, mods: list) -> list:
+    recursion bounded 256
+    let kind = item.kind
+    if kind == "RECORD":
+        let fields = []
+        let out = []
+        for each f in item.children:
+            let nf = make_field_def(f.name, mz_rewrite_type(f.val_str, module, mods), f.line)
+            set fields to fields + [nf]
+        return [make_node("RECORD", mz_c_name(module, item), item.name, item.val_num, fields, item.line), out]
+    if mz_routine_kind(kind) == 1:
+        let cur = module.needs + routine_needs(item)
+        let out = []
+        let params = []
+        for each p in (child_at(item, 0)).children:
+            let defaults = []
+            for each d in p.children:
+                let r = mz_rewrite_expr(d, module, mods, cur)
+                set defaults to defaults + [r[0] otherwise none_node()]
+                set out to out + (r[1] otherwise [])
+            set params to params + [make_node("PARAM", p.name, mz_rewrite_type(p.val_str, module, mods), p.val_num, defaults, p.line)]
+        let contracts = []
+        for each c in (child_at(item, 1)).children:
+            if c.kind == "CONTRACT":
+                let r = mz_rewrite_expr(child_at(c, 0), module, mods, cur)
+                set contracts to contracts + [make_node("CONTRACT", c.name, c.val_str, c.val_num, [r[0] otherwise none_node()], c.line)]
+                set out to out + (r[1] otherwise [])
+            otherwise:
+                set contracts to contracts + [c]
+        let body = child_at(item, 2)
+        let stmts = []
+        for each s in body.children:
+            let r = mz_rewrite_expr(s, module, mods, cur)
+            set stmts to stmts + [r[0] otherwise none_node()]
+            set out to out + (r[1] otherwise [])
+        let new_body = make_block(body.name, stmts, body.line)
+        let params_node = make_node("PARAMS", "", "", 0, params, item.line)
+        let contracts_node = make_node("CONTRACTS", "", "", 0, contracts, item.line)
+        let node = make_node(kind, mz_c_name(module, item), mz_rewrite_type(item.val_str, module, mods), item.val_num, [params_node, contracts_node, new_body], item.line)
+        return [node, out]
+    if kind == "WHEN" or kind == "EVERY":
+        let out = []
+        let kids = []
+        for each c in item.children:
+            let r = mz_rewrite_expr(c, module, mods, module.needs)
+            set kids to kids + [r[0] otherwise none_node()]
+            set out to out + (r[1] otherwise [])
+        return [make_node(kind, item.name, item.val_str, item.val_num, kids, item.line), out]
+    return [item, []]
+
+action mz_rewrite_module(module: KzModule, mods: list) -> list:
+    let out = mz_validate_imports(module, mods)
+    let strict = mz_has_pub(module)
+    let items = []
+    for each item in module.items:
+        let r = mz_rewrite_item(item, module, mods)
+        let rewritten = r[0] otherwise item
+        # A module written before `pub` existed exports everything. Marking the
+        # items here gives them external linkage in a per-unit build and keeps
+        # the strict privacy rule for modules that opt in.
+        if strict == 0:
+            set rewritten to with_pub(rewritten, 1)
+        set items to items + [rewritten]
+        set out to out + (r[1] otherwise [])
+    let m = KzModule(path: module.path, tag: module.tag, prog: module.prog, items: module.items, rewritten: items, needs: module.needs, uses: module.uses, root: module.root)
+    return [m, out]
+
+action mz_rewrite_all(mods: list) -> list:
+    # Dependencies come first, so each module can see the already-rewritten
+    # signatures of everything it imports. Stubs then carry mangled record
+    # names and rewritten units instead of the source spellings.
+    let done = []
+    let out_diags = []
+    for each m in mods:
+        let r = mz_rewrite_module(m, done)
+        set done to done + [r[0] otherwise no_module()]
+        set out_diags to out_diags + (r[1] otherwise [])
+    return [done, out_diags]
+
+# ── per-module checking ─────────────────────────────────────────────────
+
+action mz_stub_item(item: AstNode) -> AstNode:
+    if item.kind == "RECORD":
+        return make_node("RECORD", item.name, item.val_str, 1, item.children, item.line)
+    if mz_routine_kind(item.kind) == 1:
+        let params = child_at(item, 0)
+        let contracts = child_at(item, 1)
+        let body = make_block("body", [], item.line)
+        return make_node(item.kind, item.name, item.val_str, 1, [params, contracts, body], item.line)
+    return item
+
+action mz_add_unique(items: list, item: AstNode) -> list:
+    let found = 0
+    for each it in items:
+        if it.name == item.name:
+            set found to 1
+    if found == 1:
+        return items
+    return items + [item]
+
+action mz_module_has_item(module: KzModule, name: string) -> num:
+    let found = 0
+    for each it in module.rewritten:
+        if it.name == name:
+            set found to 1
+    return found
+
+# Stubs make imported public routines visible to this module's checker without
+# widening its `needs:` list. A body-less signature is enough for name
+# resolution and the tensor/unit passes; the importer's own module pass checks
+# the real body.
+action mz_rewritten_named(module: KzModule, name: string) -> AstNode:
+    let out = none_node()
+    for each it in module.rewritten:
+        if it.name == name:
+            set out to it
+    return out
+
+action mz_stub_for(target: KzModule, name: string) -> AstNode:
+    let orig = mz_exported(target, name)
+    if orig.kind == "NONE":
+        set orig to mz_any_named(target, name)
+    if orig.kind == "NONE":
+        return none_node()
+    let cname = mz_c_name(target, orig)
+    let rewritten = mz_rewritten_named(target, cname)
+    if rewritten.kind != "NONE":
+        return mz_stub_item(rewritten)
+    return mz_stub_item(orig)
+
+# Stubs make imported symbols visible to this module's checker without widening
+# its `needs:` list. A body-less signature is enough for name resolution and the
+# tensor/unit passes; the importer's own module pass checks the real body.
+action mz_stubs(module: KzModule, mods: list) -> list:
+    let out = []
+    for each u in module.uses:
+        let target = mz_use_target(module, u, mods)
+        if target.path != "":
+            let wanted = []
+            let select = (length of use_symbols(u)) > 0
+            let qualified = use_alias(u) != ""
+            if select:
+                for each s in use_symbols(u):
+                    set wanted to wanted + [s.name]
+            otherwise:
+                for each it in mz_exported_items(target):
+                    set wanted to wanted + [it.name]
+                if qualified:
+                    # A qualified call to a private symbol is rewritten to its
+                    # mangled name and diagnosed at the call site; the stub
+                    # keeps the checker from adding a second unknown-name error.
+                    for each it in target.items:
+                        if mz_list_has(wanted, it.name) == 0:
+                            set wanted to wanted + [it.name]
+            for each name in wanted:
+                let stub = mz_stub_for(target, name)
+                if stub.kind != "NONE":
+                    let renamed = make_node(stub.kind, stub.name, stub.val_str, stub.val_num, stub.children, stub.line)
+                    if mz_module_has_item(module, renamed.name) == 0:
+                        set out to mz_add_unique(out, renamed)
+    return out
+
+action mz_need_nodes(names: list) -> list:
+    let out = []
+    for each n in names:
+        set out to out + [make_node("NEED", n, "", 0, [], 0)]
+    return out
+
+action mz_check_program(module: KzModule, mods: list) -> AstNode:
+    let items = []
+    for each it in module.rewritten:
+        set items to mz_add_unique(items, it)
+    for each s in mz_stubs(module, mods):
+        set items to mz_add_unique(items, s)
+    return make_program([], mz_need_nodes(module.needs), items, program_config(module.prog))
+
+# Load and rewrite in one step. `[modules, diagnostics]`; on a resolution
+# failure the modules are returned unrewritten so the caller can still report
+# what it read.
+action mz_prepare(root_path: string) -> list:
+    let loaded = mz_load(root_path)
+    let mods = loaded[0] otherwise []
+    let out = loaded[1] otherwise []
+    let fatal = 0
+    for each d in out:
+        if d.code == "E_KAZE_CYCLIC_IMPORT" or d.code == "E_KAZE_MODULE_NOT_FOUND" or d.code == "E_KAZE_ALIAS_CONFLICT":
+            set fatal to 1
+    if fatal == 1 or (length of mods) == 0:
+        return [mods, out]
+    let rr = mz_rewrite_all(mods)
+    return [rr[0] otherwise [], out + (rr[1] otherwise [])]
+
+# Every checker rule runs once per module, against that module's own needs and
+# its own rewritten tree. Nothing a library declares can silently authorize the
+# importer, because the importer's program never receives the library's needs.
+action mz_check_modules(mods: list) -> list:
+    let out = []
+    for each m in mods:
+        if (length of m.rewritten) > 0:
+            let ds = check_program(mz_check_program(m, mods))
+            for each d in ds:
+                set out to out + [diag_in(d.code, d.line, d.msg, m.path)]
+    return out
+
+action mz_check_all(root_path: string) -> list:
+    let prepared = mz_prepare(root_path)
+    let mods = prepared[0] otherwise []
+    let out = prepared[1] otherwise []
+    return out + mz_check_modules(mods)
+
+# ── merged program (C emission, bytecode, manifest) ─────────────────────
+
+action mz_root(mods: list) -> KzModule:
+    let out = no_module()
+    for each m in mods:
+        if m.root == 1:
+            set out to m
+    return out
+
+action mz_union_needs(mods: list) -> list:
+    let out = []
+    for each m in mods:
+        for each n in m.needs:
+            if mz_list_has(out, n) == 0:
+                set out to out + [n]
+    return out
+
+# The entry routine is the root module's `main`, else its only callable. A
+# single-routine library imported into a larger program must not become the
+# entry by accident, so the choice is made before the trees are merged.
+action mz_root_entry(root: KzModule) -> string:
+    let named = ""
+    let count = 0
+    let only = ""
+    for each it in root.rewritten:
+        if mz_routine_kind(it.kind) == 1:
+            set count to count + 1
+            set only to it.name
+            if it.name == "main":
+                set named to "main"
+    if named != "":
+        return named
+    if count == 1:
+        return only
+    return ""
+
+action mz_config_with_entry(config: list, entry: string) -> list:
+    let out = []
+    for each c in config:
+        if c.kind != "ENTRY":
+            set out to out + [c]
+    let chosen = entry
+    if chosen == "":
+        set chosen to "__kaze_no_entry__"
+    set out to out + [make_node("ENTRY", "", chosen, 0, [], 0)]
+    return out
+
+action mz_merged_program(mods: list) -> AstNode:
+    let root = mz_root(mods)
+    let items = []
+    for each m in mods:
+        for each it in m.rewritten:
+            set items to items + [it]
+    let entry = mz_root_entry(root)
+    let config = mz_config_with_entry(program_config(root.prog), entry)
+    return make_program([], mz_need_nodes(mz_union_needs(mods)), items, config)
+
+# ── interface summaries and the manifest host builds read ───────────────
+
+action mz_node_key(n: AstNode) -> string:
+    recursion bounded 64
+    let out = n.kind + ":" + n.name + ":" + n.val_str
+    for each c in n.children:
+        set out to out + "(" + mz_node_key(c) + ")"
+    return out
+
+action mz_item_needs(item: AstNode) -> string:
+    let out = ""
+    for each c in (child_at(item, 1)).children:
+        if c.kind == "ROUTINE_NEED":
+            if out != "":
+                set out to out + ","
+            set out to out + c.name
+    return out
+
+action mz_iface_item(item: AstNode) -> string:
+    let pub = "0"
+    if item_is_pub(item) == 1:
+        set pub to "1"
+    if item.kind == "RECORD":
+        let fields = ""
+        for each f in item.children:
+            if fields != "":
+                set fields to fields + ","
+            set fields to fields + f.name + ":" + f.val_str
+        return "R|" + item.name + "|" + pub + "|" + fields
+    if mz_routine_kind(item.kind) == 1:
+        let params = ""
+        for each p in (child_at(item, 0)).children:
+            if params != "":
+                set params to params + ","
+            set params to params + p.name + ":" + p.val_str
+        let contracts = ""
+        for each c in (child_at(item, 1)).children:
+            set contracts to contracts + mz_node_key(c)
+        return "F|" + item.kind + "|" + item.name + "|" + pub + "|" + params + "|" + item.val_str + "|" + mz_item_needs(item) + "|" + contracts
+    return "X|" + item.kind + "|" + item.name
+
+action mz_iface_text(module: KzModule) -> string:
+    let out = ""
+    for each it in mz_exported_items(module):
+        set out to out + mz_iface_item(it) + "\n"
+    return out
+
+action mz_iface_hash(module: KzModule) -> string:
+    return mz_hex8(mz_hash(mz_iface_text(module)))
+
+action mz_join_list(items: list, sep: string) -> string:
+    let out = ""
+    for each x in items:
+        if out != "":
+            set out to out + sep
+        set out to out + x
+    return out
+
+action mz_deps(module: KzModule, mods: list) -> list:
+    let out = []
+    for each u in module.uses:
+        let t = mz_use_target(module, u, mods)
+        if t.path != "":
+            if mz_list_has(out, t.tag) == 0:
+                set out to out + [t.tag]
+    return out
+
+action mz_tree_has_call(n: AstNode, name: string) -> num:
+    recursion bounded 64
+    if n.kind == "CALL" and n.name == name:
+        return 1
+    for each c in n.children:
+        if mz_tree_has_call(c, name) == 1:
+            return 1
+    return 0
+
+action mz_module_has_call(module: KzModule, name: string) -> num:
+    for each it in module.items:
+        if mz_tree_has_call(it, name) == 1:
+            return 1
+    return 0
+
+action mz_module_flags(module: KzModule) -> string:
+    let out = []
+    if module.root == 1:
+        set out to out + ["root"]
+    if mz_module_has_call(module, "http_fetch") == 1:
+        set out to out + ["http"]
+    if mz_module_has_call(module, "tensor") == 1 or mz_module_has_call(module, "matmul") == 1:
+        set out to out + ["tensor"]
+    if (length of out) == 0:
+        return "-"
+    return mz_join_list(out, ",")
+
+# M <tag> <path> <dep-tags> <interface-hash> <flags>
+# Tab-separated because a path may contain spaces.
+action mz_manifest(root_path: string) -> string:
+    let loaded = mz_load(root_path)
+    let mods = loaded[0] otherwise []
+    let diags = loaded[1] otherwise []
+    let out = ""
+    if (length of diags) > 0:
+        for each d in diags:
+            set out to out + "E\t" + render_diag(d) + "\n"
+        return out
+    for each m in mods:
+        set out to out + "M\t" + m.tag + "\t" + m.path + "\t" + mz_join_list(mz_deps(m, mods), ",") + "\t" + mz_iface_hash(m) + "\t" + mz_module_flags(m) + "\n"
+    return out
+
+# The host reads this when the compiler cannot build the program. Keeping the
+# diagnostics in comments and a single #error makes `emit-c` still produce C.
+action mz_error_c(diags: list) -> string:
+    let out = "/* Kaze module diagnostics */\n"
+    for each d in diags:
+        set out to out + "/* " + render_diag(d) + " */\n"
+    return out + "#error \"Kaze module resolution failed; see the comment above\"\n"
+
+# ── one translation unit (incremental build) ─────────────────────────────
+
+action mz_public_items(mods: list, exclude_tag: string) -> list:
+    let out = []
+    for each m in mods:
+        if m.tag != exclude_tag:
+            for each it in m.rewritten:
+                # Only symbols with external linkage are visible across units.
+                if item_is_pub(it) == 1:
+                    set out to out + [it]
+    return out
+
+action mz_unit_program(module: KzModule, mods: list) -> AstNode:
+    let config = []
+    if module.root == 1:
+        set config to mz_config_with_entry(program_config(module.prog), mz_root_entry(module))
+    return make_program([], mz_need_nodes(module.needs), module.rewritten, config)

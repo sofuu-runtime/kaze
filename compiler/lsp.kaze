@@ -904,7 +904,7 @@ action lsp_diags_json(text):
     let out = "["
     let i = 0
     while i < count bounded 200000:
-        let d = diags[i] otherwise Diagnostic(code: "", line: 0, msg: "")
+        let d = diags[i] otherwise Diagnostic(code: "", line: 0, msg: "", file: "")
         let line0 = d.line - 1
         if line0 < 0:
             set line0 to 0
@@ -946,7 +946,7 @@ action lsp_definition_result(text, want_line, want_char, uri):
 # ── dispatch ───────────────────────────────────────────────────────────
 
 action lsp_initialize_caps():
-    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true},\"serverInfo\":{\"name\":\"kaze-lsp-native\",\"version\":\"0.1.0\"}}"
+    return "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true},\"serverInfo\":{\"name\":\"kaze-lsp-native\",\"version\":" + lsp_jstr(kaze_version()) + "}}"
 
 # Handle one message. Result: [reply_text, next_docs, stop_flag].
 action lsp_handle(body, docs, eol):

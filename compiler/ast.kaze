@@ -223,6 +223,43 @@ action make_when(cond, body, l):
 action make_every(duration, body, l):
     return make_node("EVERY", "", "", 0, [duration, body], l)
 
+# ── imports and visibility (module format) ──────────────────────────────
+#
+# A use node carries the module spec in name, the namespace alias in val_str,
+# and the selected symbols (for `use { a, b } from "..."`) as SYMBOL children.
+# val_num distinguishes the forms without adding another record field:
+#   0  use "./path.kaze"                bare, legacy single-namespace import
+#   1  use "./path.kaze" as alias       qualified namespace import
+#   2  use { a, b } from "./path.kaze"  selective import
+action make_use(spec, alias, symbols, form, l):
+    return make_node("USE", spec, alias, form, symbols, l)
+
+action make_symbol(name, l):
+    return make_node("SYMBOL", name, "", 0, [], l)
+
+action use_alias(u: AstNode) -> string:
+    return u.val_str
+
+action use_symbols(u: AstNode) -> list:
+    return u.children
+
+# An item is visible to importers only when it says `pub`. Modules written before
+# the keyword existed are grandfathered as implicit exports by the loader, which
+# keeps the standard library and the compiler's own modules working unchanged.
+action item_is_pub(item: AstNode) -> num:
+    return item.val_num
+
+action with_pub(item: AstNode, flag: num) -> AstNode:
+    return make_node(item.kind, item.name, item.val_str, flag, item.children, item.line)
+
+# The name a record carries at run time. The C symbol is mangled per module, but
+# the value keeps the spelling the source used, so diagnostics and field maps do
+# not leak the mangling scheme.
+action record_runtime_name(item: AstNode) -> string:
+    if item.kind == "RECORD" and item.val_str != "":
+        return item.val_str
+    return item.name
+
 action make_program(uses, needs, items, config):
     let uses_node = make_node("USES", "", "", 0, uses, 0)
     let needs_node = make_node("NEEDS", "", "", 0, needs, 0)
@@ -376,3 +413,8 @@ action text_to_num(s):
                     set whole to whole * 10 + d
         set i to i + 1
     return whole + frac
+
+# Single source of truth for the Kaze language version across the compiler,
+# LSP handshake, and `kaze version` CLI output.
+action kaze_version() -> text:
+    return "1.0"

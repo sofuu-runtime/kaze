@@ -31,11 +31,19 @@ record Diagnostic:
     code: str
     line: num
     msg: str
+    file: str
 
 action diag(code, line, msg):
-    return Diagnostic(code: code, line: line, msg: msg)
+    return Diagnostic(code: code, line: line, msg: msg, file: "")
+
+# A diagnostic that knows which module it came from. Single-file checks leave
+# `file` empty, so their rendered form is byte-for-byte what it always was.
+action diag_in(code, line, msg, file):
+    return Diagnostic(code: code, line: line, msg: msg, file: file)
 
 action render_diag(d: Diagnostic):
+    if d.file != "":
+        return d.file + ":" + d.line + ": " + d.code + ": " + d.msg
     return d.code + " at line " + d.line + ": " + d.msg
 
 # ── small text and list helpers ─────────────────────────────────────────
@@ -170,7 +178,9 @@ action mmio_builtin(name):
 action pure_builtin(name):
     if mmio_builtin(name) == 1:
         return 1
-    if name == "code" or name == "character":
+    if name == "code" or name == "character" or name == "byte_at":
+        return 1
+    if name == "clock_monotonic_ns" or name == "clock_utc_seconds":
         return 1
     if name == "sin" or name == "cos" or name == "tan" or name == "sqrt" or name == "atan2":
         return 1
@@ -208,6 +218,15 @@ action pure_builtin(name):
     if name == "model_open" or name == "model_forward":
         return 1
     if name == "cli_text":
+        return 1
+    # Compiler host intrinsics: the filesystem is not a language capability, it
+    # is how a source file names its dependencies. A program that never imports
+    # anything never calls these.
+    if name == "source_read" or name == "source_exists" or name == "source_path":
+        return 1
+    if name == "env_text":
+        return 1
+    if name == "exit_code":
         return 1
     return 0
 

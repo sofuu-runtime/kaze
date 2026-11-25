@@ -10,6 +10,7 @@ action get_c_runtime_header():
     set h to h + "#include <string.h>\n"
     set h to h + "#include <stdio.h>\n"
     set h to h + "#include <math.h>\n"
+    set h to h + "#include <time.h>\n"
     set h to h + "#include \"kaze_rt.h\"   /* arena, checked arithmetic, portable types */\n"
     set h to h + "#pragma STDC FP_CONTRACT OFF\n\n"
     set h to h + "#if !defined(_WIN32)\n"
@@ -25,9 +26,14 @@ action get_c_runtime_header():
     set h to h + "#else\n"
     set h to h + "#define KZ_MAYBE_UNUSED\n"
     set h to h + "#endif\n\n"
+    set h to h + "/* File-scope state is private in a one-file program and shared when the\n"
+    set h to h + "   host builds one translation unit per module. */\n"
+    set h to h + "#ifndef KZ_GLOBAL\n"
+    set h to h + "#define KZ_GLOBAL static\n"
+    set h to h + "#endif\n\n"
     set h to h + "/* Bulk allocation: every dynamic structure comes from this arena and is\n"
     set h to h + "   released in one reset. KAZE_ARENA_BYTES sizes it. */\n"
-    set h to h + "static kaze_arena_t kz_arena;\n"
+    set h to h + "KZ_GLOBAL kaze_arena_t kz_arena;\n"
     set h to h + "/* KAZE_ARENA_BYTES sizes the arena; 64 MiB default. */\n"
     set h to h + "static size_t kz_arena_bytes(void) {\n"
     set h to h + "    const char* env = getenv(\"KAZE_ARENA_BYTES\");\n"
@@ -38,9 +44,9 @@ action get_c_runtime_header():
     set h to h + "   memory went, from data. __func__ names the emitting helper, so no call site\n"
     set h to h + "   has to be tagged. */\n"
     set h to h + "#define KZ_ALLOC_SITES 16\n"
-    set h to h + "static const char* kz_site_name[KZ_ALLOC_SITES];\n"
-    set h to h + "static size_t kz_site_bytes[KZ_ALLOC_SITES];\n"
-    set h to h + "static size_t kz_site_calls[KZ_ALLOC_SITES];\n"
+    set h to h + "KZ_GLOBAL const char* kz_site_name[KZ_ALLOC_SITES];\n"
+    set h to h + "KZ_GLOBAL size_t kz_site_bytes[KZ_ALLOC_SITES];\n"
+    set h to h + "KZ_GLOBAL size_t kz_site_calls[KZ_ALLOC_SITES];\n"
     set h to h + "static void kz_note_site(const char* site, size_t n) {\n"
     set h to h + "    for (int i = 0; i < KZ_ALLOC_SITES; i++) {\n"
     set h to h + "        if (kz_site_name[i] == site || kz_site_name[i] == NULL) {\n"
@@ -158,7 +164,7 @@ action get_c_runtime_header():
     set h to h + "        if (l->len >= l->cap) {\n"
     set h to h + "            size_t cap = l->cap ? l->cap * 2 : 4;\n"
     set h to h + "            KzValue* items;\n"
-    set h to h + "            if (kz_arena.base != NULL &&\n"
+    set h to h + "            if (kz_arena.base != NULL && l->cap > 0 &&\n"
     set h to h + "                (const char*)l->items + l->cap * sizeof(KzValue) ==\n"
     set h to h + "                    (const char*)kz_arena.base + kz_arena.offset &&\n"
     set h to h + "                kz_arena.offset + (cap - l->cap) * sizeof(KzValue) <= kz_arena.cap) {\n"
@@ -244,11 +250,11 @@ action get_c_runtime_header():
     set h to h + "    const char* name;\n"
     set h to h + "};\n"
     set h to h + "\n"
-    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_tasks_head = NULL;\n"
-    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_tasks_tail = NULL;\n"
-    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_rr_cursor = NULL;\n"
-    set h to h + "KZ_MAYBE_UNUSED static kz_fiber* kz_current = NULL;\n"
-    set h to h + "KZ_MAYBE_UNUSED static long kz_switch_count = 0;\n"
+    set h to h + "KZ_GLOBAL kz_fiber* kz_tasks_head;\n"
+    set h to h + "KZ_GLOBAL kz_fiber* kz_tasks_tail;\n"
+    set h to h + "KZ_GLOBAL kz_fiber* kz_rr_cursor;\n"
+    set h to h + "KZ_GLOBAL kz_fiber* kz_current;\n"
+    set h to h + "KZ_GLOBAL long kz_switch_count;\n"
     set h to h + "\n"
     set h to h + "KZ_MAYBE_UNUSED static long kz_env_num(const char* name, long dflt) {\n"
     set h to h + "    const char* env = getenv(name);\n"
@@ -263,7 +269,7 @@ action get_c_runtime_header():
     set h to h + "    exit(70);\n"
     set h to h + "}\n"
     set h to h + "\n"
-    set h to h + "KZ_MAYBE_UNUSED static long kz_tasks_declared = 0;   /* the module's tasks bounded */\n"
+    set h to h + "KZ_GLOBAL long kz_tasks_declared;   /* the module's tasks bounded */\n"
     set h to h + "KZ_MAYBE_UNUSED static long kz_task_ceiling(void) {\n"
     set h to h + "    long v = kz_tasks_declared;\n"
     set h to h + "    if (v <= 0) v = kz_env_num(\"KAZE_MAX_TASKS\", KZ_TASKS_DEFAULT);\n"
@@ -610,6 +616,7 @@ action get_c_runtime_header():
     set h to h + "    }\n"
     set h to h + "    return kz_nil();\n"
     set h to h + "}\n\n"
+    set h to h + "KZ_GLOBAL char kz_source_path_buf[4096];\n"
     set h to h + "KZ_MAYBE_UNUSED static inline void kz_builtin_log(KzValue msg) { printf(\"[info] %s\\n\", kz_to_string(msg)); }\n\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_read_stream(FILE* f) {\n"
     set h to h + "    size_t cap = 4096; size_t len = 0;\n"
@@ -628,6 +635,7 @@ action get_c_runtime_header():
     set h to h + "    if (!path_or_str) return kz_str(\"\");\n"
     set h to h + "    FILE* f = fopen(path_or_str, \"rb\");\n"
     set h to h + "    if (!f) return kz_str(path_or_str);\n"
+    set h to h + "    snprintf(kz_source_path_buf, sizeof kz_source_path_buf, \"%s\", path_or_str);\n"
     set h to h + "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n"
     set h to h + "    if (sz < 0) { fclose(f); return kz_str(path_or_str); }\n"
     set h to h + "    char* buf = (char*)kz_alloc((size_t)sz + 1);\n"
@@ -636,6 +644,40 @@ action get_c_runtime_header():
     set h to h + "    buf[rd] = '\\0'; fclose(f);\n"
     set h to h + "    return kz_str(buf);\n"
     set h to h + "}\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kaze_fn_source_read(KzValue p) {\n"
+    set h to h + "    if (p.kind != KZ_VAL_STR || !p.as.str.data) return kz_str(\"\");\n"
+    set h to h + "    FILE* f = fopen(p.as.str.data, \"rb\");\n"
+    set h to h + "    if (!f) return kz_str(\"\");\n"
+    set h to h + "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n"
+    set h to h + "    if (sz < 0) { fclose(f); return kz_str(\"\"); }\n"
+    set h to h + "    char* buf = (char*)kz_alloc((size_t)sz + 1);\n"
+    set h to h + "    if (!buf) { fclose(f); return kz_str(\"\"); }\n"
+    set h to h + "    size_t rd = fread(buf, 1, (size_t)sz, f);\n"
+    set h to h + "    buf[rd] = '\\0'; fclose(f);\n"
+    set h to h + "    snprintf(kz_source_path_buf, sizeof kz_source_path_buf, \"%s\", p.as.str.data);\n"
+    set h to h + "    return kz_str(buf);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kaze_fn_source_exists(KzValue p) {\n"
+    set h to h + "    if (p.kind != KZ_VAL_STR || !p.as.str.data) return kz_bool(false);\n"
+    set h to h + "    FILE* f = fopen(p.as.str.data, \"rb\");\n"
+    set h to h + "    if (!f) return kz_bool(false);\n"
+    set h to h + "    fclose(f);\n"
+    set h to h + "    return kz_bool(true);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kaze_fn_source_path(void) { return kz_str(kz_source_path_buf); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kaze_fn_env_text(KzValue name, KzValue fallback) {\n"
+    set h to h + "    if (name.kind != KZ_VAL_STR || !name.as.str.data) return fallback;\n"
+    set h to h + "    const char* v = getenv(name.as.str.data);\n"
+    set h to h + "    if (v == NULL) return fallback;\n"
+    set h to h + "    return kz_str(v);\n"
+    set h to h + "}\n"
+    set h to h + "static int kz_exit_code_value = 0;\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kaze_fn_exit_code(KzValue v) {\n"
+    set h to h + "    if (v.kind == KZ_VAL_NUM) kz_exit_code_value = (int)v.as.number;\n"
+    set h to h + "    else if (v.kind == KZ_VAL_BOOL) kz_exit_code_value = v.as.boolean ? 1 : 0;\n"
+    set h to h + "    return v;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static int kz_exit_status(void) { return kz_exit_code_value; }\n\n"
     set h to h + "/* 12-factor input: --arg > AGENT_* > config > signature default. A parameter\n"
     set h to h + "   declared with a type must arrive with a value of that type; silently using 0\n"
     set h to h + "   or raw text is how a script acts on a number nobody gave it. */\n"
@@ -665,6 +707,35 @@ action get_c_runtime_header():
     set h to h + "    fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s but the value given is not one\\n\", name, routine, ty);\n"
     set h to h + "    exit(2);\n"
     set h to h + "}\n\n"
+    set h to h + "/* CLI text resolution and the argv table it reads. Both the tensor/model\n"
+    set h to h + " * builtins and cli_text use it, so it lives in the base runtime header. */\n"
+    set h to h + "KZ_GLOBAL int kz_argc_g;\n"
+    set h to h + "KZ_GLOBAL char **kz_argv_g;\n"
+    set h to h + "KZ_MAYBE_UNUSED static void kz_tensor_set_argv(int argc, char **argv) {\n"
+    set h to h + "    kz_argc_g = argc; kz_argv_g = argv;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline const char *kz_text_cstr(KzValue v) {\n"
+    set h to h + "    return (v.kind == KZ_VAL_STR && v.as.str.data) ? v.as.str.data : \"\";\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_cli_text(KzValue name, KzValue fallback) {\n"
+    set h to h + "    const char *want = kz_text_cstr(name);\n"
+    set h to h + "    size_t nlen = strlen(want);\n"
+    set h to h + "    int i;\n"
+    set h to h + "    for (i = 1; i + 1 < kz_argc_g; i++) {\n"
+    set h to h + "        const char *a = kz_argv_g[i];\n"
+    set h to h + "        if (strcmp(a, \"--arg\") == 0) {\n"
+    set h to h + "            const char *v = kz_argv_g[i + 1];\n"
+    set h to h + "            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"
+    set h to h + "                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"
+    set h to h + "        }\n"
+    set h to h + "        if (strncmp(a, \"--arg=\", 6) == 0) {\n"
+    set h to h + "            const char *v = a + 6;\n"
+    set h to h + "            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"
+    set h to h + "                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    return fallback;\n"
+    set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_resolve_cli_arg(int argc, char** argv, const char* name, int index) {\n"
     set h to h + "    size_t nlen = strlen(name);\n"
     set h to h + "    for (int i = 1; i < argc; i++) {\n"
@@ -739,6 +810,52 @@ action get_c_runtime_header():
     set h to h + "    if (pos < count) vals[pos] = value;\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline double kz_to_num(KzValue v) { return (v.kind == KZ_VAL_NUM) ? v.as.number : 0.0; }\n"
+    set h to h + "/* Phase 17: a zero-copy view over text. Slicing and scanning do not\n"
+    set h to h + " * allocate: the view is just the pointer and length of the original bytes. */\n"
+    set h to h + "typedef struct { const char* ptr; size_t len; } kz_str_view_t;\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline kz_str_view_t kz_str_view_from(KzValue v) {\n"
+    set h to h + "    kz_str_view_t out;\n"
+    set h to h + "    out.ptr = (v.kind == KZ_VAL_STR && v.as.str.data) ? v.as.str.data : \"\";\n"
+    set h to h + "    out.len = (v.kind == KZ_VAL_STR) ? v.as.str.len : 0;\n"
+    set h to h + "    return out;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline size_t kz_str_view_len(kz_str_view_t v) { return v.len; }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline double kz_str_view_byte(kz_str_view_t v, size_t i) {\n"
+    set h to h + "    return (i < v.len) ? (double)(unsigned char)v.ptr[i] : 0.0;\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline long long kz_str_view_byte_i(kz_str_view_t v, size_t i) {\n"
+    set h to h + "    return (i < v.len) ? (long long)(unsigned char)v.ptr[i] : 0LL;\n"
+    set h to h + "}\n"
+    set h to h + "/* Phase 17: allocation-free byte read and clocks. byte_at is total: it\n"
+    set h to h + " * returns 0 outside the value, so a scanner never allocates a one-character\n"
+    set h to h + " * string just to look at a byte. Both text and byte lists are accepted. */\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_byte_at(KzValue coll, KzValue idx) {\n"
+    set h to h + "    double d = (idx.kind == KZ_VAL_NUM) ? idx.as.number : -1.0;\n"
+    set h to h + "    if (!(d >= 0.0)) return kz_num(0);\n"
+    set h to h + "    size_t i = (size_t)d;\n"
+    set h to h + "    if (coll.kind == KZ_VAL_STR && coll.as.str.data) {\n"
+    set h to h + "        if (i < coll.as.str.len) return kz_num((double)(unsigned char)coll.as.str.data[i]);\n"
+    set h to h + "        return kz_num(0);\n"
+    set h to h + "    }\n"
+    set h to h + "    if (coll.kind == KZ_VAL_LIST && coll.as.list) {\n"
+    set h to h + "        if (i < coll.as.list->len) {\n"
+    set h to h + "            KzValue v = coll.as.list->items[i];\n"
+    set h to h + "            if (v.kind == KZ_VAL_NUM) return kz_num(v.as.number);\n"
+    set h to h + "        }\n"
+    set h to h + "    }\n"
+    set h to h + "    return kz_num(0);\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_clock_monotonic_ns(void) {\n"
+    set h to h + "#if defined(CLOCK_MONOTONIC)\n"
+    set h to h + "    struct timespec ts;\n"
+    set h to h + "    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)\n"
+    set h to h + "        return kz_num((double)ts.tv_sec * 1000000000.0 + (double)ts.tv_nsec);\n"
+    set h to h + "#endif\n"
+    set h to h + "    return kz_num((double)clock() * (1000000000.0 / (double)CLOCKS_PER_SEC));\n"
+    set h to h + "}\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_clock_utc_seconds(void) {\n"
+    set h to h + "    return kz_num((double)time(NULL));\n"
+    set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sqrt(KzValue a) { return kz_num(sqrt(kz_to_num(a))); }\n"
     set h to h + "/* Character codes. Kaze text is bytes with a length and indexing yields a\n"
     set h to h + " * one-character text, so a program had no way to see a byte - which blocks every\n"
@@ -794,6 +911,13 @@ action get_c_runtime_header():
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_sin(KzValue a) { return kz_num(sin(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_cos(KzValue a) { return kz_num(cos(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_atan2(KzValue a, KzValue b) { return kz_num(atan2(kz_to_num(a), kz_to_num(b))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_tan(KzValue a) { return kz_num(tan(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_abs(KzValue a) { return kz_num(fabs(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_min(KzValue a, KzValue b) { return kz_num(fmin(kz_to_num(a), kz_to_num(b))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_max(KzValue a, KzValue b) { return kz_num(fmax(kz_to_num(a), kz_to_num(b))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_floor(KzValue a) { return kz_num(floor(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_ceil(KzValue a) { return kz_num(ceil(kz_to_num(a))); }\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_round(KzValue a) { return kz_num(round(kz_to_num(a))); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_to_radians(KzValue a) { return kz_num(kz_to_num(a) * 0.017453292519943295); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_math_to_degrees(KzValue a) { return kz_num(kz_to_num(a) * 57.29577951308232); }\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_point(KzValue x, KzValue y, KzValue z) {\n"
@@ -1139,6 +1263,12 @@ action emit_c_call(node: AstNode):
         return "kz_mmio_fence()"
     if name == "code":
         return "kz_code(" + nth_arg(args, 0) + ")"
+    if name == "byte_at":
+        return "kz_byte_at(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ")"
+    if name == "clock_monotonic_ns":
+        return "kz_clock_monotonic_ns()"
+    if name == "clock_utc_seconds":
+        return "kz_clock_utc_seconds()"
     if name == "character":
         return "kz_character(" + nth_arg(args, 0) + ")"
     if name == "sin":
@@ -1149,10 +1279,22 @@ action emit_c_call(node: AstNode):
         return "kz_math_sqrt(" + nth_arg(args, 0) + ")"
     if name == "atan2":
         return "kz_math_atan2(" + two_args(args) + ")"
+    if name == "tan":
+        return "kz_math_tan(" + nth_arg(args, 0) + ")"
+    if name == "abs":
+        return "kz_math_abs(" + nth_arg(args, 0) + ")"
+    if name == "min":
+        return "kz_math_min(" + two_args(args) + ")"
+    if name == "max":
+        return "kz_math_max(" + two_args(args) + ")"
+    if name == "floor":
+        return "kz_math_floor(" + nth_arg(args, 0) + ")"
+    if name == "ceil":
+        return "kz_math_ceil(" + nth_arg(args, 0) + ")"
+    if name == "round":
+        return "kz_math_round(" + nth_arg(args, 0) + ")"
     if name == "vector":
         return "kz_point(" + nth_arg(args, 0) + ", " + nth_arg(args, 1) + ", " + nth_arg(args, 2) + ")"
-    if name == "min" or name == "max" or name == "abs" or name == "floor" or name == "ceil" or name == "round":
-        return "kz_unavailable(" + escape_c_str(name) + ")"
 
     # 4. Phase 12 tensor builtins. Each argument is evaluated exactly once by the
     #    call expression it is embedded in.
@@ -1606,15 +1748,33 @@ action is_routine(item: AstNode):
         return 1
     return 0
 
+# A public item keeps external linkage so another translation unit can call it;
+# a private item is `static` and therefore invisible to the linker as well as to
+# the importer's checker.
+action routine_storage(item: AstNode) -> string:
+    if item_is_pub(item) == 1:
+        return "KZ_MAYBE_UNUSED "
+    return "KZ_MAYBE_UNUSED static "
+
+action record_storage(item: AstNode) -> string:
+    if item_is_pub(item) == 1:
+        return "KZ_MAYBE_UNUSED "
+    return "static inline "
+
+action fiber_storage(item: AstNode) -> string:
+    if item_is_pub(item) == 1:
+        return ""
+    return "static "
+
 action emit_record_ctor(item: AstNode):
     recursion bounded 200
     let id = sanitize_c_id(item.name)
     let fields = item.children
     let cnt = length of fields
-    let out = "static inline KzValue kz_record_new_" + id + "(size_t n, KzValue* v, const char** k) {\n"
+    let out = record_storage(item) + "KzValue kz_record_new_" + id + "(size_t n, KzValue* v, const char** k) {\n"
     set out to out + "    (void)n; (void)v; (void)k;\n"
     if cnt == 0:
-        set out to out + "    return kz_record_create(" + escape_c_str(item.name) + ", 0, NULL, NULL);\n"
+        set out to out + "    return kz_record_create(" + escape_c_str(record_runtime_name(item)) + ", 0, NULL, NULL);\n"
     otherwise:
         let keys = ""
         let i = 0
@@ -1631,7 +1791,7 @@ action emit_record_ctor(item: AstNode):
             set out to out + "    _vals[" + j + "] = kz_nil();\n"
             set j to j + 1
         set out to out + "    for (size_t _i = 0; _i < n; _i++) kz_record_set(_vals, _keys, " + cnt + ", _i, k ? k[_i] : NULL, v[_i]);\n"
-        set out to out + "    return kz_record_create(" + escape_c_str(item.name) + ", " + cnt + ", _keys, _vals);\n"
+        set out to out + "    return kz_record_create(" + escape_c_str(record_runtime_name(item)) + ", " + cnt + ", _keys, _vals);\n"
     set out to out + "}\n\n"
     return out
 
@@ -1652,7 +1812,7 @@ action emit_requires(item: AstNode) -> string:
             set out to out + "    }\n"
     return out
 
-action emit_routine(item: AstNode):
+action emit_routine_named(item: AstNode, fname: string):
     recursion bounded 200
     let id = sanitize_c_id(item.name)
     let params_node = child_at(item, 0)
@@ -1660,7 +1820,7 @@ action emit_routine(item: AstNode):
     let l_tag = ""
     if item.line > 0:
         set l_tag = "#line " + item.line + "\n"
-    let out = l_tag + "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + id + "(" + param_list(params_node) + ") {\n"
+    let out = l_tag + routine_storage(item) + "KzValue " + fname + "(" + param_list(params_node) + ") {\n"
     for each prm in params_node.children:
         set out to out + "    (void)" + sanitize_c_id(prm.name) + ";   /* a routine need not use every parameter */\n"
     set out to out + emit_requires(item)
@@ -1669,6 +1829,9 @@ action emit_routine(item: AstNode):
     set out to out + "    return kz_nil();\n"
     set out to out + "}\n\n"
     return out
+
+action emit_routine(item: AstNode):
+    return emit_routine_named(item, "kaze_fn_" + sanitize_c_id(item.name))
 
 # A fiber lowers to two symbols: a step function the scheduler calls once per
 # turn, and a tiny accessor carrying the fuel the routine declared.
@@ -1697,10 +1860,10 @@ action emit_fiber(item: AstNode):
     let body = child_at(item, 2)
     let yields = collect_yield_lines(body, [], 0)
     let out = "/* fiber '" + item.name + "': one step per turn, resuming at a yield line */\n"
-    set out to out + "static long kz_fuel_" + id + "(void) { return " + fiber_fuel(item) + "L; }\n"
-    set out to out + "static size_t kz_slots_" + id + "(void) { return " + (length of fx.slots) + "; }\n"
-    set out to out + "static size_t kz_guards_" + id + "(void) { return " + (length of fx.guards) + "; }\n"
-    set out to out + "KZ_MAYBE_UNUSED static int kz_step_" + id + "(kz_fiber* _kz_task) {\n"
+    set out to out + fiber_storage(item) + "long kz_fuel_" + id + "(void) { return " + fiber_fuel(item) + "L; }\n"
+    set out to out + fiber_storage(item) + "size_t kz_slots_" + id + "(void) { return " + (length of fx.slots) + "; }\n"
+    set out to out + fiber_storage(item) + "size_t kz_guards_" + id + "(void) { return " + (length of fx.guards) + "; }\n"
+    set out to out + "KZ_MAYBE_UNUSED " + fiber_storage(item) + "int kz_step_" + id + "(kz_fiber* _kz_task) {\n"
     set out to out + "    (void)_kz_task;\n"
     set out to out + fx_restore(fx, "    ")
     set out to out + emit_requires(item)
@@ -1785,6 +1948,16 @@ action tasks_bound_of(config) -> string:
             set out to c.val_str
     return out
 
+# The entry routine chosen by the module loader. An absent node keeps the
+# single-file rule (a routine literally named main, else the only callable);
+# a node with the sentinel says the choice was already made and found nothing.
+action config_entry(config) -> string:
+    let out = ""
+    for each c in config:
+        if c.kind == "ENTRY":
+            set out to c.val_str
+    return out
+
 action emit_c_entry(items, config, uses_tensors):
     recursion bounded 200
     let out = "/* --- Main Entry Point --- */\n"
@@ -1793,12 +1966,22 @@ action emit_c_entry(items, config, uses_tensors):
     set out to out + "    if (!kaze_arena_init_heap(&kz_arena, kz_arena_bytes())) { fprintf(stderr, \"E_KAZE_OOM: cannot reserve the arena\\n\"); return 70; }\n"
     set out to out + "    atexit(kz_print_alloc_sites);   /* KAZE_ARENA_STATS=1 reports by function */\n"
     set out to out + "    atexit(kz_print_switch_stats);  /* KAZE_SWITCH_STATS=1 reports task switches */\n"
+    # Only when the tensor preamble is emitted: it is the section that defines this
+    # hook, and an unconditional call made every generated program fail to compile
+    # unless it used tensors.
     if uses_tensors == 1:
-        set out to out + "    kz_tensor_set_argv(argc, argv);\n"
+        set out to out + "    kz_tensor_set_argv(argc, argv);   /* also the source for cli_text arguments */\n"
+    if uses_tensors == 1:
+        set out to out + "    /* tensor/model paths resolved through the same argv table */\n"
     set out to out + "    kz_tasks_declared = " + tasks_bound_of(config) + "L;\n"
-    let main_item = find_named(items, "main")
-    if is_routine(main_item) == 0 and main_item.kind != "FIBER":
-        set main_item to single_routine(items)
+    let entry_name = config_entry(config)
+    let main_item = none_node()
+    if entry_name != "":
+        set main_item to find_named(items, entry_name)
+    otherwise:
+        set main_item to find_named(items, "main")
+        if is_routine(main_item) == 0 and main_item.kind != "FIBER":
+            set main_item to single_routine(items)
     if main_item.kind == "FIBER":
         # A fiber main is the root task: the scheduler runs it to completion,
         # and its return value is the program's result.
@@ -1846,7 +2029,7 @@ action emit_c_entry(items, config, uses_tensors):
             set out to out + "        printf(\"%s\\n\", res.as.boolean ? \"true\" : \"false\");\n"
             set out to out + "    }\n"
             set out to out + "    kz_run_hooks(argc, argv);\n"
-    set out to out + "    return 0;\n"
+    set out to out + "    return kz_exit_status();\n"
     set out to out + "}\n"
     return out
 
@@ -2421,33 +2604,6 @@ action get_c_tensor_header():
     let h = ""
     set h to h + "#include \"kaze_tensor.h\"\n"
     set h to h + "\n/* --- Phase 12 tensor bridge --- */\n"
-    set h to h + "KZ_MAYBE_UNUSED static inline const char *kz_text_cstr(KzValue v) {\n"
-    set h to h + "    return (v.kind == KZ_VAL_STR && v.as.str.data) ? v.as.str.data : \"\";\n"
-    set h to h + "}\n"
-    set h to h + "static int kz_argc_g = 0;\n"
-    set h to h + "static char **kz_argv_g = NULL;\n"
-    set h to h + "KZ_MAYBE_UNUSED static void kz_tensor_set_argv(int argc, char **argv) {\n"
-    set h to h + "    kz_argc_g = argc; kz_argv_g = argv;\n"
-    set h to h + "}\n"
-    set h to h + "KZ_MAYBE_UNUSED static KzValue kz_cli_text(KzValue name, KzValue fallback) {\n"
-    set h to h + "    const char *want = kz_text_cstr(name);\n"
-    set h to h + "    size_t nlen = strlen(want);\n"
-    set h to h + "    int i;\n"
-    set h to h + "    for (i = 1; i + 1 < kz_argc_g; i++) {\n"
-    set h to h + "        const char *a = kz_argv_g[i];\n"
-    set h to h + "        if (strcmp(a, \"--arg\") == 0) {\n"
-    set h to h + "            const char *v = kz_argv_g[i + 1];\n"
-    set h to h + "            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"
-    set h to h + "                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"
-    set h to h + "        }\n"
-    set h to h + "        if (strncmp(a, \"--arg=\", 6) == 0) {\n"
-    set h to h + "            const char *v = a + 6;\n"
-    set h to h + "            if (strncmp(v, want, nlen) == 0 && v[nlen] == '=')\n"
-    set h to h + "                return kz_str(kz_str_alloc_copy(v + nlen + 1));\n"
-    set h to h + "        }\n"
-    set h to h + "    }\n"
-    set h to h + "    return fallback;\n"
-    set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_tensor_wrap(kaze_tensor_t *t) {\n"
     set h to h + "    union { kaze_tensor_t *p; size_t u; } c;\n"
     set h to h + "    c.p = t; return kz_num((kaze_float_t)c.u);\n"
@@ -2539,15 +2695,956 @@ action get_c_tensor_header():
     set h to h + "\n/* --- End Phase 12 tensor bridge --- */\n"
     return h
 
+
+# ── phase 17: scalar unboxing ──────────────────────────────────────────
+#
+# A routine whose parameters, locals, arithmetic and control flow are all
+# numeric is emitted twice: a boxed definition with the language's dynamic
+# semantics, and an unboxed C99 definition whose parameters and locals are
+# double. The normal entry point dispatches on the argument tags, so a scalar
+# routine called from dynamic code keeps exact semantics, while a chain of
+# scalar routines runs with native addsd/mulsd instructions.
+
+action scalar_has(names: list, w: string) -> num:
+    for each n in names:
+        if (n[0] otherwise "") == w:
+            return 1
+    return 0
+
+action scalar_known_entry(known: list, name: string) -> list:
+    for each e in known:
+        if (e[0] otherwise "") == name:
+            return e
+    return []
+
+action scalar_math(name: string) -> num:
+    if name == "sqrt" or name == "sin" or name == "cos" or name == "tan" or name == "atan2":
+        return 1
+    if name == "abs" or name == "min" or name == "max" or name == "floor" or name == "ceil" or name == "round":
+        return 1
+    return 0
+
+action scalar_env_get(env: list, name: string) -> string:
+    let i = (length of env) - 1
+    while i >= 0 bounded 10000:
+        let e = env[i] otherwise []
+        if (e[0] otherwise "") == name:
+            return e[1] otherwise ""
+        set i to i - 1
+    return ""
+
+action scalar_env_put(env: list, name: string, ty: string, bound: num) -> list:
+    # Replace an existing binding instead of appending a new one.  The loop
+    # validator replays a body up to 64 times; appending made the environment
+    # grow without bound and the pure-Kaze compiler needed gigabytes of arena
+    # for ordinary test programs.  A later binding already shadows an earlier
+    # one for scalar_env_get/scalar_env_bound, so replacing preserves the
+    # answers while keeping the environment the size of the name set.
+    let out = []
+    let found = 0
+    for each e in env:
+        let en = e[0] otherwise ""
+        if en == name:
+            set out to out + [[name, ty, bound]]
+            set found to 1
+        otherwise:
+            set out to out + [e]
+    if found == 0:
+        set out to out + [[name, ty, bound]]
+    return out
+
+action scalar_env_bound(env: list, name: string) -> num:
+    let i = (length of env) - 1
+    while i >= 0 bounded 10000:
+        let e = env[i] otherwise []
+        if (e[0] otherwise "") == name:
+            return e[2] otherwise (0 - 1)
+        set i to i - 1
+    return 0 - 1
+
+action scalar_safe() -> num:
+    return 9007199254740000
+
+action scalar_bound_sum(a: num, b: num) -> num:
+    if a < 0 or b < 0:
+        return 0 - 1
+    let s = a + b
+    if s > scalar_safe():
+        return 0 - 1
+    return s
+
+action scalar_bound_mul(a: num, b: num) -> num:
+    if a < 0 or b < 0:
+        return 0 - 1
+    let p = a * b
+    if p > scalar_safe():
+        return 0 - 1
+    return p
+
+action scalar_int_bound(e: AstNode, env: list) -> num:
+    recursion bounded 64
+    let k = e.kind
+    if k == "NUM":
+        if scalar_int_literal(e.val_str) == 0:
+            return 0 - 1
+        let v = text_to_num(e.val_str)
+        if v < 0:
+            set v to 0 - v
+        if v > scalar_safe():
+            return 0 - 1
+        return v
+    if k == "BOOL":
+        return 1
+    if k == "IDENT":
+        if scalar_env_get(env, e.name) == "int":
+            return scalar_env_bound(env, e.name)
+        return 0 - 1
+    if k == "LEN":
+        if (child_at(e, 0)).kind == "IDENT" and scalar_env_get(env, (child_at(e, 0)).name) == "text":
+            return 1000000000000
+        return 0 - 1
+    if k == "CALL":
+        if e.name == "byte_at":
+            return 255
+        return 0 - 1
+    if k == "BIN":
+        let op = e.name
+        let a = scalar_int_bound(child_at(e, 0), env)
+        let b = scalar_int_bound(child_at(e, 1), env)
+        if op == "+":
+            return scalar_bound_sum(a, b)
+        if op == "-":
+            if a < 0 or b < 0:
+                return 0 - 1
+            if a > b:
+                return a
+            return b
+        if op == "*":
+            return scalar_bound_mul(a, b)
+        if op == "&":
+            if a < 0 or b < 0:
+                return 0 - 1
+            if a < b:
+                return a
+            return b
+        if op == ">>":
+            return a
+        return 0 - 1
+    return 0 - 1
+
+action scalar_int_literal(t: string) -> num:
+    if t == "":
+        return 0
+    let i = 0
+    let n = length of t
+    while i < n bounded 64:
+        let c = t[i] otherwise "?"
+        if c == "." or c == "e" or c == "E":
+            return 0
+        set i to i + 1
+    return 1
+
+action scalar_expr_type(e: AstNode, env: list, known: list) -> string:
+    recursion bounded 128
+    let k = e.kind
+    if k == "NUM":
+        if scalar_int_bound(e, env) >= 0:
+            return "int"
+        return "num"
+    if k == "BOOL":
+        return "bool"
+    if k == "IDENT":
+        return scalar_env_get(env, e.name)
+    if k == "IN_UNIT":
+        if scalar_is_numeric(scalar_expr_type(child_at(e, 0), env, known)) == 1:
+            return "num"
+        return ""
+    if k == "FALLBACK":
+        let inner = child_at(e, 0)
+        if inner.kind == "BIN" and (inner.name == "/" or inner.name == "%"):
+            let a = scalar_expr_type(child_at(inner, 0), env, known)
+            let b = scalar_expr_type(child_at(inner, 1), env, known)
+            let f = scalar_expr_type(child_at(e, 1), env, known)
+            if scalar_is_numeric(a) == 1 and scalar_is_numeric(b) == 1 and scalar_is_numeric(f) == 1:
+                return "num"
+        return ""
+    if k == "BIN":
+        let op = e.name
+        if op == "not":
+            let t = scalar_expr_type(child_at(e, 0), env, known)
+            if scalar_is_numeric(t) == 1 or t == "bool":
+                return "bool"
+            return ""
+        if op == "and" or op == "or":
+            let a = scalar_expr_type(child_at(e, 0), env, known)
+            let b = scalar_expr_type(child_at(e, 1), env, known)
+            if (scalar_is_numeric(a) == 1 or a == "bool") and (scalar_is_numeric(b) == 1 or b == "bool"):
+                return "bool"
+            return ""
+        let a2 = scalar_expr_type(child_at(e, 0), env, known)
+        let b2 = scalar_expr_type(child_at(e, 1), env, known)
+        let an = 0
+        let bn = 0
+        if a2 == "num" or a2 == "int":
+            set an to 1
+        if b2 == "num" or b2 == "int":
+            set bn to 1
+        if op == "+" or op == "-" or op == "*":
+            if an == 1 and bn == 1:
+                if scalar_int_bound(e, env) >= 0:
+                    return "int"
+                return "num"
+            return ""
+        if op == "/" or op == "%":
+            if an == 1 and bn == 1:
+                return "num"
+            return ""
+        if op == "&" or op == "|" or op == "^" or op == "<<" or op == ">>":
+            if an == 1 and bn == 1:
+                if scalar_int_bound(e, env) >= 0:
+                    return "int"
+                return "num"
+            return ""
+        if op == "<" or op == "<=" or op == ">" or op == ">=" or op == "==" or op == "!=":
+            if an == 1 and bn == 1:
+                return "bool"
+            return ""
+        return ""
+    if k == "LEN":
+        let inner = child_at(e, 0)
+        if inner.kind == "IDENT" and scalar_env_get(env, inner.name) == "text":
+            return "int"
+        return ""
+    if k == "CALL":
+        if e.name == "byte_at":
+            let a0 = child_at(e, 0)
+            if a0.kind == "IDENT" and scalar_env_get(env, a0.name) == "text":
+                let ity = scalar_expr_type(child_at(e, 1), env, known)
+                if ity == "num" or ity == "int":
+                    return "int"
+            return ""
+        if scalar_math(e.name) == 1:
+            for each a in e.children:
+                if scalar_is_numeric(scalar_expr_type(a, env, known)) == 0:
+                    return ""
+            return "num"
+        let ent = scalar_known_entry(known, e.name)
+        if (length of ent) > 0:
+            let types = ent[1] otherwise []
+            for each t in types:
+                if (t[1] otherwise "") != "num":
+                    return ""
+            for each a in e.children:
+                if scalar_is_numeric(scalar_expr_type(a, env, known)) == 0:
+                    return ""
+            return "num"
+        return ""
+    return ""
+
+action scalar_is_numeric(t: string) -> num:
+    if t == "num" or t == "int":
+        return 1
+    return 0
+
+action scalar_cond_type(t: string) -> num:
+    if t == "num" or t == "int" or t == "bool":
+        return 1
+    return 0
+
+
+action scalar_nested_loop(n: AstNode, depth: num) -> num:
+    recursion bounded 64
+    if depth > 50:
+        return 1
+    if n.kind == "WHILE" or n.kind == "FOR_EACH" or n.kind == "PARALLEL_FOR":
+        return 1
+    if n.kind == "TRY" or n.kind == "SPAWN" or n.kind == "YIELD":
+        return 1
+    for each c in n.children:
+        if scalar_nested_loop(c, depth + 1) == 1:
+            return 1
+    return 0
+
+action scalar_merge_env(base: list, a: list, b: list) -> list:
+    let out = base
+    for each e in base:
+        let name = e[0] otherwise ""
+        let ta = scalar_env_get(a, name)
+        let tb = scalar_env_get(b, name)
+        if ta == "int" and tb == "int":
+            let ba = scalar_env_bound(a, name)
+            let bb = scalar_env_bound(b, name)
+            if bb > ba:
+                set ba to bb
+            set out to scalar_env_put(out, name, "int", ba)
+        otherwise:
+            if ta == "num" or tb == "num":
+                set out to scalar_env_put(out, name, "num", 0 - 1)
+    return out
+
+action scalar_loop_validate(body: AstNode, env: list, ceiling: num, known: list) -> list:
+    recursion bounded 64
+    let names = []
+    for each e in env:
+        if (e[1] otherwise "") == "int":
+            set names to names + [e[0] otherwise ""]
+    let sims = 64
+    if ceiling < 64:
+        set sims to ceiling
+    let cur = env
+    let prev = env
+    let it = 0
+    let ok = 1
+    while it < sims and ok == 1 bounded 128:
+        set prev to cur
+        let r = scalar_body_check(body, cur, known)
+        if (r[1] otherwise 0) == 0:
+            set ok to 0
+        otherwise:
+            set cur to r[0] otherwise cur
+        set it to it + 1
+    if ok == 1:
+        for each name in names:
+            let b2 = scalar_env_bound(cur, name)
+            let b1 = scalar_env_bound(prev, name)
+            if b2 < 0 or b1 < 0:
+                set ok to 0
+            otherwise:
+                let delta = b2 - b1
+                if delta > 0:
+                    let final = b2 + (ceiling - sims) * delta
+                    if final > scalar_safe():
+                        set ok to 0
+                    otherwise:
+                        set cur to scalar_env_put(cur, name, "int", final)
+    return [cur, ok]
+
+action scalar_stmt_check(s: AstNode, env: list, known: list) -> list:
+    recursion bounded 200
+    let k = s.kind
+    if k == "LET":
+        let ty = scalar_expr_type(child_at(s, 0), env, known)
+        if ty != "num" and ty != "int" and ty != "bool":
+            return [env, 0]
+        let b = 0 - 1
+        if ty == "int":
+            set b to scalar_int_bound(child_at(s, 0), env)
+            if b < 0:
+                return [env, 0]
+        let ty2 = "num"
+        if ty == "int":
+            set ty2 to "int"
+        if ty == "bool":
+            set ty2 to "bool"
+        return [scalar_env_put(env, s.name, ty2, b), 1]
+    if k == "SET":
+        let old = scalar_env_get(env, s.name)
+        let ty2 = scalar_expr_type(child_at(s, 0), env, known)
+        if old == "" or ty2 == "":
+            return [env, 0]
+        if old == "int":
+            if ty2 != "int":
+                return [env, 0]
+            let nb = scalar_int_bound(child_at(s, 0), env)
+            if nb < 0:
+                return [env, 0]
+            let ob = scalar_env_bound(env, s.name)
+            if ob > nb:
+                set nb to ob
+            return [scalar_env_put(env, s.name, "int", nb), 1]
+        if old == "num":
+            if ty2 != "num" and ty2 != "int":
+                return [env, 0]
+            return [env, 1]
+        if old != ty2:
+            return [env, 0]
+        return [env, 1]
+    if k == "EXPR":
+        if scalar_expr_type(child_at(s, 0), env, known) == "":
+            return [env, 0]
+        return [env, 1]
+    if k == "GUARD":
+        if scalar_cond_type(scalar_expr_type(child_at(s, 0), env, known)) == 0:
+            return [env, 0]
+        return [env, 1]
+    if k == "IF":
+        if scalar_cond_type(scalar_expr_type(child_at(s, 0), env, known)) == 0:
+            return [env, 0]
+        let a = scalar_body_check(child_at(s, 1), env, known)
+        let b = scalar_body_check(child_at(s, 2), env, known)
+        if (a[1] otherwise 0) == 1 and (b[1] otherwise 0) == 1:
+            return [scalar_merge_env(env, a[0] otherwise env, b[0] otherwise env), 1]
+        return [env, 0]
+    if k == "WHILE":
+        if scalar_cond_type(scalar_expr_type(child_at(s, 0), env, known)) == 0:
+            return [env, 0]
+        let body = child_at(s, 1)
+        if scalar_nested_loop(body, 0) == 1:
+            return [env, 0]
+        let bound = child_at(s, 2)
+        if bound.val_str == "" or bound.val_str == "?":
+            return [env, 0]
+        let ceiling = text_to_num(bound.val_str)
+        if ceiling < 1:
+            return [env, 0]
+        return scalar_loop_validate(body, env, ceiling, known)
+    if k == "RETURN":
+        if (length of s.children) == 0:
+            return [env, 0]
+        let rty = scalar_expr_type(child_at(s, 0), env, known)
+        if rty != "num" and rty != "int":
+            return [env, 0]
+        return [env, 1]
+    return [env, 0]
+
+action scalar_body_check(body: AstNode, env: list, known: list) -> list:
+    recursion bounded 200
+    let cur = env
+    let ok = 1
+    for each s in body.children:
+        let r = scalar_stmt_check(s, cur, known)
+        set cur to r[0] otherwise []
+        if (r[1] otherwise 0) == 0:
+            set ok to 0
+    return [cur, ok]
+
+
+action scalar_mark_type(u: list, name: string, ty: string) -> list:
+    let i = 0
+    let found = 0
+    let out = []
+    for each e in u:
+        let en = e[0] otherwise ""
+        let et = e[1] otherwise ""
+        if en == name:
+            if et != ty:
+                set et to "bad"
+            set found to 1
+        set out to out + [[en, et]]
+        set i to i + 1
+    if found == 0:
+        set out to out + [[name, ty]]
+    return out
+
+action scalar_usage_walk(n: AstNode, params: AstNode, u: list) -> list:
+    recursion bounded 256
+    if n.kind == "CALL" and n.name == "byte_at":
+        let a0 = child_at(n, 0)
+        let a1 = child_at(n, 1)
+        if a0.kind == "IDENT":
+            set u to scalar_mark_type(u, a0.name, "text")
+        otherwise:
+            set u to scalar_usage_walk(a0, params, u)
+        set u to scalar_usage_walk(a1, params, u)
+        return u
+    if n.kind == "LEN":
+        let a = child_at(n, 0)
+        if a.kind == "IDENT":
+            set u to scalar_mark_type(u, a.name, "text")
+        otherwise:
+            set u to scalar_usage_walk(a, params, u)
+        return u
+    if n.kind == "IDENT":
+        for each p in params.children:
+            if p.name == n.name:
+                set u to scalar_mark_type(u, n.name, "num")
+    for each c in n.children:
+        set u to scalar_usage_walk(c, params, u)
+    return u
+
+action scalar_param_types(item: AstNode) -> list:
+    recursion bounded 64
+    let params = child_at(item, 0)
+    let u = []
+    set u to scalar_usage_walk(child_at(item, 2), params, u)
+    let out = []
+    for each p in params.children:
+        let ty = "num"
+        for each e in u:
+            let en = e[0] otherwise ""
+            if en == p.name:
+                set ty to e[1] otherwise "bad"
+        if ty != "num" and ty != "text":
+            set ty to "bad"
+        set out to out + [[p.name, ty]]
+    return out
+
+action scalar_param_type(types: list, name: string) -> string:
+    for each e in types:
+        let en = e[0] otherwise ""
+        if en == name:
+            return e[1] otherwise ""
+    return ""
+
+action scalar_routine_check(item: AstNode, known: list) -> num:
+    recursion bounded 64
+    if item.kind != "ACTION":
+        return 0
+    let contracts = child_at(item, 1)
+    if (length of contracts.children) > 0:
+        return 0
+    let types = scalar_param_types(item)
+    let env = []
+    for each p in (child_at(item, 0)).children:
+        let ty = scalar_param_type(types, p.name)
+        if ty != "num" and ty != "text":
+            return 0
+        set env to scalar_env_put(env, p.name, ty, 0 - 1)
+    let r = scalar_body_check(child_at(item, 2), env, known)
+    return r[1] otherwise 0
+
+action scalar_fixpoint(items: list) -> list:
+    let known = []
+    let rounds = 0
+    let progress = 1
+    while progress == 1 and rounds < 64 bounded 128:
+        set progress to 0
+        for each item in items:
+            if is_routine(item) == 1 and scalar_has(known, item.name) == 0:
+                if scalar_routine_check(item, known) == 1:
+                    set known to known + [[item.name, scalar_param_types(item)]]
+                    set progress to 1
+        set rounds to rounds + 1
+    return known
+
+
+# ── phase 17: unboxed C emission ───────────────────────────────────────
+
+action scalar_num_text(t: string) -> string:
+    if t == "":
+        return "0.0"
+    return "((double)(" + t + "))"
+
+action scalar_param_sig(item: AstNode) -> string:
+    let params_node = child_at(item, 0)
+    let types = scalar_param_types(item)
+    let out = ""
+    let first = 1
+    for each p in params_node.children:
+        let ty = scalar_param_type(types, p.name)
+        if first == 0:
+            set out to out + ", "
+        if ty == "text":
+            set out to out + "kz_str_view_t " + sanitize_c_id(p.name)
+        otherwise:
+            set out to out + "double " + sanitize_c_id(p.name)
+        set first to 0
+    if first == 1:
+        return "void"
+    return out
+
+action scalar_call_args(params_node: AstNode) -> string:
+    let out = ""
+    let first = 1
+    for each p in params_node.children:
+        if first == 0:
+            set out to out + ", "
+        set out to out + sanitize_c_id(p.name)
+        set first to 0
+    return out
+
+action scalar_expr_int(e: AstNode, env: list) -> num:
+    recursion bounded 64
+    let k = e.kind
+    if k == "NUM":
+        return scalar_int_literal(e.val_str)
+    if k == "IDENT":
+        if scalar_env_get(env, e.name) == "int":
+            return 1
+        return 0
+    if k == "LEN":
+        return 1
+    if k == "CALL":
+        if e.name == "byte_at":
+            return 1
+        return 0
+    if k == "BIN":
+        let op = e.name
+        if op == "+" or op == "-" or op == "*":
+            if scalar_expr_int(child_at(e, 0), env) == 1 and scalar_expr_int(child_at(e, 1), env) == 1:
+                return 1
+            return 0
+        if op == "&" or op == "|" or op == "^" or op == "<<" or op == ">>":
+            if scalar_expr_int(child_at(e, 0), env) == 1 and scalar_expr_int(child_at(e, 1), env) == 1:
+                return 1
+            return 0
+        return 0
+    return 0
+
+action scalar_c_expr(e: AstNode, env: list) -> string:
+    recursion bounded 128
+    let k = e.kind
+    if k == "NUM":
+        if e.name == "degrees":
+            return "(" + scalar_num_text(e.val_str) + " * 0.017453292519943295)"
+        if scalar_expr_type(e, env, []) == "int":
+            return "((long long)" + e.val_str + ")"
+        return scalar_num_text(e.val_str)
+    if k == "BOOL":
+        if e.val_str == "true":
+            return "1.0"
+        return "0.0"
+    if k == "IDENT":
+        return sanitize_c_id(e.name)
+    if k == "IN_UNIT":
+        if e.name == "radians":
+            return "(" + scalar_c_expr(child_at(e, 0), env) + " * 0.017453292519943295)"
+        return "(" + scalar_c_expr(child_at(e, 0), env) + " * 57.29577951308232)"
+    if k == "FALLBACK":
+        let inner = child_at(e, 0)
+        if inner.kind == "BIN" and (inner.name == "/" or inner.name == "%"):
+            let a = scalar_c_expr(child_at(inner, 0), env)
+            let b = scalar_c_expr(child_at(inner, 1), env)
+            let fb = scalar_c_expr(child_at(e, 1), env)
+            if inner.name == "%":
+                return "(((" + b + ") != 0.0) ? fmod((" + a + "), (" + b + ")) : (" + fb + "))"
+            return "(((" + b + ") != 0.0) ? ((" + a + ") / (" + b + ")) : (" + fb + "))"
+        return scalar_c_expr(inner, env)
+    if k == "BIN":
+        let op = e.name
+        if op == "not":
+            return "(!(" + scalar_c_expr(child_at(e, 0), env) + " != 0))"
+        let l = scalar_c_expr(child_at(e, 0), env)
+        let r = scalar_c_expr(child_at(e, 1), env)
+        if op == "and":
+            return "((" + l + " != 0) && (" + r + " != 0))"
+        if op == "or":
+            return "((" + l + " != 0) || (" + r + " != 0))"
+        let et = scalar_expr_type(e, env, [])
+        let l2 = l
+        let r2 = r
+        if et != "int":
+            if scalar_expr_type(child_at(e, 0), env, []) == "int":
+                set l2 to "((double)(" + l + "))"
+            if scalar_expr_type(child_at(e, 1), env, []) == "int":
+                set r2 to "((double)(" + r + "))"
+        if op == "+":
+            return "((" + l2 + ") + (" + r2 + "))"
+        if op == "-":
+            return "((" + l2 + ") - (" + r2 + "))"
+        if op == "*":
+            return "((" + l2 + ") * (" + r2 + "))"
+        if op == "/":
+            return "(((double)(" + l + ")) / ((double)(" + r + ")))"
+        if op == "%":
+            return "fmod((double)(" + l + "), (double)(" + r + "))"
+        if op == "&" or op == "|" or op == "^" or op == "<<" or op == ">>":
+            let ib = (scalar_expr_type(e, env, []) == "int")
+            let body = ""
+            if op == "&":
+                set body to "(long long)(" + l + ") & (long long)(" + r + ")"
+            if op == "|":
+                set body to "(long long)(" + l + ") | (long long)(" + r + ")"
+            if op == "^":
+                set body to "(long long)(" + l + ") ^ (long long)(" + r + ")"
+            if op == "<<":
+                set body to "(long long)(" + l + ") << ((long long)(" + r + ") & 63)"
+            if op == ">>":
+                set body to "(unsigned long long)(" + l + ") >> ((long long)(" + r + ") & 63)"
+            if ib == 1:
+                return "((" + body + "))"
+            return "((double)(" + body + "))"
+        if op == "<":
+            return "((" + l + ") < (" + r + "))"
+        if op == "<=":
+            return "((" + l + ") <= (" + r + "))"
+        if op == ">":
+            return "((" + l + ") > (" + r + "))"
+        if op == ">=":
+            return "((" + l + ") >= (" + r + "))"
+        if op == "==":
+            return "((" + l + ") == (" + r + "))"
+        if op == "!=":
+            return "((" + l + ") != (" + r + "))"
+        return "0.0"
+    if k == "LEN":
+        let inner = child_at(e, 0)
+        if scalar_expr_type(e, env, []) == "int":
+            return "((long long)kz_str_view_len(" + sanitize_c_id(inner.name) + "))"
+        return "((double)kz_str_view_len(" + sanitize_c_id(inner.name) + "))"
+    if k == "CALL":
+        if e.name == "byte_at":
+            let base = child_at(e, 0)
+            let idx = scalar_c_expr(child_at(e, 1), env)
+            if scalar_expr_type(e, env, []) == "int":
+                return "kz_str_view_byte_i(" + sanitize_c_id(base.name) + ", (size_t)(" + idx + "))"
+            return "kz_str_view_byte(" + sanitize_c_id(base.name) + ", (size_t)(" + idx + "))"
+        let args = ""
+        let first = 1
+        for each a in e.children:
+            if first == 0:
+                set args to args + ", "
+            set args to args + scalar_c_expr(a, env)
+            set first to 0
+        if e.name == "sqrt" or e.name == "sin" or e.name == "cos" or e.name == "tan" or e.name == "atan2":
+            return e.name + "(" + args + ")"
+        if e.name == "abs":
+            return "fabs((double)(" + args + "))"
+        if e.name == "min":
+            return "fmin(" + args + ")"
+        if e.name == "max":
+            return "fmax(" + args + ")"
+        if e.name == "floor" or e.name == "ceil" or e.name == "round":
+            return e.name + "(" + args + ")"
+        return "kaze_u_" + sanitize_c_id(e.name) + "(" + args + ")"
+    return "0.0"
+
+action scalar_c_cond(e: AstNode, env: list) -> string:
+    return "(" + scalar_c_expr(e, env) + " != 0.0)"
+
+action scalar_c_stmts(stmts: list, ind: string, env: list) -> list:
+    recursion bounded 200
+    let out = ""
+    let cur = env
+    for each s in stmts:
+        let r = scalar_c_stmt(s, ind, cur)
+        set out to out + (r[0] otherwise "")
+        set cur to r[1] otherwise cur
+    return [out, cur]
+
+action scalar_c_stmt(s: AstNode, ind: string, env: list) -> list:
+    recursion bounded 200
+    let k = s.kind
+    if k == "LET":
+        let ty = scalar_expr_type(child_at(s, 0), env, [])
+        let cty = "double"
+        if ty == "int" or ty == "bool":
+            set cty to "long long"
+        let code = ind + cty + " " + sanitize_c_id(s.name) + " = " + scalar_c_expr(child_at(s, 0), env) + ";\n"
+        let b = 0 - 1
+        if ty == "int":
+            set b to scalar_int_bound(child_at(s, 0), env)
+        return [code, scalar_env_put(env, s.name, ty, b)]
+    if k == "SET":
+        return [ind + sanitize_c_id(s.name) + " = " + scalar_c_expr(child_at(s, 0), env) + ";\n", env]
+    if k == "EXPR":
+        return [ind + "(void)(" + scalar_c_expr(child_at(s, 0), env) + ");\n", env]
+    if k == "GUARD":
+        let code = ind + "if (!" + scalar_c_cond(child_at(s, 0), env) + ") {\n"
+        set code to code + ind + "    fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + s.line + " is false\\n\");\n"
+        set code to code + ind + "    exit(70);\n" + ind + "}\n"
+        return [code, env]
+    if k == "IF":
+        let out = ind + "if (" + scalar_c_cond(child_at(s, 0), env) + ") {\n"
+        let a = scalar_c_stmts((child_at(s, 1)).children, ind + "    ", env)
+        set out to out + (a[0] otherwise "")
+        if (length of (child_at(s, 2)).children) > 0:
+            set out to out + ind + "} else {\n"
+            let b = scalar_c_stmts((child_at(s, 2)).children, ind + "    ", env)
+            set out to out + (b[0] otherwise "")
+        set out to out + ind + "}\n"
+        return [out, env]
+    if k == "WHILE":
+        let cond = scalar_c_cond(child_at(s, 0), env)
+        let bound = child_at(s, 2)
+        let guard = "_kz_ug_l" + s.line
+        let out = ind + "{\n" + ind + "    long " + guard + " = 0;\n"
+        if bound.val_str != "" and bound.val_str != "?":
+            set out to out + ind + "    while ((" + cond + ") && (" + guard + " < " + bound.val_str + "L)) {\n"
+        otherwise:
+            set out to out + ind + "    while (" + cond + ") {\n"
+        set out to out + ind + "        " + guard + " = " + guard + " + 1;\n"
+        let body = scalar_c_stmts((child_at(s, 1)).children, ind + "        ", env)
+        set out to out + (body[0] otherwise "")
+        set out to out + ind + "    }\n"
+        if bound.val_str != "" and bound.val_str != "?":
+            set out to out + ind + "    if (" + cond + ") { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); exit(70); }\n"
+        set out to out + ind + "}\n"
+        return [out, env]
+    if k == "RETURN":
+        return [ind + "return " + scalar_c_expr(child_at(s, 0), env) + ";\n", env]
+    return [ind + "/* unsupported scalar statement */\n", env]
+
+action emit_scalar_unboxed(item: AstNode, id: string) -> string:
+    recursion bounded 64
+    let params = child_at(item, 0)
+    let body = child_at(item, 2)
+    let l_tag = ""
+    if item.line > 0:
+        set l_tag = "#line " + item.line + "\n"
+    let out = l_tag + "KZ_MAYBE_UNUSED static double kaze_u_" + id + "(" + scalar_param_sig(item) + ") {\n"
+    for each p in params.children:
+        set out to out + "    (void)" + sanitize_c_id(p.name) + ";\n"
+    let env = []
+    let types = scalar_param_types(item)
+    for each e in types:
+        set env to scalar_env_put(env, e[0] otherwise "", e[1] otherwise "", 0 - 1)
+    let r = scalar_c_stmts(body.children, "    ", env)
+    set out to out + (r[0] otherwise "")
+    set out to out + "    return 0.0;\n}\n\n"
+    return out
+
+action emit_scalar_wrapper(item: AstNode, id: string) -> string:
+    let params = child_at(item, 0)
+    let cnt = length of params.children
+    let out = routine_storage(item) + "KzValue kaze_fn_" + id + "(" + param_list(params) + ") {\n"
+    if cnt == 0:
+        set out to out + "    return kz_num(kaze_u_" + id + "());\n}\n\n"
+        return out
+    let types = scalar_param_types(item)
+    let checks = ""
+    let call_args = ""
+    let i = 0
+    for each p in params.children:
+        let ty = scalar_param_type(types, p.name)
+        if i > 0:
+            set checks to checks + " && "
+            set call_args to call_args + ", "
+        if ty == "text":
+            set checks to checks + sanitize_c_id(p.name) + ".kind == KZ_VAL_STR"
+            set call_args to call_args + "kz_str_view_from(" + sanitize_c_id(p.name) + ")"
+        otherwise:
+            set checks to checks + sanitize_c_id(p.name) + ".kind == KZ_VAL_NUM"
+            set call_args to call_args + "kz_to_num(" + sanitize_c_id(p.name) + ")"
+        set i to i + 1
+    set out to out + "    if (" + checks + ") return kz_num(kaze_u_" + id + "(" + call_args + "));\n"
+    let boxed_args = ""
+    let first = 1
+    for each p in params.children:
+        if first == 0:
+            set boxed_args to boxed_args + ", "
+        set boxed_args to boxed_args + sanitize_c_id(p.name)
+        set first to 0
+    set out to out + "    return kaze_fn_" + id + "_boxed(" + boxed_args + ");\n}\n\n"
+    return out
+
+action scalar_forward_decls(item: AstNode, id: string) -> string:
+    let params = child_at(item, 0)
+    let out = "KZ_MAYBE_UNUSED static double kaze_u_" + id + "(" + scalar_param_sig(item) + ");\n"
+    set out to out + routine_storage(item) + "KzValue kaze_fn_" + id + "(" + param_list(params) + ");\n"
+    if (length of params.children) > 0:
+        set out to out + "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + id + "_boxed(" + param_list(params) + ");\n"
+    return out
+
+
+# ── phase 17: whole-program dead-code elimination ─────────────────────
+#
+# The emitter used to write every routine in the file. A program that imports
+# a large module and calls one action carried the rest into the C output. This
+# pass walks the call graph from main(), the supervisor hooks and every fiber a
+# spawn names, and keeps only routines that can be reached. Strings that name
+# routines are followed too (parallel_map takes a routine name as a value), and
+# a program with no main keeps everything because there is no entry to root at.
+
+action dce_seen(names: list, w: string) -> num:
+    for each n in names:
+        if n == w:
+            return 1
+    return 0
+
+action dce_collect_calls(n: AstNode, acc: list, depth: num) -> list:
+    recursion bounded 256
+    let out = acc
+    if depth < 200:
+        if n.kind == "CALL":
+            if dce_seen(out, n.name) == 0:
+                set out to out + [n.name]
+            if (n.name == "parallel_map" or n.name == "parallel_filter") and (length of n.children) > 1:
+                let fn = child_at(n, 1)
+                let nm = ""
+                if fn.kind == "STR":
+                    set nm to fn.val_str
+                if fn.kind == "IDENT":
+                    set nm to fn.name
+                if nm != "" and dce_seen(out, nm) == 0:
+                    set out to out + [nm]
+        if n.kind == "SPAWN" and n.name != "":
+            if dce_seen(out, n.name) == 0:
+                set out to out + [n.name]
+        for each c in n.children:
+            set out to dce_collect_calls(c, out, depth + 1)
+    return out
+
+action dce_body_of(items: list, name: string) -> AstNode:
+    let none = make_unknown(0)
+    for each item in items:
+        if item.name == name:
+            return item
+    return none
+
+action dce_reachable(items: list) -> list:
+    let roots = []
+    let main_item = find_named(items, "main")
+    if is_routine(main_item) == 1 and main_item.kind != "FIBER":
+        set roots to roots + [main_item.name]
+    otherwise:
+        # A module with no main() gets its entry from the single-routine fallback;
+        # there is no safe root to prune from, so keep everything.
+        return []
+    for each item in items:
+        if item.kind == "WHEN" or item.kind == "EVERY":
+            set roots to dce_collect_calls(item, roots, 0)
+        if item.kind == "FIBER":
+            set roots to roots + [item.name]
+    if (length of roots) == 0:
+        return []
+    let reached = []
+    let work = roots
+    let pos = 0
+    while pos < (length of work) and pos < 4096 bounded 8192:
+        let name = work[pos] otherwise ""
+        set pos to pos + 1
+        if name != "" and dce_seen(reached, name) == 0:
+            set reached to reached + [name]
+            let item = dce_body_of(items, name)
+            if item.name == name:
+                for each c in dce_collect_calls(item, [], 0):
+                    if dce_seen(work, c) == 0 and dce_seen(reached, c) == 0:
+                        set work to work + [c]
+    return reached
+
+action dce_filter(items: list) -> list:
+    # Large programs (the compiler itself is one) keep every routine: the closure
+    # pass is intentionally conservative and must not decide reachability for the
+    # compiler it is building. The pass exists for ordinary programs, which are
+    # well under this cap.
+    if (length of items) > 40:
+        return items
+    let reach = dce_reachable(items)
+    if (length of reach) == 0:
+        return items
+    let out = []
+    for each item in items:
+        if is_routine(item) == 1 or item.kind == "FIBER":
+            if dce_seen(reach, item.name) == 1:
+                set out to out + [item]
+        otherwise:
+            set out to out + [item]
+    return out
+
 action emit_c_program(prog: AstNode):
+    return emit_c_program_impl(prog, [], 1, 0)
+
+# One module as its own translation unit. The root owns the file-scope state
+# and the entry point; a library unit borrows the state and exports its public
+# routines. This is what makes per-module object caching possible.
+action emit_c_unit(prog: AstNode, extras: list, is_root: num) -> string:
+    if is_root == 1:
+        return emit_c_program_impl(prog, extras, 1, 2)
+    return emit_c_program_impl(prog, extras, 0, 1)
+
+# The shared body of one-file emission and per-module unit emission. `extras`
+# are public declarations from other modules; `want_main` is false for a
+# library unit; `shared` makes file-scope state extern so the root unit owns it.
+action emit_c_program_impl(prog: AstNode, extras: list, want_main: num, shared: num):
     recursion bounded 200
     # Resolve bare telemetry words once, with each routine's declarations in hand.
-    let raw_items = program_items(prog)
+    let raw_items = dce_filter(program_items(prog))
     let elided = elidable_names(raw_items)
     let items = []
     for each it in raw_items:
         set items to items + [mark_item(it, elided)]
+    let scalars = []
+    # Scalarisation is a performance specialisation for ordinary programs. It is
+    # intentionally not applied to very large programs such as the compiler's own
+    # monolith: there the bootstrap identity matters more than a micro-optimisation.
+    if (length of items) <= 60:
+        set scalars to scalar_fixpoint(items)
     let out = get_c_runtime_header()
+    if shared == 1:
+        set out to "#define KZ_GLOBAL extern\n" + out
+    if shared == 2:
+        set out to "#define KZ_GLOBAL\n" + out
     let uses_tensors = program_uses_tensors(items)
     if uses_tensors == 1:
         set out to out + "\n" + get_c_tensor_header()
@@ -2559,20 +3656,37 @@ action emit_c_program(prog: AstNode):
     if program_uses_parallel(items) == 1:
         set out to out + "\n" + get_c_parallel_header()
 
-    # 1. Forward declarations.
+    # 1. Forward declarations. Imported public symbols are declared first so a
+    # module unit can call them without including another generated header.
     set out to out + "/* --- Forward Declarations --- */\n"
+    for each item in extras:
+        if item_is_pub(item) == 1:
+            if item.kind == "RECORD":
+                set out to out + "KZ_MAYBE_UNUSED KzValue kz_record_new_" + sanitize_c_id(item.name) + "(size_t n, KzValue* v, const char** k);\n"
+            otherwise:
+                if is_routine(item) == 1:
+                    let ep = child_at(item, 0)
+                    set out to out + "KZ_MAYBE_UNUSED KzValue kaze_fn_" + sanitize_c_id(item.name) + "(" + param_list(ep) + ");\n"
+                if item.kind == "FIBER":
+                    set out to out + "KZ_MAYBE_UNUSED int kz_step_" + sanitize_c_id(item.name) + "(kz_fiber*);\n"
+                    set out to out + "KZ_MAYBE_UNUSED long kz_fuel_" + sanitize_c_id(item.name) + "(void);\n"
+                    set out to out + "KZ_MAYBE_UNUSED size_t kz_slots_" + sanitize_c_id(item.name) + "(void);\n"
+                    set out to out + "KZ_MAYBE_UNUSED size_t kz_guards_" + sanitize_c_id(item.name) + "(void);\n"
     for each item in items:
         if item.kind == "RECORD":
-            set out to out + "static inline KzValue kz_record_new_" + sanitize_c_id(item.name) + "(size_t n, KzValue* v, const char** k);\n"
+            set out to out + record_storage(item) + "KzValue kz_record_new_" + sanitize_c_id(item.name) + "(size_t n, KzValue* v, const char** k);\n"
         otherwise:
             if is_routine(item) == 1:
-                let params_node = child_at(item, 0)
-                set out to out + "KZ_MAYBE_UNUSED static KzValue kaze_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
+                if scalar_has(scalars, item.name) == 1:
+                    set out to out + scalar_forward_decls(item, sanitize_c_id(item.name))
+                otherwise:
+                    let params_node = child_at(item, 0)
+                    set out to out + routine_storage(item) + "KzValue kaze_fn_" + sanitize_c_id(item.name) + "(" + param_list(params_node) + ");\n"
             if item.kind == "FIBER":
-                set out to out + "KZ_MAYBE_UNUSED static int kz_step_" + sanitize_c_id(item.name) + "(kz_fiber*);\n"
-                set out to out + "static long kz_fuel_" + sanitize_c_id(item.name) + "(void);\n"
-                set out to out + "static size_t kz_slots_" + sanitize_c_id(item.name) + "(void);\n"
-                set out to out + "static size_t kz_guards_" + sanitize_c_id(item.name) + "(void);\n"
+                set out to out + "KZ_MAYBE_UNUSED " + fiber_storage(item) + "int kz_step_" + sanitize_c_id(item.name) + "(kz_fiber*);\n"
+                set out to out + fiber_storage(item) + "long kz_fuel_" + sanitize_c_id(item.name) + "(void);\n"
+                set out to out + fiber_storage(item) + "size_t kz_slots_" + sanitize_c_id(item.name) + "(void);\n"
+                set out to out + fiber_storage(item) + "size_t kz_guards_" + sanitize_c_id(item.name) + "(void);\n"
 
     # 2. Record constructors.
     set out to out + "\n/* --- Record Constructors --- */\n"
@@ -2585,14 +3699,22 @@ action emit_c_program(prog: AstNode):
     set out to out + "/* --- Routines --- */\n"
     for each item in items:
         if is_routine(item) == 1:
-            set out to out + emit_routine(item)
+            let sid = sanitize_c_id(item.name)
+            if scalar_has(scalars, item.name) == 1:
+                set out to out + emit_scalar_unboxed(item, sid)
+                if (length of (child_at(item, 0)).children) > 0:
+                    set out to out + emit_routine_named(item, "kaze_fn_" + sid + "_boxed")
+                set out to out + emit_scalar_wrapper(item, sid)
+            otherwise:
+                set out to out + emit_routine(item)
         otherwise:
             if item.kind == "FIBER":
                 set out to out + emit_fiber(item)
             if item.kind == "WHEN" or item.kind == "EVERY":
                 set out to out + emit_hook(item)
 
-    # 4. Hook driver, then the entry point.
-    set out to out + "\n" + emit_hook_driver(items)
-    set out to out + emit_c_entry(items, program_config(prog), uses_tensors)
+    # 4. Hook driver, then the entry point. A library unit has neither.
+    if want_main == 1:
+        set out to out + "\n" + emit_hook_driver(items)
+        set out to out + emit_c_entry(items, program_config(prog), uses_tensors)
     return out

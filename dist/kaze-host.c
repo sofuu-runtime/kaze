@@ -6,6 +6,8 @@
  * host, exactly as Phase 10's "embedded host bridge" describes.
  *
  *   kaze-host run <file.kaze> [args...]   emit C, build it, run it
+ *   kaze-host build <file.kaze> [-o out] [--force]
+ *                                        incremental per-module .o build
  *   kaze-host <any compiler command> ...  pass through to the compiler
  *
  * The compiler is found via $KAZE_BIN, else next to this binary, else on $PATH.
@@ -15,6 +17,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,12 +71,95 @@ static void find_compiler(const char* self) {
     kaze_bin = "kaze";
 }
 
+static int is_backend_flag(const char* a) {
+    return strncmp(a, "--backend=", 10) == 0;
+}
+
+static void native_bin_path(const char* self, char* out, size_t cap) {
+    const char* env = getenv("KAZE_NATIVE_BIN");
+    if (env && env[0]) { snprintf(out, cap, "%s", env); return; }
+    const char* slash = strrchr(self, '/');
+    if (slash != NULL) {
+        size_t n = (size_t)(slash - self);
+        snprintf(out, cap, "%.*s/kaze-native", (int)n, self);
+    } else {
+        snprintf(out, cap, "%s", "kaze-native");
+    }
+}
+
+static int do_build_native(int argc, char** argv, const char* self) {
+    static char native_bin[4096];
+    native_bin_path(self, native_bin, sizeof native_bin);
+    char* build_argv[64];
+    int n = 0;
+    build_argv[n++] = native_bin;
+    build_argv[n++] = (char*)"build";
+    const char* source = NULL;
+    for (int i = 2; i < argc && n < 60; i++) {
+        if (strcmp(argv[i], "--backend=native") == 0) continue;
+        if (strcmp(argv[i], "--force") == 0 || strcmp(argv[i], "--release") == 0) continue;
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            build_argv[n++] = (char*)"-o";
+            build_argv[n++] = argv[++i];
+            continue;
+        }
+        if (strncmp(argv[i], "--target=", 9) == 0 || strcmp(argv[i], "--target") == 0) {
+            build_argv[n++] = argv[i];
+            if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) build_argv[n++] = argv[++i];
+            continue;
+        }
+        if (source == NULL) source = argv[i];
+        build_argv[n++] = argv[i];
+    }
+    if (source == NULL) {
+        fprintf(stderr, "usage: %s build <entry.kaze> [--backend=native] [-o output]\n", self);
+        return 2;
+    }
+    build_argv[n] = NULL;
+    int status = run_child(build_argv);
+    if (status == 127) fprintf(stderr, "E_KAZE_BACKEND_UNSUPPORTED: cannot find %s\n", native_bin);
+    return status;
+}
+
+static int do_run_native(int argc, char** argv, const char* self) {
+    static char native_bin[4096];
+    native_bin_path(self, native_bin, sizeof native_bin);
+    const char* source = NULL;
+    char* run_argv[64];
+    int n = 0;
+    run_argv[n++] = native_bin;
+    run_argv[n++] = (char*)"run";
+    for (int i = 2; i < argc && n < 62; i++) {
+        if (is_backend_flag(argv[i])) continue;
+        if (source == NULL) { source = argv[i]; run_argv[n++] = argv[i]; }
+        else run_argv[n++] = argv[i];
+    }
+    if (source == NULL) {
+        fprintf(stderr, "usage: %s run --backend=native <file.kaze> [args...]\n", self);
+        return 2;
+    }
+    run_argv[n] = NULL;
+    int status = run_child(run_argv);
+    if (status == 127) fprintf(stderr, "E_KAZE_BACKEND_UNSUPPORTED: cannot find %s\n", native_bin);
+    return status;
+}
+
 static int do_run(int argc, char** argv, const char* self) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s run <file.kaze> [args...]\n", self);
         return 2;
     }
-    const char* source = argv[2];
+    /* `run --backend=c99 file` and `run file --backend=c99` are both natural;
+     * drop backend flags before the source is chosen and before program args. */
+    char* clean[64];
+    int cn = 0;
+    const char* source = NULL;
+    for (int i = 2; i < argc && cn < 62; i++) {
+        if (is_backend_flag(argv[i])) continue;
+        if (source == NULL) source = argv[i];
+        else clean[cn++] = argv[i];
+    }
+    if (source == NULL) source = argv[2];
     static char runtime_dir[4096];
     const char* env_rt = getenv("KAZE_RT_DIR");
     if (env_rt && env_rt[0]) snprintf(runtime_dir, sizeof runtime_dir, "%s", env_rt);
@@ -175,7 +261,7 @@ static int do_run(int argc, char** argv, const char* self) {
     char* run_argv[64];
     int n = 0;
     run_argv[n++] = bin_path;
-    for (int i = 3; i < argc && n < 62; i++) run_argv[n++] = argv[i];
+    for (int i = 0; i < cn && n < 62; i++) run_argv[n++] = clean[i];
     run_argv[n] = NULL;
     int code = run_child(run_argv);
     /* the temp directory is ours: remove the binary, the C and the directory */
@@ -183,6 +269,420 @@ static int do_run(int argc, char** argv, const char* self) {
     unlink(c_path);
     rmdir(dir);
     return code;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Native incremental build: `kaze-host build <entry.kaze> [-o out]`    */
+/*                                                                     */
+/* The compiler resolves the module DAG and emits one C translation    */
+/* unit per module. This host compiles each unit to an object keyed by */
+/* (source bytes, compiler identity, dependency interface hashes), so  */
+/* editing a private body recompiles one object and relinks.            */
+/* ------------------------------------------------------------------ */
+
+#define KZH_MAX_MODULES 512
+#define KZH_PATH 4096
+
+typedef struct {
+    char tag[64];
+    char path[KZH_PATH];
+    char deps[4 * KZH_PATH];
+    char iface[64];
+    char flags[128];
+} kzh_module;
+
+static uint64_t kzh_fnv1a(const void* data, size_t n, uint64_t h) {
+    const unsigned char* p = (const unsigned char*)data;
+    for (size_t i = 0; i < n; i++) {
+        h ^= (uint64_t)p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static uint64_t kzh_hash_bytes(const char* s, uint64_t h) {
+    if (s == NULL) s = "";
+    return kzh_fnv1a(s, strlen(s), h);
+}
+
+static uint64_t kzh_hash_file(const char* path) {
+    uint64_t h = 1469598103934665603ULL;
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) return h;
+    char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) h = kzh_fnv1a(buf, n, h);
+    fclose(f);
+    return h;
+}
+
+/* Split one manifest line on tabs, preserving empty fields. Returns the number
+ * of fields written. The line is modified in place. */
+static int kzh_split_tabs(char* line, char** out, int max) {
+    int n = 0;
+    char* p = line;
+    while (n < max) {
+        out[n++] = p;
+        char* tab = strchr(p, '\t');
+        if (tab == NULL) break;
+        *tab = 0;
+        p = tab + 1;
+    }
+    return n;
+}
+
+static char* kzh_trim_nl(char* s) {
+    size_t n = strlen(s);
+    while (n > 0 && (s[n-1] == '\n' || s[n-1] == '\r')) s[--n] = 0;
+    return s;
+}
+
+/* Capture a child's stdout. Returns malloc'd NUL-terminated text (never NULL;
+ * an empty string on failure) and stores the exit status in *status. */
+static char* kzh_capture(char* const argv[], int* status) {
+    int fds[2];
+    if (pipe(fds) != 0) fail("pipe");
+    pid_t pid = fork();
+    if (pid < 0) fail("fork");
+    if (pid == 0) {
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0) _exit(70);
+        close(fds[1]);
+        execvp(argv[0], argv);
+        fprintf(stderr, "kaze-host: cannot run %s: %s\n", argv[0], strerror(errno));
+        _exit(127);
+    }
+    close(fds[1]);
+    size_t cap = 16384, len = 0;
+    char* out = (char*)malloc(cap);
+    if (out == NULL) fail("malloc");
+    for (;;) {
+        if (len + 4096 + 1 > cap) {
+            cap *= 2;
+            char* nb = (char*)realloc(out, cap);
+            if (nb == NULL) fail("realloc");
+            out = nb;
+        }
+        ssize_t r = read(fds[0], out + len, cap - len - 1);
+        if (r < 0) { if (errno == EINTR) continue; break; }
+        if (r == 0) break;
+        len += (size_t)r;
+    }
+    close(fds[0]);
+    out[len] = 0;
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0) { if (errno != EINTR) fail("waitpid"); }
+    *status = WIFEXITED(st) ? WEXITSTATUS(st) : 70;
+    return out;
+}
+
+static const char* kzh_runtime_dir(void) {
+    static char dir[KZH_PATH];
+    if (dir[0]) return dir;
+    const char* env_rt = getenv("KAZE_RT_DIR");
+    if (env_rt && env_rt[0]) {
+        snprintf(dir, sizeof dir, "%s", env_rt);
+        return dir;
+    }
+    const char* slash = strrchr(kaze_bin, '/');
+    if (slash != NULL) {
+        size_t n = (size_t)(slash - kaze_bin);
+        if (n + 6 < sizeof dir) {
+            memcpy(dir, kaze_bin, n);
+            snprintf(dir + n, sizeof dir - n, "/dist");
+            if (access(dir, R_OK) != 0 && n + 9 < sizeof dir) {
+                snprintf(dir + n, sizeof dir - n, "/../dist");
+            }
+        }
+    }
+    if (dir[0] == 0) snprintf(dir, sizeof dir, "dist");
+    return dir;
+}
+
+/* Does a generated translation unit mention a runtime header? The manifest
+ * flags describe source-level calls, but a unit can pull in a header through a
+ * type or an imported wrapper. Link decisions read the C that was actually
+ * produced, so they cannot drift from the emitter. */
+static int kzh_file_has(const char* path, const char* needle) {
+    FILE* f = fopen(path, "r");
+    char line[8192];
+    int hit = 0;
+    if (f == NULL) return 0;
+    while (fgets(line, sizeof line, f) != NULL) {
+        if (strstr(line, needle) != NULL) { hit = 1; break; }
+    }
+    fclose(f);
+    return hit;
+}
+
+static void kzh_dirname(const char* path, char* out, size_t cap) {
+    snprintf(out, cap, "%s", path);
+    char* slash = strrchr(out, '/');
+    if (slash == NULL) {
+        snprintf(out, cap, ".");
+    } else if (slash == out) {
+        slash[1] = 0;
+    } else {
+        *slash = 0;
+    }
+}
+
+static void kzh_basename_stem(const char* path, char* out, size_t cap) {
+    const char* base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    snprintf(out, cap, "%s", base);
+    char* dot = strrchr(out, '.');
+    if (dot != NULL && dot != out) *dot = 0;
+}
+
+static int kzh_find_module(kzh_module* mods, int n, const char* tag) {
+    for (int i = 0; i < n; i++) if (strcmp(mods[i].tag, tag) == 0) return i;
+    return -1;
+}
+
+static int kzh_has_flag(const kzh_module* m, const char* flag) {
+    const char* p = m->flags;
+    size_t n = strlen(flag);
+    while (*p) {
+        while (*p == ',') p++;
+        const char* q = p;
+        while (*q && *q != ',') q++;
+        if ((size_t)(q - p) == n && strncmp(p, flag, n) == 0) return 1;
+        p = q;
+    }
+    return 0;
+}
+
+static int do_build(int argc, char** argv, const char* self) {
+    if (argc < 3) {
+        fprintf(stderr, "usage: %s build <entry.kaze> [-o output]\n", self);
+        return 2;
+    }
+    const char* entry = argv[2];
+    const char* output = NULL;
+    int force = 0;
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) output = argv[++i];
+        else if (strcmp(argv[i], "--force") == 0) force = 1;
+        else if (strcmp(argv[i], "--release") == 0) { /* same optimized build today */ }
+        else if (strncmp(argv[i], "--backend=", 10) == 0) { /* c99 is this path */ }
+        else { fprintf(stderr, "kaze-host: build: unknown argument %s\n", argv[i]); return 2; }
+    }
+
+    char entry_dir[KZH_PATH];
+    kzh_dirname(entry, entry_dir, sizeof entry_dir);
+
+    char* manifest_argv[] = { (char*)kaze_bin, (char*)"module-manifest", (char*)entry, NULL };
+    int mstatus = 0;
+    char* manifest = kzh_capture(manifest_argv, &mstatus);
+    if (mstatus != 0) {
+        fprintf(stderr, "kaze-host: build: module resolution failed\n%s", manifest);
+        free(manifest);
+        return mstatus;
+    }
+
+    static kzh_module mods[KZH_MAX_MODULES];
+    int nmods = 0;
+    char* save = NULL;
+    for (char* line = strtok_r(manifest, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
+        kzh_trim_nl(line);
+        if (line[0] == 0) continue;
+        char* f[8];
+        int nf = kzh_split_tabs(line, f, 8);
+        if (nf > 0 && strcmp(f[0], "E") == 0) {
+            fprintf(stderr, "kaze-host: build: %s\n", nf > 1 ? f[1] : line);
+            free(manifest);
+            return 1;
+        }
+        if (nf >= 6 && strcmp(f[0], "M") == 0) {
+            if (nmods >= KZH_MAX_MODULES) break;
+            kzh_module* m = &mods[nmods++];
+            memset(m, 0, sizeof *m);
+            snprintf(m->tag, sizeof m->tag, "%s", f[1]);
+            snprintf(m->path, sizeof m->path, "%s", f[2]);
+            snprintf(m->deps, sizeof m->deps, "%s", f[3]);
+            snprintf(m->iface, sizeof m->iface, "%s", f[4]);
+            snprintf(m->flags, sizeof m->flags, "%s", f[5]);
+        }
+    }
+    free(manifest);
+    if (nmods == 0) {
+        fprintf(stderr, "kaze-host: build: the module manifest is empty\n");
+        return 1;
+    }
+
+    char cache_dir[KZH_PATH], cache_root[KZH_PATH];
+    snprintf(cache_root, sizeof cache_root, "%s/.kaze-cache", entry_dir);
+    snprintf(cache_dir, sizeof cache_dir, "%s", cache_root);
+    if (mkdir(cache_dir, 0777) != 0 && errno != EEXIST) fail("mkdir .kaze-cache");
+
+    uint64_t compiler_id = kzh_hash_file(kaze_bin);
+    const char* rt_dir = kzh_runtime_dir();
+    const char* cc = getenv("KAZE_CC");
+    if (cc == NULL || cc[0] == 0) cc = "cc";
+
+    static char objs[KZH_MAX_MODULES][KZH_PATH];
+    int compiled = 0, cached = 0;
+
+    for (int i = 0; i < nmods; i++) {
+        kzh_module* m = &mods[i];
+        /* Key: source bytes, compiler identity, dependency interfaces, flags. */
+        uint64_t key = 1469598103934665603ULL;
+        key = kzh_hash_file(m->path);
+        key = kzh_fnv1a(&compiler_id, sizeof compiler_id, key);
+        key = kzh_hash_bytes(m->flags, key);
+        key = kzh_hash_bytes("c99", key);
+        char* depsave = NULL;
+        char depcopy[4 * KZH_PATH];
+        snprintf(depcopy, sizeof depcopy, "%s", m->deps);
+        for (char* d = strtok_r(depcopy, ",", &depsave); d != NULL; d = strtok_r(NULL, ",", &depsave)) {
+            int di = kzh_find_module(mods, nmods, d);
+            if (di >= 0) {
+                key = kzh_hash_bytes(mods[di].iface, key);
+                key = kzh_hash_bytes(mods[di].tag, key);
+            }
+        }
+        char keytext[32];
+        snprintf(keytext, sizeof keytext, "%016llx", (unsigned long long)key);
+
+        snprintf(objs[i], sizeof objs[i], "%s/%s.o", cache_root, m->tag);
+        char keypath[KZH_PATH], ifacepath[KZH_PATH], cpath[KZH_PATH];
+        snprintf(keypath, sizeof keypath, "%s/%s.key", cache_root, m->tag);
+        snprintf(ifacepath, sizeof ifacepath, "%s/%s.kziface", cache_root, m->tag);
+        snprintf(cpath, sizeof cpath, "%s/%s.c", cache_root, m->tag);
+
+        int fresh = 0;
+        if (!force && access(objs[i], R_OK) == 0) {
+            FILE* kf = fopen(keypath, "r");
+            if (kf != NULL) {
+                char have[64];
+                if (fgets(have, sizeof have, kf) != NULL) {
+                    kzh_trim_nl(have);
+                    if (strcmp(have, keytext) == 0) fresh = 1;
+                }
+                fclose(kf);
+            }
+        }
+        if (fresh) {
+            cached++;
+            continue;
+        }
+
+        /* 1. Ask the compiler for this module's translation unit. */
+        {
+            int fd = open(cpath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fd < 0) fail("open the emitted unit");
+            pid_t pid = fork();
+            if (pid < 0) fail("fork");
+            if (pid == 0) {
+                if (dup2(fd, STDOUT_FILENO) < 0) _exit(70);
+                char* unit_argv[] = { (char*)kaze_bin, (char*)"emit-c-unit", (char*)entry, m->tag, NULL };
+                execvp(unit_argv[0], unit_argv);
+                _exit(127);
+            }
+            int st = 0;
+            if (waitpid(pid, &st, 0) < 0) fail("waitpid");
+            close(fd);
+            int ust = WIFEXITED(st) ? WEXITSTATUS(st) : 70;
+            if (ust != 0) {
+                fprintf(stderr, "kaze-host: build: %s did not emit\n", m->path);
+                return ust;
+            }
+        }
+
+        /* 2. Compile it. */
+        {
+            char inc[KZH_PATH + 3];
+            snprintf(inc, sizeof inc, "-I%s", rt_dir);
+            char* cc_argv[16];
+            int n = 0;
+            cc_argv[n++] = (char*)cc;
+            cc_argv[n++] = "-std=c99";
+            cc_argv[n++] = "-O2";
+            cc_argv[n++] = "-w";
+            cc_argv[n++] = inc;
+            cc_argv[n++] = "-c";
+            cc_argv[n++] = cpath;
+            cc_argv[n++] = "-o";
+            cc_argv[n++] = objs[i];
+            cc_argv[n] = NULL;
+            int st = run_child(cc_argv);
+            if (st != 0) {
+                fprintf(stderr, "kaze-host: build: %s did not compile\n", m->path);
+                return st;
+            }
+        }
+
+        /* 3. Record the key only after a successful object write. */
+        {
+            FILE* kf = fopen(keypath, "w");
+            if (kf != NULL) { fprintf(kf, "%s\n", keytext); fclose(kf); }
+            FILE* inf = fopen(ifacepath, "w");
+            if (inf != NULL) { fprintf(inf, "%s\n", m->iface); fclose(inf); }
+        }
+        compiled++;
+    }
+
+    /* The root module is the one the manifest marks with the root flag; the
+     * compiler emits main there, so link order is otherwise irrelevant. */
+    char out_path[KZH_PATH];
+    if (output == NULL) {
+        kzh_basename_stem(entry, out_path, sizeof out_path);
+    } else {
+        snprintf(out_path, sizeof out_path, "%s", output);
+    }
+
+    int wants_http = 0, wants_tensor = 0, wants_parallel = 0;
+    for (int i = 0; i < nmods; i++) if (kzh_has_flag(&mods[i], "http")) wants_http = 1;
+    for (int i = 0; i < nmods; i++) {
+        char cpath[KZH_PATH];
+        snprintf(cpath, sizeof cpath, "%s/%s.c", cache_root, mods[i].tag);
+        if (kzh_file_has(cpath, "kaze_http.h")) wants_http = 1;
+        if (kzh_file_has(cpath, "kaze_tensor.h")) wants_tensor = 1;
+        if (kzh_file_has(cpath, "pthread.h")) wants_parallel = 1;
+    }
+
+    char rt_c[KZH_PATH];
+    snprintf(rt_c, sizeof rt_c, "%s/kaze_rt.c", rt_dir);
+    char** link_argv = (char**)calloc((size_t)nmods + 32, sizeof(char*));
+    if (link_argv == NULL) fail("calloc");
+    int ln = 0;
+    link_argv[ln++] = (char*)cc;
+    link_argv[ln++] = "-std=c99";
+    link_argv[ln++] = "-O2";
+    link_argv[ln++] = "-w";
+    for (int i = 0; i < nmods; i++) link_argv[ln++] = objs[i];
+    if (access(rt_c, R_OK) == 0) link_argv[ln++] = rt_c;
+    if (wants_tensor) {
+        /* The same archive closure build-cli.sh ships: the tensor unit can
+         * reference quantisation/GGUF helpers, so all six sources travel
+         * together. */
+        static const char* tensor_src[] = {
+            "kaze_tensor.c", "kaze_quant.c", "kaze_gguf.c",
+            "kaze_llama.c", "kaze_tokenizer.c", "kaze_autograd.c"
+        };
+        static char tensor_paths[6][KZH_PATH];
+        for (int i = 0; i < 6; i++) {
+            snprintf(tensor_paths[i], sizeof tensor_paths[i], "%s/%s", rt_dir, tensor_src[i]);
+            if (access(tensor_paths[i], R_OK) == 0) link_argv[ln++] = tensor_paths[i];
+        }
+    }
+    link_argv[ln++] = "-lm";
+    if (wants_http) link_argv[ln++] = "-lcurl";
+    if (wants_tensor || wants_parallel) link_argv[ln++] = "-pthread";
+    link_argv[ln++] = "-o";
+    link_argv[ln++] = out_path;
+    link_argv[ln] = NULL;
+    int lst = run_child(link_argv);
+    free(link_argv);
+    if (lst != 0) {
+        fprintf(stderr, "kaze-host: build: link failed\n");
+        return lst;
+    }
+    fprintf(stderr, "kaze-host: built %s (%d module%s, %d compiled, %d cached)\n",
+            out_path, nmods, nmods == 1 ? "" : "s", compiled, cached);
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -529,7 +1029,7 @@ static int do_lsp(void) {
         if (strcmp(method, "initialize") == 0) {
             char body[512];
             snprintf(body, sizeof body,
-                     "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true}}}", id_tok);
+                     "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true,\"definitionProvider\":true},\"serverInfo\":{\"name\":\"kaze-host-lsp\",\"version\":\"1.0\"}}}", id_tok);
             lsp_write(body);
         } else if (strcmp(method, "initialized") == 0) {
             /* notification: no reply */
@@ -592,12 +1092,21 @@ static int do_lsp(void) {
 }
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s run <file.kaze> [args...] | <compiler command> ...\n", argv[0]);
+        fprintf(stderr, "usage: %s run <file.kaze> [args...] | version | <compiler command> ...\n", argv[0]);
         return 2;
     }
     find_compiler(argv[0]);
-    if (strcmp(argv[1], "run") == 0) return do_run(argc, argv, argv[0]);
+    if (strcmp(argv[1], "run") == 0) {
+        for (int i = 2; i < argc; i++)
+            if (strcmp(argv[i], "--backend=native") == 0) return do_run_native(argc, argv, argv[0]);
+        return do_run(argc, argv, argv[0]);
+    }
     if (strcmp(argv[1], "lsp") == 0) return do_lsp();
+    if (strcmp(argv[1], "build") == 0) {
+        for (int i = 2; i < argc; i++)
+            if (strcmp(argv[i], "--backend=native") == 0) return do_build_native(argc, argv, argv[0]);
+        return do_build(argc, argv, argv[0]);
+    }
 
     /* `check` in the compiler prints diagnostics but always exits 0, so a pipeline
      * cannot see failure. The host watches the text and supplies the status the
@@ -622,22 +1131,31 @@ int main(int argc, char** argv) {
         if (waitpid(pid, &st, 0) < 0) fail("waitpid");
         close(fd);
         int compiler_status = WIFEXITED(st) ? WEXITSTATUS(st) : 70;
-        if (compiler_status != 0) { unlink(out_path); return compiler_status; }
+        /* The compiler exits 1 on diagnostics and still prints them. A spawn
+         * failure (127) or a crash keeps its own status. */
+        if (compiler_status != 0 && compiler_status != 1) { unlink(out_path); return compiler_status; }
         FILE* fp = fopen(out_path, "r");
-        int clean = 0, reported = 0;
+        int clean = 0, reported = 0, native_bad = 0;
         if (fp != NULL) {
             char line[1024];
             while (fgets(line, sizeof line, fp) != NULL) {
                 fputs(line, stdout);
                 if (strstr(line, "check: ok") != NULL) clean = 1;
                 if (strstr(line, "diagnostic(s)") != NULL) reported = 1;
+                if (strncmp(line, "native: ", 8) == 0 && strstr(line, "E_KAZE_") != NULL) native_bad = 1;
             }
             fclose(fp);
         }
         unlink(out_path);
-        if (reported) return 1;
+        if (reported || compiler_status == 1) return 1;
         (void)clean;   /* unknown text: do not invent a failure */
         return 0;
+    }
+
+    /* Normalize version flags into the compiler's `version` subcommand. */
+    if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0) {
+        char* ver_argv[] = { (char*)kaze_bin, (char*)"version", NULL };
+        return run_child(ver_argv);
     }
 
     /* everything else goes to the compiler unchanged */

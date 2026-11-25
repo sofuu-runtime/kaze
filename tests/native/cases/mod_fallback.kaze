@@ -1,0 +1,5 @@
+action remainder(a: num, b: num) -> num:
+    return a % b otherwise 7
+
+action main() -> num:
+    return remainder(10, 3) + remainder(10, 0)

@@ -1,0 +1,4 @@
+# No main and no argument: the implicit entry is `helper`, so the missing-value
+# diagnostic must name `helper`, not `main`.
+action helper(x: num) -> num:
+    return x + 1

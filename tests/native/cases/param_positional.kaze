@@ -1,0 +1,4 @@
+# Positional argv is the last resolution layer before piped stdin.
+action main(total: num):
+    let left = total % 4
+    return left

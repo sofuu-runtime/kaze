@@ -14,3 +14,14 @@ dist/kaze_parallel_bench
 # python caches from the sitl harness
 __pycache__/
 *.pyc
+
+# Native backend build products
+/dist/kaze_native_rt.o
+/dist/qbe/obj/
+/dist/qbe/*/*.o
+/dist/qbe/libqbe.a
+/dist/qbe/qbe
+/dist/lib/
+
+# Incremental multi-file module cache (content-addressed, never committed)
+.kaze-cache/

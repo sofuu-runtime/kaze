@@ -1,0 +1,2 @@
+QBE 1.2 (commit 2d683e0, github.com/omenos/mirror-qbe tag v1.2)
+Vendored unmodified except for the embedding wrapper in qbe_embed.c.
