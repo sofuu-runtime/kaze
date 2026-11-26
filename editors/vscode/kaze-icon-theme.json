@@ -1,0 +1,14 @@
+{
+  "iconDefinitions": {
+    "_kaze": {
+      "iconPath": "./icon.png"
+    }
+  },
+  "fileExtensions": {
+    "kaze": "_kaze"
+  },
+  "languageIds": {
+    "kaze": "_kaze"
+  },
+  "showLanguageModeIcons": true
+}

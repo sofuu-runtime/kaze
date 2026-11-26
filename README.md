@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/kaze-logo.png" width="128" alt="Kaze Logo" />
+</p>
+
 # Kaze
 
 Kaze is a programming language for AI and machines.

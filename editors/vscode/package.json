@@ -4,6 +4,7 @@
   "description": "Kaze 1.0 language support: syntax highlighting, diagnostics, completion, hover, symbols and formatting via the pure-C99 Kaze toolchain.",
   "version": "1.0.0",
   "publisher": "sofuu-runtime",
+  "icon": "icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -41,7 +42,18 @@
         "extensions": [
           ".kaze"
         ],
+        "icon": {
+          "light": "./icon.png",
+          "dark": "./icon.png"
+        },
         "configuration": "./language-configuration.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "kaze-icons",
+        "label": "Kaze File Icons",
+        "path": "./kaze-icon-theme.json"
       }
     ],
     "grammars": [
