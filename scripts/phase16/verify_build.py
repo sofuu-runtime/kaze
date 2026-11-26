@@ -67,6 +67,23 @@ def main():
     os.makedirs(outdir, exist_ok=True)
     name = os.path.splitext(os.path.basename(source))[0]
 
+    # Semantic cache key: comments and whitespace cannot change the AST hash,
+    # so a cosmetic edit reuses the solver verdicts for the same obligations.
+    ast = run([compiler, "ast-hash", source])
+    ast_hash = ""
+    for line in ast.stdout.splitlines():
+        if line.startswith("module "):
+            ast_hash = line.split()[1]
+            break
+    cache_dir = os.path.join(outdir, ".proof-cache")
+    cache_path = os.path.join(cache_dir, ast_hash + ".json") if ast_hash else ""
+    cached_proof = None
+    if cache_path and os.path.exists(cache_path):
+        try:
+            cached_proof = json.load(open(cache_path))
+        except Exception:
+            cached_proof = None
+
     proof = run([verifier, "--arg", "source=" + source, "--arg", "mode=proof"])
     if proof.returncode != 0 or not proof.stdout.startswith("kaze-proof 1"):
         print("verify_build: FAIL (verifier proof)")
@@ -111,19 +128,46 @@ def main():
     verdict_path = os.path.join(outdir, name + ".verdicts.json")
     bridge = os.path.join(os.path.dirname(os.path.abspath(__file__)), "z3_bridge.py")
     solver_used = 0
-    pb = run([sys.executable, bridge, os.path.join(outdir, name + ".smt2"), verdict_path])
-    if pb.returncode not in (0, 77):
-        print("verify_build: FAIL (solver: %s)" % (pb.stdout.strip().splitlines()[-1][:200] if pb.stdout.strip() else pb.stderr[:200]))
-        return 1
-    if pb.returncode == 0 and os.path.exists(verdict_path):
+    proof_cache = "miss"
+    # Current obligation line numbers, so cached verdicts survive comment lines.
+    current_lines = {}
+    for raw in proof.stdout.splitlines():
+        mo = OBL.match(raw)
+        if mo:
+            idx, kind, routine, line, status = mo.groups()
+            current_lines[(idx, kind, routine)] = int(line)
+    if cached_proof is not None and cached_proof.get("solver_used") == 1:
+        proof_cache = "hit"
         solver_used = 1
-        data = json.load(open(verdict_path))
+        data = {"verdicts": cached_proof.get("verdicts", [])}
         for v in data.get("verdicts", []):
             if not v["kind"].startswith("fallback-"):
                 continue
-            st = line_stats.setdefault(int(v["line"]), {"total": 0, "proven": 0, "solver": 0})
+            line = current_lines.get((str(v.get("index")), v["kind"], v["routine"]), v.get("line"))
+            st = line_stats.setdefault(int(line), {"total": 0, "proven": 0, "solver": 0})
             if v["verdict"] == "unsat":
                 st["solver"] += 1
+        if os.path.exists(verdict_path) is False:
+            json.dump(data, open(verdict_path, "w"))
+    else:
+        pb = run([sys.executable, bridge, os.path.join(outdir, name + ".smt2"), verdict_path])
+        if pb.returncode not in (0, 77):
+            print("verify_build: FAIL (solver: %s)" % (pb.stdout.strip().splitlines()[-1][:200] if pb.stdout.strip() else pb.stderr[:200]))
+            return 1
+        if pb.returncode == 0 and os.path.exists(verdict_path):
+            solver_used = 1
+            data = json.load(open(verdict_path))
+            for v in data.get("verdicts", []):
+                if not v["kind"].startswith("fallback-"):
+                    continue
+                st = line_stats.setdefault(int(v["line"]), {"total": 0, "proven": 0, "solver": 0})
+                if v["verdict"] == "unsat":
+                    st["solver"] += 1
+        if cache_path and solver_used == 1:
+            os.makedirs(cache_dir, exist_ok=True)
+            json.dump({"ast_hash": ast_hash, "solver_used": 1,
+                       "verdicts": json.load(open(verdict_path)).get("verdicts", [])},
+                      open(cache_path, "w"))
     if solver_used == 0:
         # No solver: fall back to the embedded prover's verdict, which is what the
         # pre-solver version of this file did.
@@ -219,6 +263,7 @@ def main():
         "obligations_reachable": reachable_obls,
         "sites_with_reachable_fallback": len(reachable_lines),
         "solver": solver_used,
+        "proof_cache": proof_cache,
         "elided_lines": sorted(elidable),
         "output_equal": same,
         "output": raw_run.stdout.strip(),

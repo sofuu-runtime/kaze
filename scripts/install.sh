@@ -112,6 +112,10 @@ if [ -f "$ROOT/dist/grammars/kaze.gbnf" ]; then
     install -m 0644 "$ROOT/dist/grammars/kaze.gbnf" \
         "$DEST/share/kaze/grammars/kaze.gbnf"
 fi
+if [ -f "$ROOT/dist/grammars/kaze_machine.gbnf" ]; then
+    install -m 0644 "$ROOT/dist/grammars/kaze_machine.gbnf" \
+        "$DEST/share/kaze/grammars/kaze_machine.gbnf"
+fi
 
 say "installed $(wc -c < "$DEST/bin/kaze" | tr -d ' ') bytes to $DEST/bin/kaze"
 if [ -z "$DESTDIR" ]; then

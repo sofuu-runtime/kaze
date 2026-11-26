@@ -164,18 +164,12 @@ def parse_trace(text: str) -> list:
 def build_and_run(tmp: pathlib.Path) -> str:
     src = tmp / "harness.kaze"
     src.write_text(harness_source(), encoding="utf-8")
-    bundler = ROOT / "scripts" / "bundle-imports.py"
-    flat = tmp / "flat.kaze"
-    bundled = subprocess.run([sys.executable, str(bundler), str(src)], capture_output=True, text=True)
-    if bundled.returncode != 0:
-        raise SystemExit("diff heap: bundling failed\n" + bundled.stderr[-2000:])
-    flat.write_text(bundled.stdout, encoding="utf-8")
 
-    checked = subprocess.run([str(KAZE), "check", str(flat)], capture_output=True, text=True)
+    checked = subprocess.run([str(KAZE), "check", str(src)], capture_output=True, text=True)
     if "E_KAZE" in checked.stdout + checked.stderr:
         raise SystemExit("diff heap: the harness does not check\n" + (checked.stdout + checked.stderr)[-2000:])
 
-    emitted = subprocess.run([str(KAZE), "emit-c", str(flat)], capture_output=True, text=True)
+    emitted = subprocess.run([str(KAZE), "emit-c", str(src)], capture_output=True, text=True)
     if emitted.returncode != 0:
         raise SystemExit("diff heap: emit-c failed\n" + emitted.stderr[-2000:])
     cfile = tmp / "harness.c"

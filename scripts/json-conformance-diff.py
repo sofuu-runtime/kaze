@@ -91,24 +91,12 @@ def main() -> int:
     lines.append("    return 0")
     program = "\n".join(lines) + "\n"
 
-    # The loader resolves 'use' relative to the importing file, so the generated program
-    # has to sit where the suites sit. It is named so the suite glob cannot pick it up.
-    src = os.path.join(ROOT, "tests", "_json_diff_tmp.kaze")
     with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "json_diff.kaze")
+        prog_text = program.replace('use "./../lib/json.kaze"', f'use "{os.path.join(ROOT, "lib", "json.kaze")}"')
         with open(src, "w", encoding="utf-8") as fh:
-            fh.write(program)
-        flat = os.path.join(tmp, "flat.kaze")
-        try:
-            r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "bundle-imports.py"), src],
-                               capture_output=True, text=True)
-            if r.returncode != 0:
-                print("json-diff: bundle failed\n" + r.stderr, file=sys.stderr)
-                return 2
-            with open(flat, "w", encoding="utf-8") as fout:
-                fout.write(r.stdout)
-        finally:
-            os.unlink(src)
-        run = subprocess.run([HOST, "run", flat, "--ticks", "8"], capture_output=True, text=True)
+            fh.write(prog_text)
+        run = subprocess.run([HOST, "run", src, "--ticks", "8"], capture_output=True, text=True)
     if run.returncode != 0:
         print("json-diff: the program failed\n" + run.stdout[-2000:] + run.stderr[-2000:], file=sys.stderr)
         return 2

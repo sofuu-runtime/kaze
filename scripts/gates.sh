@@ -49,6 +49,7 @@ run 'hardware buses (phase 14)' bash scripts/phase14-gates.sh
 run 'formal verification (phase 16)' bash scripts/phase16-gates.sh
 run 'unboxing, views, dce (phase 17)' env KAZE_P17_SKIP_FIXPOINT=1 bash scripts/phase17-gates.sh
 run 'formatter' bash scripts/fmt-check.sh
+run 'human syntax (phase 15)' bash scripts/phase15-syntax-gates.sh
 run 'native backend' bash scripts/backend-diff.sh --full
 run 'phase 7 strict gates' bash scripts/phase7-gates.sh
 run 'concurrency (phase 13)' bash scripts/phase13-gates.sh

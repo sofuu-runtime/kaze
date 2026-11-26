@@ -1,0 +1,15 @@
+action main() -> num:
+    let total = 0
+    for x in [1, 2, 3]:
+        total += x
+    if total == 6:
+        total += 1
+    elif total == 7:
+        total -= 2
+    else:
+        total *= 2
+    if len([10, 20]) == 2:
+        total += 10
+    repeat 2 times:
+        total += 1
+    return total

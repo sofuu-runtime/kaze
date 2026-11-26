@@ -24,10 +24,9 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 inc=$(zig cc -print-file-name=include 2>/dev/null)
 
-python3 scripts/bundle-imports.py "$SRC" > "$tmp/prog.kaze" || { echo "hw-run-qemu: bundle failed" >&2; exit 2; }
-"$KAZE" check "$tmp/prog.kaze" > "$tmp/check.out" 2>&1
+"$KAZE" check "$SRC" > "$tmp/check.out" 2>&1
 if grep -qE 'E_KAZE' "$tmp/check.out"; then grep -E 'E_KAZE' "$tmp/check.out" >&2; exit 2; fi
-"$KAZE" emit-c "$tmp/prog.kaze" > "$tmp/prog.c" || { echo "hw-run-qemu: emit failed" >&2; exit 2; }
+"$KAZE" emit-c "$SRC" > "$tmp/prog.c" || { echo "hw-run-qemu: emit failed" >&2; exit 2; }
 
 # -mcpu=cortex_m3 is not a tuning hint here, it is correctness: emitted double arithmetic
 # calls into compiler-rt, and the default profile uses UMAAL, which a Cortex-M3 does not

@@ -258,12 +258,12 @@ if ! build_out=$(KAZE_BIN="$compiler" KAZE_RT_DIR="$ROOT/dist" "$host" build "$g
 else
     clean_ns=$(( $(now_ns) - start ))
     cp "$g6/prog" "$g6/prog.clean"
-    # A private body edit with an unchanged public interface: exactly one object
-    # may be rebuilt, and the linked binary must be byte-identical. Three
-    # independent probes take the fastest warm rebuild so one noisy scheduling
-    # hiccup cannot decide a speed gate on a loaded machine.
+    # Plan 16.5 makes the object key semantic: comments and whitespace cannot
+    # change the ast-hash, so the three cosmetic probes must rebuild nothing.
+    # Three independent probes take the fastest warm rebuild so one noisy
+    # scheduling hiccup cannot decide a speed gate on a loaded machine.
     warm_ns=0
-    one=1
+    zero=1
     same=1
     for probe in 0 1 2; do
         printf '\n# incremental-cache probe %s: private comment only\n' "$probe" >> "$g6/m$probe.kaze"
@@ -273,15 +273,20 @@ else
         if [ "$warm_ns" -eq 0 ] || [ "$took" -lt "$warm_ns" ]; then
             warm_ns=$took
         fi
-        printf '%s' "$build_out" | grep -q '1 compiled' || one=0
+        printf '%s' "$build_out" | grep -q '0 compiled' || zero=0
         cmp -s "$g6/prog" "$g6/prog.clean" || same=0
     done
+    # A private body edit with an unchanged interface must rebuild exactly one
+    # object; the linked binary is allowed to differ (the helper's value does).
+    perl -pi -e 's/return 4 \* 2/return (4 + 4)/' "$g6/m4.kaze"
+    build_body=$(KAZE_BIN="$compiler" KAZE_RT_DIR="$ROOT/dist" "$host" build "$g6/main.kaze" -o "$g6/prog" 2>&1)
+    printf '%s' "$build_body" | grep -q '1 compiled' || zero=0
     ratio=$(python3 -c "print('%.2f' % ($warm_ns / max($clean_ns, 1)))")
     fast=$(python3 -c "print(1 if $warm_ns * 5 <= $clean_ns else 0)")
-    if [ "$one" -eq 1 ] && [ "$same" -eq 1 ] && [ "$fast" -eq 1 ]; then
-        pass 'M6 incremental cache' "1 object rebuilt, identical binary, ${ratio}x clean"
+    if [ "$zero" -eq 1 ] && [ "$same" -eq 1 ] && [ "$fast" -eq 1 ]; then
+        pass 'M6 incremental cache' "0 objects on comment edits, 1 on a body edit, ${ratio}x clean"
     else
-        fail 'M6 incremental cache' "one=$one identical=$same ratio=$ratio" "$build_out"
+        fail 'M6 incremental cache' "zero=$zero identical=$same ratio=$ratio" "$build_body"
     fi
 fi
 

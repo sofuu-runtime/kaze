@@ -214,6 +214,9 @@ if expect_rc 70 "$GATE_BIN" run "$WORK/trap.kaze" --arg x=0; then
 fi
 if expect_rc 0 "$GATE_BIN" test; then
     expected_suites=$(find "$ROOT/tests/stdlib" -name '*_test.kaze' | wc -l | tr -d ' ')
+    for lib in "$ROOT"/lib/*.kaze; do
+        [ -f "$lib" ] && grep -q '^test ' "$lib" && expected_suites=$((expected_suites + 1))
+    done
     if grep -q "kaze test: $expected_suites passed, 0 failed" "$WORK/last.out"; then
         ok "kaze test runs all $expected_suites standard library suites cleanly"
     else
@@ -328,6 +331,112 @@ KZ
         bad "installed binary cannot resolve use \"std/...\""
         cat "$WORK/stdlib4.out" | head -10 | sed 's/^/      /'
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Incremental .kaze-cache/, --target forwarding, and compiler/lsp.kaze delegation.
+# ---------------------------------------------------------------------------
+mkdir -p "$WORK/inc"
+cat >"$WORK/inc/a.kaze" <<'KZ'
+pub action alpha() -> num:
+    return 10
+KZ
+cat >"$WORK/inc/b.kaze" <<'KZ'
+pub action beta() -> num:
+    return 32
+KZ
+cat >"$WORK/inc/main.kaze" <<'KZ'
+use "./a.kaze" as a
+use "./b.kaze" as b
+
+action main() -> num:
+    return a.alpha() + b.beta()
+KZ
+if "$GATE_BIN" build "$WORK/inc/main.kaze" -o "$WORK/inc/prog" >"$WORK/inc1.out" 2>&1 &&
+   [ -d "$WORK/inc/.kaze-cache" ] &&
+   grep -q '3 modules, 3 compiled, 0 cached' "$WORK/inc1.out" &&
+   [ "$("$WORK/inc/prog")" = "42" ]; then
+    printf '\n# warm rebuild comment\n' >>"$WORK/inc/a.kaze"
+    if "$GATE_BIN" build "$WORK/inc/main.kaze" -o "$WORK/inc/prog" >"$WORK/inc2.out" 2>&1 &&
+       grep -q '3 modules, 0 compiled, 3 cached' "$WORK/inc2.out" &&
+       [ "$("$WORK/inc/prog")" = "42" ]; then
+        perl -pi -e 's/return 10/return (10 + 1)/' "$WORK/inc/a.kaze"
+        if "$GATE_BIN" build "$WORK/inc/main.kaze" -o "$WORK/inc/prog" >"$WORK/inc3.out" 2>&1 &&
+           grep -q '3 modules, 1 compiled, 2 cached' "$WORK/inc3.out" &&
+           [ "$("$WORK/inc/prog")" = "43" ]; then
+            ok "bin/kaze build uses .kaze-cache/ semantically"
+        else
+            bad "bin/kaze incremental semantic rebuild"
+            cat "$WORK/inc3.out" | head -10
+        fi
+    else
+        bad "bin/kaze incremental cosmetic reuse"
+        cat "$WORK/inc2.out" | head -10
+    fi
+else
+    bad "bin/kaze incremental cold build"
+    cat "$WORK/inc1.out" | head -10
+fi
+
+if expect_rc 2 "$GATE_BIN" build --target=arm64 "$WORK/inc/main.kaze" -o "$WORK/inc/tfail"; then
+    require_grep 'requires --backend=native' "$WORK/last.err" "c99 rejects non-native --target cleanly"
+fi
+if [ -x "$ROOT/bin/kaze-native" ] && [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+    if KAZE_NATIVE_BIN="$ROOT/bin/kaze-native" "$GATE_BIN" run --backend=native --target=arm64_apple \
+            "$WORK/inc/main.kaze" >"$WORK/nat.out" 2>&1 &&
+       [ "$(tail -n 1 "$WORK/nat.out")" = "43" ]; then
+        ok "kaze run forwards --target=arm64_apple to kaze-native"
+    else
+        bad "kaze run --backend=native --target=arm64_apple"
+        cat "$WORK/nat.out" | head -10
+    fi
+fi
+
+if python3 - "$GATE_BIN" "$WORK/inc" <<'PY'
+import json, os, subprocess, sys
+
+def frame(m):
+    b = json.dumps(m).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+def decode(buf):
+    out, i = [], 0
+    while i < len(buf):
+        j = buf.find(b"\r\n\r\n", i)
+        if j < 0:
+            break
+        hdr = buf[i:j].decode("ascii")
+        cl = [int(l.split(":")[1].strip()) for l in hdr.splitlines() if l.lower().startswith("content-length:")][0]
+        out.append(json.loads(buf[j+4:j+4+cl].decode("utf-8")))
+        i = j + 4 + cl
+    return out
+
+gate_bin, inc_dir = sys.argv[1], sys.argv[2]
+main_path = os.path.join(inc_dir, "main.kaze")
+src = 'use "./a.kaze" as a\n\npub action twice(x: num) -> num:\n    return a.alpha() + x\n\naction main() -> num:\n    return twice(32)\n'
+uri = "file://" + main_path
+payload = b"".join(frame(m) for m in [
+    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    {"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {"textDocument": {"uri": uri, "languageId": "kaze", "version": 1, "text": src}}},
+    {"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {"textDocument": {"uri": uri}, "position": {"line": 6, "character": 12}}},
+    {"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition", "params": {"textDocument": {"uri": uri}, "position": {"line": 6, "character": 12}}},
+    {"jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": None},
+    {"jsonrpc": "2.0", "method": "exit"},
+])
+r = subprocess.run([gate_bin, "lsp"], input=payload, capture_output=True, timeout=15)
+assert r.returncode == 0, r.stderr
+replies = decode(r.stdout)
+diags = [m for m in replies if m.get("method") == "textDocument/publishDiagnostics"]
+assert diags and diags[0]["params"]["diagnostics"] == [], diags
+hover = [m for m in replies if m.get("id") == 2][0]["result"]
+assert "action twice(x: num)" in hover["contents"]["value"], hover
+defn = [m for m in replies if m.get("id") == 3][0]["result"]
+assert defn["range"]["start"]["line"] == 2 and defn["range"]["start"]["character"] == 11, defn
+PY
+then
+    ok "kaze lsp delegates hover/definition to compiler/lsp.kaze with multi-file diagnostics"
+else
+    bad "kaze lsp delegation"
 fi
 
 # ---------------------------------------------------------------------------

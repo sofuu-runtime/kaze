@@ -112,11 +112,7 @@ def run_no_backend_case(tmp, failures):
                   '    let r = http_get("http://127.0.0.1:1/x")\n'
                   '    log.info("error=" + r.error)\n'
                   '    return 0\n' % ROOT)
-    bundle = os.path.join(tmp, "no_backend.bundle.kaze")
-    with open(bundle, "w") as out:
-        subprocess.run(["python3", os.path.join(ROOT, "scripts", "bundle-imports.py"), src],
-                       stdout=out, check=True)
-    emitted = subprocess.run([KAZE, "emit-c", bundle], stdout=subprocess.PIPE,
+    emitted = subprocess.run([KAZE, "emit-c", src], stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True)
     if emitted.returncode != 0:
         print("FAIL  a build without libcurl is refused as E_HTTP_BACKEND")
@@ -185,10 +181,7 @@ def main():
         print(openssl.stdout[-400:], file=sys.stderr)
         return 2
 
-    BUNDLE = os.path.join(tmp, "http_test.bundle.kaze")
-    with open(BUNDLE, "w") as out:
-        subprocess.run(["python3", os.path.join(ROOT, "scripts", "bundle-imports.py"), TEST],
-                       stdout=out, check=True)
+    BUNDLE = TEST
 
     http_srv = serve(0)
     https_srv = serve(0, cert, key)

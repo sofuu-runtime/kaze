@@ -303,22 +303,13 @@ def build_and_run(cases, workdir):
     src = os.path.join(workdir, "harness.kaze")
     with open(src, "w", encoding="utf-8") as fh:
         fh.write(harness(cases))
-    bundle = subprocess.run(
-        [sys.executable, os.path.join(ROOT, "scripts", "bundle-imports.py"), src],
-        capture_output=True, text=True)
-    if bundle.returncode != 0:
-        print("diff url: bundling the harness failed\n" + bundle.stderr, file=sys.stderr)
-        return None
-    flat = os.path.join(workdir, "flat.kaze")
-    with open(flat, "w", encoding="utf-8") as fh:
-        fh.write(bundle.stdout)
-    check = subprocess.run([KAZE, "check", flat], capture_output=True, text=True)
+    check = subprocess.run([KAZE, "check", src], capture_output=True, text=True)
     if "E_KAZE" in check.stdout + check.stderr:
         print("diff url: the harness does not check\n" + check.stdout + check.stderr, file=sys.stderr)
         return None
     cpath = os.path.join(workdir, "harness.c")
     with open(cpath, "w", encoding="utf-8") as fh:
-        emit = subprocess.run([KAZE, "emit-c", flat], stdout=fh, stderr=subprocess.PIPE, text=True)
+        emit = subprocess.run([KAZE, "emit-c", src], stdout=fh, stderr=subprocess.PIPE, text=True)
     if emit.returncode != 0:
         print("diff url: emit-c failed\n" + emit.stderr[-2000:], file=sys.stderr)
         return None

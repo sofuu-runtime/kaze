@@ -1,0 +1,6 @@
+action main() -> num:
+    let total = 0
+    for x in [1, 2, 3]:
+        guard x != 2 otherwise continue
+        total += x
+    return total

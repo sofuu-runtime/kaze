@@ -24,7 +24,6 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 KAZE = os.path.join(ROOT, "bin", "kaze")
-BUNDLE = os.path.join(ROOT, "scripts", "bundle-imports.py")
 DIST = os.path.join(ROOT, "dist")
 RT = os.path.join(DIST, "kaze_rt.c")
 SEED = 20261125
@@ -254,12 +253,14 @@ def expected(index, case):
 # ---- harness -------------------------------------------------------------------
 
 DSP_LIB = os.path.join(ROOT, "lib", "dsp.kaze")
+MATRIX_LIB = os.path.join(ROOT, "lib", "matrix.kaze")
 
 
 def build_program(cases):
     lines = [
         "needs: log",
         "",
+        'use "%s"' % MATRIX_LIB,
         'use "%s"' % DSP_LIB,
         "",
         "action sf1(x):",
@@ -319,19 +320,11 @@ def run_harness(program):
         env["ASAN_OPTIONS"] = "detect_leaks=0"
     with tempfile.TemporaryDirectory() as tmp:
         raw = os.path.join(tmp, "harness.kaze")
-        flat = os.path.join(tmp, "harness_flat.kaze")
         cfile = os.path.join(tmp, "harness.c")
         exe = os.path.join(tmp, "harness")
         with open(raw, "w", encoding="utf-8") as fh:
             fh.write(program)
-        bundle = subprocess.run([sys.executable, BUNDLE, raw],
-                                capture_output=True, text=True)
-        if bundle.returncode != 0:
-            print("diff_dsp: bundling failed\n" + bundle.stderr, file=sys.stderr)
-            return None
-        with open(flat, "w", encoding="utf-8") as fh:
-            fh.write(bundle.stdout)
-        emit = subprocess.run([KAZE, "emit-c", flat], capture_output=True, text=True)
+        emit = subprocess.run([KAZE, "emit-c", raw], capture_output=True, text=True)
         if emit.returncode != 0 or not emit.stdout:
             print("diff_dsp: emit-c failed\n" + emit.stderr[:2000], file=sys.stderr)
             return None

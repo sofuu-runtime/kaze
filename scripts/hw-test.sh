@@ -30,15 +30,11 @@ for src in tests/hw/*_test.kaze; do
     [ -f "$src" ] || continue
     name=$(basename "$src" _test.kaze)
     if [ -n "$ONLY" ] && [ "$name" != "$ONLY" ]; then continue; fi
-    flat="$tmp/$name.kaze"
-    if ! python3 scripts/bundle-imports.py "$src" > "$flat" 2>"$tmp/$name.bundle.err"; then
-        echo "FAIL  $name (bundle)"; head -3 "$tmp/$name.bundle.err" | sed 's/^/    /'; fail=$((fail + 1)); continue
-    fi
-    "$KAZE" check "$flat" > "$tmp/$name.check" 2>&1
+    "$KAZE" check "$src" > "$tmp/$name.check" 2>&1
     if grep -qE 'E_KAZE' "$tmp/$name.check"; then
         echo "FAIL  $name (check)"; grep -E 'E_KAZE' "$tmp/$name.check" | head -3 | sed 's/^/    /'; fail=$((fail + 1)); continue
     fi
-    if ! "$KAZE" emit-c "$flat" > "$tmp/$name.c" 2>"$tmp/$name.emit.err"; then
+    if ! "$KAZE" emit-c "$src" > "$tmp/$name.c" 2>"$tmp/$name.emit.err"; then
         echo "FAIL  $name (emit)"; head -3 "$tmp/$name.emit.err" | sed 's/^/    /'; fail=$((fail + 1)); continue
     fi
     if ! "$CC" -std=c99 -g -O1 -w -I dist "$tmp/$name.c" dist/kaze_rt.c dist/kaze_board_sim.c \

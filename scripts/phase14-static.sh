@@ -23,8 +23,7 @@ LIMIT=${3:-192}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 inc=$(zig cc -print-file-name=include 2>/dev/null)
-python3 scripts/bundle-imports.py "$SRC" > "$tmp/p.kaze" || exit 1
-bin/kaze emit-c "$tmp/p.kaze" > "$tmp/p.c" || exit 1
+bin/kaze emit-c "$SRC" > "$tmp/p.c" || exit 1
 build() { zig cc -target thumb-freestanding-eabi -mcpu=cortex_m3 -Os -ffreestanding -nostdinc \
   -isystem dist/baremetal-include -isystem "$inc" -I dist \
   -DKAZE_NO_HEAP -DKAZE_NO_SIGNALS -DKAZE_SIM_METAL -DKAZE_USE_DOUBLE -w -c "$1" -o "$2"; }
@@ -50,8 +49,11 @@ if [ -z "$DIS" ]; then echo "phase14-static: no disassembler found" >&2; exit 1;
 "$DIS" --disassemble "$tmp/p.elf" > "$tmp/dis.txt" 2>/dev/null || { echo "phase14-static: disassembly failed" >&2; exit 1; }
 
 # llvm-objdump and GNU objdump both print the label as "00003444 <symbol>:".
-count=$(awk -v fn="kaze_fn_$ROUTINE" '
-  index($0, "<" fn ">:") { inside = 1; next }
+# A routine pulled in through a module is emitted with the module's mangled
+# prefix (kaze_fn_kz_m_<tag>__pwm_set_duty_permille), so match the symbol's
+# suffix as well as the exact name.
+count=$(awk -v fn="kaze_fn_$ROUTINE" -v rn="$ROUTINE" '
+  index($0, "<" fn ">:") || index($0, "_" rn ">:") { inside = 1; next }
   inside && /^[0-9a-f]+ <.*>:$/ { exit }
   inside && /\t/ { n++ }
   END { print n + 0 }' "$tmp/dis.txt")

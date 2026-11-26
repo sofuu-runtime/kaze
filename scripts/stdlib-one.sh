@@ -24,26 +24,21 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 printf '{"deny":[]}\n' > "$tmp/policy.json"
 
-if ! python3 scripts/bundle-imports.py "$src" > "$tmp/$name.kaze" 2>"$tmp/bundle.err"; then
-    echo "FAIL $name (bundle)"; sed 's/^/    /' "$tmp/bundle.err" | head -5; exit 1
-fi
-# 'kaze check' prints its diagnostics and exits 0 either way, so the output is what has to
-# be read: an exit status alone was letting a program with a hard diagnostic through as
-# "check: ok", which is how a missing fallback reached a suite unnoticed once.
-"$KAZE" check "$tmp/$name.kaze" > "$tmp/check.out" 2>&1
+abs_src="$ROOT/$src"
+"$KAZE" check "$abs_src" > "$tmp/check.out" 2>&1
 if grep -qE 'E_KAZE' "$tmp/check.out"; then
     echo "FAIL $name (check)"; grep -E 'E_KAZE' "$tmp/check.out" | head -20 | sed 's/^/    /'; exit 1
 fi
 echo "check: ok"
 
-out=$( cd "$tmp" && "$HOST" run "$tmp/$name.kaze" --ticks 8 2>&1 )
+out=$( cd "$tmp" && "$HOST" run "$abs_src" --ticks 8 2>&1 )
 rc=$?
 printf '%s\n' "$out" | sed 's/^\[info\] //' | grep -E '^(OK|FAIL)' | head -20 | sed 's/^/    /'
 if [ "$rc" -ne 0 ]; then echo "FAIL $name (run exit $rc)"; printf '%s\n' "$out" | tail -20 | sed 's/^/    /'; exit 1; fi
 if printf '%s\n' "$out" | grep -q 'FAIL'; then echo "FAIL $name (assertion)"; exit 1; fi
 
 if [ "$ASAN" = "1" ]; then
-    if "$KAZE" emit-c "$tmp/$name.kaze" > "$tmp/$name.c" 2>/dev/null && \
+    if "$KAZE" emit-c "$abs_src" > "$tmp/$name.c" 2>/dev/null && \
        "$CC" -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
             -I dist "$tmp/$name.c" dist/kaze_rt.c -lm -o "$tmp/$name.asan" 2>"$tmp/asan.cc"; then
         leakopt="detect_leaks=1"

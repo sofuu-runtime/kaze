@@ -136,13 +136,8 @@ if [ "$FULL" -eq 1 ] && [ "$ONLY" = '' ]; then
         [ -f "$src" ] || continue
         name=$(basename "$src" _test.kaze)
         full_cases=$((full_cases + 1))
-        if ! python3 "$ROOT/scripts/bundle-imports.py" "$src" >"$ftmp/$name.kaze" 2>"$ftmp/$name.bundle.err"; then
-            full_failed=$((full_failed + 1))
-            printf 'FULL FAIL   %-22s bundle failed\n' "$name"
-            continue
-        fi
-        "$NATIVE" run "$ftmp/$name.kaze" --ticks 4 >"$ftmp/$name.n.out" 2>"$ftmp/$name.n.err"; nrc=$?
-        "$KAZE" run "$ftmp/$name.kaze" --ticks 4 >"$ftmp/$name.c.out" 2>"$ftmp/$name.c.err"; crc=$?
+        "$NATIVE" run "$src" --ticks 4 >"$ftmp/$name.n.out" 2>"$ftmp/$name.n.err"; nrc=$?
+        "$KAZE" run "$src" --ticks 4 >"$ftmp/$name.c.out" 2>"$ftmp/$name.c.err"; crc=$?
         if [ "$nrc" -eq "$crc" ] && cmp -s "$ftmp/$name.n.out" "$ftmp/$name.c.out" && cmp -s "$ftmp/$name.n.err" "$ftmp/$name.c.err"; then
             full_passed=$((full_passed + 1))
         else

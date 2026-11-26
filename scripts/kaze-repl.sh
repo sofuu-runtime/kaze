@@ -30,7 +30,6 @@ cd "$(dirname "$0")/.." || exit 2
 ROOT=$(pwd)
 KAZE="${KAZE_BIN:-$ROOT/bin/kaze}"
 HOST="${KAZE_HOST:-$ROOT/bin/kaze-host}"
-BUNDLE="$ROOT/scripts/bundle-imports.py"
 CC=${CC:-cc}
 
 if [ ! -x "$KAZE" ]; then echo "kaze-repl: no compiler at $KAZE" >&2; exit 2; fi
@@ -78,21 +77,11 @@ needs_block() {
     fi
 }
 
-# bundle SRC OUT: flatten use lines so the single-file checker sees the imports.
-bundle() {
-    local src=$1 out=$2
-    if ! python3 "$BUNDLE" "$src" > "$out" 2>"$tmp/bundle.err"; then
-        say "bundle: $(head -1 "$tmp/bundle.err" 2>/dev/null)"
-        return 1
-    fi
-}
-
 check_buffer() {
-    local src="$tmp/check.kaze" flat="$tmp/check.flat.kaze"
+    local src="$tmp/check.kaze"
     { needs_block; printf '%s\n' "$session"; } > "$src"
-    bundle "$src" "$flat" || return 1
     local out
-    out=$("$KAZE" check "$flat" 2>&1)
+    out=$("$KAZE" check "$src" 2>&1)
     if printf '%s\n' "$out" | grep -q 'E_KAZE'; then
         printf '%s\n' "$out" | sed 's/^/  /'
         return 1
@@ -102,14 +91,13 @@ check_buffer() {
 }
 
 run_buffer() {
-    local src="$tmp/run.kaze" flat="$tmp/run.flat.kaze"
+    local src="$tmp/run.kaze"
     { needs_block; printf '%s\n' "$session"; } > "$src"
     if ! printf '%s\n' "$session" | grep -qE '^[[:space:]]*(action|check|filter|fiber)[[:space:]]+main[[:space:]]*\('; then
         printf '\naction main() -> num:\n    return 0\n' >> "$src"
     fi
-    bundle "$src" "$flat" || return 1
     local out rc
-    out=$("$HOST" run "$flat" --ticks 8 2>&1)
+    out=$("$HOST" run "$src" --ticks 8 2>&1)
     rc=$?
     printf '%s\n' "$out" | sed 's/^\[info\] //'
     return $rc
@@ -121,16 +109,15 @@ eval_expr() {
         say 'eval: the buffer already defines main; use :run or :clear'
         return 1
     fi
-    local src="$tmp/eval.kaze" flat="$tmp/eval.flat.kaze"
+    local src="$tmp/eval.kaze"
     {
         needs_block
         printf '%s\n' "$session"
         printf '\naction main() -> text:\n'
         printf '    return "" + (%s)\n' "$expr"
     } > "$src"
-    bundle "$src" "$flat" || return 1
     local out rc
-    out=$("$HOST" run "$flat" --ticks 8 2>&1)
+    out=$("$HOST" run "$src" --ticks 8 2>&1)
     rc=$?
     printf '%s\n' "$out" | sed 's/^\[info\] //'
     return $rc

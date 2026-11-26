@@ -27,9 +27,7 @@ bad=0
 for src in tests/stdlib/*_test.kaze examples/hello.kaze; do
     [ -f "$src" ] || continue
     name=$(basename "$src" .kaze)
-    flat="$tmp/$name.kaze"
-    python3 scripts/bundle-imports.py "$src" > "$flat" 2>/dev/null || { echo "alloc-audit: bundle failed for $src" >&2; exit 2; }
-    "$KAZE" emit-c "$flat" > "$tmp/$name.c" 2>/dev/null || { echo "alloc-audit: emit failed for $src" >&2; exit 2; }
+    "$KAZE" emit-c "$src" > "$tmp/$name.c" 2>/dev/null || { echo "alloc-audit: emit failed for $src" >&2; exit 2; }
     files=$((files + 1))
 
     # 1. The program body: from the routines marker to the end of the file.

@@ -19,15 +19,7 @@ if [ -z "$bin" ]; then
   bin="$ROOT/bin/kaze"
 fi
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-
-python3 "$ROOT/scripts/bundle-imports.py" "$file" > "$tmp/bundle.kaze" || {
-  echo "kaze-check-bundled: refusing $file: an import could not be resolved" >&2
-  exit 1
-}
-
-"$bin" check "$tmp/bundle.kaze"
+"$bin" check "$file"
 status=$?
 if [ $status -eq 0 ]; then
   echo "kaze-check-bundled: $file and its imports are valid"

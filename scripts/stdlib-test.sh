@@ -26,16 +26,13 @@ pass=0; fail=0; checks=0
 for src in tests/stdlib/*_test.kaze; do
     [ -f "$src" ] || continue
     name=$(basename "$src" _test.kaze)
-    flat="$tmp/$name.kaze"
-    if ! python3 scripts/bundle-imports.py "$src" > "$flat" 2>"$tmp/$name.bundle.err"; then
-        echo "FAIL  $name (bundle)"; sed 's/^/    /' "$tmp/$name.bundle.err" | head -3; fail=$((fail + 1)); continue
-    fi
-    # 'kaze check' exits 0 even with diagnostics, so the output is the verdict here.
-    "$KAZE" check "$flat" > "$tmp/$name.check" 2>&1
+    abs_src="$ROOT/$src"
+    # 'kaze check' exits 0 on valid multi-file imports via module.kaze.
+    "$KAZE" check "$abs_src" > "$tmp/$name.check" 2>&1
     if grep -qE 'E_KAZE' "$tmp/$name.check"; then
         echo "FAIL  $name (check)"; grep -E 'E_KAZE' "$tmp/$name.check" | head -3 | sed 's/^/    /'; fail=$((fail + 1)); continue
     fi
-    out=$( cd "$tmp" && "$HOST" run "$flat" --ticks 4 2>&1 )
+    out=$( cd "$tmp" && "$HOST" run "$abs_src" --ticks 4 2>&1 )
     rc=$?
     # Suite names carry digits (sha256, ed25519), so the character class has to as well.
     n=$(printf '%s' "$out" | sed -n 's/.*OK [a-z0-9_]*: \([0-9]*\) checks.*/\1/p' | head -1)
@@ -48,7 +45,7 @@ for src in tests/stdlib/*_test.kaze; do
         fail=$((fail + 1))
     fi
     if [ "$ASAN" = "1" ]; then
-        if "$KAZE" emit-c "$flat" > "$tmp/$name.c" 2>/dev/null && \
+        if "$KAZE" emit-c "$abs_src" > "$tmp/$name.c" 2>/dev/null && \
            "$CC" -std=c99 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
                 -I dist "$tmp/$name.c" dist/kaze_rt.c -lm -o "$tmp/$name.asan" 2>"$tmp/$name.asan.cc"; then
             # LeakSanitizer does not exist on Darwin; there ASan still checks overflows and
