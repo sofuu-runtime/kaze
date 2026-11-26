@@ -151,3 +151,16 @@ action vector_upper_bound(xs, x) -> num:
             return k
         set k to k + 1
     return k
+
+# Co-located tests. See lib/text.kaze for the convention.
+test "vector_push reports the new size":
+    let xs = vector_new()
+    let ys = vector_push(xs, 7)
+    require vector_size(ys) == 1
+    require vector_get(ys, 0) == 7
+
+test "vector_reverse preserves every element":
+    let r = vector_reverse([1, 2, 3])
+    require vector_get(r, 0) == 3
+    require vector_get(r, 1) == 2
+    require vector_get(r, 2) == 1

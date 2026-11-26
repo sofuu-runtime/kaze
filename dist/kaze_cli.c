@@ -1340,6 +1340,18 @@ static int compiler_emit_c(const char *source, Buf *out) {
     return rc;
 }
 
+static int compiler_emit_test_c(const char *source, Buf *out) {
+    char *argv[5];
+    int rc;
+    argv[0] = (char *)"kaze";
+    argv[1] = (char *)"test-c";
+    argv[2] = (char *)source;
+    argv[3] = NULL;
+    buf_init(out);
+    rc = run_compiler(argv, out);
+    return rc;
+}
+
 static int compiler_check(const char *source, Buf *out) {
     char *argv[5];
     int rc;
@@ -1349,6 +1361,37 @@ static int compiler_check(const char *source, Buf *out) {
     argv[3] = NULL;
     buf_init(out);
     rc = run_compiler(argv, out);
+    return rc;
+}
+
+/* Ask the compiler for the module's semantic AST hash.  The cache uses this
+ * instead of the source bytes so a comment or whitespace edit reuses the
+ * object (and, for Phase 16, the proof certificate). */
+static int compiler_ast_hash(const char *source, char *out, size_t cap) {
+    char *argv[5];
+    Buf b;
+    int rc;
+    size_t i;
+    if (cap > 0) out[0] = 0;
+    argv[0] = (char *)"kaze";
+    argv[1] = (char *)"ast-hash";
+    argv[2] = (char *)source;
+    argv[3] = NULL;
+    buf_init(&b);
+    rc = run_compiler(argv, &b);
+    if (rc == 0 && b.data != NULL && strncmp(b.data, "module ", 7) == 0) {
+        i = 7;
+        while (i < b.len && b.data[i] != 0 && !isspace((unsigned char)b.data[i]) &&
+               i - 7 + 1 < cap) {
+            out[i - 7] = b.data[i];
+            i++;
+        }
+        out[i - 7] = 0;
+        rc = out[0] != 0 ? 0 : 1;
+    } else {
+        rc = 1;
+    }
+    buf_free(&b);
     return rc;
 }
 
@@ -1365,8 +1408,7 @@ typedef struct {
     int blas;
 } Features;
 
-static void detect_features(const char *c, Features *f) {
-    memset(f, 0, sizeof *f);
+static void detect_features_merge(const char *c, Features *f) {
     if (c == NULL) return;
     if (strstr(c, "kaze_tensor.h") != NULL) f->tensor = 1;
     if (strstr(c, "kaze_http.h") != NULL) f->http = 1;
@@ -1375,6 +1417,11 @@ static void detect_features(const char *c, Features *f) {
         strstr(c, "kz_num_workers") != NULL) f->parallel = 1;
     if (strstr(c, "kaze_metal.h") != NULL) f->metal = 1;
     if (strstr(c, "kaze_blas.h") != NULL) f->blas = 1;
+}
+
+static void detect_features(const char *c, Features *f) {
+    memset(f, 0, sizeof *f);
+    detect_features_merge(c, f);
 }
 
 typedef struct {
@@ -1390,6 +1437,7 @@ typedef struct {
     const char *gpu;
     const char *cc;
     const char *output;
+    int tests;
 } BuildOpts;
 
 static void build_opts_init(BuildOpts *o) {
@@ -1489,41 +1537,97 @@ static void print_argv(const StrVec *v) {
     fputc('\n', stderr);
 }
 
-/* Compile emitted C into an executable.  Returns 0 on success. */
-static int link_program(const char *program_c, const char *tmpdir, const BuildOpts *opts,
-                        Features *features, const char *output) {
-    char *inc_dir = path_join(tmpdir, "include");
-    char *src_dir = path_join(tmpdir, "src");
-    char *libdir = find_lib_dir();
-    int use_archives;
-    int want_sitl = opts->sitl || getenv("KAZE_SITL") != NULL;
-    const char *cc = compiler_cc(opts);
-    StrVec args;
-    int rc;
-    int i;
+static void push_cc_compile_flags(StrVec *args, const char *cc, const BuildOpts *opts,
+                                  const char *inc_dir, int want_sitl, int want_metal) {
+    argv_push(args, cc);
+    argv_push(args, "-std=c99");
+    if (opts->asan) {
+        argv_push(args, "-O1");
+        argv_push(args, "-g");
+        argv_push(args, "-fsanitize=address,undefined");
+        argv_push(args, "-fno-omit-frame-pointer");
+    } else if (opts->debug) {
+        argv_push(args, "-O0");
+        argv_push(args, "-g");
+    } else if (opts->release) {
+        argv_push(args, "-O3");
+    } else {
+        argv_push(args, "-O2");
+    }
+    argv_push(args, opts->strict ? "-Wall" : "-w");
+    if (opts->strict) {
+        argv_push(args, "-Wextra");
+        argv_push(args, "-Werror");
+        argv_push(args, "-pedantic");
+    }
+    argv_push_owned(args, xasprintf("-I%s", inc_dir));
+    if (opts->debug || opts->asan) argv_push(args, "-g");
+    if (want_sitl) argv_push(args, "-DKAZE_SITL_LINK");
+    if (want_metal || opts->metal) argv_push(args, "-DKAZE_GPU_METAL");
+}
 
+static void push_runtime_libs(StrVec *args, const char *libdir, const char *src_dir,
+                              Features *features, int want_sitl, int use_archives,
+                              const BuildOpts *opts) {
+    size_t i;
+    if (use_archives) {
+        argv_push_owned(args, xasprintf("-L%s", libdir));
+        if (features->tensor) argv_push(args, "-lkaze_tensor");
+        if (want_sitl) argv_push(args, "-lkaze_sitl");
+        argv_push(args, "-lkaze_rt");
+        if (features->blas) argv_push(args, "-lkaze_blas");
+    } else {
+        static const char *rt_src[] = { "kaze_rt.c", NULL };
+        static const char *tensor_src[] = {
+            "kaze_tensor.c", "kaze_quant.c", "kaze_gguf.c", "kaze_llama.c",
+            "kaze_tokenizer.c", "kaze_autograd.c", NULL
+        };
+        if (features->tensor) {
+            for (i = 0; tensor_src[i] != NULL; i++) {
+                argv_push_owned(args, path_join(src_dir, tensor_src[i]));
+            }
+        }
+        if (want_sitl) argv_push_owned(args, path_join(src_dir, "kaze_mavlink.c"));
+        if (features->blas) argv_push_owned(args, path_join(src_dir, "kaze_blas.c"));
+        for (i = 0; rt_src[i] != NULL; i++) {
+            argv_push_owned(args, path_join(src_dir, rt_src[i]));
+        }
+    }
+    argv_push(args, "-lm");
+    if (features->http) argv_push(args, "-lcurl");
+    if (features->parallel || features->tensor) argv_push(args, "-pthread");
+    if (features->metal || opts->metal) {
+        argv_push(args, "-framework");
+        argv_push(args, "Metal");
+        argv_push(args, "-framework");
+        argv_push(args, "Foundation");
+    }
+    if (features->blas) {
+#if defined(__APPLE__)
+        argv_push(args, "-framework");
+        argv_push(args, "Accelerate");
+#endif
+    }
+}
+
+static int prepare_include_dir(const char *tmpdir, int want_sitl, int want_metal, char **inc_out) {
+    char *inc_dir = path_join(tmpdir, "include");
     if (mkdir_p(inc_dir) != 0) {
         fprintf(stderr, "kaze: cannot create %s\n", inc_dir);
         free(inc_dir);
-        free(src_dir);
-        free(libdir);
-        return KAZE_EXIT_USAGE;
+        return -1;
     }
     if (embedded_write_suffix(inc_dir, ".h") != 0) {
         fprintf(stderr, "kaze: cannot materialise the embedded runtime headers\n");
         free(inc_dir);
-        free(src_dir);
-        free(libdir);
-        return KAZE_EXIT_USAGE;
+        return -1;
     }
-    if (features->metal) {
+    if (want_metal) {
         if (embedded_write(inc_dir, "kaze_metal.h") != 0 ||
             embedded_write(tmpdir, "kaze_metal.m") != 0) {
             fprintf(stderr, "kaze: cannot materialise the Metal runtime\n");
             free(inc_dir);
-            free(src_dir);
-            free(libdir);
-            return KAZE_EXIT_USAGE;
+            return -1;
         }
     }
     /* The emitted program textually includes the SITL host when
@@ -1531,10 +1635,43 @@ static int link_program(const char *program_c, const char *tmpdir, const BuildOp
     if (want_sitl && embedded_write(inc_dir, "kaze_sitl_client.c") != 0) {
         fprintf(stderr, "kaze: cannot materialise the SITL client\n");
         free(inc_dir);
-        free(src_dir);
-        free(libdir);
-        return KAZE_EXIT_USAGE;
+        return -1;
     }
+    *inc_out = inc_dir;
+    return 0;
+}
+
+/* Compile and link input C/object files into an executable.  Returns 0 on success. */
+static int link_program_inputs(const StrVec *inputs, const char *tmpdir, const char *ready_inc_dir,
+                               const BuildOpts *opts, Features *features, const char *output) {
+    char *inc_dir = ready_inc_dir ? xstrdup(ready_inc_dir) : NULL;
+    char *src_dir = path_join(tmpdir, "src");
+    char *libdir = find_lib_dir();
+    int use_archives;
+    int want_sitl = opts->sitl || getenv("KAZE_SITL") != NULL;
+    int want_metal = features->metal || opts->metal;
+    const char *cc = compiler_cc(opts);
+    StrVec args;
+    size_t i;
+    int rc;
+
+    if (inc_dir == NULL) {
+        if (prepare_include_dir(tmpdir, want_sitl, want_metal, &inc_dir) != 0) {
+            free(src_dir);
+            free(libdir);
+            return KAZE_EXIT_USAGE;
+        }
+    } else if (want_metal) {
+        char *metal_m = path_join(tmpdir, "kaze_metal.m");
+        if (!is_regular(metal_m)) {
+            /* If Metal was discovered during unit generation after prepare_include_dir,
+             * materialize kaze_metal.m before linking. */
+            (void)embedded_write(inc_dir, "kaze_metal.h");
+            (void)embedded_write(tmpdir, "kaze_metal.m");
+        }
+        free(metal_m);
+    }
+
     use_archives = archives_ready(libdir, features, want_sitl);
     if (!use_archives) {
         if (mkdir_p(src_dir) != 0 || materialize_sources(src_dir, features, want_sitl) != 0) {
@@ -1547,82 +1684,9 @@ static int link_program(const char *program_c, const char *tmpdir, const BuildOp
     }
 
     vec_init(&args);
-    argv_push(&args, cc);
-    argv_push(&args, "-std=c99");
-    if (opts->asan) {
-        argv_push(&args, "-O1");
-        argv_push(&args, "-g");
-        argv_push(&args, "-fsanitize=address,undefined");
-        argv_push(&args, "-fno-omit-frame-pointer");
-    } else if (opts->debug) {
-        argv_push(&args, "-O0");
-        argv_push(&args, "-g");
-    } else if (opts->release) {
-        argv_push(&args, "-O3");
-    } else {
-        argv_push(&args, "-O2");
-    }
-    argv_push(&args, opts->strict ? "-Wall" : "-w");
-    if (opts->strict) {
-        argv_push(&args, "-Wextra");
-        argv_push(&args, "-Werror");
-        argv_push(&args, "-pedantic");
-    }
-    {
-        char *inc_flag = xasprintf("-I%s", inc_dir);
-        argv_push_owned(&args, inc_flag);
-    }
-    if (opts->debug || opts->asan) argv_push(&args, "-g");
-    if (want_sitl) argv_push(&args, "-DKAZE_SITL_LINK");
-    if (features->metal || opts->metal) argv_push(&args, "-DKAZE_GPU_METAL");
-    argv_push(&args, program_c);
-    if (use_archives) {
-        char *lflag = xasprintf("-L%s", libdir);
-        argv_push_owned(&args, lflag);
-        if (features->tensor) argv_push(&args, "-lkaze_tensor");
-        if (want_sitl) argv_push(&args, "-lkaze_sitl");
-        argv_push(&args, "-lkaze_rt");
-    } else {
-        static const char *rt_src[] = { "kaze_rt.c", NULL };
-        static const char *tensor_src[] = {
-            "kaze_tensor.c", "kaze_quant.c", "kaze_gguf.c", "kaze_llama.c",
-            "kaze_tokenizer.c", "kaze_autograd.c", NULL
-        };
-        if (features->tensor) {
-            for (i = 0; tensor_src[i] != NULL; i++) {
-                char *p = path_join(src_dir, tensor_src[i]);
-                argv_push_owned(&args, p);
-            }
-        }
-        if (want_sitl) {
-            char *p = path_join(src_dir, "kaze_mavlink.c");
-            argv_push_owned(&args, p);
-        }
-        if (features->blas) {
-            char *p = path_join(src_dir, "kaze_blas.c");
-            argv_push_owned(&args, p);
-        }
-        for (i = 0; rt_src[i] != NULL; i++) {
-            char *p = path_join(src_dir, rt_src[i]);
-            argv_push_owned(&args, p);
-        }
-    }
-    argv_push(&args, "-lm");
-    if (features->http) argv_push(&args, "-lcurl");
-    if (features->parallel || features->tensor) argv_push(&args, "-pthread");
-    if (features->metal || opts->metal) {
-        argv_push(&args, "-framework");
-        argv_push(&args, "Metal");
-        argv_push(&args, "-framework");
-        argv_push(&args, "Foundation");
-    }
-    if (features->blas && use_archives) argv_push(&args, "-lkaze_blas");
-    if (features->blas) {
-#if defined(__APPLE__)
-        argv_push(&args, "-framework");
-        argv_push(&args, "Accelerate");
-#endif
-    }
+    push_cc_compile_flags(&args, cc, opts, inc_dir, want_sitl, features->metal);
+    for (i = 0; i < inputs->len; i++) argv_push(&args, inputs->items[i]);
+    push_runtime_libs(&args, libdir, src_dir, features, want_sitl, use_archives, opts);
     argv_push(&args, "-o");
     argv_push(&args, output);
     argv_push(&args, NULL);
@@ -1639,39 +1703,9 @@ static int link_program(const char *program_c, const char *tmpdir, const BuildOp
             return KAZE_EXIT_USAGE;
         }
         vec_init(&args);
-        argv_push(&args, cc);
-        argv_push(&args, "-std=c99");
-        argv_push(&args, "-O2");
-        argv_push(&args, "-w");
-        {
-            char *inc_flag = xasprintf("-I%s", inc_dir);
-            argv_push_owned(&args, inc_flag);
-        }
-        if (want_sitl) argv_push(&args, "-DKAZE_SITL_LINK");
-        argv_push(&args, program_c);
-        if (features->tensor) {
-            static const char *tensor_src[] = {
-                "kaze_tensor.c", "kaze_quant.c", "kaze_gguf.c", "kaze_llama.c",
-                "kaze_tokenizer.c", "kaze_autograd.c", NULL
-            };
-            for (i = 0; tensor_src[i] != NULL; i++) {
-                char *p = path_join(src_dir, tensor_src[i]);
-                argv_push_owned(&args, p);
-            }
-        }
-        {
-            char *p = path_join(src_dir, "kaze_rt.c");
-            argv_push_owned(&args, p);
-        }
-        argv_push(&args, "-lm");
-        if (features->http) argv_push(&args, "-lcurl");
-        if (features->parallel || features->tensor) argv_push(&args, "-pthread");
-        if (features->blas) {
-#if defined(__APPLE__)
-            argv_push(&args, "-framework");
-            argv_push(&args, "Accelerate");
-#endif
-        }
+        push_cc_compile_flags(&args, cc, opts, inc_dir, want_sitl, features->metal);
+        for (i = 0; i < inputs->len; i++) argv_push(&args, inputs->items[i]);
+        push_runtime_libs(&args, libdir, src_dir, features, want_sitl, 0, opts);
         argv_push(&args, "-o");
         argv_push(&args, output);
         argv_push(&args, NULL);
@@ -1690,30 +1724,167 @@ static int link_program(const char *program_c, const char *tmpdir, const BuildOp
     return rc;
 }
 
-/* Build source -> output.  Returns 0, 1 (diagnostic) or 2 (setup). */
-static int build_source(const char *source, const BuildOpts *opts, const char *tmpdir,
-                        const char *output) {
+/* -- FNV-1a cache keys and multi-module incremental builds --------- */
+
+typedef struct {
+    int nmods;
+    int compiled;
+    int cached;
+    int used_cache;
+} BuildStats;
+
+typedef struct {
+    char *tag;
+    char *path;
+    char *deps;
+    char *iface;
+    char *flags;
+} ModUnit;
+
+static uint64_t fnv1a_bytes(uint64_t h, const void *data, size_t n) {
+    const unsigned char *p = (const unsigned char *)data;
+    size_t i;
+    for (i = 0; i < n; i++) {
+        h ^= (uint64_t)p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static uint64_t fnv1a_str(uint64_t h, const char *s) {
+    if (s == NULL) s = "";
+    return fnv1a_bytes(h, s, strlen(s) + 1);
+}
+
+static uint64_t fnv1a_file(uint64_t h, const char *path) {
+    Buf b;
+    buf_init(&b);
+    if (read_file(path, &b) == 0 && b.data != NULL) {
+        h = fnv1a_bytes(h, b.data, b.len);
+    }
+    buf_free(&b);
+    return h;
+}
+
+static int split_tabs_exact(char *line, char **out, int max_fields) {
+    int n = 0;
+    char *p = line;
+    if (line == NULL || *line == 0) return 0;
+    while (n < max_fields) {
+        char *tab = strchr(p, '\t');
+        out[n++] = p;
+        if (tab == NULL) break;
+        *tab = 0;
+        p = tab + 1;
+    }
+    return n;
+}
+
+static int mod_flag_has(const char *flags, const char *flag) {
+    const char *p;
+    size_t fl;
+    if (flags == NULL || flag == NULL) return 0;
+    fl = strlen(flag);
+    p = flags;
+    while ((p = strstr(p, flag)) != NULL) {
+        int left_ok = (p == flags || p[-1] == ',');
+        int right_ok = (p[fl] == 0 || p[fl] == ',');
+        if (left_ok && right_ok) return 1;
+        p += fl;
+    }
+    return 0;
+}
+
+static int find_mod_by_tag(const ModUnit *mods, int nmods, const char *tag) {
+    int i;
+    for (i = 0; i < nmods; i++) {
+        if (strcmp(mods[i].tag, tag) == 0) return i;
+    }
+    return -1;
+}
+
+static void free_mod_units(ModUnit *mods, int nmods) {
+    int i;
+    if (mods == NULL) return;
+    for (i = 0; i < nmods; i++) {
+        free(mods[i].tag);
+        free(mods[i].path);
+        free(mods[i].deps);
+        free(mods[i].iface);
+        free(mods[i].flags);
+    }
+    free(mods);
+}
+
+static int load_module_manifest(const char *source, ModUnit **out_mods, int *out_nmods) {
+    char *av[4];
+    Buf out;
+    ModUnit *mods = NULL;
+    int nmods = 0;
+    int cap = 0;
+    int rc;
+    char *p;
+
+    *out_mods = NULL;
+    *out_nmods = 0;
+    av[0] = (char *)"kaze";
+    av[1] = (char *)"module-manifest";
+    av[2] = (char *)source;
+    av[3] = NULL;
+    buf_init(&out);
+    rc = run_compiler(av, &out);
+    if (rc != 0 || out.data == NULL) {
+        if (out.data != NULL && out.len > 0) fwrite(out.data, 1, out.len, stderr);
+        buf_free(&out);
+        return -1;
+    }
+    p = out.data;
+    while (p != NULL && *p != 0) {
+        char *nl = strchr(p, '\n');
+        char *f[8];
+        int nf;
+        if (nl != NULL) *nl = 0;
+        {
+            size_t ln = strlen(p);
+            if (ln > 0 && p[ln - 1] == '\r') p[ln - 1] = 0;
+        }
+        nf = split_tabs_exact(p, f, 8);
+        if (nf > 0 && strcmp(f[0], "E") == 0) {
+            fprintf(stderr, "kaze: %s\n", nf > 1 ? f[1] : p);
+            free_mod_units(mods, nmods);
+            buf_free(&out);
+            return -1;
+        }
+        if (nf >= 6 && strcmp(f[0], "M") == 0) {
+            if (nmods == cap) {
+                cap = cap ? cap * 2 : 8;
+                mods = (ModUnit *)xrealloc(mods, (size_t)cap * sizeof *mods);
+            }
+            mods[nmods].tag = xstrdup(f[1]);
+            mods[nmods].path = xstrdup(f[2]);
+            mods[nmods].deps = xstrdup(f[3]);
+            mods[nmods].iface = xstrdup(f[4]);
+            mods[nmods].flags = xstrdup(f[5]);
+            nmods++;
+        }
+        if (nl == NULL) break;
+        p = nl + 1;
+    }
+    buf_free(&out);
+    *out_mods = mods;
+    *out_nmods = nmods;
+    return nmods > 0 ? 0 : -1;
+}
+
+static int build_source_single(const char *source, const BuildOpts *opts, const char *tmpdir,
+                               const char *output) {
     Buf c;
-    char *program_c = NULL;
+    char *program_c;
     Features features;
-    int check_rc;
+    StrVec inputs;
     int rc;
 
-    /* The checker is part of compilation: refuse a program with a hard
-     * diagnostic rather than compiling whatever the parser recovered. The
-     * compiler resolves imports itself, so the entry path goes in unchanged. */
-    {
-        Buf diag;
-        buf_init(&diag);
-        check_rc = compiler_check(source, &diag);
-        if (check_rc != 0 || has_diagnostics(diag.data)) {
-            fwrite(diag.data, 1, diag.len, stdout);
-            buf_free(&diag);
-            return KAZE_EXIT_DIAG;
-        }
-        buf_free(&diag);
-    }
-    if (compiler_emit_c(source, &c) != 0) {
+    if ((opts->tests ? compiler_emit_test_c(source, &c) : compiler_emit_c(source, &c)) != 0) {
         fputs("kaze: the compiler did not emit C\n", stderr);
         buf_free(&c);
         return KAZE_EXIT_DIAG;
@@ -1722,12 +1893,6 @@ static int build_source(const char *source, const BuildOpts *opts, const char *t
         fputs("kaze: the compiler produced no output\n", stderr);
         buf_free(&c);
         return KAZE_EXIT_DIAG;
-    }
-    {
-        const char *base = path_basename(source);
-        size_t n = strlen(base);
-        if (n > 5 && strcmp(base + n - 5, ".kaze") == 0) n -= 5;
-        (void)n;
     }
     program_c = xasprintf("%s/program-%ld.c", tmpdir, (long)getpid());
     if (write_tracked(program_c, c.data, c.len, 0644) != 0) {
@@ -1741,7 +1906,11 @@ static int build_source(const char *source, const BuildOpts *opts, const char *t
     if (opts->metal) features.metal = 1;
     if (opts->blas || getenv("KAZE_BLAS") != NULL) features.blas = 1;
     buf_free(&c);
-    rc = link_program(program_c, tmpdir, opts, &features, output);
+
+    vec_init(&inputs);
+    argv_push(&inputs, program_c);
+    rc = link_program_inputs(&inputs, tmpdir, NULL, opts, &features, output);
+    vec_free(&inputs);
     free(program_c);
     if (rc != 0) {
         fprintf(stderr, "kaze: the emitted C did not build (backend %s)\n", opts->backend ? opts->backend : "c99");
@@ -1749,6 +1918,249 @@ static int build_source(const char *source, const BuildOpts *opts, const char *t
         return rc == KAZE_EXIT_USAGE ? KAZE_EXIT_USAGE : KAZE_EXIT_DIAG;
     }
     return 0;
+}
+
+static int build_source_cached(const char *source, const BuildOpts *opts, const char *tmpdir,
+                               const char *output, BuildStats *stats) {
+    ModUnit *mods = NULL;
+    int nmods = 0;
+    char *entry_dir;
+    char *cache_dir;
+    char *inc_dir = NULL;
+    char *opts_sig;
+    const char *cc = compiler_cc(opts);
+    int want_sitl = opts->sitl || getenv("KAZE_SITL") != NULL;
+    uint64_t compiler_id = 1469598103934665603ULL;
+    Features features;
+    StrVec inputs;
+    int i, rc;
+    int compiled = 0, cached = 0;
+
+    if (load_module_manifest(source, &mods, &nmods) != 0) {
+        return build_source_single(source, opts, tmpdir, output);
+    }
+
+    entry_dir = path_dirname(source);
+    cache_dir = path_join(entry_dir, ".kaze-cache");
+    if (mkdir_p(cache_dir) != 0) {
+        free(cache_dir);
+        cache_dir = path_join(tmpdir, "cache");
+        if (mkdir_p(cache_dir) != 0) {
+            free(entry_dir);
+            free(cache_dir);
+            free_mod_units(mods, nmods);
+            return build_source_single(source, opts, tmpdir, output);
+        }
+    }
+    free(entry_dir);
+
+    /* Materialise headers (and optional metal/sitl files) once for all units. */
+    if (prepare_include_dir(tmpdir, want_sitl, embedded_find("kaze_metal.h") != NULL, &inc_dir) != 0) {
+        free(cache_dir);
+        free_mod_units(mods, nmods);
+        return KAZE_EXIT_USAGE;
+    }
+
+    if (g_self_path != NULL && is_regular(g_self_path)) {
+        compiler_id = fnv1a_file(compiler_id, g_self_path);
+    } else {
+        compiler_id = fnv1a_str(compiler_id, KAZE_VERSION);
+    }
+    opts_sig = xasprintf("%s|rel=%d|dbg=%d|asan=%d|strict=%d|sitl=%d|metal=%d|blas=%d",
+                         cc, opts->release, opts->debug, opts->asan, opts->strict,
+                         want_sitl, opts->metal, opts->blas);
+
+    memset(&features, 0, sizeof features);
+    if (want_sitl) features.sitl = 1;
+    if (opts->metal) features.metal = 1;
+    if (opts->blas || getenv("KAZE_BLAS") != NULL) features.blas = 1;
+
+    vec_init(&inputs);
+    for (i = 0; i < nmods; i++) {
+        ModUnit *m = &mods[i];
+        uint64_t key = 1469598103934665603ULL;
+        char keytext[32];
+        char *obj_path;
+        char *key_path;
+        char *iface_path;
+        char *c_path;
+        int fresh = 0;
+
+        if (mod_flag_has(m->flags, "http")) features.http = 1;
+        if (mod_flag_has(m->flags, "tensor")) features.tensor = 1;
+        if (mod_flag_has(m->flags, "parallel")) features.parallel = 1;
+
+        {
+            char ast[32];
+            if (compiler_ast_hash(m->path, ast, sizeof ast) == 0)
+                key = fnv1a_str(key, ast);
+            else
+                key = fnv1a_file(key, m->path);
+        }
+        key = fnv1a_bytes(key, &compiler_id, sizeof compiler_id);
+        key = fnv1a_str(key, opts_sig);
+        key = fnv1a_str(key, m->flags);
+        key = fnv1a_str(key, "c99");
+        {
+            char *deps_copy = xstrdup(m->deps);
+            char *dp = deps_copy;
+            while (*dp != 0) {
+                char *comma = strchr(dp, ',');
+                int di;
+                if (comma != NULL) *comma = 0;
+                di = find_mod_by_tag(mods, nmods, dp);
+                if (di >= 0) {
+                    key = fnv1a_str(key, mods[di].iface);
+                    key = fnv1a_str(key, mods[di].tag);
+                }
+                if (comma == NULL) break;
+                dp = comma + 1;
+            }
+            free(deps_copy);
+        }
+        snprintf(keytext, sizeof keytext, "%016llx", (unsigned long long)key);
+
+        obj_path = xasprintf("%s/%s.o", cache_dir, m->tag);
+        key_path = xasprintf("%s/%s.key", cache_dir, m->tag);
+        iface_path = xasprintf("%s/%s.kziface", cache_dir, m->tag);
+        c_path = xasprintf("%s/%s.c", cache_dir, m->tag);
+
+        if (is_regular(obj_path) && is_regular(c_path)) {
+            Buf kb;
+            buf_init(&kb);
+            if (read_file(key_path, &kb) == 0 && kb.data != NULL) {
+                size_t kn = kb.len;
+                while (kn > 0 && (kb.data[kn - 1] == '\n' || kb.data[kn - 1] == '\r')) kb.data[--kn] = 0;
+                if (strcmp(kb.data, keytext) == 0) fresh = 1;
+            }
+            buf_free(&kb);
+        }
+
+        if (fresh) {
+            Buf cb;
+            buf_init(&cb);
+            if (read_file(c_path, &cb) == 0 && cb.data != NULL) detect_features_merge(cb.data, &features);
+            buf_free(&cb);
+            cached++;
+        } else {
+            char *uav[5];
+            Buf unit_c;
+            Features unit_feat;
+            StrVec ccmd;
+            int urc;
+
+            uav[0] = (char *)"kaze";
+            uav[1] = (char *)"emit-c-unit";
+            uav[2] = (char *)source;
+            uav[3] = m->tag;
+            uav[4] = NULL;
+            buf_init(&unit_c);
+            urc = run_compiler(uav, &unit_c);
+            if (urc != 0 || unit_c.len == 0) {
+                if (unit_c.data != NULL && unit_c.len > 0) fwrite(unit_c.data, 1, unit_c.len, stderr);
+                else fprintf(stderr, "kaze: %s did not emit C\n", m->path);
+                buf_free(&unit_c);
+                free(obj_path); free(key_path); free(iface_path); free(c_path);
+                free(opts_sig); free(inc_dir); free(cache_dir);
+                vec_free(&inputs);
+                free_mod_units(mods, nmods);
+                return KAZE_EXIT_DIAG;
+            }
+            if (write_file_raw(c_path, unit_c.data, unit_c.len, 0644) != 0) {
+                fprintf(stderr, "kaze: cannot write %s: %s\n", c_path, strerror(errno));
+                buf_free(&unit_c);
+                free(obj_path); free(key_path); free(iface_path); free(c_path);
+                free(opts_sig); free(inc_dir); free(cache_dir);
+                vec_free(&inputs);
+                free_mod_units(mods, nmods);
+                return KAZE_EXIT_USAGE;
+            }
+            detect_features(unit_c.data, &unit_feat);
+            detect_features_merge(unit_c.data, &features);
+            buf_free(&unit_c);
+
+            vec_init(&ccmd);
+            push_cc_compile_flags(&ccmd, cc, opts, inc_dir, want_sitl, unit_feat.metal);
+            argv_push(&ccmd, "-c");
+            argv_push(&ccmd, c_path);
+            argv_push(&ccmd, "-o");
+            argv_push(&ccmd, obj_path);
+            argv_push(&ccmd, NULL);
+            if (g_verbose) print_argv(&ccmd);
+            urc = run_child(ccmd.items);
+            vec_free(&ccmd);
+            if (urc != 0) {
+                fprintf(stderr, "kaze: the emitted C did not compile (%s)\n", m->path);
+                free(obj_path); free(key_path); free(iface_path); free(c_path);
+                free(opts_sig); free(inc_dir); free(cache_dir);
+                vec_free(&inputs);
+                free_mod_units(mods, nmods);
+                return urc == 127 ? KAZE_EXIT_USAGE : KAZE_EXIT_DIAG;
+            }
+            {
+                char *kline = xasprintf("%s\n", keytext);
+                char *iline = xasprintf("%s\n", m->iface);
+                (void)write_file_raw(key_path, kline, strlen(kline), 0644);
+                (void)write_file_raw(iface_path, iline, strlen(iline), 0644);
+                free(kline);
+                free(iline);
+            }
+            compiled++;
+        }
+        argv_push_owned(&inputs, obj_path);
+        free(key_path);
+        free(iface_path);
+        free(c_path);
+    }
+
+    rc = link_program_inputs(&inputs, tmpdir, inc_dir, opts, &features, output);
+    vec_free(&inputs);
+    free(opts_sig);
+    free(inc_dir);
+    free(cache_dir);
+    free_mod_units(mods, nmods);
+    if (rc != 0) {
+        fprintf(stderr, "kaze: the emitted C did not build (backend %s)\n", opts->backend ? opts->backend : "c99");
+        if (!g_keep_temps) fprintf(stderr, "kaze: re-run with --keep-temps to inspect the C and the compiler command\n");
+        return rc == KAZE_EXIT_USAGE ? KAZE_EXIT_USAGE : KAZE_EXIT_DIAG;
+    }
+    if (stats != NULL) {
+        stats->nmods = nmods;
+        stats->compiled = compiled;
+        stats->cached = cached;
+        stats->used_cache = 1;
+    }
+    return 0;
+}
+
+/* Build source -> output.  Returns 0, 1 (diagnostic) or 2 (setup). */
+static int build_source_ex(const char *source, const BuildOpts *opts, const char *tmpdir,
+                           const char *output, int allow_cache, BuildStats *stats) {
+    Buf diag;
+    int check_rc;
+    if (stats != NULL) memset(stats, 0, sizeof *stats);
+
+    /* The checker is part of compilation: refuse a program with a hard
+     * diagnostic rather than compiling whatever the parser recovered. The
+     * compiler resolves imports itself, so the entry path goes in unchanged. */
+    buf_init(&diag);
+    check_rc = compiler_check(source, &diag);
+    if (check_rc != 0 || has_diagnostics(diag.data)) {
+        fwrite(diag.data, 1, diag.len, stdout);
+        buf_free(&diag);
+        return KAZE_EXIT_DIAG;
+    }
+    buf_free(&diag);
+
+    if (allow_cache && getenv("KAZE_NO_CACHE") == NULL) {
+        return build_source_cached(source, opts, tmpdir, output, stats);
+    }
+    return build_source_single(source, opts, tmpdir, output);
+}
+
+static int build_source(const char *source, const BuildOpts *opts, const char *tmpdir,
+                        const char *output) {
+    return build_source_ex(source, opts, tmpdir, output, 0, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1774,6 +2186,7 @@ static void usage(FILE *fp) {
         "STATIC ANALYSIS & FORMATTING:\n"
         "  check <file.kaze>        Verify syntax, types, units, contracts, capabilities (exit 0/1)\n"
         "    --json                   Emit machine-readable JSON diagnostics\n"
+        "    --holes                  Emit typed-hole synthesis contexts as JSON and exit 1\n"
         "  verify <file.kaze>       Run the Phase 16 formal proof & obligation verifier\n"
         "  fmt [options] <paths...> Format .kaze files deterministically\n"
         "    -w, --write              Modify files in place\n"
@@ -1786,6 +2199,8 @@ static void usage(FILE *fp) {
         "  compile <file.kaze>      Emit a compact Kaze bytecode module (hex)\n"
         "  to-machine <file.kaze>   Convert human syntax -> canonical S-expression form\n"
         "  to-human <file.kaze>     Convert machine S-expression -> canonical human syntax\n"
+        "  patch <target> <patch>   Splice one top-level item into an existing source\n"
+        "  ast-hash <file.kaze>     Print the semantic AST hash (comments ignored)\n"
         "  lsp [--dap]              Start the Language Server Protocol daemon\n"
         "  repl                     Start the interactive expression REPL\n"
         "  pkg <subcmd>             Package manager (init, verify, add, lock)\n"
@@ -1802,6 +2217,7 @@ static int is_known_command(const char *s) {
     static const char *cmds[] = {
         "init", "run", "build", "test", "check", "verify", "fmt",
         "emit-c", "emit-ir", "emit-qbe", "compile", "to-machine", "to-human",
+        "patch", "ast-hash",
         "module-manifest", "emit-c-unit", "emit-ir-c",
         "lsp", "repl", "pkg", "version", "surface", "help", NULL
     };
@@ -1908,6 +2324,7 @@ static int cmd_passthrough(const char *command, int argc, char **argv) {
 
 static int cmd_compile_like(const char *command, int argc, char **argv) {
     const char *source = NULL;
+    const char *machine_format = NULL;
     int i;
     Buf out;
     int compiler_rc;
@@ -1916,11 +2333,16 @@ static int cmd_compile_like(const char *command, int argc, char **argv) {
         return KAZE_EXIT_USAGE;
     }
     for (i = 0; i < argc; i++) {
-        if (argv[i][0] == '-' && argv[i][1] != 0) {
+        if (strcmp(argv[i], "--format=1") == 0 || strcmp(argv[i], "--format=2") == 0) {
+            if (strcmp(command, "to-machine") != 0) {
+                fprintf(stderr, "kaze %s: unknown option %s\n", command, argv[i]);
+                return KAZE_EXIT_USAGE;
+            }
+            machine_format = argv[i];
+        } else if (argv[i][0] == '-' && argv[i][1] != 0) {
             fprintf(stderr, "kaze %s: unknown option %s\n", command, argv[i]);
             return KAZE_EXIT_USAGE;
-        }
-        if (source == NULL) source = argv[i];
+        } else if (source == NULL) source = argv[i];
         else {
             fprintf(stderr, "kaze %s: unexpected argument %s\n", command, argv[i]);
             return KAZE_EXIT_USAGE;
@@ -1934,11 +2356,16 @@ static int cmd_compile_like(const char *command, int argc, char **argv) {
      * the compiler now. Passing the source path keeps the entry location (and
      * therefore per-file diagnostics and mangled module names) intact. */
     {
-        char *av[5];
-        av[0] = (char *)"kaze";
-        av[1] = (char *)command;
-        av[2] = (char *)source;
-        av[3] = NULL;
+        char *av[6];
+        int ai = 0;
+        av[ai++] = (char *)"kaze";
+        av[ai++] = (char *)command;
+        av[ai++] = (char *)source;
+        /* The compiler reads flags through its named-argument layer; a bare
+         * `--format=1` would be skipped as a positional option. */
+        if (machine_format != NULL && strcmp(machine_format, "--format=1") == 0)
+            av[ai++] = (char *)"--extra=--format=1";
+        av[ai] = NULL;
         buf_init(&out);
         compiler_rc = run_compiler(av, &out);
     }
@@ -1966,8 +2393,525 @@ static int cmd_compile_like(const char *command, int argc, char **argv) {
     return KAZE_EXIT_OK;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* kaze patch: splice one top-level item into an existing source       */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    size_t start;
+    size_t end;
+    char kind[32];
+    char name[256];
+} PatchSpan;
+
+static int patch_is_machine(const char *src) {
+    const char *p = src;
+    while (*p != 0 && isspace((unsigned char)*p)) p++;
+    return *p == '(';
+}
+
+static void patch_copy_quoted(const char **pp, char *out, size_t cap) {
+    const char *p = *pp;
+    size_t n = 0;
+    if (*p == '"') p++;
+    while (*p != 0 && *p != '"') {
+        if (*p == '\\' && p[1] != 0) p++;
+        if (n + 1 < cap) out[n++] = *p;
+        p++;
+    }
+    if (*p == '"') p++;
+    out[n] = 0;
+    *pp = p;
+}
+
+static void patch_copy_atom(const char **pp, char *out, size_t cap) {
+    const char *p = *pp;
+    size_t n = 0;
+    while (*p != 0 && !isspace((unsigned char)*p) && *p != '(' && *p != ')' && *p != ':') {
+        if (n + 1 < cap) out[n++] = *p;
+        p++;
+    }
+    out[n] = 0;
+    *pp = p;
+}
+
+static int patch_decl_word(const char *word) {
+    static const char *words[] = {
+        "action", "routine", "func", "check", "filter", "fiber",
+        "record", "test", "when", "every", "use", "needs", "tasks", NULL
+    };
+    int i;
+    for (i = 0; words[i] != NULL; i++) {
+        if (strcmp(word, words[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+static void patch_parse_human_head(const char *line, PatchSpan *it) {
+    const char *p = line;
+    char word[64];
+    it->kind[0] = 0;
+    it->name[0] = 0;
+    if (strncmp(p, "pub ", 4) == 0) p += 4;
+    patch_copy_atom(&p, word, sizeof word);
+    if (!patch_decl_word(word)) return;
+    snprintf(it->kind, sizeof it->kind, "%s", word);
+    while (*p == ' ' || *p == '\t') p++;
+    if (strcmp(word, "test") == 0) {
+        patch_copy_quoted(&p, it->name, sizeof it->name);
+    } else if (strcmp(word, "when") != 0 && strcmp(word, "every") != 0 &&
+               strcmp(word, "use") != 0 && strcmp(word, "needs") != 0 &&
+               strcmp(word, "tasks") != 0) {
+        patch_copy_atom(&p, it->name, sizeof it->name);
+    }
+}
+
+static int patch_collect_human(const char *src, PatchSpan *out, int max, int *count_out) {
+    size_t n = strlen(src);
+    size_t pos = 0;
+    size_t item_start = 0;
+    int have = 0;
+    PatchSpan cur;
+    int count = 0;
+    memset(&cur, 0, sizeof cur);
+    while (pos < n) {
+        size_t line_start = pos;
+        const char *nl = strchr(src + pos, '\n');
+        size_t line_end = nl ? (size_t)(nl - src) : n;
+        if (line_start < line_end && src[line_start] != ' ' && src[line_start] != '\t') {
+            if (src[line_start] == '#') {
+                if (have && count < max) {
+                    cur.end = line_start;
+                    out[count++] = cur;
+                    have = 0;
+                }
+            } else {
+                PatchSpan head;
+                patch_parse_human_head(src + line_start, &head);
+                if (head.kind[0] != 0) {
+                    if (have && count < max) {
+                        cur.end = line_start;
+                        out[count++] = cur;
+                    }
+                    cur = head;
+                    cur.start = line_start;
+                    item_start = line_start;
+                    have = 1;
+                }
+            }
+        }
+        pos = nl ? line_end + 1 : n;
+    }
+    if (have && count < max) {
+        cur.end = n;
+        cur.start = item_start;
+        out[count++] = cur;
+    }
+    *count_out = count;
+    return 0;
+}
+
+static void patch_skip_machine_ws(const char *s, size_t *pos, size_t end) {
+    for (;;) {
+        while (*pos < end && isspace((unsigned char)s[*pos])) (*pos)++;
+        if (*pos < end && s[*pos] == ';') {
+            while (*pos < end && s[*pos] != '\n') (*pos)++;
+            continue;
+        }
+        break;
+    }
+}
+
+static int patch_scan_form(const char *s, size_t *pos, size_t end, size_t *start, size_t *stop) {
+    size_t p = *pos;
+    int depth = 0;
+    int in_string = 0;
+    patch_skip_machine_ws(s, &p, end);
+    if (p >= end || s[p] != '(') return 0;
+    *start = p;
+    while (p < end) {
+        char c = s[p];
+        if (in_string) {
+            if (c == '\\' && p + 1 < end) p++;
+            else if (c == '"') in_string = 0;
+        } else if (c == '"') {
+            in_string = 1;
+        } else if (c == '(') {
+            depth++;
+        } else if (c == ')') {
+            depth--;
+            if (depth == 0) {
+                *stop = p + 1;
+                *pos = p + 1;
+                return 1;
+            }
+        } else if (c == ';') {
+            while (p < end && s[p] != '\n') p++;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static void patch_parse_machine_head(const char *s, size_t start, size_t stop, PatchSpan *it) {
+    size_t p = start + 1;
+    char word[64];
+    it->kind[0] = 0;
+    it->name[0] = 0;
+    patch_skip_machine_ws(s, &p, stop);
+    {
+        const char *q = s + p;
+        patch_copy_atom(&q, word, sizeof word);
+        p = (size_t)(q - s);
+    }
+    if (strcmp(word, "pub") == 0) {
+        patch_skip_machine_ws(s, &p, stop);
+        {
+            const char *q = s + p;
+            patch_copy_atom(&q, word, sizeof word);
+            p = (size_t)(q - s);
+        }
+    }
+    if (word[0] == 0) return;
+    snprintf(it->kind, sizeof it->kind, "%s", word);
+    patch_skip_machine_ws(s, &p, stop);
+    if (p >= stop || s[p] == ')') return;
+    if (s[p] == '"') {
+        const char *q = s + p;
+        patch_copy_quoted(&q, it->name, sizeof it->name);
+    } else {
+        const char *q = s + p;
+        patch_copy_atom(&q, it->name, sizeof it->name);
+    }
+}
+
+static int patch_collect_machine(const char *src, PatchSpan *out, int max,
+                                 int *count_out, size_t *insert_out, int *wrapped_out) {
+    size_t n = strlen(src);
+    size_t pos = 0, start = 0, stop = 0;
+    size_t p;
+    int count = 0;
+    int wrapped = 0;
+    if (!patch_scan_form(src, &pos, n, &start, &stop)) {
+        *count_out = 0;
+        *insert_out = n;
+        *wrapped_out = 0;
+        return 0;
+    }
+    /* A `(kaze 2 ...)` wrapper contributes its direct children; a bare form is
+     * itself the item. */
+    p = start + 1;
+    patch_skip_machine_ws(src, &p, stop);
+    {
+        const char *q = src + p;
+        char head[64];
+        patch_copy_atom(&q, head, sizeof head);
+        if (strcmp(head, "kaze") == 0) wrapped = 1;
+    }
+    if (wrapped) {
+        p = start + 1;
+        patch_skip_machine_ws(src, &p, stop);
+        {
+            const char *q = src + p;
+            char head[64];
+            patch_copy_atom(&q, head, sizeof head);
+            p = (size_t)(q - src);
+        }
+        patch_skip_machine_ws(src, &p, stop);
+        {
+            const char *q = src + p;
+            char head[64];
+            patch_copy_atom(&q, head, sizeof head);
+            p = (size_t)(q - src);
+        }
+        while (p + 1 < stop) {
+            size_t cs = 0, ce = 0;
+            PatchSpan item;
+            patch_skip_machine_ws(src, &p, stop);
+            if (p >= stop || src[p] == ')') break;
+            if (!patch_scan_form(src, &p, stop, &cs, &ce)) break;
+            patch_parse_machine_head(src, cs, ce, &item);
+            item.start = cs;
+            item.end = ce;
+            if (item.kind[0] != 0 && count < max) out[count++] = item;
+        }
+        *insert_out = stop - 1;
+    } else {
+        p = 0;
+        while (p < n) {
+            size_t cs = 0, ce = 0;
+            PatchSpan item;
+            patch_skip_machine_ws(src, &p, n);
+            if (p >= n) break;
+            if (!patch_scan_form(src, &p, n, &cs, &ce)) break;
+            patch_parse_machine_head(src, cs, ce, &item);
+            item.start = cs;
+            item.end = ce;
+            if (item.kind[0] != 0 && count < max) out[count++] = item;
+        }
+        *insert_out = n;
+    }
+    *count_out = count;
+    *wrapped_out = wrapped;
+    return 0;
+}
+
+typedef struct {
+    size_t start;
+    size_t end;
+    char *text;
+} PatchEdit;
+
+static int patch_find_target(const PatchSpan *target, int nt, const PatchSpan *item) {
+    int i;
+    for (i = 0; i < nt; i++) {
+        if (strcmp(target[i].kind, item->kind) != 0) continue;
+        if (item->name[0] == 0) return i;
+        if (strcmp(target[i].name, item->name) == 0) return i;
+    }
+    return -1;
+}
+
+static char *patch_apply(const char *src, PatchEdit *edits, int nedits, const char *append,
+                         size_t append_len) {
+    size_t srclen = strlen(src);
+    size_t total = srclen + append_len + 8;
+    char *out;
+    size_t last = 0, w = 0;
+    int i;
+    for (i = 0; i < nedits; i++) total += strlen(edits[i].text) + 8;
+    out = (char *)xmalloc(total);
+    for (i = 0; i < nedits; i++) {
+        int j;
+        for (j = i + 1; j < nedits; j++) {
+            if (edits[j].start < edits[i].start) {
+                PatchEdit tmp = edits[i];
+                edits[i] = edits[j];
+                edits[j] = tmp;
+            }
+        }
+    }
+    for (i = 0; i < nedits; i++) {
+        size_t n;
+        if (edits[i].start < last) continue;
+        n = edits[i].start - last;
+        memcpy(out + w, src + last, n);
+        w += n;
+        n = strlen(edits[i].text);
+        memcpy(out + w, edits[i].text, n);
+        w += n;
+        last = edits[i].end;
+    }
+    memcpy(out + w, src + last, srclen - last);
+    w += srclen - last;
+    if (append_len > 0) {
+        memcpy(out + w, append, append_len);
+        w += append_len;
+    }
+    out[w] = 0;
+    return out;
+}
+
+static int cmd_patch(int argc, char **argv) {
+    const char *target = NULL;
+    const char *patch = NULL;
+    Buf tb, pb, canon;
+    char *target_src;
+    char *patch_src;
+    char *canon_src;
+    int target_machine;
+    int patch_machine;
+    int i;
+    PatchSpan target_items[128];
+    PatchSpan patch_items[128];
+    int nt = 0, np = 0;
+    size_t insert_at = 0;
+    size_t ignored_insert = 0;
+    int wrapped = 0;
+    PatchEdit edits[128];
+    int nedits = 0;
+    int used[128];
+    char *append = NULL;
+    size_t append_len = 0;
+    char *result;
+    char *tmp;
+    Buf diag;
+    int rc;
+
+    for (i = 0; i < argc; i++) {
+        if (argv[i][0] == '-') {
+            fprintf(stderr, "kaze patch: unknown option %s\n", argv[i]);
+            return KAZE_EXIT_USAGE;
+        }
+        if (target == NULL) target = argv[i];
+        else if (patch == NULL) patch = argv[i];
+        else {
+            fprintf(stderr, "kaze patch: unexpected argument %s\n", argv[i]);
+            return KAZE_EXIT_USAGE;
+        }
+    }
+    if (target == NULL || patch == NULL) {
+        fputs("usage: kaze patch <target.kaze> <patch.kaze>\n", stderr);
+        return KAZE_EXIT_USAGE;
+    }
+    if (!is_regular(target) || !is_regular(patch)) {
+        fprintf(stderr, "kaze: no such file: %s\n", !is_regular(target) ? target : patch);
+        return KAZE_EXIT_USAGE;
+    }
+    buf_init(&tb);
+    buf_init(&pb);
+    buf_init(&canon);
+    if (read_file(target, &tb) != 0 || read_file(patch, &pb) != 0) {
+        fprintf(stderr, "kaze patch: cannot read %s\n", target);
+        buf_free(&tb); buf_free(&pb); buf_free(&canon);
+        return KAZE_EXIT_USAGE;
+    }
+    target_src = tb.data != NULL ? tb.data : (char *)"";
+    patch_src = pb.data != NULL ? pb.data : (char *)"";
+    target_machine = patch_is_machine(target_src);
+    patch_machine = patch_is_machine(patch_src);
+
+    /* Canonicalise the patch into the target's syntax so the spliced text is
+     * exactly what `fmt` / `to-machine` would write. */
+    {
+        char *av[6];
+        int ai = 0;
+        av[ai++] = (char *)"kaze";
+        if (target_machine) {
+            av[ai++] = (char *)"to-machine";
+        } else if (patch_machine) {
+            av[ai++] = (char *)"to-human";
+        } else {
+            av[ai++] = (char *)"fmt";
+        }
+        av[ai++] = (char *)patch;
+        av[ai] = NULL;
+        rc = run_compiler(av, &canon);
+    }
+    if (rc != 0 || canon.len == 0) {
+        fputs("kaze patch: the patch fragment did not parse\n", stderr);
+        if (canon.data != NULL) fwrite(canon.data, 1, canon.len, stderr);
+        buf_free(&tb); buf_free(&pb); buf_free(&canon);
+        return KAZE_EXIT_DIAG;
+    }
+    canon_src = canon.data;
+
+    if (target_machine) {
+        patch_collect_machine(target_src, target_items, 128, &nt, &insert_at, &wrapped);
+        patch_collect_machine(canon_src, patch_items, 128, &np, &ignored_insert, &wrapped);
+    } else {
+        patch_collect_human(target_src, target_items, 128, &nt);
+        patch_collect_human(canon_src, patch_items, 128, &np);
+        insert_at = strlen(target_src);
+    }
+    memset(used, 0, sizeof used);
+    for (i = 0; i < np; i++) {
+        int hit = patch_find_target(target_items, nt, &patch_items[i]);
+        if (hit >= 0 && !used[hit]) {
+            size_t n = patch_items[i].end - patch_items[i].start;
+            size_t target_n = target_items[hit].end - target_items[hit].start;
+            size_t tail = 0, text_tail = 0;
+            char *text;
+            if (!target_machine) {
+                while (target_n > 0 && target_src[target_items[hit].start + target_n - 1] == '\n') {
+                    target_n--;
+                    tail++;
+                }
+                {
+                    size_t scan = n;
+                    while (scan > 0 && canon_src[patch_items[i].start + scan - 1] == '\n') {
+                        scan--;
+                        text_tail++;
+                    }
+                }
+            }
+            text = (char *)xmalloc(n + tail + 2);
+            memcpy(text, canon_src + patch_items[i].start, n);
+            n -= text_tail;
+            if (!target_machine && tail == 0) tail = 1;
+            {
+                size_t k;
+                for (k = 0; k < tail; k++) text[n++] = '\n';
+            }
+            text[n] = 0;
+            edits[nedits].start = target_items[hit].start;
+            edits[nedits].end = target_items[hit].end;
+            edits[nedits].text = text;
+            nedits++;
+            used[hit] = 1;
+        } else {
+            size_t n = patch_items[i].end - patch_items[i].start;
+            size_t need = append_len + n + 4;
+            append = (char *)xrealloc(append, need);
+            if (append_len == 0) {
+                size_t slen = strlen(target_src);
+                if (slen == 0 || target_src[slen - 1] != '\n') append[append_len++] = '\n';
+                else if (slen < 2 || target_src[slen - 2] != '\n') append[append_len++] = '\n';
+            }
+            memcpy(append + append_len, canon_src + patch_items[i].start, n);
+            append_len += n;
+            append[append_len++] = '\n';
+        }
+    }
+    if (nedits == 0 && append_len == 0) {
+        fputs("kaze patch: the patch contains no top-level item\n", stderr);
+        buf_free(&tb); buf_free(&pb); buf_free(&canon);
+        return KAZE_EXIT_USAGE;
+    }
+    /* Appending to a machine source goes just before the root close. */
+    if (append_len > 0 && target_machine) {
+        size_t n = strlen(target_src);
+        size_t extra = 0;
+        size_t before = insert_at;
+        char *joined;
+        if (append_len > 0 && append[append_len - 1] == '\n') append_len--;
+        if (append_len > 0 && append[0] != '\n') extra = 1;
+        joined = (char *)xmalloc(n + append_len + extra + 2);
+        memcpy(joined, target_src, before);
+        if (extra) joined[before++] = '\n';
+        memcpy(joined + before, append, append_len);
+        memcpy(joined + before + append_len, target_src + insert_at, n - insert_at);
+        joined[n + append_len + extra] = 0;
+        result = patch_apply(joined, edits, nedits, NULL, 0);
+        free(joined);
+    } else {
+        result = patch_apply(target_src, edits, nedits, append, append_len);
+    }
+
+    tmp = xasprintf("%s.patch.%ld.kaze", target, (long)getpid());
+    if (write_file_raw(tmp, result, strlen(result), 0644) != 0) {
+        fprintf(stderr, "kaze patch: cannot write %s: %s\n", tmp, strerror(errno));
+        free(tmp); free(result); buf_free(&tb); buf_free(&pb); buf_free(&canon);
+        return KAZE_EXIT_USAGE;
+    }
+    if (getenv("KAZE_PATCH_DEBUG") != NULL) fprintf(stderr, "--- patched ---\n%s--- end ---\n", result);
+    buf_init(&diag);
+    rc = compiler_check(tmp, &diag);
+    if (rc != 0) {
+        fputs("kaze patch: the patched source does not check:\n", stderr);
+        if (diag.data != NULL) fwrite(diag.data, 1, diag.len, stderr);
+        if (getenv("KAZE_PATCH_KEEP") == NULL) unlink(tmp);
+        free(tmp); free(result); buf_free(&diag);
+        buf_free(&tb); buf_free(&pb); buf_free(&canon);
+        return KAZE_EXIT_DIAG;
+    }
+    if (rename(tmp, target) != 0) {
+        fprintf(stderr, "kaze patch: cannot replace %s: %s\n", target, strerror(errno));
+        if (getenv("KAZE_PATCH_KEEP") == NULL) unlink(tmp);
+        free(tmp); free(result); buf_free(&diag);
+        buf_free(&tb); buf_free(&pb); buf_free(&canon);
+        return KAZE_EXIT_USAGE;
+    }
+    printf("patched %s: %d item(s)\n", target, np);
+    free(tmp); free(result); buf_free(&diag);
+    buf_free(&tb); buf_free(&pb); buf_free(&canon);
+    return KAZE_EXIT_OK;
+}
+
 static int cmd_check(int argc, char **argv) {
     int json = 0;
+    int holes = 0;
     StrVec files;
     int i;
     int any_bad = 0;
@@ -1975,6 +2919,7 @@ static int cmd_check(int argc, char **argv) {
     vec_init(&files);
     for (i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--json") == 0) json = 1;
+        else if (strcmp(argv[i], "--holes") == 0) holes = 1;
         else if (argv[i][0] == '-' && argv[i][1] != 0) {
             fprintf(stderr, "kaze check: unknown option %s\n", argv[i]);
             vec_free(&files);
@@ -1984,7 +2929,7 @@ static int cmd_check(int argc, char **argv) {
         }
     }
     if (files.len == 0) {
-        fputs("usage: kaze check [--json] <file.kaze>...\n", stderr);
+        fputs("usage: kaze check [--json] [--holes] <file.kaze>...\n", stderr);
         vec_free(&files);
         return KAZE_EXIT_USAGE;
     }
@@ -1997,6 +2942,24 @@ static int cmd_check(int argc, char **argv) {
             vec_free(&files);
             return KAZE_EXIT_USAGE;
         }
+    }
+    if (holes) {
+        for (i = 0; i < (int)files.len; i++) {
+            char *av[4];
+            Buf out;
+            int rc;
+            av[0] = (char *)"kaze";
+            av[1] = (char *)"holes";
+            av[2] = files.items[i];
+            av[3] = NULL;
+            buf_init(&out);
+            rc = run_compiler(av, &out);
+            if (out.data != NULL) fwrite(out.data, 1, out.len, stdout);
+            if (rc != 0) any_bad = 1;
+            buf_free(&out);
+        }
+        vec_free(&files);
+        return any_bad ? KAZE_EXIT_DIAG : KAZE_EXIT_OK;
     }
     if (json) fputs("{\"files\":[", stdout);
     for (i = 0; i < (int)files.len; i++) {
@@ -2087,7 +3050,7 @@ static int cmd_fmt(int argc, char **argv) {
     vec_init(&paths);
     vec_init(&files);
     for (i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "-w") == 0 || strcmp(argv[i], "--write") == 0) write_in_place = 1;
+        if (strcmp(argv[i], "-w") == 0 || strcmp(argv[i], "--write") == 0 || strcmp(argv[i], "--migrate") == 0) write_in_place = 1;
         else if (strcmp(argv[i], "--check") == 0) check = 1;
         else if (argv[i][0] == '-' && argv[i][1] != 0) {
             fprintf(stderr, "kaze fmt: unknown option %s\n", argv[i]);
@@ -2097,7 +3060,7 @@ static int cmd_fmt(int argc, char **argv) {
         } else vec_push(&paths, argv[i]);
     }
     if (paths.len == 0) {
-        fputs("usage: kaze fmt [-w|--check] <paths...>\n", stderr);
+        fputs("usage: kaze fmt [-w|--migrate|--check] <paths...>\n", stderr);
         vec_free(&paths);
         vec_free(&files);
         return KAZE_EXIT_USAGE;
@@ -2354,9 +3317,20 @@ static int validate_backend(const char *backend) {
     return 0;
 }
 
-static int validate_target(const char *target) {
-    if (target == NULL || strcmp(target, "native") == 0) return 1;
-    fprintf(stderr, "kaze: --target=%s needs the cross/back-end toolchain; this binary supports --target=native\n", target);
+static int validate_target(const BuildOpts *opts) {
+    const char *target = opts->target;
+    if (target == NULL || target[0] == 0 || strcmp(target, "native") == 0) return 1;
+    if (strcmp(target, "arm64_apple") == 0 || strcmp(target, "arm64") == 0 ||
+        strcmp(target, "amd64_sysv") == 0 || strcmp(target, "amd64_apple") == 0 ||
+        strcmp(target, "rv64") == 0) {
+        if (opts->backend != NULL && strcmp(opts->backend, "native") == 0) return 1;
+        fprintf(stderr, "kaze: --target=%s requires --backend=native (c99 uses the host C compiler target)\n",
+                target);
+        return 0;
+    }
+    fprintf(stderr,
+            "kaze: unknown target '%s' (supported: native, arm64_apple, arm64, amd64_sysv, amd64_apple, rv64)\n",
+            target);
     return 0;
 }
 
@@ -2376,6 +3350,7 @@ static char *native_tool_path(void) {
 static int run_native_tool(const char *mode, const char *source, const StrVec *rest,
                            const BuildOpts *opts, const char *output) {
     char *tool = native_tool_path();
+    char *target_flag = NULL;
     size_t cap = 8 + (rest != NULL ? rest->len : 0);
     char **av = (char **)xmalloc(cap * sizeof *av);
     size_t n = 0;
@@ -2389,7 +3364,8 @@ static int run_native_tool(const char *mode, const char *source, const StrVec *r
         av[n++] = (char *)output;
     }
     if (target != NULL && target[0] != 0 && strcmp(target, "native") != 0) {
-        av[n++] = xasprintf("--target=%s", target);
+        target_flag = xasprintf("--target=%s", target);
+        av[n++] = target_flag;
     }
     if (rest != NULL) {
         size_t i;
@@ -2407,6 +3383,8 @@ static int run_native_tool(const char *mode, const char *source, const StrVec *r
         fprintf(stderr, "E_KAZE_BACKEND_UNSUPPORTED: cannot find %s\n", tool);
         rc = KAZE_EXIT_DIAG;
     }
+    free(target_flag);
+    free(av);
     free(tool);
     return rc;
 }
@@ -2429,7 +3407,7 @@ static int cmd_run(int argc, char **argv) {
         vec_free(&rest);
         return KAZE_EXIT_USAGE;
     }
-    if (!validate_backend(opts.backend) || !validate_target(opts.target)) {
+    if (!validate_backend(opts.backend) || !validate_target(&opts)) {
         vec_free(&rest);
         return KAZE_EXIT_USAGE;
     }
@@ -2492,7 +3470,7 @@ static int cmd_build(int argc, char **argv) {
         vec_free(&rest);
         return KAZE_EXIT_USAGE;
     }
-    if (!validate_backend(opts.backend) || !validate_target(opts.target)) {
+    if (!validate_backend(opts.backend) || !validate_target(&opts)) {
         vec_free(&rest);
         return KAZE_EXIT_USAGE;
     }
@@ -2521,8 +3499,19 @@ static int cmd_build(int argc, char **argv) {
         vec_free(&rest);
         return rc;
     }
-    rc = build_source(source, &opts, tmpdir, output);
-    if (rc == 0) printf("kaze: built %s\n", output);
+    {
+        BuildStats stats;
+        rc = build_source_ex(source, &opts, tmpdir, output, 1, &stats);
+        if (rc == 0) {
+            if (stats.used_cache) {
+                printf("kaze: built %s (%d module%s, %d compiled, %d cached)\n",
+                       output, stats.nmods, stats.nmods == 1 ? "" : "s",
+                       stats.compiled, stats.cached);
+            } else {
+                printf("kaze: built %s\n", output);
+            }
+        }
+    }
     if (g_keep_temps) fprintf(stderr, "kaze: temporary files: %s\n", tmpdir);
     free(output);
     vec_free(&rest);
@@ -2556,8 +3545,37 @@ static int cmd_test(int argc, char **argv) {
     }
     if (is_dir("tests/stdlib")) collect_kaze_files("tests/stdlib", &files, 0);
     else if (is_dir("tests")) collect_kaze_files("tests", &files, 1);
+    /* Co-located tests: a source file that carries `test "..."` blocks is a
+     * suite too. Modules of a library live in lib/; a project's application
+     * sources live in src/. Only top-level files are scanned; subdirectories
+     * are modules of a suite rather than suites themselves. */
+    {
+        static const char *const co_dirs[] = { "lib", "src", NULL };
+        size_t di;
+        for (di = 0; co_dirs[di] != NULL; di++) {
+            StrVec libs;
+            size_t li;
+            if (!is_dir(co_dirs[di])) continue;
+            vec_init(&libs);
+            collect_kaze_files(co_dirs[di], &libs, 0);
+            for (li = 0; li < libs.len; li++) {
+                Buf body;
+                int has = 0;
+                buf_init(&body);
+                if (read_file(libs.items[li], &body) == 0 && body.data != NULL) {
+                    if (strstr(body.data, "\ntest \"") != NULL ||
+                        strstr(body.data, "\npub test \"") != NULL ||
+                        strncmp(body.data, "test \"", 6) == 0 ||
+                        strncmp(body.data, "pub test \"", 10) == 0) has = 1;
+                }
+                buf_free(&body);
+                if (has) vec_push(&files, xstrdup(libs.items[li]));
+            }
+            vec_free(&libs);
+        }
+    }
     if (files.len == 0) {
-        fprintf(stderr, "kaze test: no tests/stdlib/*_test.kaze suites found\n");
+        fprintf(stderr, "kaze test: no suites in tests/stdlib, lib/*.kaze or src/*.kaze\n");
         vec_free(&files);
         return KAZE_EXIT_USAGE;
     }
@@ -2600,7 +3618,8 @@ static int cmd_test(int argc, char **argv) {
                 int brc;
                 build_opts_init(&opts);
                 opts.asan = getenv("KAZE_TEST_ASAN") != NULL;
-                brc = build_source(file, &opts, tmpdir, out);
+                opts.tests = 1;
+                brc = build_source_single(file, &opts, tmpdir, out);
                 if (brc != 0) {
                     printf("FAIL  %-24s build\n", name);
                     failed++;
@@ -3192,6 +4211,68 @@ static void json_escape_buf(char *dst, size_t cap, const char *src) {
     dst[o] = 0;
 }
 
+static char lsp_doc_uri[512];
+
+static int hex_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    return -1;
+}
+
+static int lsp_uri_to_path(const char *uri, char *out, size_t cap) {
+    const char *p;
+    size_t o = 0;
+    if (uri == NULL || strncmp(uri, "file://", 7) != 0) return 0;
+    p = uri + 7;
+    if (strncmp(p, "localhost/", 10) == 0) p += 9;
+    while (*p != 0 && o + 1 < cap) {
+        if (*p == '%' && p[1] != 0 && p[2] != 0) {
+            int hi = hex_val(p[1]);
+            int lo = hex_val(p[2]);
+            if (hi >= 0 && lo >= 0) {
+                out[o++] = (char)((hi << 4) | lo);
+                p += 3;
+                continue;
+            }
+        }
+        out[o++] = *p++;
+    }
+    out[o] = 0;
+    return o > 0;
+}
+
+static void buf_append_json_str(Buf *b, const char *s, size_t len) {
+    size_t i;
+    buf_appendc(b, '"');
+    for (i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)s[i];
+        if (ch == '"' || ch == '\\') {
+            buf_appendc(b, '\\');
+            buf_appendc(b, (char)ch);
+        } else if (ch == '\n') buf_appends(b, "\\n");
+        else if (ch == '\r') buf_appends(b, "\\r");
+        else if (ch == '\t') buf_appends(b, "\\t");
+        else if (ch < 0x20) {
+            static const char hex[] = "0123456789abcdef";
+            char esc[7];
+            esc[0] = '\\'; esc[1] = 'u'; esc[2] = '0'; esc[3] = '0';
+            esc[4] = hex[(ch >> 4) & 0xF]; esc[5] = hex[ch & 0xF]; esc[6] = 0;
+            buf_appends(b, esc);
+        } else {
+            buf_appendc(b, (char)ch);
+        }
+    }
+    buf_appendc(b, '"');
+}
+
+static void lsp_append_frame(Buf *b, const char *json, size_t len) {
+    char hdr[64];
+    snprintf(hdr, sizeof hdr, "Content-Length: %lu\r\n\r\n", (unsigned long)len);
+    buf_appends(b, hdr);
+    buf_append(b, json, len);
+}
+
 static void lsp_cleanup_file(void) {
     if (lsp_src_path[0] != 0) unlink(lsp_src_path);
 }
@@ -3202,26 +4283,54 @@ static void lsp_publish(const char *uri) {
     char body[16384];
     size_t used;
     char safe_uri[1024];
+    char doc_path[PATH_MAX];
+    char sib_path[PATH_MAX];
+    const char *check_path = NULL;
+    int unlink_after = 0;
     const char *p;
     int count = 0;
-    if (lsp_src_path[0] == 0) {
-        char tpl[PATH_MAX];
-        snprintf(tpl, sizeof tpl, "%s/kaze-lsp-XXXXXX", temp_root());
-        snprintf(lsp_src_path, sizeof lsp_src_path, "%s", tpl);
-        {
-            int fd = mkstemp(lsp_src_path);
-            if (fd < 0) { lsp_src_path[0] = 0; return; }
-            close(fd);
+
+    if (lsp_uri_to_path(uri, doc_path, sizeof doc_path)) {
+        char *dir = path_dirname(doc_path);
+        if (is_dir(dir)) {
+            snprintf(sib_path, sizeof sib_path, "%s/.kaze-lsp-%ld-XXXXXX", dir, (long)getpid());
+            {
+                int fd = mkstemp(sib_path);
+                if (fd >= 0) {
+                    close(fd);
+                    if (write_file_raw(sib_path, lsp_doc, lsp_doc_len, 0644) == 0) {
+                        check_path = sib_path;
+                        unlink_after = 1;
+                    } else {
+                        unlink(sib_path);
+                    }
+                }
+            }
         }
-        atexit(lsp_cleanup_file);
+        free(dir);
     }
-    if (write_file_raw(lsp_src_path, lsp_doc, lsp_doc_len, 0644) != 0) return;
+
+    if (check_path == NULL) {
+        if (lsp_src_path[0] == 0) {
+            snprintf(lsp_src_path, sizeof lsp_src_path, "%s/kaze-lsp-XXXXXX", temp_root());
+            {
+                int fd = mkstemp(lsp_src_path);
+                if (fd < 0) { lsp_src_path[0] = 0; return; }
+                close(fd);
+            }
+            atexit(lsp_cleanup_file);
+        }
+        if (write_file_raw(lsp_src_path, lsp_doc, lsp_doc_len, 0644) != 0) return;
+        check_path = lsp_src_path;
+    }
+
     av[0] = (char *)"kaze";
     av[1] = (char *)"check";
-    av[2] = lsp_src_path;
+    av[2] = (char *)check_path;
     av[3] = NULL;
     buf_init(&out);
     run_compiler(av, &out);
+    if (unlink_after) unlink(check_path);
     json_escape_buf(safe_uri, sizeof safe_uri, uri);
     {
         int n = snprintf(body, sizeof body,
@@ -3265,68 +4374,95 @@ static void lsp_publish(const char *uri) {
     lsp_write(body);
 }
 
-static int lsp_word_at(int want_line, int want_char, char *word, size_t cap, int *decl_line) {
-    int line = 0;
-    size_t i = 0;
-    while (i < lsp_doc_len) {
-        size_t start = i;
-        while (i < lsp_doc_len && lsp_doc[i] != '\n') i++;
-        if (line == want_line) {
-            size_t len = i - start;
-            size_t c = (size_t)want_char < len ? (size_t)want_char : (len ? len - 1 : 0);
-            size_t a = start + c, b = a;
-            size_t n;
-            while (a > start && (isalnum((unsigned char)lsp_doc[a - 1]) || lsp_doc[a - 1] == '_')) a--;
-            while (b < start + len && (isalnum((unsigned char)lsp_doc[b]) || lsp_doc[b] == '_')) b++;
-            n = b - a;
-            if (n == 0 || n + 1 > cap) return 0;
-            memcpy(word, lsp_doc + a, n);
-            word[n] = 0;
-            *decl_line = -1;
-            {
-                int ln = 0;
-                size_t j = 0;
-                while (j < lsp_doc_len) {
-                    size_t s2 = j;
-                    while (j < lsp_doc_len && lsp_doc[j] != '\n') j++;
-                    {
-                        const char *text = lsp_doc + s2;
-                        size_t tl = j - s2;
-                        if ((strncmp(text, "action ", 7) == 0 || strncmp(text, "record ", 7) == 0 ||
-                             strncmp(text, "routine ", 8) == 0) &&
-                            strstr(text, word) != NULL && strstr(text, word) < text + tl) {
-                            *decl_line = ln;
-                            break;
-                        }
-                    }
-                    ln++;
-                    j++;
-                }
-            }
-            return 1;
-        }
-        line++;
-        i++;
-    }
-    return 0;
-}
+/* Delegate hover/definition JSON-RPC requests to the pure-Kaze LSP engine
+ * (`compiler/lsp.kaze`) by sending [didOpen(uri, lsp_doc), request] as a
+ * temporary framed session and extracting the matching reply frame. */
+static int lsp_delegate_compiler(const char *uri, const char *req_msg, char *reply_out, size_t cap) {
+    Buf open_json;
+    Buf sess;
+    Buf out;
+    char sess_path[PATH_MAX];
+    char *av[4];
+    const char *use_uri = (uri != NULL && uri[0] != 0) ? uri :
+                          (lsp_doc_uri[0] != 0 ? lsp_doc_uri : "file:///document.kaze");
+    int fd;
+    int rc;
+    const char *p;
+    int found = 0;
 
-static int lsp_position(const char *msg, int *line, int *ch) {
-    const char *p = strstr(msg, "\"position\"");
-    const char *l;
-    const char *c;
-    const char *lc;
-    const char *cc;
-    if (p == NULL) return 0;
-    l = strstr(p, "\"line\"");
-    c = strstr(p, "\"character\"");
-    if (l == NULL || c == NULL) return 0;
-    lc = strchr(l, ':');
-    cc = strchr(c, ':');
-    if (lc == NULL || cc == NULL) return 0;
-    *line = atoi(lc + 1);
-    *ch = atoi(cc + 1);
-    return 1;
+    buf_init(&open_json);
+    buf_appends(&open_json, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":");
+    buf_append_json_str(&open_json, use_uri, strlen(use_uri));
+    buf_appends(&open_json, ",\"languageId\":\"kaze\",\"version\":1,\"text\":");
+    buf_append_json_str(&open_json, lsp_doc, lsp_doc_len);
+    buf_appends(&open_json, "}}}");
+
+    buf_init(&sess);
+    lsp_append_frame(&sess, open_json.data, open_json.len);
+    lsp_append_frame(&sess, req_msg, strlen(req_msg));
+    buf_free(&open_json);
+
+    snprintf(sess_path, sizeof sess_path, "%s/kaze-lsp-sess-XXXXXX", temp_root());
+    fd = mkstemp(sess_path);
+    if (fd < 0) {
+        buf_free(&sess);
+        return 0;
+    }
+    close(fd);
+    if (write_file_raw(sess_path, sess.data, sess.len, 0600) != 0) {
+        unlink(sess_path);
+        buf_free(&sess);
+        return 0;
+    }
+    buf_free(&sess);
+
+    av[0] = (char *)"kaze";
+    av[1] = (char *)"lsp";
+    av[2] = sess_path;
+    av[3] = NULL;
+    buf_init(&out);
+    rc = run_compiler(av, &out);
+    unlink(sess_path);
+    if (rc != 0 || out.data == NULL) {
+        buf_free(&out);
+        return 0;
+    }
+
+    p = out.data;
+    while (p != NULL && (size_t)(p - out.data) < out.len) {
+        const char *cl = NULL;
+        const char *hdr_end = NULL;
+        long len = -1;
+        while (*p != 0 && (*p == '\r' || *p == '\n')) p++;
+        if (strncasecmp(p, "Content-Length:", 15) != 0) {
+            const char *nl = strchr(p, '\n');
+            if (nl == NULL) break;
+            p = nl + 1;
+            continue;
+        }
+        cl = p + 15;
+        len = strtol(cl, NULL, 10);
+        hdr_end = strstr(p, "\r\n\r\n");
+        if (hdr_end != NULL) hdr_end += 4;
+        else {
+            hdr_end = strstr(p, "\n\n");
+            if (hdr_end != NULL) hdr_end += 2;
+        }
+        if (hdr_end == NULL || len < 0 || (size_t)(hdr_end - out.data) + (size_t)len > out.len) break;
+        {
+            char *frame = (char *)xmalloc((size_t)len + 1);
+            memcpy(frame, hdr_end, (size_t)len);
+            frame[len] = 0;
+            if (strstr(frame, "\"id\":") != NULL && (size_t)len < cap) {
+                memcpy(reply_out, frame, (size_t)len + 1);
+                found = 1;
+            }
+            free(frame);
+        }
+        p = hdr_end + (size_t)len;
+    }
+    buf_free(&out);
+    return found;
 }
 
 static int read_frame(void) {
@@ -3413,39 +4549,23 @@ static int cmd_lsp(int argc, char **argv) {
                     memcpy(lsp_doc, text, n);
                     lsp_doc[n] = 0;
                     lsp_doc_len = n;
+                    snprintf(lsp_doc_uri, sizeof lsp_doc_uri, "%s", uri);
                     snprintf(pending_uri, sizeof pending_uri, "%s", uri);
                     pending = 1;
                 }
-            } else if (strcmp(method, "textDocument/hover") == 0) {
-                int line = 0, ch = 0;
-                char word[128];
-                int decl = -1;
-                char body[1024];
-                if (lsp_position(lsp_msg, &line, &ch) &&
-                    lsp_word_at(line, ch, word, sizeof word, &decl) && decl >= 0) {
-                    snprintf(body, sizeof body,
-                             "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\"`%s` is declared in this document\"}}}",
-                             id_tok, word);
-                } else {
-                    snprintf(body, sizeof body, "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":null}", id_tok);
-                }
-                lsp_write(body);
-            } else if (strcmp(method, "textDocument/definition") == 0) {
-                int line = 0, ch = 0;
-                char word[128];
-                int decl = -1;
-                char body[1024];
-                char uri[512] = "file:///document.kaze";
+            } else if (strcmp(method, "textDocument/hover") == 0 ||
+                       strcmp(method, "textDocument/definition") == 0) {
+                char uri[512] = "";
+                char reply[65536];
                 (void)json_string(lsp_msg, "\"uri\"", uri, sizeof uri);
-                if (lsp_position(lsp_msg, &line, &ch) &&
-                    lsp_word_at(line, ch, word, sizeof word, &decl) && decl >= 0) {
-                    snprintf(body, sizeof body,
-                             "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"uri\":\"%s\",\"range\":{\"start\":{\"line\":%d,\"character\":0},\"end\":{\"line\":%d,\"character\":0}}}}",
-                             id_tok, uri, decl, decl);
+                if (uri[0] == 0 && lsp_doc_uri[0] != 0) snprintf(uri, sizeof uri, "%s", lsp_doc_uri);
+                if (lsp_delegate_compiler(uri, lsp_msg, reply, sizeof reply)) {
+                    lsp_write(reply);
                 } else {
-                    snprintf(body, sizeof body, "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":null}", id_tok);
+                    char fallback[256];
+                    snprintf(fallback, sizeof fallback, "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":null}", id_tok);
+                    lsp_write(fallback);
                 }
-                lsp_write(body);
             } else if (strcmp(method, "shutdown") == 0) {
                 char body[256];
                 saw_shutdown = 1;
@@ -3525,6 +4645,8 @@ int main(int argc, char **argv) {
     else if (strcmp(cmd, "compile") == 0) rc = cmd_compile_like("compile", rest_argc, rest_argv);
     else if (strcmp(cmd, "to-machine") == 0) rc = cmd_compile_like("to-machine", rest_argc, rest_argv);
     else if (strcmp(cmd, "to-human") == 0) rc = cmd_compile_like("to-human", rest_argc, rest_argv);
+    else if (strcmp(cmd, "ast-hash") == 0) rc = cmd_compile_like("ast-hash", rest_argc, rest_argv);
+    else if (strcmp(cmd, "patch") == 0) rc = cmd_patch(rest_argc, rest_argv);
     else if (strcmp(cmd, "emit-ir") == 0) rc = cmd_compile_like("emit-ir", rest_argc, rest_argv);
     else if (strcmp(cmd, "emit-qbe") == 0) rc = cmd_compile_like("emit-qbe", rest_argc, rest_argv);
     else if (strcmp(cmd, "module-manifest") == 0) rc = cmd_passthrough("module-manifest", rest_argc, rest_argv);

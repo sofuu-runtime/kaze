@@ -31,6 +31,16 @@ action get_c_runtime_header():
     set h to h + "#ifndef KZ_GLOBAL\n"
     set h to h + "#define KZ_GLOBAL static\n"
     set h to h + "#endif\n\n"
+    set h to h + "/* A trap's last act. Standalone programs leave the process; an embedded\n"
+    set h to h + "   library records the status and returns to its caller. */\n"
+    set h to h + "KZ_MAYBE_UNUSED KZ_GLOBAL int kz_exit_code_g;\n"
+    set h to h + "#ifndef KZ_EXIT\n"
+    set h to h + "#ifdef KAZE_EMBEDDED\n"
+    set h to h + "#define KZ_EXIT(code) ((void)(kz_exit_code_g = (code)))\n"
+    set h to h + "#else\n"
+    set h to h + "#define KZ_EXIT(code) exit(code)\n"
+    set h to h + "#endif\n"
+    set h to h + "#endif\n\n"
     set h to h + "/* Bulk allocation: every dynamic structure comes from this arena and is\n"
     set h to h + "   released in one reset. KAZE_ARENA_BYTES sizes it. */\n"
     set h to h + "KZ_GLOBAL kaze_arena_t kz_arena;\n"
@@ -63,7 +73,7 @@ action get_c_runtime_header():
     set h to h + "    void* p = kmalloc(&kz_arena, n);\n"
     set h to h + "    if (p == NULL) {\n"
     set h to h + "        kaze_trap(KAZE_ERR_OOM, \"the arena is full; raise KAZE_ARENA_BYTES\");\n"
-    set h to h + "        exit(70);\n"
+    set h to h + "        KZ_EXIT(70);\n"
     set h to h + "    }\n"
     set h to h + "    return p;\n"
     set h to h + "}\n\n"
@@ -266,7 +276,7 @@ action get_c_runtime_header():
     set h to h + "\n"
     set h to h + "KZ_MAYBE_UNUSED static void kz_conc_fail(const char* code, const char* detail) {\n"
     set h to h + "    fprintf(stderr, \"%s: %s\\n\", code, detail);\n"
-    set h to h + "    exit(70);\n"
+    set h to h + "    KZ_EXIT(70);\n"
     set h to h + "}\n"
     set h to h + "\n"
     set h to h + "KZ_GLOBAL long kz_tasks_declared;   /* the module's tasks bounded */\n"
@@ -545,13 +555,13 @@ action get_c_runtime_header():
     set h to h + "    kaze_float_t out = 0.0;   /* kaze_rt checks the divisor and the result */\n"
     set h to h + "    kaze_float_t x = (a.kind == KZ_VAL_NUM) ? a.as.number : 0.0;\n"
     set h to h + "    kaze_float_t y = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
-    set h to h + "    if (!kaze_float_div_checked(x, y, &out)) { kaze_trap(KAZE_ERR_DIV0, \"division by zero\"); exit(70); }\n"
+    set h to h + "    if (!kaze_float_div_checked(x, y, &out)) { kaze_trap(KAZE_ERR_DIV0, \"division by zero\"); KZ_EXIT(70); }\n"
     set h to h + "    return kz_num(out);\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_mod(KzValue a, KzValue b) {\n"
     set h to h + "    kaze_float_t y = (b.kind == KZ_VAL_NUM) ? b.as.number : 0.0;\n"
     set h to h + "    kaze_float_t x = (a.kind == KZ_VAL_NUM) ? a.as.number : 0.0;\n"
-    set h to h + "    if (y == 0.0) { kaze_trap(KAZE_ERR_DIV0, \"remainder by zero\"); exit(70); }\n"
+    set h to h + "    if (y == 0.0) { kaze_trap(KAZE_ERR_DIV0, \"remainder by zero\"); KZ_EXIT(70); }\n"
     set h to h + "    return kz_num(fmod(x, y));\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_not(KzValue a) { return kz_bool(!kz_is_truthy(a)); }\n\n"
@@ -596,7 +606,7 @@ action get_c_runtime_header():
     set h to h + "    /* length of applies to text, lists and points. Returning 0 for anything\n"
     set h to h + "       else would make a guard clause fall through instead of refusing. */\n"
     set h to h + "    kaze_trap(KAZE_ERR_TYPE, \"length of does not apply to this value\");\n"
-    set h to h + "    exit(70);\n"
+    set h to h + "    KZ_EXIT(70);\n"
     set h to h + "}\n\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_index(KzValue coll, KzValue idx) {\n"
     set h to h + "    size_t i = (idx.kind == KZ_VAL_NUM && idx.as.number >= 0.0) ? (size_t)idx.as.number : 0;\n"
@@ -615,6 +625,10 @@ action get_c_runtime_header():
     set h to h + "        return kz_str(\"\");\n"
     set h to h + "    }\n"
     set h to h + "    return kz_nil();\n"
+    set h to h + "}\n\n"
+    set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_between(KzValue v, KzValue lo, KzValue hi) {\n"
+    set h to h + "    if (v.kind != KZ_VAL_NUM || lo.kind != KZ_VAL_NUM || hi.kind != KZ_VAL_NUM) return kz_bool(0);\n"
+    set h to h + "    return kz_bool(v.as.number >= lo.as.number && v.as.number <= hi.as.number);\n"
     set h to h + "}\n\n"
     set h to h + "KZ_GLOBAL char kz_source_path_buf[4096];\n"
     set h to h + "KZ_MAYBE_UNUSED static inline void kz_builtin_log(KzValue msg) { printf(\"[info] %s\\n\", kz_to_string(msg)); }\n\n"
@@ -687,7 +701,7 @@ action get_c_runtime_header():
     set h to h + "    int wants_bool = (strcmp(ty, \"bool\") == 0);\n"
     set h to h + "    if (v.kind == KZ_VAL_NIL) {\n"
     set h to h + "        fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s and has no value; provide --arg %s=<value>, the environment variable AGENT_%s, or \\\"%s\\\" in the config file\\n\", name, routine, ty, name, name, name);\n"
-    set h to h + "        exit(2);\n"
+    set h to h + "        KZ_EXIT(2);\n"
     set h to h + "    }\n"
     set h to h + "    if (wants_text) return (v.kind == KZ_VAL_STR) ? v : kz_str(kz_to_string(v));\n"
     set h to h + "    if (wants_bool) {\n"
@@ -705,7 +719,7 @@ action get_c_runtime_header():
     set h to h + "        }\n"
     set h to h + "    }\n"
     set h to h + "    fprintf(stderr, \"E_KAZE_PARAM: parameter '%s' of '%s' is declared as %s but the value given is not one\\n\", name, routine, ty);\n"
-    set h to h + "    exit(2);\n"
+    set h to h + "    KZ_EXIT(2);\n"
     set h to h + "}\n\n"
     set h to h + "/* CLI text resolution and the argv table it reads. Both the tensor/model\n"
     set h to h + " * builtins and cli_text use it, so it lives in the base runtime header. */\n"
@@ -986,13 +1000,13 @@ action get_c_runtime_header():
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_cap_get(const char* family, const char* field) {\n"
     set h to h + "    if (kz_sitl_enabled() == 1) return kz_sitl_field(family, field);\n"
     set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", family, field);\n"
-    set h to h + "    exit(70);\n"
+    set h to h + "    KZ_EXIT(70);\n"
     set h to h + "}\n\n"
     set h to h + "KZ_MAYBE_UNUSED static inline KzValue kz_cap_call(const char* recv, const char* op, int n, KzValue* args) {\n"
     set h to h + "    if (kz_sitl_enabled() == 1) return kz_sitl_call(recv, op, n, args);\n"
     set h to h + "    (void)n; (void)args;\n"
     set h to h + "    fprintf(stderr, \"E_CAP_MISSING: the native emitter has no host for %s.%s\\n\", recv, op);\n"
-    set h to h + "    exit(70);\n"
+    set h to h + "    KZ_EXIT(70);\n"
     set h to h + "}\n"
     set h to h + "KZ_MAYBE_UNUSED static inline void kz_builtin_alert(KzValue msg) { fprintf(stderr, \"[alert] %s\\n\", kz_to_string(msg)); }\n"
     return h
@@ -1399,6 +1413,8 @@ action emit_c_expr(node: AstNode):
         return "kz_get_field(" + emit_c_expr(child_at(node, 0)) + ", " + escape_c_str(node.name) + ")"
     if k == "INDEX":
         return "kz_index(" + emit_c_expr(child_at(node, 0)) + ", " + emit_c_expr(child_at(node, 1)) + ")"
+    if k == "BETWEEN":
+        return "kz_between(" + emit_c_expr(child_at(node, 0)) + ", " + emit_c_expr(child_at(node, 1)) + ", " + emit_c_expr(child_at(node, 2)) + ")"
     if k == "BIN":
         if node.name == "not":
             return "kz_not(" + emit_c_expr(child_at(node, 0)) + ")"
@@ -1562,7 +1578,7 @@ action emit_c_stmt_inner(stmt: AstNode, ind, fx: EmitFx):
         while i < (length of stmt.children) bounded 32:
             set out to out + ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, i)) + ")) {\n"
             set out to out + ind + "    fprintf(stderr, \"E_KAZE_CONTRACT: an ensures clause is false for this result\\n\");\n"
-            set out to out + ind + "    exit(70);\n"
+            set out to out + ind + "    KZ_EXIT(70);\n"
             set out to out + ind + "}\n"
             set i to i + 1
         if fx.fiber == 1:
@@ -1586,9 +1602,37 @@ action emit_c_stmt_inner(stmt: AstNode, ind, fx: EmitFx):
 
     # guard <expr>: an executed assertion. A false invariant stops the run.
     if k == "GUARD":
+        if (length of stmt.children) > 1:
+            let exit_stmt = child_at(stmt, 1)
+            let action = "break;"
+            if exit_stmt.kind == "RETURN":
+                if fx.fiber == 1:
+                    set action to "_kz_task->ret = kz_nil(); return 0;"
+                    if (length of exit_stmt.children) > 0:
+                        set action to "_kz_task->ret = " + emit_c_expr(child_at(exit_stmt, 0)) + "; return 0;"
+                otherwise:
+                    set action to "return kz_nil();"
+                    if (length of exit_stmt.children) > 0:
+                        set action to "return " + emit_c_expr(child_at(exit_stmt, 0)) + ";"
+            if exit_stmt.kind == "CONTINUE":
+                set action to "continue;"
+            return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { " + action + " }\n"
         if fx.fiber == 1:
-            return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + stmt.line + " is false\\n\"); exit(70); }\n"
+            return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + stmt.line + " is false\\n\"); KZ_EXIT(70); }\n"
         return ind + "if (!kz_is_truthy(" + emit_c_expr(child_at(stmt, 0)) + ")) { fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + stmt.line + " is false\\n\"); return kz_nil(); }\n"
+
+    if k == "BREAK":
+        return ind + "break;\n"
+    if k == "CONTINUE":
+        return ind + "continue;\n"
+
+    if k == "REPEAT":
+        let loop_id = "_kz_rep" + stmt.line
+        let out = ind + "for (long long " + loop_id + " = 0, " + loop_id + "_end = (long long)kz_to_num(" + emit_c_expr(child_at(stmt, 0)) + "); " + loop_id + " < " + loop_id + "_end; " + loop_id + "++) {\n"
+        for each s in (child_at(stmt, 1)).children:
+            set out to out + emit_c_stmt(s, ind + "    ", fx)
+        set out to out + ind + "}\n"
+        return out
 
     if k == "IF":
         let cond = child_at(stmt, 0)
@@ -1615,7 +1659,7 @@ action emit_c_stmt_inner(stmt: AstNode, ind, fx: EmitFx):
             if bound.val_str == "" or bound.val_str == "?":
                 set fout to fout + ind + "    /* no ceiling declared */\n"
             otherwise:
-                set fout to fout + ind + "    if (" + guard_id + " >= " + bound.val_str + "L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); exit(70); }\n"
+                set fout to fout + ind + "    if (" + guard_id + " >= " + bound.val_str + "L) { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); KZ_EXIT(70); }\n"
             set fout to fout + ind + "    " + guard_id + " = " + guard_id + " + 1;\n"
             for each s in body.children:
                 set fout to fout + emit_c_stmt(s, ind + "    ", fx)
@@ -1808,7 +1852,7 @@ action emit_requires(item: AstNode) -> string:
             let cond = child_at(c, 0)
             set out to out + "    if (!kz_is_truthy(" + emit_c_expr(cond) + ")) {\n"
             set out to out + "        fprintf(stderr, \"E_KAZE_CONTRACT: the requires clause at line " + c.line + " is false for these arguments\\n\");\n"
-            set out to out + "        exit(70);\n"
+            set out to out + "        KZ_EXIT(70);\n"
             set out to out + "    }\n"
     return out
 
@@ -1956,6 +2000,23 @@ action config_entry(config) -> string:
     for each c in config:
         if c.kind == "ENTRY":
             set out to c.val_str
+    return out
+
+# The test driver `kaze test` generates for co-located test blocks. Each block
+# prints its description before it runs; a failed require/guard exits 70, so a
+# completed line means the block passed. Tests run in source order.
+action emit_c_test_entry(items):
+    recursion bounded 200
+    let out = "/* --- Co-located Test Driver --- */\n"
+    set out to out + "int main(int argc, char** argv) {\n"
+    set out to out + "    (void)argc; (void)argv;\n"
+    set out to out + "    if (!kaze_arena_init_heap(&kz_arena, kz_arena_bytes())) { fprintf(stderr, \"E_KAZE_OOM: cannot reserve the arena\\n\"); return 70; }\n"
+    for each item in items:
+        if item.kind == "TEST":
+            set out to out + "    fprintf(stderr, \"test: %s\\n\", " + escape_c_str(item.val_str) + ");\n"
+            set out to out + "    (void)kaze_fn_" + sanitize_c_id(item.name) + "();\n"
+    set out to out + "    return 0;\n"
+    set out to out + "}\n"
     return out
 
 action emit_c_entry(items, config, uses_tensors):
@@ -3064,6 +3125,8 @@ action scalar_stmt_check(s: AstNode, env: list, known: list) -> list:
             return [env, 0]
         return [env, 1]
     if k == "GUARD":
+        if (length of s.children) > 1:
+            return [env, 0]
         if scalar_cond_type(scalar_expr_type(child_at(s, 0), env, known)) == 0:
             return [env, 0]
         return [env, 1]
@@ -3422,7 +3485,7 @@ action scalar_c_stmt(s: AstNode, ind: string, env: list) -> list:
     if k == "GUARD":
         let code = ind + "if (!" + scalar_c_cond(child_at(s, 0), env) + ") {\n"
         set code to code + ind + "    fprintf(stderr, \"E_KAZE_GUARD: the invariant at line " + s.line + " is false\\n\");\n"
-        set code to code + ind + "    exit(70);\n" + ind + "}\n"
+        set code to code + ind + "    KZ_EXIT(70);\n" + ind + "}\n"
         return [code, env]
     if k == "IF":
         let out = ind + "if (" + scalar_c_cond(child_at(s, 0), env) + ") {\n"
@@ -3448,7 +3511,7 @@ action scalar_c_stmt(s: AstNode, ind: string, env: list) -> list:
         set out to out + (body[0] otherwise "")
         set out to out + ind + "    }\n"
         if bound.val_str != "" and bound.val_str != "?":
-            set out to out + ind + "    if (" + cond + ") { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); exit(70); }\n"
+            set out to out + ind + "    if (" + cond + ") { fprintf(stderr, \"E_KAZE_LOOP_BOUND: loop exceeded its declared bound\\n\"); KZ_EXIT(70); }\n"
         set out to out + ind + "}\n"
         return [out, env]
     if k == "RETURN":
@@ -3574,6 +3637,10 @@ action dce_reachable(items: list) -> list:
     for each item in items:
         if item.kind == "WHEN" or item.kind == "EVERY":
             set roots to dce_collect_calls(item, roots, 0)
+        if item.kind == "TEST":
+            # A test body is a root of its own: kaze test compiles it even when
+            # the module has no main(), and DCE must keep what it calls.
+            set roots to dce_collect_calls(item, roots, 0)
         if item.kind == "FIBER":
             set roots to roots + [item.name]
     if (length of roots) == 0:
@@ -3634,6 +3701,7 @@ action emit_c_program_impl(prog: AstNode, extras: list, want_main: num, shared: 
     let items = []
     for each it in raw_items:
         set items to items + [mark_item(it, elided)]
+    let test_mode = config_has_test_mode(program_config(prog))
     let scalars = []
     # Scalarisation is a performance specialisation for ordinary programs. It is
     # intentionally not applied to very large programs such as the compiler's own
@@ -3687,6 +3755,8 @@ action emit_c_program_impl(prog: AstNode, extras: list, want_main: num, shared: 
                 set out to out + fiber_storage(item) + "long kz_fuel_" + sanitize_c_id(item.name) + "(void);\n"
                 set out to out + fiber_storage(item) + "size_t kz_slots_" + sanitize_c_id(item.name) + "(void);\n"
                 set out to out + fiber_storage(item) + "size_t kz_guards_" + sanitize_c_id(item.name) + "(void);\n"
+            if item.kind == "TEST" and test_mode == 1:
+                set out to out + routine_storage(item) + "KzValue kaze_fn_" + sanitize_c_id(item.name) + "(void);\n"
 
     # 2. Record constructors.
     set out to out + "\n/* --- Record Constructors --- */\n"
@@ -3712,9 +3782,14 @@ action emit_c_program_impl(prog: AstNode, extras: list, want_main: num, shared: 
                 set out to out + emit_fiber(item)
             if item.kind == "WHEN" or item.kind == "EVERY":
                 set out to out + emit_hook(item)
+            if item.kind == "TEST" and test_mode == 1:
+                set out to out + emit_routine(item)
 
     # 4. Hook driver, then the entry point. A library unit has neither.
     if want_main == 1:
         set out to out + "\n" + emit_hook_driver(items)
-        set out to out + emit_c_entry(items, program_config(prog), uses_tensors)
+        if test_mode == 1 and items_have_tests(items) == 1:
+            set out to out + emit_c_test_entry(items)
+        otherwise:
+            set out to out + emit_c_entry(items, program_config(prog), uses_tensors)
     return out

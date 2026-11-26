@@ -212,7 +212,7 @@ action qbe_slots_with_params(f: IRFunc) -> list:
 action qbe_op_ty(op: string) -> string:
     if op == "add_f64" or op == "sub_f64" or op == "mul_f64" or op == "div_f64" or op == "mod_f64":
         return "f64"
-    if op == "add_i64" or op == "band_i64" or op == "bor_i64" or op == "bxor_i64" or op == "shl_i64" or op == "shr_i64":
+    if op == "add_i64" or op == "sub_i64" or op == "band_i64" or op == "bor_i64" or op == "bxor_i64" or op == "shl_i64" or op == "shr_i64":
         return "i64"
     if op == "cmp_eq_f64" or op == "cmp_ne_f64" or op == "cmp_lt_f64" or op == "cmp_le_f64" or op == "cmp_gt_f64" or op == "cmp_ge_f64" or op == "cmp_ge_i64":
         return "bool"
@@ -289,6 +289,8 @@ action qbe_stmt(ins: IRInstr, slots, msgs, strs, uid, fret) -> string:
         return "    " + d + " =d call $fmod(d " + a + ", d " + b + ")\n"
     if op == "add_i64":
         return "    " + d + " =l add " + a + ", " + b + "\n"
+    if op == "sub_i64":
+        return "    " + d + " =l sub " + a + ", " + b + "\n"
     if op == "band_i64":
         return "    " + d + " =l and " + a + ", " + b + "\n"
     if op == "bor_i64":

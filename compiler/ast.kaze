@@ -103,6 +103,11 @@ action make_fallback(inner, fb, l):
 action make_in_unit(unit, inner, l):
     return make_node("IN_UNIT", unit, "", 0, [inner], l)
 
+# x between low and high. Kept as its own node so the canonical formatter can
+# print the contract as written instead of a desugared pair of comparisons.
+action make_between(value, low, high, l):
+    return make_node("BETWEEN", "", "", 0, [value, low, high], l)
+
 # f(name: value) keeps the field name on the argument.
 action make_named_arg(field, value, l):
     return make_node("NAMED_ARG", field, "", 0, [value], l)
@@ -111,6 +116,13 @@ action make_named_arg(field, value, l):
 # silently dropped.
 action make_unknown(l):
     return make_node("UNKNOWN", "", "", 0, [], l)
+
+# A typed synthesis hole: the type/unit the expression must have (empty means
+# the author did not say) and the goal text an AI is asked to satisfy. The
+# human syntax spells this `?` or `todo(<type>, "<goal>")`; the machine syntax
+# spells it `(hole <type_or_unit> "<goal>")`.
+action make_hole(ty, goal, l):
+    return make_node("HOLE", ty, goal, 0, [], l)
 
 # ── statements ──────────────────────────────────────────────────────────
 
@@ -122,6 +134,28 @@ action make_block(label, stmts, l):
 
 action make_guard(cond, l):
     return make_node("GUARD", "", "", 0, [cond], l)
+
+# A `require` written inside a body (a co-located test, or an assertion after
+# some work) is the same runtime check as guard, but the formatter prints the
+# keyword the writer used.
+action make_require(cond, l):
+    return make_node("GUARD", "require", "", 0, [cond], l)
+
+# guard cond otherwise return/break/continue. The second child is the exit
+# statement; the plain guard keeps its trap behavior.
+action make_guard_exit(cond, exit_stmt, l):
+    return make_node("GUARD", "", "", 0, [cond, exit_stmt], l)
+
+action make_break(l):
+    return make_node("BREAK", "", "", 0, [], l)
+
+action make_continue(l):
+    return make_node("CONTINUE", "", "", 0, [], l)
+
+# repeat N times: body. The count is evaluated once; the body runs that many
+# times unless a guard exits early.
+action make_repeat(count, body, l):
+    return make_node("REPEAT", "", "", 0, [count, body], l)
 
 # The ceiling of a while ... bounded n: loop. An empty spelling means the loop
 # declared no ceiling, which the checker refuses.
@@ -208,6 +242,14 @@ action make_item(kind_word, name, params, contracts, result, body, l):
 action make_record_item(name, fields, l):
     return make_node("RECORD", name, "", 0, fields, l)
 
+# test "description": body. The generated name gives the block a stable C
+# routine name; the description is what humans and `kaze test` display.
+action make_test(desc, contracts, body, l):
+    let name = "__kz_test_" + l
+    let params = make_node("PARAMS", "", "", 0, [], l)
+    let contracts_node = make_node("CONTRACTS", "", "", 0, contracts, l)
+    return make_node("TEST", name, desc, 0, [params, contracts_node, body], l)
+
 action make_contract(kind_word, expr, l):
     return make_node("CONTRACT", kind_word, "", 0, [expr], l)
 
@@ -290,48 +332,164 @@ action config_tasks_bound(prog: AstNode) -> string:
             set out to c.val_str
     return out
 
+# `kaze test` compiles the same program with this marker so the emitter knows
+# to include co-located test items and to generate the test driver. A normal
+# build never sets it, so test blocks stay inert (and DCE keeps them).
+action with_test_mode(prog: AstNode):
+    let uses_node = child_at(prog, 0)
+    let needs_node = child_at(prog, 1)
+    let items_node = child_at(prog, 2)
+    let config_node = child_at(prog, 3)
+    let config = config_node.children + [make_node("TEST_MODE", "", "", 0, [], 0)]
+    let new_config = make_node("CONFIG", "", "", 0, config, 0)
+    return make_node("PROGRAM", "", "", 0, [uses_node, needs_node, items_node, new_config], 0)
+
+action config_has_test_mode(config) -> num:
+    for each c in config:
+        if c.kind == "TEST_MODE":
+            return 1
+    return 0
+
+action item_is_test(item: AstNode) -> num:
+    if item.kind == "TEST":
+        return 1
+    return 0
+
+action items_have_tests(items) -> num:
+    for each item in items:
+        if item.kind == "TEST":
+            return 1
+    return 0
+
 # ── vocabulary shared by the parser and the checker ─────────────────────
 
+# ASCII lowercasing without a Unicode dependency: unit spellings are ASCII.
+action lower_word(w):
+    let out = ""
+    let i = 0
+    while i < (length of w) bounded 1000:
+        let c = w[i] otherwise ""
+        if c >= "A" and c <= "Z":
+            set out to out + character(code(c) + 32)
+        otherwise:
+            set out to out + c
+        set i to i + 1
+    return out
+
+# Short SI spellings are case-sensitive and stay exactly as written. Everything
+# else is a spelled-out word and normalizes to lowercase.
+action unit_abbrev(w):
+    if w == "m" or w == "km" or w == "cm" or w == "mm":
+        return 1
+    if w == "s" or w == "ms" or w == "h" or w == "min":
+        return 1
+    if w == "kg" or w == "g":
+        return 1
+    if w == "C" or w == "K" or w == "A":
+        return 1
+    if w == "Pa" or w == "hPa" or w == "mbar" or w == "A":
+        return 1
+    if w == "%" or w == "m/s" or w == "km/h" or w == "m/s2" or w == "kg/m3":
+        return 1
+    return 0
+
+# The unit a formatter prints. Abbreviations are preserved; a recognized
+# spelled-out word is lowercased so `METERS`, `Meters` and `meters` converge.
+action canonical_unit_text(w):
+    if w == "":
+        return ""
+    if unit_abbrev(w) == 1:
+        return w
+    if unit_word(w) != "":
+        return lower_word(w)
+    return w
+
+# Type annotations carry units and record names. Only a recognized unit is
+# normalized; `Point` and `HeapNode` keep their PascalCase spelling.
+action normalize_type_text(w):
+    # Primitive spellings converge on the canonical one. This is the same
+    # synonym set the checker resolves, kept here so `kaze fmt` removes the
+    # dialect rather than preserving it forever.
+    if w == "number" or w == "float" or w == "double":
+        return "num"
+    if w == "str" or w == "string":
+        return "text"
+    return canonical_unit_text(w)
+
 # The unit suffixes the language knows (the phase 3 lexicon). A unit word here
-# is consumed as a suffix and recorded on the literal it follows.
+# is consumed as a suffix and recorded on the literal it follows. Spelled-out
+# words are accepted case-insensitively; SI abbreviations stay exact.
 action unit_word(w):
-    if w == "m" or w == "meter" or w == "meters":
+    let lw = lower_word(w)
+    if w == "m":
         return "m"
-    if w == "km" or w == "kilometer" or w == "kilometers":
+    if lw == "meter" or lw == "meters" or lw == "metre" or lw == "metres":
+        return "meters"
+    if w == "km":
         return "km"
-    if w == "cm" or w == "centimeter" or w == "centimeters":
+    if lw == "kilometer" or lw == "kilometers" or lw == "kilometre" or lw == "kilometres":
+        return "kilometers"
+    if w == "cm":
         return "cm"
-    if w == "mm" or w == "millimeter" or w == "millimeters":
+    if lw == "centimeter" or lw == "centimeters" or lw == "centimetre" or lw == "centimetres":
+        return "centimeters"
+    if w == "mm":
         return "mm"
-    if w == "s" or w == "sec" or w == "second" or w == "seconds":
+    if lw == "millimeter" or lw == "millimeters" or lw == "millimetre" or lw == "millimetres":
+        return "millimeters"
+    if w == "s":
+        return "s"
+    if lw == "sec" or lw == "second" or lw == "seconds":
         return "seconds"
-    if w == "ms" or w == "millisecond" or w == "milliseconds":
+    if w == "ms":
         return "ms"
-    if w == "h" or w == "hour" or w == "hours":
+    if lw == "millisecond" or lw == "milliseconds":
+        return "milliseconds"
+    if w == "h":
+        return "h"
+    if lw == "hour" or lw == "hours":
         return "hours"
-    if w == "min" or w == "minute" or w == "minutes":
+    if w == "min":
+        return "min"
+    if lw == "minute" or lw == "minutes":
         return "minutes"
-    if w == "kg" or w == "kilogram" or w == "kilograms":
+    if w == "kg":
         return "kg"
-    if w == "g" or w == "gram" or w == "grams":
-        return "gram"
-    if w == "Celsius" or w == "celsius" or w == "C":
+    if lw == "kilogram" or lw == "kilograms":
+        return "kilograms"
+    if w == "g":
+        return "g"
+    if lw == "gram" or lw == "grams":
+        return "grams"
+    if w == "C":
+        return "C"
+    if lw == "celsius":
         return "Celsius"
-    if w == "Kelvin" or w == "kelvin" or w == "K":
+    if w == "K":
+        return "K"
+    if lw == "kelvin":
         return "Kelvin"
-    if w == "Pascal" or w == "pascal" or w == "Pa":
+    if w == "Pa":
+        return "Pa"
+    if lw == "pascal":
         return "Pascal"
-    if w == "mbar" or w == "millibar" or w == "millibars":
+    if w == "mbar":
         return "mbar"
-    if w == "hPa" or w == "hpa" or w == "hectopascal" or w == "hectopascals":
+    if lw == "millibar" or lw == "millibars":
+        return "mbar"
+    if w == "hPa":
         return "hPa"
-    if w == "ampere" or w == "amperes" or w == "amp" or w == "A":
+    if lw == "hectopascal" or lw == "hectopascals":
+        return "hectopascals"
+    if w == "A":
+        return "A"
+    if lw == "ampere" or lw == "amperes" or lw == "amp":
         return "ampere"
-    if w == "percent":
+    if lw == "percent":
         return "%"
-    if w == "degrees" or w == "degree" or w == "deg":
+    if lw == "degrees" or lw == "degree" or lw == "deg":
         return "degrees"
-    if w == "radians" or w == "radian" or w == "rad":
+    if lw == "radians" or lw == "radian" or lw == "rad":
         return "radians"
     return ""
 

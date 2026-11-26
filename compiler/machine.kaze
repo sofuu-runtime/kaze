@@ -67,27 +67,35 @@ action h_pad(n):
     return out
 
 action quoted(s):
-    let out = "\""
+    let parts = []
+    let chunk = "\""
+    let used = 0
     let len = length of s
     let i = 0
     while i < len bounded 1000000:
         let c = s[i] otherwise "x"
         if c == "\\":
-            set out to out + "\\\\"
+            set chunk to chunk + "\\\\"
         otherwise:
             if c == "\"":
-                set out to out + "\\\""
+                set chunk to chunk + "\\\""
             otherwise:
                 if c == "\n":
-                    set out to out + "\\n"
+                    set chunk to chunk + "\\n"
                 otherwise:
                     if c == "\t":
-                        set out to out + "\\t"
+                        set chunk to chunk + "\\t"
                     otherwise:
-                        set out to out + c
+                        set chunk to chunk + c
+        set used to used + 1
+        if used == 128:
+            set parts to parts + [chunk]
+            set chunk = ""
+            set used to 0
         set i to i + 1
-    set out to out + "\""
-    return out
+    set chunk to chunk + "\""
+    set parts to parts + [chunk]
+    return m2_join(parts)
 
 action drop_first(items):
     let out = []
@@ -163,7 +171,7 @@ action emit_expr_machine(e: AstNode):
         return "(receive " + emit_expr_machine(child_at(e, 0)) + ")"
     if k == "JOIN":
         return "(join " + emit_expr_machine(child_at(e, 0)) + ")"
-    return "(unsupported " + quoted(k) + ")"
+    return "(unknown)"
 
 action emit_stmts_machine(stmts):
     recursion bounded 200
@@ -216,7 +224,7 @@ action emit_stmt_machine(s: AstNode):
         return "(cancel " + emit_expr_machine(child_at(s, 0)) + ")"
     if k == "SEND":
         return "(send " + emit_expr_machine(child_at(s, 0)) + " " + emit_expr_machine(child_at(s, 1)) + ")"
-    return "(unsupported_stmt " + quoted(k) + ")"
+    return "(unknown_stmt)"
 
 action emit_params_machine(item: AstNode):
     let params = child_at(item, 0)
@@ -243,7 +251,7 @@ action emit_contracts_machine(item: AstNode):
                 if c.kind == "FUEL":
                     set parts to parts + " (fuel " + c.val_str + ")"
                 otherwise:
-                    set parts to parts + " (unsupported_contract " + quoted(c.kind) + ")"
+                    set parts to parts + " (unknown_contract)"
     return "(contracts" + parts + ")"
 
 action item_keyword(item: AstNode):
@@ -282,7 +290,7 @@ action emit_item_machine(item: AstNode, depth):
     if item.kind == "EVERY":
         let body = child_at(item, 1)
         return ind + "(every " + emit_expr_machine(child_at(item, 0)) + "\n" + ind + "  (body" + emit_stmts_machine(body.children) + "))\n"
-    return ind + "(unsupported_item " + quoted(item.kind) + ")\n"
+    return ind + "(unknown_item " + quoted(item.kind) + ")\n"
 
 action emit_machine(prog: AstNode):
     recursion bounded 200
@@ -584,12 +592,1268 @@ action lower_program(root: AstNode):
                         set items to items + [lower_item(form)]
     return make_program(uses, needs, items, config)
 
-# Read the canonical machine form back into a PROGRAM node.
-action parse_machine(src):
+# ── format 2: compact (kaze 2 ...) ─────────────────────────────────────
+#
+# The compact form keeps the S-expression shape but drops every redundant
+# tag and quote: identifiers are bare atoms, numbers carry a literal suffix
+# (`5@meters`), calls write their target as the head (`(add x y)`), and empty
+# contract lists disappear. The reader below is whitespace-insensitive, and
+# the writer emits one statement per line so a diff is stable.
+
+action m2_is_space(c):
+    if c == " " or c == "\t" or c == "\n" or c == character(13):
+        return 1
+    return 0
+
+action m2_lex_push(toks, block, tok):
+    let next_block = block + [tok]
+    if (length of next_block) >= 512:
+        return [toks + next_block, []]
+    return [toks, next_block]
+
+action m2_lex(src):
+    let toks = []
+    let block = []
+    let i = 0
+    let n = length of src
+    let line = 1
+    while i < n bounded 1000000:
+        let c = src[i] otherwise " "
+        if c == " " or c == "\t" or c == character(13):
+            set i to i + 1
+        otherwise:
+            if c == "\n":
+                set line to line + 1
+                set i to i + 1
+            otherwise:
+                if c == "#" or c == ";":
+                    while i < n and (src[i] otherwise " ") != "\n" bounded 1000000:
+                        set i to i + 1
+                otherwise:
+                    if c == "(":
+                        let acc_lp = m2_lex_push(toks, block, make_node("LP", "", "", 0, [], line))
+                        set toks to acc_lp[0] otherwise []
+                        set block to acc_lp[1] otherwise []
+                        set i to i + 1
+                    otherwise:
+                        if c == ")":
+                            let acc_rp = m2_lex_push(toks, block, make_node("RP", "", "", 0, [], line))
+                            set toks to acc_rp[0] otherwise []
+                            set block to acc_rp[1] otherwise []
+                            set i to i + 1
+                        otherwise:
+                            if c == "\"":
+                                let start_line = line
+                                set i to i + 1
+                                let text = ""
+                                let closed = 0
+                                while i < n and closed == 0 bounded 1000000:
+                                    let d = src[i] otherwise "x"
+                                    if d == "\\":
+                                        set i to i + 1
+                                        if i < n:
+                                            let e = src[i] otherwise "x"
+                                            if e == "n":
+                                                set text to text + "\n"
+                                            otherwise:
+                                                if e == "t":
+                                                    set text to text + "\t"
+                                                otherwise:
+                                                    set text to text + e
+                                            set i to i + 1
+                                    otherwise:
+                                        if d == "\"":
+                                            set closed to 1
+                                            set i to i + 1
+                                        otherwise:
+                                            if d == "\n":
+                                                set line to line + 1
+                                            set text to text + d
+                                            set i to i + 1
+                                let acc_s = m2_lex_push(toks, block, make_node("S", "", text, 0, [], start_line))
+                                set toks to acc_s[0] otherwise []
+                                set block to acc_s[1] otherwise []
+                            otherwise:
+                                let start = i
+                                let text = ""
+                                while i < n and m2_is_space(src[i] otherwise " ") == 0 and (src[i] otherwise "x") != "(" and (src[i] otherwise "x") != ")" and (src[i] otherwise "x") != "\"" and (src[i] otherwise "x") != "#" bounded 1000000:
+                                    set text to text + (src[i] otherwise "")
+                                    set i to i + 1
+                                if (length of text) == 0:
+                                    set i to i + 1
+                                otherwise:
+                                    let acc_a = m2_lex_push(toks, block, make_node("A", text, "", 0, [], line))
+                                    set toks to acc_a[0] otherwise []
+                                    set block to acc_a[1] otherwise []
+    return toks + block
+
+action m2_read(toks, pos):
+    recursion bounded 240
+    ensures length of result == 2
+    let t = node_at(toks, pos)
+    if t.kind == "LP":
+        let kids = []
+        let q = pos + 1
+        let done = 0
+        while done == 0 bounded 1000000:
+            let cur = node_at(toks, q)
+            if cur.kind == "RP":
+                set q to q + 1
+                set done to 1
+            otherwise:
+                if cur.kind == "NONE":
+                    set done to 1
+                otherwise:
+                    let r = m2_read(toks, q)
+                    set kids to kids + [r[0]]
+                    if r[1] > q:
+                        set q to r[1]
+                    otherwise:
+                        set q to q + 1
+        return [make_node("L", "", "", 0, kids, t.line), q]
+    return [t, pos + 1]
+
+action m2_head(form: AstNode):
+    let kids = form.children
+    if form.kind != "L" or (length of kids) == 0:
+        return ""
+    return m_text(node_at(kids, 0))
+
+action m2_arg(form: AstNode, i):
+    return child_at(form, i + 1)
+
+# Concatenate chunk strings pairwise. A left-to-right `out + part` loop is
+# quadratic on the multi-hundred-kilobyte bodies the self-hosted compiler
+# emits; pairwise reduction copies each byte O(log chunks) times instead.
+action m2_join(parts):
+    let cur = parts
+    while (length of cur) > 1 bounded 1000000:
+        let next = []
+        let i = 0
+        let n = length of cur
+        while i < n bounded 1000000:
+            if i + 1 < n:
+                set next to next + [(cur[i] otherwise "") + (cur[i + 1] otherwise "")]
+            otherwise:
+                set next to next + [(cur[i] otherwise "")]
+            set i to i + 2
+        set cur to next
+    if (length of cur) == 0:
+        return ""
+    return cur[0] otherwise ""
+
+action m2_slice(s, start, stop):
+    let n = length of s
+    let lo = start
+    if lo < 0:
+        set lo to 0
+    let hi = stop
+    if hi > n:
+        set hi to n
+    let parts = []
+    let chunk = ""
+    let used = 0
+    let i = lo
+    while i < hi bounded 1000000:
+        set chunk to chunk + (s[i] otherwise "")
+        set used to used + 1
+        if used == 128:
+            set parts to parts + [chunk]
+            set chunk to ""
+            set used to 0
+        set i to i + 1
+    if used > 0:
+        set parts to parts + [chunk]
+    return m2_join(parts)
+
+action m2_is_number(s):
+    let n = length of s
+    if n == 0:
+        return 0
+    let i = 0
+    if (s[0] otherwise "x") == "-":
+        set i to 1
+    let digits = 0
+    let dots = 0
+    while i < n bounded 1000:
+        let c = s[i] otherwise "x"
+        if c >= "0" and c <= "9":
+            set digits to digits + 1
+        otherwise:
+            if c == ".":
+                set dots to dots + 1
+                if dots > 1:
+                    return 0
+            otherwise:
+                return 0
+        set i to i + 1
+    return digits
+
+action m2_find_at(s):
+    let i = 0
+    let n = length of s
+    while i < n bounded 1000:
+        if (s[i] otherwise "x") == "@":
+            return i
+        set i to i + 1
+    return -1
+
+action m2_atom(s):
+    if s == "":
+        return "_"
+    return s
+
+action m2_ty(s):
+    if s == "":
+        return "_"
+    # Canonical type spellings keep machine output stable across the
+    # human formatter's synonym folding (string -> text, number -> num).
+    return normalize_type_text(s)
+
+action m2_op_head(h):
+    if h == "+" or h == "-" or h == "*" or h == "/" or h == "%":
+        return 1
+    if h == "==" or h == "!=" or h == "<" or h == "<=" or h == ">" or h == ">=":
+        return 1
+    if h == "and" or h == "or":
+        return 1
+    if h == "&" or h == "|" or h == "^" or h == "<<" or h == ">>":
+        return 1
+    return 0
+
+action m2_strip_colon(s):
+    let n = length of s
+    if n > 0 and (s[n - 1] otherwise "x") == ":":
+        return m2_slice(s, 0, n - 1)
+    return s
+
+action emit_expr_m2(e: AstNode):
+    recursion bounded 240
+    let k = e.kind
+    if k == "NUM":
+        if e.name == "":
+            return e.val_str
+        return e.val_str + "@" + e.name
+    if k == "LEN_LIT":
+        return "(lenlit " + num_text_of(e.val_num) + ")"
+    if k == "STR":
+        return quoted(e.val_str)
+    if k == "BOOL":
+        if e.val_str == "true":
+            return "true"
+        return "false"
+    if k == "IDENT":
+        return e.name
+    if k == "HOLE":
+        return "(hole " + m2_ty(e.name) + " " + quoted(e.val_str) + ")"
+    if k == "BIN":
+        if e.name == "not":
+            return "(not " + emit_expr_m2(child_at(e, 0)) + ")"
+        return "(" + e.name + " " + emit_expr_m2(child_at(e, 0)) + " " + emit_expr_m2(child_at(e, 1)) + ")"
+    if k == "FALLBACK":
+        let inner = child_at(e, 0)
+        let alt = emit_expr_m2(child_at(e, 1))
+        if inner.kind == "INDEX":
+            return "(at " + emit_expr_m2(child_at(inner, 0)) + " " + emit_expr_m2(child_at(inner, 1)) + " " + alt + ")"
+        if inner.kind == "BIN" and inner.name == "/":
+            return "(div " + emit_expr_m2(child_at(inner, 0)) + " " + emit_expr_m2(child_at(inner, 1)) + " " + alt + ")"
+        if inner.kind == "BIN" and inner.name == "%":
+            return "(mod " + emit_expr_m2(child_at(inner, 0)) + " " + emit_expr_m2(child_at(inner, 1)) + " " + alt + ")"
+        return "(fb " + emit_expr_m2(inner) + " " + alt + ")"
+    if k == "FIELD":
+        return "(get " + emit_expr_m2(child_at(e, 0)) + " " + m2_atom(e.name) + ")"
+    if k == "INDEX":
+        return "(at " + emit_expr_m2(child_at(e, 0)) + " " + emit_expr_m2(child_at(e, 1)) + " _)"
+    if k == "LEN":
+        return "(len " + emit_expr_m2(child_at(e, 0)) + ")"
+    if k == "IN_UNIT":
+        return "(as " + m2_atom(e.name) + " " + emit_expr_m2(child_at(e, 0)) + ")"
+    if k == "BETWEEN":
+        return "(between " + emit_expr_m2(child_at(e, 0)) + " " + emit_expr_m2(child_at(e, 1)) + " " + emit_expr_m2(child_at(e, 2)) + ")"
+    if k == "LIST":
+        let parts = ""
+        for each it in e.children:
+            set parts to parts + " " + emit_expr_m2(it)
+        return "(list" + parts + ")"
+    if k == "CALL":
+        let parts = ""
+        for each a in e.children:
+            set parts to parts + " " + emit_expr_m2(a)
+        return "(" + m2_atom(e.name) + parts + ")"
+    if k == "NAMED_ARG":
+        return "(" + m2_atom(e.name) + ": " + emit_expr_m2(child_at(e, 0)) + ")"
+    if k == "RECEIVE":
+        return "(receive " + emit_expr_m2(child_at(e, 0)) + ")"
+    if k == "JOIN":
+        return "(join " + emit_expr_m2(child_at(e, 0)) + ")"
+    if k == "UNKNOWN":
+        return "(unknown)"
+    return "(unknown)"
+
+action m2_close_last(text, close):
+    let n = length of text
+    if n == 0:
+        return close + "\n"
+    if (text[n - 1] otherwise "x") == "\n":
+        return m2_slice(text, 0, n - 1) + close + "\n"
+    return text + close + "\n"
+
+# Format 2 carries no indentation; building the leading spaces only to strip
+# them again made the per-character strip quadratic on large files.
+action m2_pad(depth):
+    return ""
+
+action emit_stmts_m2(stmts, depth):
+    recursion bounded 240
+    let out = ""
+    for each s in stmts:
+        set out to out + emit_stmt_m2(s, depth)
+    return out
+
+action emit_stmt_m2(s: AstNode, depth):
+    recursion bounded 240
+    let ind = m2_pad(depth)
+    let k = s.kind
+    if k == "LET":
+        return ind + "(let " + m2_atom(s.name) + " " + emit_expr_m2(child_at(s, 0)) + ")\n"
+    if k == "SET":
+        return ind + "(set " + m2_atom(s.name) + " " + emit_expr_m2(child_at(s, 0)) + ")\n"
+    if k == "RETURN":
+        if (length of s.children) == 0:
+            return ind + "(return)\n"
+        return ind + "(return " + emit_expr_m2(child_at(s, 0)) + ")\n"
+    if k == "EXPR":
+        return ind + emit_expr_m2(child_at(s, 0)) + "\n"
+    if k == "GUARD":
+        if (length of s.children) > 1:
+            let alt = child_at(s, 1)
+            let alt_text = emit_expr_m2(alt)
+            if alt.kind == "RETURN" or alt.kind == "BREAK" or alt.kind == "CONTINUE":
+                let stmt_text = emit_stmt_m2(alt, 0)
+                let sn = length of stmt_text
+                if sn > 0 and (stmt_text[sn - 1] otherwise "x") == "\n":
+                    set alt_text to m2_slice(stmt_text, 0, sn - 1)
+                otherwise:
+                    set alt_text to stmt_text
+            return ind + "(guard " + emit_expr_m2(child_at(s, 0)) + " " + alt_text + ")\n"
+        return ind + "(guard " + emit_expr_m2(child_at(s, 0)) + ")\n"
+    if k == "BREAK":
+        return ind + "(break)\n"
+    if k == "CONTINUE":
+        return ind + "(continue)\n"
+    if k == "IF":
+        let head = ind + "(if " + emit_expr_m2(child_at(s, 0))
+        let then_text = emit_stmts_m2(kids_of(child_at(s, 1)), depth + 1)
+        let other = kids_of(child_at(s, 2))
+        if (length of other) == 0:
+            return head + "\n" + m2_close_last(then_text, ")")
+        let else_text = emit_stmts_m2(other, depth + 2)
+        return head + "\n" + then_text + ind + "(otherwise\n" + m2_close_last(else_text, "))")
+    if k == "WHILE":
+        let bound = child_at(s, 2)
+        let head = ind + "(while " + emit_expr_m2(child_at(s, 0))
+        if bound.val_str != "" and bound.val_str != "?":
+            set head to head + " (bounded " + bound.val_str + ")"
+        return head + "\n" + m2_close_last(emit_stmts_m2(kids_of(child_at(s, 1)), depth + 1), ")")
+    if k == "FOR_EACH":
+        let head = ind + "(for_each " + m2_atom(s.name) + " " + emit_expr_m2(child_at(s, 0))
+        return head + "\n" + m2_close_last(emit_stmts_m2(kids_of(child_at(s, 1)), depth + 1), ")")
+    if k == "PARALLEL_FOR":
+        let head = ind + "(parallel_for " + m2_atom(s.name) + " " + emit_expr_m2(child_at(s, 0))
+        return head + "\n" + m2_close_last(emit_stmts_m2(kids_of(child_at(s, 1)), depth + 1), ")")
+    if k == "REPEAT":
+        let head = ind + "(repeat " + emit_expr_m2(child_at(s, 0))
+        return head + "\n" + m2_close_last(emit_stmts_m2(kids_of(child_at(s, 1)), depth + 1), ")")
+    if k == "TRY":
+        let body_text = emit_stmts_m2(kids_of(child_at(s, 0)), depth + 1)
+        let other = kids_of(child_at(s, 1))
+        let head = ind + "(try"
+        if (length of other) == 0 and s.name == "":
+            return head + "\n" + m2_close_last(body_text, ")")
+        let else_head = ind + "(otherwise"
+        if s.name != "":
+            set else_head to else_head + " (with " + m2_atom(s.name) + ")"
+        let else_text = emit_stmts_m2(other, depth + 2)
+        return head + "\n" + body_text + else_head + "\n" + m2_close_last(else_text, "))")
+    if k == "SPAWN":
+        let args = ""
+        for each a in s.children:
+            set args to args + " " + emit_expr_m2(a)
+        return ind + "(spawn " + m2_atom(s.name) + " (args" + args + ") " + m2_atom(s.val_str) + ")\n"
+    if k == "YIELD":
+        return ind + "(yield)\n"
+    if k == "JOIN":
+        return ind + "(join " + emit_expr_m2(child_at(s, 0)) + ")\n"
+    if k == "CANCEL":
+        return ind + "(cancel " + emit_expr_m2(child_at(s, 0)) + ")\n"
+    if k == "SEND":
+        return ind + "(send " + emit_expr_m2(child_at(s, 0)) + " " + emit_expr_m2(child_at(s, 1)) + ")\n"
+    if k == "UNKNOWN":
+        return ind + "(unknown)\n"
+    return ind + "(unknown)\n"
+
+action emit_params_m2(item: AstNode):
+    let params = child_at(item, 0)
+    let parts = ""
+    for each p in params.children:
+        if parts != "":
+            set parts to parts + " "
+        set parts to parts + "(" + m2_atom(p.name) + " " + m2_ty(p.val_str)
+        if (length of p.children) > 0:
+            set parts to parts + " " + emit_expr_m2(child_at(p, 0))
+        set parts to parts + ")"
+    if parts == "":
+        return "()"
+    return "(" + parts + ")"
+
+action emit_contracts_m2(item: AstNode):
+    let out = ""
+    let contracts = child_at(item, 1)
+    for each c in contracts.children:
+        if c.kind == "CONTRACT":
+            let word = "require"
+            if c.name == "ensures":
+                set word to "ensure"
+            set out to out + m2_pad(2) + "(" + word + " " + emit_expr_m2(child_at(c, 0)) + ")\n"
+        otherwise:
+            if c.kind == "RECURSION_BOUND":
+                set out to out + m2_pad(2) + "(recursion " + c.val_str + ")\n"
+            otherwise:
+                if c.kind == "FUEL":
+                    set out to out + m2_pad(2) + "(fuel " + c.val_str + ")\n"
+                otherwise:
+                    if c.kind == "ROUTINE_NEED":
+                        set out to out + m2_pad(2) + "(needs " + m2_atom(c.name) + ")\n"
+    return out
+
+action emit_item_core_m2(item: AstNode):
+    recursion bounded 240
+    let k = item.kind
+    if k == "RECORD":
+        let fields = ""
+        for each f in item.children:
+            if fields != "":
+                set fields to fields + " "
+            set fields to fields + "(" + m2_atom(f.name) + " " + m2_ty(f.val_str) + ")"
+        return "(record " + m2_atom(item.name) + " (" + fields + "))"
+    if k == "TEST":
+        let body = emit_stmts_m2(kids_of(child_at(item, 2)), 2)
+        if body == "":
+            return "(test " + quoted(item.val_str) + "\n" + emit_contracts_m2(item) + m2_pad(1) + ")"
+        return "(test " + quoted(item.val_str) + "\n" + emit_contracts_m2(item) + m2_close_last(body, ")")
+    if k == "ACTION" or k == "CHECK" or k == "FILTER" or k == "FIBER":
+        let head = "(" + item_keyword(item) + " " + m2_atom(item.name) + " " + emit_params_m2(item)
+        if item.val_str != "":
+            set head to head + " -> " + m2_ty(item.val_str)
+        let body = emit_stmts_m2(kids_of(child_at(item, 2)), 2)
+        if body == "":
+            return head + "\n" + emit_contracts_m2(item) + m2_pad(1) + ")"
+        return head + "\n" + emit_contracts_m2(item) + m2_close_last(body, ")")
+    if k == "WHEN":
+        let body = emit_stmts_m2(kids_of(child_at(item, 1)), 2)
+        return "(when " + emit_expr_m2(child_at(item, 0)) + "\n" + m2_close_last(body, ")")
+    if k == "EVERY":
+        let body = emit_stmts_m2(kids_of(child_at(item, 1)), 2)
+        return "(every " + emit_expr_m2(child_at(item, 0)) + "\n" + m2_close_last(body, ")")
+    return "(unknown_item " + quoted(k) + ")"
+
+action emit_item_m2(item: AstNode, depth):
+    recursion bounded 240
+    let ind = m2_pad(depth)
+    let core = emit_item_core_m2(item)
+    let n = length of core
+    if n > 0 and (core[n - 1] otherwise "x") == "\n":
+        set core to m2_slice(core, 0, n - 1)
+    if item_is_pub(item) == 1:
+        return ind + "(pub " + core + ")\n"
+    return ind + core + "\n"
+
+# Machine format is deliberately indentation-free: leading whitespace is a
+# pure token cost for a decoder, and the parentheses already carry the shape.
+action m2_strip_indent(text):
+    let out = ""
+    let n = length of text
+    let i = 0
+    let at_line = 1
+    while i < n bounded 4000000:
+        let c = text[i] otherwise "x"
+        if at_line == 1 and (c == " " or c == "\t"):
+            set i to i + 1
+        otherwise:
+            set out to out + c
+            if c == "\n":
+                set at_line to 1
+            otherwise:
+                set at_line to 0
+            set i to i + 1
+    return out
+
+action emit_machine2(prog: AstNode):
+    recursion bounded 240
+    let out = "(kaze 2\n"
+    for each u in kids_of(program_uses(prog)):
+        let symbols = use_symbols(u)
+        if (length of symbols) > 0:
+            let names = ""
+            for each s in symbols:
+                set names to names + " " + s.name
+            set out to out + "(use (selects" + names + ") (from " + quoted(u.name) + "))\n"
+        otherwise:
+            if use_alias(u) != "":
+                set out to out + "(use " + quoted(u.name) + " (as " + use_alias(u) + "))\n"
+            otherwise:
+                set out to out + "(use " + quoted(u.name) + ")\n"
+    let needs_node = program_needs(prog)
+    if (length of needs_node.children) > 0:
+        let parts = ""
+        for each n in needs_node.children:
+            set parts to parts + " " + n.name
+        set out to out + "(needs" + parts + ")\n"
+    for each c in program_config(prog):
+        if c.kind == "TASKS_BOUND":
+            set out to out + "(tasks " + c.val_str + ")\n"
+    for each item in program_items(prog):
+        set out to out + emit_item_m2(item, 1)
+    return m2_close_last(out, ")")
+
+# ── typed holes: structured synthesis context ──────────────────────────
+
+action m2_json_str(s):
+    let n = length of s
+    let i = 0
+    let out = "\""
+    while i < n bounded 4000000:
+        let c = s[i] otherwise ""
+        let esc = c
+        if c == "\"":
+            set esc to "\\\""
+        otherwise:
+            if c == "\\":
+                set esc to "\\\\"
+            otherwise:
+                if c == "\n":
+                    set esc to "\\n"
+                otherwise:
+                    if c == "\t":
+                        set esc to "\\t"
+                    otherwise:
+                        if c < " ":
+                            set esc to "?"
+        set out to out + esc
+        set i to i + 1
+    return out + "\""
+
+action m2_json_strings(items):
+    let out = "["
+    let first = 1
+    for each s in items:
+        if first == 0:
+            set out to out + ","
+        set out to out + m2_json_str(s)
+        set first to 0
+    return out + "]"
+
+action m2_json_locals(locals):
+    let out = "["
+    let first = 1
+    for each p in locals:
+        let nm = p[0] otherwise ""
+        let ty = p[1] otherwise ""
+        if first == 0:
+            set out to out + ","
+        set out to out + "{\"name\":" + m2_json_str(nm) + ",\"type\":" + m2_json_str(ty) + "}"
+        set first to 0
+    return out + "]"
+
+action m2_caps(prog):
+    let out = []
+    for each n in kids_of(program_needs(prog)):
+        set out to out + [n.name]
+    return out
+
+action m2_infer_type(e: AstNode):
+    if e.kind == "NUM":
+        return "number"
+    if e.kind == "STR":
+        return "text"
+    if e.kind == "BOOL":
+        return "bool"
+    if e.kind == "LIST":
+        return "list"
+    return ""
+
+action m2_hole_json(e: AstNode, routine, ty, caps, locals, facts, idx):
+    return "{\"hole\":\"h" + num_text_of(idx) + "\",\"routine\":" + m2_json_str(routine) + ",\"line\":" + num_text_of(e.line) + ",\"expected_type\":" + m2_json_str(ty) + ",\"capabilities\":" + m2_json_strings(caps) + ",\"locals\":" + m2_json_locals(locals) + ",\"proven_facts\":" + m2_json_strings(facts) + "}"
+
+action m2_holes_expr(e: AstNode, routine, expected, caps, locals, facts, acc):
+    recursion bounded 240
+    if e.kind == "HOLE":
+        let ty = e.name
+        if ty == "" or ty == "_":
+            set ty to expected
+        return acc + [m2_hole_json(e, routine, ty, caps, locals, facts, length of acc)]
+    let out = acc
+    for each c in e.children:
+        set out to m2_holes_expr(c, routine, "", caps, locals, facts, out)
+    return out
+
+action m2_holes_block(block: AstNode, routine, result_ty, caps, locals, facts, acc):
+    recursion bounded 240
+    if block.kind == "BLOCK":
+        return m2_holes_stmts(kids_of(block), routine, result_ty, caps, locals, facts, acc)
+    return m2_holes_expr(block, routine, "", caps, locals, facts, acc)
+
+action m2_holes_stmts(stmts, routine, result_ty, caps, locals, facts, acc):
     recursion bounded 200
-    let tokens = tokenize(src)
-    let r = m_sexpr(tokens, 0)
-    return lower_program(r[0])
+    let out = acc
+    let env = locals
+    for each s in stmts:
+        let k = s.kind
+        if k == "LET":
+            set out to m2_holes_expr(child_at(s, 0), routine, "", caps, env, facts, out)
+            set env to env + [[s.name, m2_infer_type(child_at(s, 0))]]
+        otherwise:
+            if k == "SET":
+                set out to m2_holes_expr(child_at(s, 0), routine, "", caps, env, facts, out)
+            otherwise:
+                if k == "RETURN":
+                    if (length of s.children) > 0:
+                        set out to m2_holes_expr(child_at(s, 0), routine, result_ty, caps, env, facts, out)
+                otherwise:
+                    if k == "GUARD":
+                        if (length of s.children) > 0:
+                            set out to m2_holes_expr(child_at(s, 0), routine, "bool", caps, env, facts, out)
+                        if (length of s.children) > 1:
+                            set out to m2_holes_expr(child_at(s, 1), routine, "", caps, env, facts, out)
+                    otherwise:
+                        if k == "IF":
+                            set out to m2_holes_expr(child_at(s, 0), routine, "bool", caps, env, facts, out)
+                            set out to m2_holes_block(child_at(s, 1), routine, result_ty, caps, env, facts, out)
+                            set out to m2_holes_block(child_at(s, 2), routine, result_ty, caps, env, facts, out)
+                        otherwise:
+                            if k == "WHILE":
+                                set out to m2_holes_expr(child_at(s, 0), routine, "bool", caps, env, facts, out)
+                                set out to m2_holes_block(child_at(s, 1), routine, result_ty, caps, env, facts, out)
+                            otherwise:
+                                if k == "FOR_EACH" or k == "PARALLEL_FOR":
+                                    set out to m2_holes_expr(child_at(s, 0), routine, "", caps, env, facts, out)
+                                    let inner = env + [[s.name, ""]]
+                                    set out to m2_holes_block(child_at(s, 1), routine, result_ty, caps, inner, facts, out)
+                                otherwise:
+                                    if k == "REPEAT":
+                                        set out to m2_holes_expr(child_at(s, 0), routine, "number", caps, env, facts, out)
+                                        set out to m2_holes_block(child_at(s, 1), routine, result_ty, caps, env, facts, out)
+                                    otherwise:
+                                        if k == "TRY":
+                                            set out to m2_holes_block(child_at(s, 0), routine, result_ty, caps, env, facts, out)
+                                            let inner = env
+                                            if s.name != "":
+                                                set inner to env + [[s.name, "error"]]
+                                            set out to m2_holes_block(child_at(s, 1), routine, result_ty, caps, inner, facts, out)
+                                        otherwise:
+                                            if k == "EXPR":
+                                                set out to m2_holes_expr(child_at(s, 0), routine, "", caps, env, facts, out)
+                                            otherwise:
+                                                for each c in s.children:
+                                                    if c.kind == "BLOCK":
+                                                        set out to m2_holes_block(c, routine, result_ty, caps, env, facts, out)
+                                                    otherwise:
+                                                        set out to m2_holes_expr(c, routine, "", caps, env, facts, out)
+    return out
+
+action m2_holes_item(item: AstNode, caps, acc):
+    recursion bounded 200
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER" or item.kind == "TEST":
+        let locals = []
+        for each p in kids_of(child_at(item, 0)):
+            set locals to locals + [[p.name, p.val_str]]
+        let facts = []
+        for each c in kids_of(child_at(item, 1)):
+            if c.kind == "CONTRACT" and c.name == "requires":
+                set facts to facts + [emit_expr_human(child_at(c, 0))]
+        let name = item.name
+        if item.kind == "TEST":
+            set name to item.val_str
+        return m2_holes_block(child_at(item, 2), name, item.val_str, caps, locals, facts, acc)
+    if item.kind == "WHEN" or item.kind == "EVERY":
+        let name = "when"
+        if item.kind == "EVERY":
+            set name to "every"
+        return m2_holes_block(child_at(item, 1), name, "", caps, [], [], acc)
+    return acc
+
+action hole_count_node(n: AstNode) -> num:
+    recursion bounded 240
+    if n.kind == "HOLE":
+        return 1
+    let total = 0
+    for each c in n.children:
+        set total to total + hole_count_node(c)
+    return total
+
+action hole_count(prog: AstNode) -> num:
+    let total = 0
+    for each item in program_items(prog):
+        set total to total + hole_count_node(item)
+    return total
+
+action holes_json(prog: AstNode):
+    let caps = m2_caps(prog)
+    let acc = []
+    for each item in program_items(prog):
+        set acc to m2_holes_item(item, caps, acc)
+    let out = "{\"holes\":["
+    let first = 1
+    for each h in acc:
+        if first == 0:
+            set out to out + ","
+        set out to out + h
+        set first to 0
+    return [out + "]}\n", length of acc]
+
+# ── semantic AST hashing ───────────────────────────────────────────────
+#
+# The hash is taken over the canonical `(kaze 2 ...)` text, which is derived
+# from the AST. Comments, blank lines and human indentation therefore cannot
+# change it, and cosmetic edits keep their `.kaze-cache` objects and proofs.
+
+action ast_hash_text(text):
+    let h = 5381
+    let n = length of text
+    let i = 0
+    while i < n bounded 4000000:
+        let c = text[i] otherwise "x"
+        set h to (h * 33 + code(c)) % 2147483647
+        set i to i + 1
+    return h
+
+action ast_hash_hex(n):
+    let digits = "0123456789abcdef"
+    let out = ""
+    let v = n
+    let k = 0
+    while k < 8 bounded 8:
+        let d = v % 16
+        set out to (digits[d] otherwise "0") + out
+        set v to (v - d) / 16
+        set k to k + 1
+    return out
+
+action ast_hash_item_word(item: AstNode):
+    if item.kind == "RECORD":
+        return "record"
+    if item.kind == "TEST":
+        return "test"
+    if item.kind == "WHEN":
+        return "when"
+    if item.kind == "EVERY":
+        return "every"
+    return item_keyword(item)
+
+action ast_hash_item_name(item: AstNode):
+    if item.kind == "TEST":
+        return item.val_str
+    return item.name
+
+action ast_hash_text_of(prog: AstNode):
+    let out = "module " + ast_hash_hex(ast_hash_text(emit_machine2(prog))) + "\n"
+    for each item in program_items(prog):
+        let canonical = emit_item_m2(item, 0)
+        let word = ast_hash_item_word(item)
+        let name = ast_hash_item_name(item)
+        set out to out + word + " " + name + " " + ast_hash_hex(ast_hash_text(canonical)) + "\n"
+    return out
+
+# ── format 2 reader ────────────────────────────────────────────────────
+
+action lower_atom2(a: AstNode):
+    recursion bounded 240
+    let s = m_text(a)
+    if s == "true":
+        return make_bool(1, a.line)
+    if s == "false":
+        return make_bool(0, a.line)
+    let at = m2_find_at(s)
+    if at > 0:
+        let head = m2_slice(s, 0, at)
+        if m2_is_number(head) > 0:
+            return make_node("NUM", m2_slice(s, at + 1, length of s), head, 0, [], a.line)
+    if m2_is_number(s) > 0:
+        return make_num(s, a.line)
+    return make_ident(s, a.line)
+
+action lower_expr2(form: AstNode):
+    recursion bounded 240
+    if form.kind == "S":
+        return make_str(form.val_str, form.line)
+    if form.kind == "A":
+        return lower_atom2(form)
+    if form.kind != "L":
+        return make_unknown(form.line)
+    let h = m2_head(form)
+    if m2_op_head(h) == 1:
+        if h == "not" or (length of form.children) == 2:
+            return make_bin("not", lower_expr2(m2_arg(form, 0)), make_num("0", form.line), form.line)
+        return make_bin(h, lower_expr2(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+    if h == "not":
+        return make_bin("not", lower_expr2(m2_arg(form, 0)), make_num("0", form.line), form.line)
+    if h == "get":
+        return make_field(lower_expr2(m2_arg(form, 0)), m_text(m2_arg(form, 1)), form.line)
+    if h == "at" and (length of form.children) > 3:
+        let base = make_index(lower_expr2(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+        let alt = m2_arg(form, 2)
+        if m_text(alt) != "_" and alt.kind != "NONE":
+            return make_fallback(base, lower_expr2(alt), form.line)
+        return base
+    if h == "fb":
+        return make_fallback(lower_expr2(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+    if (h == "div" or h == "mod") and (length of form.children) > 3:
+        let op = "/"
+        if h == "mod":
+            set op to "%"
+        let base = make_bin(op, lower_expr2(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+        return make_fallback(base, lower_expr2(m2_arg(form, 2)), form.line)
+    if h == "len":
+        return make_len(lower_expr2(m2_arg(form, 0)), form.line)
+    if h == "lenlit":
+        return make_len_lit(text_to_num(m_text(m2_arg(form, 0))), form.line)
+    if h == "as":
+        return make_in_unit(m_text(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+    if h == "between":
+        return make_between(lower_expr2(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), lower_expr2(m2_arg(form, 2)), form.line)
+    if h == "list":
+        let items = []
+        for each c in drop_first(form.children):
+            set items to items + [lower_expr2(c)]
+        return make_list_expr(items, form.line)
+    if h == "receive":
+        return make_receive(lower_expr2(m2_arg(form, 0)), form.line)
+    if h == "join":
+        return make_join(lower_expr2(m2_arg(form, 0)), form.line)
+    if h == "hole":
+        let ty = m_text(m2_arg(form, 0))
+        if ty == "_":
+            set ty to ""
+        let goal = ""
+        if (length of form.children) > 2:
+            set goal to m_text(m2_arg(form, 1))
+        return make_hole(ty, goal, form.line)
+    if h == "unknown":
+        return make_unknown(form.line)
+    if h == "named":
+        return make_named_arg(m_text(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+    if h == "call":
+        let args = []
+        for each c in drop_first(drop_first(form.children)):
+            set args to args + [lower_expr2(c)]
+        return make_call(m_text(m2_arg(form, 0)), args, form.line)
+    if h == "number":
+        let unit = ""
+        if (length of form.children) > 2:
+            set unit to m_text(m2_arg(form, 1))
+        return make_node("NUM", unit, m_text(m2_arg(form, 0)), 0, [], form.line)
+    if h == "string":
+        return make_str(m_text(m2_arg(form, 0)), form.line)
+    if h == "bool":
+        let bt = m_text(m2_arg(form, 0))
+        let bv = 0
+        if bt == "true":
+            set bv to 1
+        return make_bool(bv, form.line)
+    if h == "name":
+        return make_ident(m_text(m2_arg(form, 0)), form.line)
+    if h == "bin":
+        return make_bin(m_text(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), lower_expr2(m2_arg(form, 2)), form.line)
+    if h == "fallback":
+        return make_fallback(lower_expr2(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+    if h == "field":
+        return make_field(lower_expr2(m2_arg(form, 0)), m_text(m2_arg(form, 1)), form.line)
+    if h == "index":
+        return make_index(lower_expr2(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+    if h == "in_unit":
+        return make_in_unit(m_text(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+    # A bare list in call-argument position is a call on its head atom.
+    let target = h
+    let args = []
+    for each c in drop_first(form.children):
+        if c.kind == "L" and (length of c.children) == 2 and m2_head(c) != "":
+            let maybe = m2_head(c)
+            if (length of maybe) > 0 and (maybe[(length of maybe) - 1] otherwise "x") == ":":
+                set args to args + [make_named_arg(m2_strip_colon(maybe), lower_expr2(m2_arg(c, 0)), c.line)]
+            otherwise:
+                set args to args + [lower_expr2(c)]
+        otherwise:
+            set args to args + [lower_expr2(c)]
+    return make_call(target, args, form.line)
+
+action lower_params2(form: AstNode):
+    let out = []
+    if form.kind != "L":
+        return out
+    if m2_head(form) == "params":
+        for each p in drop_first(form.children):
+            if m2_head(p) == "param":
+                let defaults = []
+                if (length of p.children) > 3:
+                    set defaults to [lower_expr2(m2_arg(p, 2))]
+                set out to out + [make_param(m_text(m2_arg(p, 0)), m_text(m2_arg(p, 1)), defaults, p.line)]
+        return out
+    for each p in form.children:
+        if p.kind == "L" and (length of p.children) > 0:
+            let nm = m_text(node_at(p.children, 0))
+            let ty = ""
+            if (length of p.children) > 1:
+                set ty to m_text(node_at(p.children, 1))
+            if ty == "_":
+                set ty to ""
+            let defaults = []
+            if (length of p.children) > 2:
+                set defaults to [lower_expr2(node_at(p.children, 2))]
+            set out to out + [make_param(nm, ty, defaults, p.line)]
+    return out
+
+action lower_contract2(form: AstNode):
+    let h = m2_head(form)
+    if h == "require" or h == "requires":
+        return [make_contract("requires", lower_expr2(m2_arg(form, 0)), form.line)]
+    if h == "ensure" or h == "ensures":
+        return [make_contract("ensures", lower_expr2(m2_arg(form, 0)), form.line)]
+    if h == "recursion":
+        return [make_recursion_bound(m_text(m2_arg(form, 0)), form.line)]
+    if h == "fuel":
+        return [make_fuel(m_text(m2_arg(form, 0)), form.line)]
+    if h == "needs":
+        return [make_routine_need(m_text(m2_arg(form, 0)), form.line)]
+    return []
+
+action lower_block_forms2(form: AstNode, skip_head: num):
+    recursion bounded 200
+    let out = []
+    let forms = form.children
+    if skip_head == 1:
+        set forms to drop_first(forms)
+    for each f in forms:
+        set out to out + [lower_stmt2(f)]
+    return out
+
+action lower_else2(form: AstNode):
+    recursion bounded 200
+    let out = []
+    let err = ""
+    let forms = drop_first(form.children)
+    if (length of forms) > 0:
+        let first = node_at(forms, 0)
+        if m2_head(first) == "with":
+            set err to m_text(m2_arg(first, 0))
+            set forms to drop_first(forms)
+    for each f in forms:
+        set out to out + [lower_stmt2(f)]
+    return [out, err]
+
+action lower_stmt2(form: AstNode):
+    recursion bounded 240
+    if form.kind == "A" or form.kind == "S" or form.kind == "NUM":
+        return make_stmt("EXPR", "", [lower_expr2(form)], form.line)
+    let h = m2_head(form)
+    if h == "let":
+        return make_stmt("LET", m_text(m2_arg(form, 0)), [lower_expr2(m2_arg(form, 1))], form.line)
+    if h == "set":
+        return make_stmt("SET", m_text(m2_arg(form, 0)), [lower_expr2(m2_arg(form, 1))], form.line)
+    if h == "return":
+        if (length of form.children) < 2:
+            return make_stmt("RETURN", "", [], form.line)
+        return make_stmt("RETURN", "", [lower_expr2(m2_arg(form, 0))], form.line)
+    if h == "eval":
+        return make_stmt("EXPR", "", [lower_expr2(m2_arg(form, 0))], form.line)
+    if h == "guard":
+        if (length of form.children) > 2:
+            return make_guard_exit(lower_expr2(m2_arg(form, 0)), lower_stmt2(m2_arg(form, 1)), form.line)
+        return make_guard(lower_expr2(m2_arg(form, 0)), form.line)
+    if h == "break":
+        return make_break(form.line)
+    if h == "continue":
+        return make_continue(form.line)
+    if h == "if":
+        let cond = lower_expr2(m2_arg(form, 0))
+        let then_s = []
+        let else_s = []
+        let mode = 0
+        let i = 1
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            let part = m2_arg(form, i)
+            let ph = m2_head(part)
+            if ph == "then":
+                set then_s to then_s + lower_block_forms2(part, 1)
+            otherwise:
+                if ph == "otherwise":
+                    let o = lower_else2(part)
+                    let got = o[0] otherwise []
+                    set else_s to else_s + got
+                    set mode to 1
+                otherwise:
+                    if mode == 0:
+                        set then_s to then_s + [lower_stmt2(part)]
+                    otherwise:
+                        set else_s to else_s + [lower_stmt2(part)]
+            set i to i + 1
+        return make_if(cond, make_block("then", then_s, form.line), make_block("otherwise", else_s, form.line), form.line)
+    if h == "while":
+        let cond = lower_expr2(m2_arg(form, 0))
+        let bound = make_bound("", form.line)
+        let body = []
+        let i = 1
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            let part = m2_arg(form, i)
+            if m2_head(part) == "bounded":
+                set bound to make_bound(m_text(m2_arg(part, 0)), part.line)
+            otherwise:
+                if m2_head(part) == "body":
+                    set body to body + lower_block_forms2(part, 1)
+                otherwise:
+                    set body to body + [lower_stmt2(part)]
+            set i to i + 1
+        return make_while(cond, make_block("body", body, form.line), bound, form.line)
+    if h == "for_each" or h == "parallel_for":
+        let var = m_text(m2_arg(form, 0))
+        let list_expr = lower_expr2(m2_arg(form, 1))
+        let body = []
+        let i = 2
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            let part = m2_arg(form, i)
+            if m2_head(part) == "body":
+                set body to body + lower_block_forms2(part, 1)
+            otherwise:
+                set body to body + [lower_stmt2(part)]
+            set i to i + 1
+        if h == "parallel_for":
+            return make_parallel_for(var, list_expr, make_block("body", body, form.line), form.line)
+        return make_for_each(var, list_expr, make_block("body", body, form.line), form.line)
+    if h == "repeat":
+        let count = lower_expr2(m2_arg(form, 0))
+        let body = []
+        let i = 1
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            let part = m2_arg(form, i)
+            if m2_head(part) == "body":
+                set body to body + lower_block_forms2(part, 1)
+            otherwise:
+                set body to body + [lower_stmt2(part)]
+            set i to i + 1
+        return make_repeat(count, make_block("body", body, form.line), form.line)
+    if h == "try":
+        let body = []
+        let other = []
+        let err = ""
+        let mode = 0
+        let i = 0
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            let part = m2_arg(form, i)
+            let ph = m2_head(part)
+            if ph == "body":
+                set body to body + lower_block_forms2(part, 1)
+            otherwise:
+                if ph == "otherwise":
+                    let o = lower_else2(part)
+                    let got = o[0] otherwise []
+                    set other to other + got
+                    set err to o[1] otherwise ""
+                    set mode to 1
+                otherwise:
+                    if mode == 0:
+                        set body to body + [lower_stmt2(part)]
+                    otherwise:
+                        set other to other + [lower_stmt2(part)]
+            set i to i + 1
+        return make_try(err, make_block("body", body, form.line), make_block("otherwise", other, form.line), form.line)
+    if h == "spawn":
+        let args = []
+        let args_form = m2_arg(form, 1)
+        if m2_head(args_form) == "args":
+            for each c in drop_first(args_form.children):
+                set args to args + [lower_expr2(c)]
+        otherwise:
+            if args_form.kind == "L":
+                for each c in args_form.children:
+                    set args to args + [lower_expr2(c)]
+        let task = m_text(m2_arg(form, 2))
+        if task == "_":
+            set task to ""
+        return make_spawn(m_text(m2_arg(form, 0)), args, task, form.line)
+    if h == "yield":
+        return make_yield(form.line)
+    if h == "join":
+        return make_join(lower_expr2(m2_arg(form, 0)), form.line)
+    if h == "cancel":
+        return make_cancel(lower_expr2(m2_arg(form, 0)), form.line)
+    if h == "send":
+        return make_send(lower_expr2(m2_arg(form, 0)), lower_expr2(m2_arg(form, 1)), form.line)
+    return make_stmt("EXPR", "", [lower_expr2(form)], form.line)
+
+action lower_item2(form: AstNode):
+    recursion bounded 240
+    let h = m2_head(form)
+    if h == "pub":
+        let inner = lower_item2(m2_arg(form, 0))
+        return with_pub(inner, 1)
+    if h == "record":
+        let name = m_text(m2_arg(form, 0))
+        let fields = []
+        let fields_form = m2_arg(form, 1)
+        if fields_form.kind == "L":
+            if m2_head(fields_form) == "fields":
+                for each f in drop_first(fields_form.children):
+                    if f.kind == "L":
+                        set fields to fields + [make_field_def(m_text(m2_arg(f, 0)), m_text(m2_arg(f, 1)), f.line)]
+                    otherwise:
+                        set fields to fields + [make_field_def(m_text(f), "any", f.line)]
+            otherwise:
+                for each f in fields_form.children:
+                    if f.kind == "L" and (length of f.children) > 0:
+                        let ty = "any"
+                        if (length of f.children) > 1:
+                            set ty to m_text(node_at(f.children, 1))
+                        set fields to fields + [make_field_def(m_text(node_at(f.children, 0)), ty, f.line)]
+        return make_record_item(name, fields, form.line)
+    if h == "test":
+        let desc = m_text(m2_arg(form, 0))
+        let contracts = []
+        let stmts = []
+        let i = 1
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            let part = m2_arg(form, i)
+            let ph = m2_head(part)
+            if ph == "require" or ph == "ensure" or ph == "recursion" or ph == "fuel" or ph == "needs":
+                set contracts to contracts + lower_contract2(part)
+            otherwise:
+                if ph == "contracts":
+                    for each c in drop_first(part.children):
+                        set contracts to contracts + lower_contract2(c)
+                otherwise:
+                    if ph == "body":
+                        set stmts to stmts + lower_block_forms2(part, 1)
+                    otherwise:
+                        set stmts to stmts + [lower_stmt2(part)]
+            set i to i + 1
+        return make_test(desc, contracts, make_block("body", stmts, form.line), form.line)
+    if h == "action" or h == "check" or h == "filter" or h == "fiber":
+        let name = m_text(m2_arg(form, 0))
+        let params = lower_params2(m2_arg(form, 1))
+        let result = ""
+        let contracts = []
+        let stmts = []
+        let i = 2
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            let part = m2_arg(form, i)
+            let ph = m2_head(part)
+            if part.kind == "A" and m_text(part) == "->":
+                set i to i + 1
+                set result to m_text(m2_arg(form, i))
+            otherwise:
+                if ph == "require" or ph == "ensure" or ph == "recursion" or ph == "fuel" or ph == "needs":
+                    set contracts to contracts + lower_contract2(part)
+                otherwise:
+                    if ph == "contracts":
+                        for each c in drop_first(part.children):
+                            set contracts to contracts + lower_contract2(c)
+                    otherwise:
+                        if ph == "body":
+                            set stmts to stmts + lower_block_forms2(part, 1)
+                        otherwise:
+                            if ph == "params":
+                                set params to lower_params2(part)
+                            otherwise:
+                                set stmts to stmts + [lower_stmt2(part)]
+            set i to i + 1
+        let params_node = make_node("PARAMS", "", "", 0, params, form.line)
+        let contracts_node = make_node("CONTRACTS", "", "", 0, contracts, form.line)
+        return make_item(h, name, params_node, contracts_node, result, make_block("body", stmts, form.line), form.line)
+    if h == "when":
+        let cond = lower_expr2(m2_arg(form, 0))
+        let body = []
+        let i = 1
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            set body to body + [lower_stmt2(m2_arg(form, i))]
+            set i to i + 1
+        return make_when(cond, make_block("body", body, form.line), form.line)
+    if h == "every":
+        let dur = lower_expr2(m2_arg(form, 0))
+        let body = []
+        let i = 1
+        let n = (length of form.children) - 1
+        while i < n bounded 100000:
+            set body to body + [lower_stmt2(m2_arg(form, i))]
+            set i to i + 1
+        return make_every(dur, make_block("body", body, form.line), form.line)
+    return make_node("UNKNOWN_ITEM", h, "", 0, [], form.line)
+
+action lower_program2(root: AstNode):
+    recursion bounded 240
+    let uses = []
+    let needs = []
+    let items = []
+    let config = []
+    let seen_head = 0
+    for each form in root.children:
+        if seen_head == 0 and m_text(form) == "kaze":
+            set seen_head to 1
+        otherwise:
+            if seen_head == 1 and m_text(form) == "2":
+                set seen_head to 2
+            otherwise:
+                let h = m2_head(form)
+                if h == "use":
+                    let spec = m_text(m2_arg(form, 0))
+                    let alias = ""
+                    let symbols = []
+                    let a0 = m2_arg(form, 0)
+                    let a1 = m2_arg(form, 1)
+                    if a0.kind == "L" and m2_head(a0) == "selects":
+                        for each c in drop_first(a0.children):
+                            set symbols to symbols + [make_symbol(m_text(c), c.line)]
+                        if m2_head(a1) == "from":
+                            set spec to m_text(m2_arg(a1, 0))
+                    otherwise:
+                        if a1.kind == "L" and m2_head(a1) == "as":
+                            set alias to m_text(m2_arg(a1, 0))
+                    let form_kind = 0
+                    if alias != "":
+                        set form_kind to 1
+                    if (length of symbols) > 0:
+                        set form_kind to 2
+                    set uses to uses + [make_use(spec, alias, symbols, form_kind, form.line)]
+                otherwise:
+                    if h == "needs":
+                        for each c in drop_first(form.children):
+                            set needs to needs + [make_node("NEED", m_text(c), "", 0, [], form.line)]
+                    otherwise:
+                        if h == "tasks":
+                            set config to config + [make_tasks_bound(m_text(m2_arg(form, 0)), form.line)]
+                        otherwise:
+                            if h != "":
+                                set items to items + [lower_item2(form)]
+    return make_program(uses, needs, items, config)
+
+# Read the canonical machine form back into a PROGRAM node. Both format 1 and
+# format 2 arrive through the same whitespace-insensitive reader; the version
+# atom chooses the lowering path.
+action parse_machine(src):
+    recursion bounded 240
+    let tokens = m2_lex(src)
+    let r = m2_read(tokens, 0)
+    let root = r[0]
+    let first = m2_arg(root, 0)
+    if m2_head(root) == "kaze" and m_text(first) == "2":
+        return lower_program2(root)
+    return lower_program(root)
+
 
 # ── AST -> human ───────────────────────────────────────────────────────
 
@@ -601,11 +1865,19 @@ action tier_of(op):
         return 1
     if op == "and":
         return 2
-    if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=":
+    if op == "|":
+        return 3
+    if op == "^":
         return 4
-    if op == "+" or op == "-":
+    if op == "&":
         return 5
-    return 6
+    if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=":
+        return 6
+    if op == "<<" or op == ">>":
+        return 7
+    if op == "+" or op == "-":
+        return 8
+    return 9
 
 action emit_bin_human(e: AstNode):
     recursion bounded 200
@@ -641,7 +1913,7 @@ action emit_expr_human(e: AstNode):
             return text
         if e.name == "%":
             return text + "%"
-        return text + " " + e.name
+        return text + " " + canonical_unit_text(e.name)
     if k == "STR":
         return quoted(e.val_str)
     if k == "BOOL":
@@ -653,7 +1925,22 @@ action emit_expr_human(e: AstNode):
     if k == "BIN":
         if e.name == "not":
             return "(not " + emit_expr_human(child_at(e, 0)) + ")"
+        # A '%' immediately after a numeric literal is its unit suffix, so the
+        # left operand of `%` always keeps its own parentheses when printed.
+        if e.name == "%":
+            return "(" + emit_expr_human(child_at(e, 0)) + " % " + emit_expr_human(child_at(e, 1)) + ")"
         return "(" + emit_bin_human(e) + ")"
+    if k == "BETWEEN":
+        return "(" + emit_expr_human(child_at(e, 0)) + " between " + emit_expr_human(child_at(e, 1)) + " and " + emit_expr_human(child_at(e, 2)) + ")"
+    if k == "HOLE":
+        let ty = e.name
+        if ty == "":
+            if e.val_str == "":
+                return "?"
+            set ty to "_"
+        return "todo(" + ty + ", " + quoted(e.val_str) + ")"
+    if k == "LEN_LIT":
+        return "" + e.val_num
     if k == "FALLBACK":
         return "(" + emit_expr_human(child_at(e, 0)) + " otherwise " + emit_expr_human(child_at(e, 1)) + ")"
     if k == "FIELD":
@@ -661,7 +1948,7 @@ action emit_expr_human(e: AstNode):
     if k == "INDEX":
         return "(" + emit_expr_human(child_at(e, 0)) + ")[" + emit_expr_human(child_at(e, 1)) + "]"
     if k == "LEN":
-        return "length of (" + emit_expr_human(child_at(e, 0)) + ")"
+        return "len(" + emit_expr_human(child_at(e, 0)) + ")"
     if k == "IN_UNIT":
         return "(" + emit_expr_human(child_at(e, 0)) + " in " + e.name + ")"
     if k == "LIST":
@@ -705,8 +1992,72 @@ action emit_block_human(block: AstNode, depth):
     recursion bounded 200
     let stmts = block.children
     if (length of stmts) == 0:
-        return h_pad(depth) + "# empty block\n" + h_pad(depth) + "guard true\n"
+        # Emit only the inert guard: the AST carries no comments, so emitting
+        # one here would make the second fmt pass differ from the first.
+        return h_pad(depth) + "guard true\n"
     return emit_stmts_human(stmts, depth)
+
+# A one-line exit used by `guard ... otherwise <stmt>`.
+action emit_exit_inline(s: AstNode):
+    recursion bounded 200
+    if s.kind == "RETURN":
+        if (length of s.children) == 0:
+            return "return"
+        return "return " + emit_expr_human(child_at(s, 0))
+    if s.kind == "BREAK":
+        return "break"
+    if s.kind == "CONTINUE":
+        return "continue"
+    return emit_expr_human(child_at(s, 0))
+
+# Strip one pair of parentheses when it wraps the whole expression. A
+# condition reads `if a == b:` rather than `if (a == b):`; inner grouping from
+# operator precedence is untouched.
+action strip_outer_parens(text: string) -> string:
+    let n = length of text
+    if n < 2:
+        return text
+    if (text[0] otherwise "") != "(" or (text[n - 1] otherwise "") != ")":
+        return text
+    let depth = 0
+    let closes_early = 0
+    let i = 0
+    while i < n bounded 1000:
+        let c = text[i] otherwise ""
+        if c == "(":
+            set depth to depth + 1
+        if c == ")":
+            set depth to depth - 1
+            if depth == 0 and i < n - 1:
+                set closes_early to 1
+        set i to i + 1
+    if closes_early == 1 or depth != 0:
+        return text
+    let out = ""
+    let j = 1
+    while j < n - 1 bounded 1000:
+        set out to out + (text[j] otherwise "")
+        set j to j + 1
+    return out
+
+action emit_cond_human(e: AstNode) -> string:
+    return strip_outer_parens(emit_expr_human(e))
+
+# Flatten an else block that contains exactly one if into `elif`, which is how
+# the canonical formatter writes the chain the parser builds.
+action emit_if_human(s: AstNode, depth, keyword):
+    recursion bounded 200
+    let ind = h_pad(depth)
+    let out = ind + keyword + " " + emit_cond_human(child_at(s, 0)) + ":\n"
+    set out to out + emit_block_human(child_at(s, 1), depth + 1)
+    let other = child_at(s, 2)
+    if (length of other.children) > 0:
+        if (length of other.children) == 1 and (child_at(other, 0)).kind == "IF":
+            set out to out + emit_if_human(child_at(other, 0), depth, "elif")
+        otherwise:
+            set out to out + ind + "else:\n"
+            set out to out + emit_block_human(other, depth + 1)
+    return out
 
 action emit_stmt_human(s: AstNode, depth):
     recursion bounded 200
@@ -715,7 +2066,13 @@ action emit_stmt_human(s: AstNode, depth):
     if k == "LET":
         return ind + "let " + s.name + " = " + emit_expr_human(child_at(s, 0)) + "\n"
     if k == "SET":
-        return ind + "set " + s.name + " to " + emit_expr_human(child_at(s, 0)) + "\n"
+        let rhs = child_at(s, 0)
+        if rhs.kind == "BIN":
+            if rhs.name == "+" or rhs.name == "-" or rhs.name == "*":
+                let lhs = child_at(rhs, 0)
+                if lhs.kind == "IDENT" and lhs.name == s.name:
+                    return ind + s.name + " " + rhs.name + "= " + emit_expr_human(child_at(rhs, 1)) + "\n"
+        return ind + s.name + " = " + emit_expr_human(rhs) + "\n"
     if k == "RETURN":
         if (length of s.children) == 0:
             return ind + "return\n"
@@ -723,22 +2080,30 @@ action emit_stmt_human(s: AstNode, depth):
     if k == "EXPR":
         return ind + emit_expr_human(child_at(s, 0)) + "\n"
     if k == "GUARD":
-        return ind + "guard " + emit_expr_human(child_at(s, 0)) + "\n"
+        let keyword = "guard"
+        if s.name == "require":
+            set keyword to "require"
+        if (length of s.children) > 1:
+            return ind + keyword + " " + emit_cond_human(child_at(s, 0)) + " otherwise " + emit_exit_inline(child_at(s, 1)) + "\n"
+        return ind + keyword + " " + emit_cond_human(child_at(s, 0)) + "\n"
+    if k == "BREAK":
+        return ind + "break\n"
+    if k == "CONTINUE":
+        return ind + "continue\n"
     if k == "IF":
-        let out = ind + "if " + emit_expr_human(child_at(s, 0)) + ":\n"
-        set out to out + emit_block_human(child_at(s, 1), depth + 1)
-        if (length of kids_of(child_at(s, 2))) > 0:
-            set out to out + ind + "otherwise:\n"
-            set out to out + emit_block_human(child_at(s, 2), depth + 1)
-        return out
+        return emit_if_human(s, depth, "if")
     if k == "WHILE":
         let bound = child_at(s, 2)
-        let head = ind + "while " + emit_expr_human(child_at(s, 0))
+        let head = ind + "while " + emit_cond_human(child_at(s, 0))
         if bound.val_str != "" and bound.val_str != "?":
             set head to head + " bounded " + bound.val_str
         return head + ":\n" + emit_block_human(child_at(s, 1), depth + 1)
     if k == "FOR_EACH":
-        return ind + "for each " + s.name + " in " + emit_expr_human(child_at(s, 0)) + ":\n" + emit_block_human(child_at(s, 1), depth + 1)
+        return ind + "for " + s.name + " in " + emit_expr_human(child_at(s, 0)) + ":\n" + emit_block_human(child_at(s, 1), depth + 1)
+    if k == "PARALLEL_FOR":
+        return ind + "parallel for each " + s.name + " in " + emit_expr_human(child_at(s, 0)) + ":\n" + emit_block_human(child_at(s, 1), depth + 1)
+    if k == "REPEAT":
+        return ind + "repeat " + emit_expr_human(child_at(s, 0)) + " times:\n" + emit_block_human(child_at(s, 1), depth + 1)
     if k == "TRY":
         let out = ind + "try:\n"
         set out to out + emit_block_human(child_at(s, 0), depth + 1)
@@ -781,7 +2146,7 @@ action emit_params_human(item: AstNode):
             set out to out + ", "
         set out to out + p.name
         if p.val_str != "":
-            set out to out + ": " + p.val_str
+            set out to out + ": " + normalize_type_text(p.val_str)
         if (length of p.children) > 0:
             set out to out + " = " + emit_expr_human(child_at(p, 0))
         set first to 0
@@ -798,15 +2163,15 @@ action emit_item_human(item: AstNode, depth):
         for each f in item.children:
             set out to out + ind + "    " + f.name + ": " + f.val_str + "\n"
         return out
-    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
-        let head = ind + pub + item_keyword(item) + " " + item.name + "(" + emit_params_human(item) + ")"
-        if item.val_str != "":
-            set head to head + " -> " + item.val_str
-        let out = head + ":\n"
+    if item.kind == "TEST":
+        let out = ind + pub + "test " + quoted(item.val_str) + ":\n"
         let contracts = child_at(item, 1)
         for each c in contracts.children:
             if c.kind == "CONTRACT":
-                set out to out + ind + "    " + c.name + " " + emit_expr_human(child_at(c, 0)) + "\n"
+                let word = "require"
+                if c.name == "ensures":
+                    set word to "ensure"
+                set out to out + ind + "    " + word + " " + emit_cond_human(child_at(c, 0)) + "\n"
             otherwise:
                 if c.kind == "RECURSION_BOUND":
                     set out to out + ind + "    recursion bounded " + c.val_str + "\n"
@@ -814,7 +2179,29 @@ action emit_item_human(item: AstNode, depth):
                     set out to out + ind + "    fuel " + c.val_str + "\n"
                 otherwise:
                     if c.kind == "ROUTINE_NEED":
-                        set out to out + ind + "    needs: " + c.name + "\n"
+                        set out to out + ind + "    needs " + c.name + "\n"
+        set out to out + emit_block_human(child_at(item, 2), depth + 1)
+        return out
+    if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
+        let head = ind + pub + item_keyword(item) + " " + item.name + "(" + emit_params_human(item) + ")"
+        if item.val_str != "":
+            set head to head + " -> " + normalize_type_text(item.val_str)
+        let out = head + ":\n"
+        let contracts = child_at(item, 1)
+        for each c in contracts.children:
+            if c.kind == "CONTRACT":
+                let word = "require"
+                if c.name == "ensures":
+                    set word to "ensure"
+                set out to out + ind + "    " + word + " " + emit_cond_human(child_at(c, 0)) + "\n"
+            otherwise:
+                if c.kind == "RECURSION_BOUND":
+                    set out to out + ind + "    recursion bounded " + c.val_str + "\n"
+                if c.kind == "FUEL":
+                    set out to out + ind + "    fuel " + c.val_str + "\n"
+                otherwise:
+                    if c.kind == "ROUTINE_NEED":
+                        set out to out + ind + "    needs " + c.name + "\n"
         set out to out + emit_block_human(child_at(item, 2), depth + 1)
         return out
     if item.kind == "WHEN":
@@ -851,12 +2238,21 @@ action emit_human(prog: AstNode):
                 set parts to parts + ", "
             set parts to parts + n.name
             set first to 0
-        set out to out + "needs: " + parts + "\n"
+        set out to out + "needs " + parts + "\n"
     for each c in program_config(prog):
         if c.kind == "TASKS_BOUND":
             set out to out + "tasks bounded " + c.val_str + "\n"
+    let first_item = 1
     for each item in program_items(prog):
-        set out to out + "\n" + emit_item_human(item, 0)
+        if first_item == 0:
+            set out to out + "\n"
+        set out to out + emit_item_human(item, 0)
+        set first_item to 0
+    # The host prints the returned text with a newline. Trim the formatter's
+    # own final newline so `kaze fmt` output ends with exactly one.
+    let n = length of out
+    if n > 0 and (out[n - 1] otherwise "") == "\n":
+        return m2_slice(out, 0, n - 1)
     return out
 
 # Does the source look like machine syntax? Same rule as the reference engine:

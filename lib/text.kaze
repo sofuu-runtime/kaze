@@ -318,3 +318,16 @@ action text_codepoint_at(t, i) -> num:
         return 0 - 1
     return cp
 
+
+# Co-located tests. `kaze test` builds this file with the test driver; a normal
+# build and `kaze run` never see these blocks.
+test "text_length counts a text":
+    require text_length("kaze") == 4
+
+test "text_join and text_split round trip":
+    let joined = text_join(["alpha", "beta"], ",")
+    require joined == "alpha,beta"
+    require text_join(text_split(joined, ","), ",") == joined
+
+test "text_trim removes surrounding whitespace":
+    require text_trim("  kaze  ") == "kaze"

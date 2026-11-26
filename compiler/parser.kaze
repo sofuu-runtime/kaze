@@ -205,6 +205,13 @@ action parse_relational(tokens, pos):
     let r = parse_shift(tokens, pos)
     let node = r[0]
     let p = r[1]
+    # x between low and high is a single comparison node, so the formatter can
+    # print it back in the contract form instead of a desugared boolean chain.
+    if is_word(tokens, p, "between"):
+        let lo = parse_shift(tokens, p + 1)
+        if is_word(tokens, lo[1], "and"):
+            let hi = parse_shift(tokens, lo[1] + 1)
+            return [make_between(node, lo[0], hi[0], tok_line(tokens, p)), hi[1]]
     let done = 0
     while done == 0 bounded 1000000:
         let t = tok(tokens, p)
@@ -337,9 +344,9 @@ action take_unit(tokens, pos):
         if per == "s2":
             return [u + "/s2", pos + 3]
         let pu = unit_word(per)
-        if pu == "seconds":
+        if pu == "seconds" or pu == "s":
             return [u + "/s", pos + 3]
-        if pu == "hours":
+        if pu == "hours" or pu == "h":
             return [u + "/h", pos + 3]
     return [u, pos + 1]
 
@@ -361,6 +368,37 @@ action parse_primary(tokens, pos):
     if k == "STR":
         return [make_str(w, l), p + 1]
 
+    # 2b. A typed synthesis hole: '?' or todo(<type>, "<goal>").
+    if k == "SYM" and w == "?":
+        return [make_hole("", "", l), p + 1]
+    if k == "IDENT" and w == "todo" and is_sym(tokens, p + 1, "("):
+        let q = p + 2
+        let ty = ""
+        let goal = ""
+        let first = tok(tokens, q)
+        if first.kind == "STR":
+            set goal to first.text
+            set q to q + 1
+        otherwise:
+            if first.kind == "IDENT" or first.kind == "SYM" or first.kind == "NUM":
+                set ty to first.text
+                set q to q + 1
+                while is_sym(tokens, q, "/") and (is_kind(tokens, q + 1, "IDENT") or is_kind(tokens, q + 1, "NUM")) bounded 64:
+                    set ty to ty + "/" + tok_text(tokens, q + 1)
+                    set q to q + 2
+            if is_sym(tokens, q, ","):
+                set q to q + 1
+                let gt = tok(tokens, q)
+                if gt.kind == "STR":
+                    set goal to gt.text
+                    set q to q + 1
+        let close = skip_noise(tokens, q)
+        if is_sym(tokens, close, ")"):
+            set close to close + 1
+        if ty == "_" or ty == "?":
+            set ty to ""
+        return [make_hole(ty, goal, l), close]
+
     # 3. List literal, possibly spanning lines.
     if k == "SYM" and w == "[":
         return parse_list_literal(tokens, p)
@@ -373,7 +411,14 @@ action parse_primary(tokens, pos):
             set q to q + 1
         return [r[0], q]
 
-    # 5. length of x
+    # 5. length of x / len(x)
+    if k == "IDENT" and w == "len":
+        if is_sym(tokens, p + 1, "("):
+            let r = parse_expr(tokens, p + 2)
+            let q = skip_noise(tokens, r[1])
+            if is_sym(tokens, q, ")"):
+                set q to q + 1
+            return [make_len(r[0], l), q]
     if k == "IDENT" and w == "length":
         if is_word(tokens, p + 1, "of"):
             let r = parse_unary(tokens, p + 2)
@@ -541,6 +586,57 @@ action parse_block(tokens, pos):
                             set p to p + 1
     return [make_block("body", stmts, l), p]
 
+# The else arm of an if. A chain of elif ... else is represented as nested IF
+# nodes inside otherwise blocks, so every backend keeps working unchanged.
+action parse_else_clause(tokens, pos, l):
+    recursion bounded 200
+    ensures length of result == 2
+    let p = skip_nl(tokens, pos)
+    if is_word(tokens, p, "elif"):
+        let c = parse_expr(tokens, p + 1)
+        let q = c[1]
+        if is_sym(tokens, q, ":"):
+            set q to q + 1
+        let b = parse_block(tokens, q)
+        let el = tok_line(tokens, p)
+        let e = parse_else_clause(tokens, b[1], el)
+        let nested = make_if(c[0], b[0], e[0], el)
+        return [make_block("otherwise", [nested], el), e[1]]
+    if is_word(tokens, p, "else") or is_word(tokens, p, "otherwise"):
+        let q = p + 1
+        if is_sym(tokens, q, ":"):
+            set q to q + 1
+        return parse_block(tokens, q)
+    return [make_block("otherwise", [], l), p]
+
+action parse_if_chain(tokens, pos, l):
+    recursion bounded 200
+    ensures length of result == 2
+    let c = parse_expr(tokens, pos + 1)
+    let q = c[1]
+    if is_sym(tokens, q, ":"):
+        set q to q + 1
+    let b = parse_block(tokens, q)
+    let e = parse_else_clause(tokens, b[1], l)
+    return [make_if(c[0], b[0], e[0], l), e[1]]
+
+# The exit statement of `guard cond otherwise <stmt>`.
+action parse_guard_exit(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let t = tok(tokens, pos)
+    if t.kind == "IDENT" and t.text == "return":
+        let nt = tok(tokens, pos + 1)
+        if nt.kind == "NEWLINE" or nt.kind == "DEDENT" or nt.kind == "EOF" or nt.kind == "INDENT":
+            return [make_stmt("RETURN", "", [], t.line), pos + 1]
+        let r = parse_expr(tokens, pos + 1)
+        return [make_stmt("RETURN", "", [r[0]], t.line), r[1]]
+    if t.kind == "IDENT" and t.text == "break":
+        return [make_break(t.line), pos + 1]
+    if t.kind == "IDENT" and t.text == "continue":
+        return [make_continue(t.line), pos + 1]
+    return [make_break(t.line), pos + 1]
+
 action parse_stmt(tokens, pos):
     recursion bounded 200
     ensures length of result == 2
@@ -555,11 +651,30 @@ action parse_stmt(tokens, pos):
             let cr = parse_expr(tokens, p)
             return [make_stmt("EXPR", "", [cr[0]], l), cr[1]]
 
+        # x = expr / x += expr / x -= expr / x *= expr / x /= expr / x %= expr
+        if is_sym(tokens, p + 1, "="):
+            let r = parse_expr(tokens, p + 2)
+            return [make_stmt("SET", w, [r[0]], l), r[1]]
+        let opt = tok(tokens, p + 1)
+        if opt.kind == "OP" and (opt.text == "+=" or opt.text == "-=" or opt.text == "*=" or opt.text == "/=" or opt.text == "%="):
+            let bop = "+"
+            if opt.text == "-=":
+                set bop to "-"
+            if opt.text == "*=":
+                set bop to "*"
+            if opt.text == "/=":
+                set bop to "/"
+            if opt.text == "%=":
+                set bop to "%"
+            let r = parse_expr(tokens, p + 2)
+            let bin = make_bin(bop, make_ident(w, l), r[0], l)
+            return [make_stmt("SET", w, [bin], l), r[1]]
+
         # let name = expr
         if w == "let":
             let nm = tok_text(tokens, p + 1)
             let q = p + 2
-            if is_sym(tokens, q, "="):
+            if is_sym(tokens, q, "=") or is_word(tokens, q, "to"):
                 set q to q + 1
             let r = parse_expr(tokens, q)
             return [make_stmt("LET", nm, [r[0]], l), r[1]]
@@ -583,28 +698,41 @@ action parse_stmt(tokens, pos):
             let r = parse_expr(tokens, p + 1)
             return [make_stmt("RETURN", "", [r[0]], l), r[1]]
 
-        # guard <expr>
+        # guard <expr> / guard <expr> otherwise <exit-stmt>
         if w == "guard":
-            let r = parse_expr(tokens, p + 1)
-            return [make_guard(r[0], l), r[1]]
-
-        # if cond: block otherwise: block
-        if w == "if":
-            let c = parse_expr(tokens, p + 1)
+            let c = parse_or(tokens, p + 1)
             let q = c[1]
+            if is_word(tokens, q, "otherwise"):
+                let e = parse_guard_exit(tokens, q + 1)
+                return [make_guard_exit(c[0], e[0], l), e[1]]
+            return [make_guard(c[0], l), q]
+
+        # require / ensure after the routine's leading contracts: a runtime
+        # assertion, so a test or a long body can assert close to the work.
+        if w == "require" or w == "ensure":
+            let r = parse_expr(tokens, p + 1)
+            return [make_require(r[0], l), r[1]]
+
+        # break / continue
+        if w == "break":
+            return [make_break(l), p + 1]
+        if w == "continue":
+            return [make_continue(l), p + 1]
+
+        # if cond: block elif cond: block else: block
+        if w == "if":
+            return parse_if_chain(tokens, p, l)
+
+        # repeat N times: block
+        if w == "repeat":
+            let c = parse_or(tokens, p + 1)
+            let q = c[1]
+            if is_word(tokens, q, "times"):
+                set q to q + 1
             if is_sym(tokens, q, ":"):
                 set q to q + 1
             let b = parse_block(tokens, q)
-            let q2 = skip_nl(tokens, b[1])
-            let other = make_block("otherwise", [], l)
-            if is_word(tokens, q2, "otherwise"):
-                let q3 = q2 + 1
-                if is_sym(tokens, q3, ":"):
-                    set q3 to q3 + 1
-                let ob = parse_block(tokens, q3)
-                set other to ob[0]
-                set q2 to ob[1]
-            return [make_if(c[0], b[0], other, l), q2]
+            return [make_repeat(c[0], b[0], l), b[1]]
 
         # while cond bounded n: block
         if w == "while":
@@ -891,9 +1019,14 @@ action parse_routine_body(tokens, pos):
                 if k == "EOF":
                     set done to 1
                 otherwise:
-                    if seen == 0 and k == "IDENT" and (w == "requires" or w == "ensures"):
+                    if seen == 0 and k == "IDENT" and (w == "requires" or w == "require" or w == "ensures" or w == "ensure"):
+                        let cname = w
+                        if w == "require":
+                            set cname to "requires"
+                        if w == "ensure":
+                            set cname to "ensures"
                         let r = parse_expr(tokens, p + 1)
-                        set contracts to contracts + [make_contract(w, r[0], tok_line(tokens, p))]
+                        set contracts to contracts + [make_contract(cname, r[0], tok_line(tokens, p))]
                         set p to r[1]
                     otherwise:
                         if seen == 0 and k == "IDENT" and w == "recursion":
@@ -1049,7 +1182,7 @@ action parse_params(tokens, pos):
             set p to p + 1
             set done to 1
         otherwise:
-            if at_end(tokens, p) == 1:
+            if at_end(tokens, p) == 1 or is_sym(tokens, p, ":") or is_kind(tokens, p, "NEWLINE") or is_kind(tokens, p, "INDENT") or is_kind(tokens, p, "DEDENT"):
                 set done to 1
             otherwise:
                 let t = tok(tokens, p)
@@ -1082,10 +1215,13 @@ action parse_routine(tokens, pos):
     let name = tok_text(tokens, pos + 1)
     let p = pos + 2
     let params = []
+    let bad_params = 0
     if is_sym(tokens, p, "("):
         let pr = parse_params(tokens, p + 1)
         set params to pr[0]
         set p to pr[1]
+        if tok_text(tokens, p - 1) != ")":
+            set bad_params to 1
     let result = ""
     if is_sym(tokens, p, "-") and is_sym(tokens, p + 1, ">"):
         let rref = parse_type_ref(tokens, p + 2)
@@ -1094,6 +1230,8 @@ action parse_routine(tokens, pos):
     if is_sym(tokens, p, ":"):
         set p to p + 1
     let br = parse_routine_body(tokens, p)
+    if bad_params == 1:
+        return [make_node("UNKNOWN_ITEM", name, "unclosed '(' in parameter list", 0, [none_node(), none_node(), make_node("BLOCK", "", "", 0, [], l)], l), br[2]]
     let params_node = make_node("PARAMS", "", "", 0, params, l)
     let contracts_node = make_node("CONTRACTS", "", "", 0, br[0], l)
     return [make_item(kw, name, params_node, contracts_node, result, br[1], l), br[2]]
@@ -1134,6 +1272,23 @@ action parse_record(tokens, pos):
                     otherwise:
                         set p to p + 1
     return [make_record_item(name, fields, l), p]
+
+# test "description": body. Contracts are accepted at the top of the block, so
+# a test can state its precondition with `require` before its statements.
+action parse_test(tokens, pos):
+    recursion bounded 200
+    ensures length of result == 2
+    let l = tok_line(tokens, pos)
+    let desc = ""
+    let p = pos + 1
+    let nt = tok(tokens, p)
+    if nt.kind == "STR":
+        set desc to nt.text
+        set p to p + 1
+    if is_sym(tokens, p, ":"):
+        set p to p + 1
+    let br = parse_routine_body(tokens, p)
+    return [make_test(desc, br[0], br[1], l), br[2]]
 
 action parse_when(tokens, pos):
     recursion bounded 200
@@ -1245,6 +1400,18 @@ action parse_program(tokens):
     let config = []
     let p = 0
     let len = length of tokens
+    let pdepth = 0
+    let di = 0
+    while di < len bounded 1000000:
+        let dt = tok(tokens, di)
+        if dt.kind == "SYM" and (dt.text == "(" or dt.text == "["):
+            set pdepth to pdepth + 1
+            if pdepth > 256:
+                return make_program(uses, needs, [make_node("UNKNOWN_ITEM", "expression", "nested more than 256 levels", 0, [none_node(), none_node(), make_node("BLOCK", "", "", 0, [], dt.line)], dt.line)], config)
+        otherwise:
+            if dt.kind == "SYM" and (dt.text == ")" or dt.text == "]") and pdepth > 0:
+                set pdepth to pdepth - 1
+        set di to di + 1
     let done = 0
     while done == 0 and p < len bounded 1000000:
         set p to skip_noise(tokens, p)
@@ -1280,6 +1447,11 @@ action parse_program(tokens):
                             set items to items + [with_pub(r[0], 1)]
                             set p to r[1]
                             set handled to 1
+                        if nk.kind == "IDENT" and nw == "test":
+                            let r = parse_test(tokens, q)
+                            set items to items + [r[0]]
+                            set p to r[1]
+                            set handled to 1
                         if nk.kind == "IDENT" and nw == "when":
                             let r = parse_when(tokens, q)
                             set items to items + [with_pub(r[0], 1)]
@@ -1308,26 +1480,31 @@ action parse_program(tokens):
                                     set items to items + [r[0]]
                                     set p to r[1]
                                 otherwise:
-                                    if k == "IDENT" and w == "when":
-                                        let r = parse_when(tokens, p)
+                                    if k == "IDENT" and w == "test":
+                                        let r = parse_test(tokens, p)
                                         set items to items + [r[0]]
                                         set p to r[1]
                                     otherwise:
-                                        if k == "IDENT" and w == "every":
-                                            let r = parse_every(tokens, p)
+                                        if k == "IDENT" and w == "when":
+                                            let r = parse_when(tokens, p)
                                             set items to items + [r[0]]
                                             set p to r[1]
                                         otherwise:
-                                            if k == "IDENT" and w == "tasks":
-                                                let q = p + 1
-                                                if is_word(tokens, q, "bounded"):
-                                                    set q to q + 1
-                                                let bt = tok(tokens, q)
-                                                if bt.kind == "NUM":
-                                                    set config to config + [make_tasks_bound(bt.text, bt.line)]
-                                                    set p to q + 1
+                                            if k == "IDENT" and w == "every":
+                                                let r = parse_every(tokens, p)
+                                                set items to items + [r[0]]
+                                                set p to r[1]
+                                            otherwise:
+                                                if k == "IDENT" and w == "tasks":
+                                                    let q = p + 1
+                                                    if is_word(tokens, q, "bounded"):
+                                                        set q to q + 1
+                                                    let bt = tok(tokens, q)
+                                                    if bt.kind == "NUM":
+                                                        set config to config + [make_tasks_bound(bt.text, bt.line)]
+                                                        set p to q + 1
+                                                    otherwise:
+                                                        set p to p + 1
                                                 otherwise:
                                                     set p to p + 1
-                                            otherwise:
-                                                set p to p + 1
     return make_program(uses, needs, items, config)

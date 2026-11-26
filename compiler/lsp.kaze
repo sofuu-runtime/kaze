@@ -829,6 +829,11 @@ action lsp_scan_decls(text) -> list:
         let t = tt[0] otherwise ""
         let indent = tt[1] otherwise 0
         let word = lsp_first_word(t)
+        if word == "pub":
+            let after_pub = lsp_after_first_word(t)
+            set indent to indent + ((length of t) - (length of after_pub))
+            set t to after_pub
+            set word to lsp_first_word(t)
         if word == "action" or word == "routine" or word == "func" or word == "check" or word == "filter":
             let rest = lsp_after_first_word(t)
             let name = lsp_leading_ident(rest)

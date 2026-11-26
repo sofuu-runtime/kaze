@@ -306,6 +306,57 @@ static uint64_t kzh_hash_bytes(const char* s, uint64_t h) {
     return kzh_fnv1a(s, strlen(s), h);
 }
 
+/* The semantic hash of a source, or an empty string when the compiler cannot
+ * produce one.  kaze-host uses it for the object key so cosmetic edits skip
+ * the C compiler just as they skip the Kaze compiler. */
+static int kzh_ast_hash(const char* path, char* out, size_t cap) {
+    int fds[2];
+    pid_t pid;
+    char buf[256];
+    size_t used = 0;
+    ssize_t n;
+    if (cap > 0) out[0] = 0;
+    if (pipe(fds) != 0) return 1;
+    pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); return 1; }
+    if (pid == 0) {
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0) _exit(127);
+        close(fds[1]);
+        {
+            char* av[] = { (char*)kaze_bin, (char*)"ast-hash", (char*)path, NULL };
+            execvp(av[0], av);
+        }
+        _exit(127);
+    }
+    close(fds[1]);
+    {
+        char chunk[4096];
+        while ((n = read(fds[0], chunk, sizeof chunk)) > 0) {
+            size_t copy = (size_t)n;
+            if (used + copy + 1 >= sizeof buf) copy = sizeof buf - 1 - used;
+            if (copy > 0) {
+                memcpy(buf + used, chunk, copy);
+                used += copy;
+            }
+        }
+    }
+    close(fds[0]);
+    {
+        int status = 0;
+        while (waitpid(pid, &status, 0) < 0) { if (errno != EINTR) return 1; }
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return 1;
+    }
+    buf[used] = 0;
+    if (strncmp(buf, "module ", 7) != 0) return 1;
+    {
+        size_t i = 7, j = 0;
+        while (buf[i] != 0 && !isspace((unsigned char)buf[i]) && j + 1 < cap) out[j++] = buf[i++];
+        out[j] = 0;
+    }
+    return out[0] != 0 ? 0 : 1;
+}
+
 static uint64_t kzh_hash_file(const char* path) {
     uint64_t h = 1469598103934665603ULL;
     FILE* f = fopen(path, "rb");
@@ -529,7 +580,13 @@ static int do_build(int argc, char** argv, const char* self) {
         kzh_module* m = &mods[i];
         /* Key: source bytes, compiler identity, dependency interfaces, flags. */
         uint64_t key = 1469598103934665603ULL;
-        key = kzh_hash_file(m->path);
+        {
+            char ast[32];
+            if (kzh_ast_hash(m->path, ast, sizeof ast) == 0)
+                key = kzh_hash_bytes(ast, key);
+            else
+                key = kzh_hash_file(m->path);
+        }
         key = kzh_fnv1a(&compiler_id, sizeof compiler_id, key);
         key = kzh_hash_bytes(m->flags, key);
         key = kzh_hash_bytes("c99", key);

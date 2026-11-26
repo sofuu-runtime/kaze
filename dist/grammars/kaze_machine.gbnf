@@ -1,0 +1,85 @@
+# kaze_machine.gbnf -- the exact grammar of Kaze machine syntax, version 2.
+#
+# `kaze to-machine` emits this language and `kaze parse-machine` reads it.  It
+# is indentation-free: every grouping is an explicit parenthesised form and
+# every leaf is a bare atom, so a token-level CFG is exact.  Strings are the
+# only quoted leaves.  Comments (`;` or `#` to end of line) are accepted
+# between tokens; the canonical emitter does not produce them.
+#
+# The llama.cpp GBNF parser wants each rule's alternatives on one line, so the
+# long rules below are deliberately single-line.
+#
+# GBNF terminals: "text", [char-class], rule refs, ?, *, + and |.
+
+root ::= ws "(kaze" ws "2" ws (top ws)* ")" ws
+top ::= use | needs | tasks | item
+
+# --------------------------------------------------------------- headers
+use ::= "(" "use" ws (use-path | use-select) ws ")"
+use-path ::= string (ws "(" "as" ws name ws ")")?
+use-select ::= "(" "selects" (ws name)* ws ")" ws "(" "from" ws string ws ")"
+needs ::= "(" "needs" (ws path)* ws ")"
+tasks ::= "(" "tasks" ws number ws ")"
+
+# ------------------------------------------------------------ items
+item ::= core | "(" "pub" ws core ws ")"
+core ::= record | routine | test | when | every
+
+record ::= "(" "record" ws type-name ws "(" ws (field (ws field)*)? ws ")" ws ")"
+field ::= "(" ws name ws type ws ")"
+
+routine ::= "(" routine-kw ws name ws params ws ("->" ws type ws)? (contract ws)* (stmt ws)* ")"
+routine-kw ::= "action" | "check" | "filter" | "fiber"
+params ::= "(" ws (param (ws param)*)? ws ")"
+param ::= "(" ws name ws type (ws expr)? ws ")"
+contract ::= "(" contract-kw ws expr ws ")" | "(" ("recursion" | "fuel") ws atom ws ")" | "(" "needs" ws name ws ")"
+contract-kw ::= "require" | "ensure"
+
+test ::= "(" "test" ws string ws (contract ws)* (stmt ws)* ")"
+when ::= "(" "when" ws expr ws (stmt ws)* ")"
+every ::= "(" "every" ws expr ws (stmt ws)* ")"
+
+# ------------------------------------------------------- statements
+stmt ::= let | set | return-stmt | guard | break-stmt | continue-stmt | if-stmt | while-stmt | for-each | parallel-for | repeat-stmt | try-stmt | spawn | yield-stmt | join-stmt | cancel-stmt | send-stmt | expr
+
+let ::= "(" "let" ws name ws expr ws ")"
+set ::= "(" "set" ws name ws expr ws ")"
+return-stmt ::= "(" "return" (ws expr)? ws ")"
+guard ::= "(" "guard" ws expr (ws return-stmt | ws break-stmt | ws continue-stmt)? ws ")"
+break-stmt ::= "(" "break" ws ")"
+continue-stmt ::= "(" "continue" ws ")"
+
+if-stmt ::= "(" "if" ws expr (ws stmt)* (ws "(" "otherwise" ws stmt* ws ")")? ws ")"
+while-stmt ::= "(" "while" ws expr (ws "(" "bounded" ws atom ws ")")? (ws stmt)* ws ")"
+for-each ::= "(" "for_each" ws name ws expr (ws stmt)* ws ")"
+parallel-for ::= "(" "parallel_for" ws name ws expr (ws stmt)* ws ")"
+repeat-stmt ::= "(" "repeat" ws expr (ws stmt)* ws ")"
+try-stmt ::= "(" "try" (ws stmt)* (ws "(" "otherwise" (ws "(" "with" ws name ws ")")? (ws stmt)* ws ")")? ws ")"
+
+spawn ::= "(" "spawn" ws name ws "(" "args" (ws expr)* ws ")" ws atom ws ")"
+yield-stmt ::= "(" "yield" ws ")"
+join-stmt ::= "(" "join" ws expr ws ")"
+cancel-stmt ::= "(" "cancel" ws expr ws ")"
+send-stmt ::= "(" "send" ws expr ws expr ws ")"
+
+# ------------------------------------------------------ expressions
+expr ::= atom | string | "(" expr-form ws ")"
+expr-form ::= bin | "not" ws expr | "get" ws expr ws path | "at" ws expr ws expr (ws expr)? | "div" ws expr ws expr ws expr | "mod" ws expr ws expr ws expr | "fb" ws expr ws expr | "len" ws expr | "lenlit" ws number | "as" ws unit ws expr | "between" ws expr ws expr ws expr | "list" (ws expr)* | "receive" ws expr | "join" ws expr | "hole" ws type ws string (ws string)? | "unknown" | "named" ws atom ws expr | named-arg | call
+bin ::= bin-op ws expr ws expr
+bin-op ::= "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "and" | "or" | "&" | "|" | "^" | "<<" | ">>"
+named-arg ::= call-head ":" ws expr
+call ::= call-head (ws expr)*
+
+# -------------------------------------------------------- terminals
+atom ::= number ("@" unit)? | path | "_"
+number ::= "-"? [0-9]+ ("." [0-9]+)?
+type ::= [^ \t\r\n()"#;]+
+type-name ::= [A-Z][A-Za-z0-9_]*
+name ::= [a-z_][A-Za-z0-9_]*
+call-head ::= path
+path ::= [A-Za-z_][A-Za-z0-9_]* ("." [A-Za-z_][A-Za-z0-9_]*)*
+unit ::= [^ \t\r\n()"#;]+
+
+string ::= "\"" ([^"\\\n] | "\\" [^\n])* "\""
+ws ::= ([ \t\r\n] | comment)*
+comment ::= (";" | "#") [^\n]*

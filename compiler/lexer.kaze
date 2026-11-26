@@ -202,7 +202,7 @@ action tokenize(src):
                                 if i + 1 < len:
                                     let next_c = src[i + 1] otherwise ""
                                     let two_s = c + next_c
-                                    if two_s == "==" or two_s == "!=" or two_s == "<=" or two_s == ">=" or two_s == "<<" or two_s == ">>":
+                                    if two_s == "==" or two_s == "!=" or two_s == "<=" or two_s == ">=" or two_s == "<<" or two_s == ">>" or two_s == "+=" or two_s == "-=" or two_s == "*=" or two_s == "/=" or two_s == "%=":
                                         let tok = make_token("OP", two_s, line, col, i)
                                         let acc7 = push_tok(chunks, chunk, chunk_len, tok)
                                         set chunks to acc7[0] otherwise []

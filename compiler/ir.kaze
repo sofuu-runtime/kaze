@@ -53,6 +53,8 @@ record IRGen:
     errors: list
     ret: str
     sigs: list
+    # Loop labels for `break` / `continue`: newest [cond, end] pair first.
+    loops: list
 
 # ── small helpers ───────────────────────────────────────────────────────
 
@@ -91,9 +93,21 @@ action ir_type_word(w: string) -> string:
         return "str"
     if w == "seconds" or w == "time" or w == "meters" or w == "degrees" or w == "angle":
         return "f64"
-    if w == "kg" or w == "gram" or w == "Celsius" or w == "celsius" or w == "Kelvin" or w == "kelvin":
+    if w == "milliseconds" or w == "hours" or w == "minutes" or w == "s" or w == "h" or w == "min":
         return "f64"
-    if w == "km" or w == "cm" or w == "mm" or w == "ms" or w == "hours" or w == "minutes":
+    if w == "km" or w == "cm" or w == "mm" or w == "ms" or w == "m":
+        return "f64"
+    if w == "kilograms" or w == "grams" or w == "kilometers" or w == "centimeters" or w == "millimeters":
+        return "f64"
+    if w == "kg" or w == "gram" or w == "grams" or w == "g":
+        return "f64"
+    if w == "Celsius" or w == "celsius" or w == "Kelvin" or w == "kelvin" or w == "C" or w == "K":
+        return "f64"
+    if w == "Pascal" or w == "pascal" or w == "Pa" or w == "hPa" or w == "mbar" or w == "hectopascals":
+        return "f64"
+    if w == "ampere" or w == "A":
+        return "f64"
+    if w == "radians":
         return "f64"
     if w == "list" or w == "record" or w == "value" or w == "any" or w == "map":
         return "val"
@@ -117,11 +131,11 @@ action ir_c_type(t: string) -> string:
 
 action ir_tune(g: IRGen, temp, label, slots, env, body, errors) -> IRGen:
     return IRGen(temp: temp, label: label, slots: slots, env: env,
-                 body: body, errors: errors, ret: g.ret, sigs: g.sigs)
+                 body: body, errors: errors, ret: g.ret, sigs: g.sigs, loops: g.loops)
 
 action ir_gen_new(env, ret, sigs) -> IRGen:
     return IRGen(temp: 0, label: 0, slots: [], env: env, body: [],
-                 errors: [], ret: ret, sigs: sigs)
+                 errors: [], ret: ret, sigs: sigs, loops: [])
 
 action ir_expr(op, dst, a, b, c) -> IRInstr:
     return IRInstr(op: op, dst: dst, a: a, b: b, c: c)
@@ -258,6 +272,8 @@ action ir_expr_type(e: AstNode, env, sigs) -> string:
         return ir_expr_type(child_at(e, 0), env, sigs)
     if k == "IN_UNIT":
         return "f64"
+    if k == "BETWEEN":
+        return "bool"
     if k == "CALL":
         if e.name == "sqrt" or e.name == "sin" or e.name == "cos" or e.name == "tan" or e.name == "atan2":
             return "f64"
@@ -291,6 +307,8 @@ action ir_scan_returns(stmts, env, sigs, out) -> list:
             set acc to ir_scan_returns((child_at(s, 1)).children, cur, sigs, acc)
         if k == "FOR_EACH" or k == "PARALLEL_FOR":
             set cur to ir_env_set(cur, s.name, "val")
+            set acc to ir_scan_returns((child_at(s, 1)).children, cur, sigs, acc)
+        if k == "REPEAT":
             set acc to ir_scan_returns((child_at(s, 1)).children, cur, sigs, acc)
     return acc
 
@@ -683,7 +701,7 @@ action ir_lower_div(e: AstNode, g: IRGen, items, fallback) -> list:
     let g19 = IRGen(temp: g18.temp, label: g18.label,
                      slots: ir_slot_add(g18.slots, slot, "f64"),
                      env: g18.env, body: g18.body, errors: g18.errors,
-                     ret: g18.ret, sigs: g18.sigs)
+                     ret: g18.ret, sigs: g18.sigs, loops: g.loops)
     let out_r = ir_temp(g19)
     let g20 = out_r[0] otherwise g19
     let out = out_r[1] otherwise ""
@@ -745,6 +763,7 @@ action ir_record_item(items, name: string) -> AstNode:
 # Named arguments carry their own key; positional arguments take the key from
 # the record declaration, in order.
 action ir_lower_record(rec_item: AstNode, e: AstNode, g: IRGen, items) -> list:
+    recursion bounded 240
     let fields = rec_item.children
     let tnr = ir_temp(g)
     let g1 = tnr[0] otherwise g
@@ -782,6 +801,7 @@ action ir_lower_record(rec_item: AstNode, e: AstNode, g: IRGen, items) -> list:
 # loop that calls the routine once per item; the native result is then the
 # same list, without needing fibers or worker threads.
 action ir_lower_parallel(e: AstNode, g: IRGen, items, keep: num) -> list:
+    recursion bounded 240
     let target = ir_lower_expr(child_at(e, 0), g, items, "val")
     let g1 = target[0] otherwise g
     let tc = ir_coerce(g1, target[1] otherwise "", target[2] otherwise "", "val")
@@ -806,7 +826,7 @@ action ir_lower_parallel(e: AstNode, g: IRGen, items, keep: num) -> list:
     let g5 = IRGen(temp: g4.temp, label: g4.label,
                    slots: ir_slot_add(g4.slots, counter, "i64"),
                    env: g4.env, body: g4.body, errors: g4.errors,
-                   ret: g4.ret, sigs: g4.sigs)
+                   ret: g4.ret, sigs: g4.sigs, loops: g.loops)
     let g6 = ir_emit(g5, "store", "", counter, "0", "")
     let nr = ir_temp(g6)
     let g7 = nr[0] otherwise g6
@@ -1073,6 +1093,36 @@ action ir_lower_expr(e: AstNode, g: IRGen, items, want) -> list:
         let c = ir_coerce(g2, r[1] otherwise "", ty, "val")
         let g3 = c[0] otherwise g2
         return [ir_emit(g3, "val_len", dst, c[1] otherwise "", "", ""), dst, "f64"]
+    if k == "BETWEEN":
+        # value and bounds are each evaluated once: a call in the value would
+        # otherwise run twice (once per comparison).
+        let vr = ir_lower_expr(child_at(e, 0), g, items, "f64")
+        let g1 = vr[0] otherwise g
+        let vc = ir_coerce(g1, vr[1] otherwise "", vr[2] otherwise "", "f64")
+        let g2 = vc[0] otherwise g1
+        let v = vc[1] otherwise ""
+        let lr = ir_lower_expr(child_at(e, 1), g2, items, "f64")
+        let g3 = lr[0] otherwise g2
+        let lc = ir_coerce(g3, lr[1] otherwise "", lr[2] otherwise "", "f64")
+        let g4 = lc[0] otherwise g3
+        let lo = lc[1] otherwise ""
+        let hr = ir_lower_expr(child_at(e, 2), g4, items, "f64")
+        let g5 = hr[0] otherwise g4
+        let hc = ir_coerce(g5, hr[1] otherwise "", hr[2] otherwise "", "f64")
+        let g6 = hc[0] otherwise g5
+        let hi = hc[1] otherwise ""
+        let t1 = ir_temp(g6)
+        let g7 = t1[0] otherwise g6
+        let c1 = t1[1] otherwise ""
+        let g8 = ir_emit(g7, "cmp_ge_f64", c1, v, lo, "")
+        let t2 = ir_temp(g8)
+        let g9 = t2[0] otherwise g8
+        let c2 = t2[1] otherwise ""
+        let g10 = ir_emit(g9, "cmp_le_f64", c2, v, hi, "")
+        let t3 = ir_temp(g10)
+        let g11 = t3[0] otherwise g10
+        let dst = t3[1] otherwise ""
+        return [ir_emit(g11, "and_bool", dst, c1, c2, ""), dst, "bool"]
     if k == "BIN":
         return ir_lower_bin(e, g, items, want)
     if k == "FALLBACK":
@@ -1153,7 +1203,7 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
                        slots: ir_slot_add(g1.slots, slot, ty),
                        env: ir_env_bind(g1.env, s.name, ty, slot),
                        body: g1.body, errors: g1.errors,
-                       ret: g1.ret, sigs: g1.sigs)
+                       ret: g1.ret, sigs: g1.sigs, loops: g.loops)
         return [ir_emit(g2, "store", "", slot, v, ""), 0]
     if k == "APPEND_OWN" or k == "APPEND_LIST_OWN":
         # The C99 pass rewrote `x = x + rest` here because every other use of x
@@ -1219,8 +1269,87 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
         let g1 = r[0] otherwise g
         let c = ir_coerce_bool(g1, r[1] otherwise "", r[2] otherwise "")
         let g2 = c[0] otherwise g1
+        if (length of s.children) > 1:
+            # guard cond otherwise <exit>: skip the exit when the condition holds.
+            let lr = ir_label(g2)
+            let g3 = lr[0] otherwise g2
+            let skip_l = lr[1] otherwise ""
+            let g4 = ir_emit(g3, "br_if", "", c[1] otherwise "", skip_l, "")
+            let er = ir_lower_stmt(child_at(s, 1), g4, items)
+            let g5 = er[0] otherwise g4
+            return [ir_emit(g5, "label", "", skip_l, "", ""), 0]
         let msg = "E_KAZE_GUARD: the invariant at line " + ir_num_text(s.line) + " is false"
         return [ir_emit(g2, "guard", "", c[1] otherwise "", msg, ""), 0]
+    if k == "BREAK" or k == "CONTINUE":
+        if (length of g.loops) == 0:
+            return [ir_fail(g, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(s.line) + ": '" + k + "' is outside a loop"), 0]
+        let pair = g.loops[0] otherwise []
+        let target = pair[0] otherwise ""
+        if k == "BREAK":
+            set target to pair[1] otherwise ""
+        return [ir_emit(g, "br", "", target, "", ""), 1]
+    if k == "REPEAT":
+        let cr = ir_lower_expr(child_at(s, 0), g, items, "i64")
+        let g1 = cr[0] otherwise g
+        let cc = ir_coerce(g1, cr[1] otherwise "", cr[2] otherwise "", "i64")
+        let g2 = cc[0] otherwise g1
+        let counter = "__kz_rep" + ir_num_text(g2.label)
+        let l0 = ir_label(g2)
+        let g3 = l0[0] otherwise g2
+        let cond_l = l0[1] otherwise ""
+        let l1 = ir_label(g3)
+        let g4 = l1[0] otherwise g3
+        let body_l = l1[1] otherwise ""
+        let l2 = ir_label(g4)
+        let g5 = l2[0] otherwise g4
+        let cont_l = l2[1] otherwise ""
+        let l3 = ir_label(g5)
+        let g6 = l3[0] otherwise g5
+        let end_l = l3[1] otherwise ""
+        let g7 = IRGen(temp: g6.temp, label: g6.label,
+                       slots: ir_slot_add(g6.slots, counter, "i64"),
+                       env: g6.env, body: g6.body, errors: g6.errors,
+                       ret: g6.ret, sigs: g6.sigs, loops: g6.loops)
+        let g8 = ir_emit(g7, "store", "", counter, cc[1] otherwise "", "")
+        let g9 = ir_emit(g8, "label", "", cond_l, "", "")
+        let lr = ir_temp(g9)
+        let g10 = lr[0] otherwise g9
+        let remaining = lr[1] otherwise ""
+        let g11 = ir_emit(g10, "load", remaining, counter, "", "")
+        let mr = ir_temp(g11)
+        let g12 = mr[0] otherwise g11
+        let cmp = mr[1] otherwise ""
+        let g13 = ir_emit(g12, "cmp_ge_i64", cmp, remaining, "1", "")
+        let g15 = g13
+        let g16 = ir_emit(g15, "br_if", "", cmp, body_l, "")
+        let g17 = ir_emit(g16, "br", "", end_l, "", "")
+        let g18 = ir_emit(g17, "label", "", body_l, "", "")
+        let inner = IRGen(temp: g18.temp, label: g18.label,
+                          slots: g18.slots, env: g18.env, body: g18.body,
+                          errors: g18.errors, ret: g18.ret, sigs: g18.sigs,
+                          loops: [[cont_l, end_l]] + g18.loops)
+        let rb = ir_lower_stmts((child_at(s, 1)).children, inner, items)
+        let g19 = rb[0] otherwise inner
+        let g20 = g19
+        if (rb[1] otherwise 0) == 0:
+            set g20 to ir_emit(g19, "br", "", cont_l, "", "")
+        let g21 = ir_emit(g20, "label", "", cont_l, "", "")
+        let lr2 = ir_temp(g21)
+        let g22 = lr2[0] otherwise g21
+        let cur = lr2[1] otherwise ""
+        let g23 = ir_emit(g22, "load", cur, counter, "", "")
+        let sr = ir_temp(g23)
+        let g24 = sr[0] otherwise g23
+        let nxt = sr[1] otherwise ""
+        let g25 = g24
+        let g27 = ir_emit(g25, "sub_i64", nxt, cur, "1", "")
+        let g28 = ir_emit(g27, "store", "", counter, nxt, "")
+        let g29 = ir_emit(g28, "br", "", cond_l, "", "")
+        let g30 = ir_emit(g29, "label", "", end_l, "", "")
+        let g31 = IRGen(temp: g30.temp, label: g30.label, slots: g30.slots,
+                        env: g.env, body: g30.body, errors: g30.errors,
+                        ret: g30.ret, sigs: g30.sigs, loops: g.loops)
+        return [g31, 0]
     if k == "IF":
         let cond = ir_lower_expr(child_at(s, 0), g, items, "bool")
         let g1 = cond[0] otherwise g
@@ -1249,7 +1378,7 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
         # the then branch is out of scope here.
         let g11e = IRGen(temp: g11.temp, label: g11.label, slots: g11.slots,
                          env: g.env, body: g11.body, errors: g11.errors,
-                         ret: g11.ret, sigs: g11.sigs)
+                         ret: g11.ret, sigs: g11.sigs, loops: g.loops)
         let rf = ir_lower_stmts((child_at(s, 2)).children, g11e, items)
         let g12 = rf[0] otherwise g11e
         let fr = rf[1] otherwise 0
@@ -1263,7 +1392,7 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
         # Bindings made inside either branch are scoped to it.
         let g15 = IRGen(temp: g14.temp, label: g14.label, slots: g14.slots,
                         env: g.env, body: g14.body, errors: g14.errors,
-                        ret: g14.ret, sigs: g14.sigs)
+                        ret: g14.ret, sigs: g14.sigs, loops: g.loops)
         return [g15, ret]
     if k == "FOR_EACH" or k == "PARALLEL_FOR":
         let target = ir_lower_expr(child_at(s, 0), g, items, "val")
@@ -1279,14 +1408,19 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
         let body_l = l1[1] otherwise ""
         let l2 = ir_label(g4)
         let g5 = l2[0] otherwise g4
-        let end_l = l2[1] otherwise ""
+        let cont_l = l2[1] otherwise ""
+        let l3 = ir_label(g5)
+        let g5b = l3[0] otherwise g5
+        let end_l = l3[1] otherwise ""
+        set g5 to g5b
         let iter_slot = s.name
         if ir_slot_type(g5.slots, iter_slot) != "":
             set iter_slot to s.name + "$" + ir_num_text(g5.temp)
         let g6 = IRGen(temp: g5.temp, label: g5.label,
                        slots: ir_slot_add(ir_slot_add(g5.slots, counter, "i64"), iter_slot, "val"),
                        env: ir_env_bind(g5.env, s.name, "val", iter_slot),
-                       body: g5.body, errors: g5.errors, ret: g5.ret, sigs: g5.sigs)
+                       body: g5.body, errors: g5.errors, ret: g5.ret, sigs: g5.sigs,
+                       loops: [[cont_l, end_l]] + g5.loops)
         let g7 = ir_emit(g6, "store", "", counter, "0", "")
         let nr = ir_temp(g7)
         let g8 = nr[0] otherwise g7
@@ -1311,7 +1445,10 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
         let g20 = ir_emit(g19, "store", "", iter_slot, item, "")
         let rb = ir_lower_stmts((child_at(s, 1)).children, g20, items)
         let g21 = rb[0] otherwise g20
-        let ir2 = ir_temp(g21)
+        if (rb[1] otherwise 0) == 0:
+            set g21 to ir_emit(g21, "br", "", cont_l, "", "")
+        let g21b = ir_emit(g21, "label", "", cont_l, "", "")
+        let ir2 = ir_temp(g21b)
         let g22 = ir2[0] otherwise g21
         let next = ir2[1] otherwise ""
         let g23 = ir_emit(g22, "add_i64", next, idx, "1", "")
@@ -1320,7 +1457,7 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
         let g26 = ir_emit(g25, "label", "", end_l, "", "")
         let g27 = IRGen(temp: g26.temp, label: g26.label, slots: g26.slots,
                         env: g.env, body: g26.body, errors: g26.errors,
-                        ret: g26.ret, sigs: g26.sigs)
+                        ret: g26.ret, sigs: g26.sigs, loops: g.loops)
         return [g27, 0]
     if k == "WHILE":
         let guard_name = "__kz_loop" + ir_num_text(g.label)
@@ -1339,7 +1476,7 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
         let g5 = IRGen(temp: g4.temp, label: g4.label,
                        slots: ir_slot_add(g4.slots, guard_name, "i64"),
                        env: g4.env, body: g4.body, errors: g4.errors,
-                       ret: g4.ret, sigs: g4.sigs)
+                       ret: g4.ret, sigs: g4.sigs, loops: g.loops)
         let g6 = ir_emit(g5, "store", "", guard_name, "0", "")
         let g7 = ir_emit(g6, "label", "", cond_l, "", "")
         let cond = ir_lower_expr(child_at(s, 0), g7, items, "bool")
@@ -1360,40 +1497,36 @@ action ir_lower_stmt(s: AstNode, g: IRGen, items) -> list:
             let g16 = cr[0] otherwise g15
             let cmp = cr[1] otherwise ""
             let g17 = ir_emit(g16, "cmp_ge_i64", cmp, count, bound.val_str, "")
-            let g18 = ir_emit(g17, "br_if", "", cmp, trap_l, "")
-            let okr = ir_label(g18)
-            let g19 = okr[0] otherwise g18
-            let ok_l = okr[1] otherwise ""
-            let g20 = ir_emit(g19, "br", "", ok_l, "", "")
-            let g21 = ir_emit(g20, "label", "", ok_l, "", "")
-            let incr = ir_temp(g21)
-            let g22 = incr[0] otherwise g21
-            let next = incr[1] otherwise ""
-            let g23 = ir_emit(g22, "add_i64", next, count, "1", "")
-            let g24 = ir_emit(g23, "store", "", guard_name, next, "")
-            set g13 to g24
-        otherwise:
-            let ar = ir_temp(g13)
-            let g14 = ar[0] otherwise g13
-            let count = ar[1] otherwise ""
-            let g15 = ir_emit(g14, "load", count, guard_name, "", "")
-            let incr = ir_temp(g15)
-            let g16 = incr[0] otherwise g15
-            let next = incr[1] otherwise ""
-            let g17 = ir_emit(g16, "add_i64", next, count, "1", "")
-            let g18 = ir_emit(g17, "store", "", guard_name, next, "")
-            set g13 to g18
-        let body = ir_lower_stmts((child_at(s, 1)).children, g13, items)
-        let g25 = body[0] otherwise g13
+            set g13 to ir_emit(g17, "br_if", "", cmp, trap_l, "")
+        let l4 = ir_label(g13)
+        let g13b = l4[0] otherwise g13
+        let cont_l = l4[1] otherwise ""
+        let inner = IRGen(temp: g13b.temp, label: g13b.label, slots: g13b.slots,
+                          env: g13b.env, body: g13b.body, errors: g13b.errors,
+                          ret: g13b.ret, sigs: g13b.sigs,
+                          loops: [[cont_l, end_l]] + g13b.loops)
+        let body = ir_lower_stmts((child_at(s, 1)).children, inner, items)
+        let g25 = body[0] otherwise inner
         let g26 = g25
         if (body[1] otherwise 0) == 0:
-            set g26 to ir_emit(g25, "br", "", cond_l, "", "")
-        let g27 = ir_emit(g26, "label", "", trap_l, "", "")
+            set g26 to ir_emit(g25, "br", "", cont_l, "", "")
+        let g26b = ir_emit(g26, "label", "", cont_l, "", "")
+        let ar2 = ir_temp(g26b)
+        let g26c = ar2[0] otherwise g26b
+        let count2 = ar2[1] otherwise ""
+        let g26d = ir_emit(g26c, "load", count2, guard_name, "", "")
+        let incr = ir_temp(g26d)
+        let g26e = incr[0] otherwise g26d
+        let next = incr[1] otherwise ""
+        let g26f = ir_emit(g26e, "add_i64", next, count2, "1", "")
+        let g26g = ir_emit(g26f, "store", "", guard_name, next, "")
+        let g26h = ir_emit(g26g, "br", "", cond_l, "", "")
+        let g27 = ir_emit(g26h, "label", "", trap_l, "", "")
         let g28 = ir_emit(g27, "trap", "", "E_KAZE_LOOP_BOUND: loop exceeded its declared bound", "", "")
         let g29 = ir_emit(g28, "label", "", end_l, "", "")
         let g30 = IRGen(temp: g29.temp, label: g29.label, slots: g29.slots,
                         env: g.env, body: g29.body, errors: g29.errors,
-                        ret: g29.ret, sigs: g29.sigs)
+                        ret: g29.ret, sigs: g29.sigs, loops: g.loops)
         return [g30, 0]
     return [ir_fail(g, "E_KAZE_BACKEND_UNSUPPORTED: line " + ir_num_text(s.line) + ": statement '" + k + "' is outside the scalar subset"), 0]
 
@@ -1706,6 +1839,8 @@ action ir_c_stmt(ins: IRInstr) -> string:
         return ir_c_decl(ins.dst, "f64", "fmod(" + a + ", " + b + ")")
     if op == "add_i64":
         return ir_c_decl(ins.dst, "i64", a + " + " + b)
+    if op == "sub_i64":
+        return ir_c_decl(ins.dst, "i64", a + " - " + b)
     if op == "band_i64":
         return ir_c_decl(ins.dst, "i64", a + " & " + b)
     if op == "bor_i64":

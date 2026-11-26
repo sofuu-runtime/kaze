@@ -117,6 +117,19 @@ action is_upper(word):
         return 1
     return 0
 
+# A declaration may start with a lowercase letter or an underscore. Kaze keeps
+# camelCase for JS/TS readers, so internal capitals are allowed.
+action starts_lower_word(word):
+    let len = length of word
+    if len == 0:
+        return 1
+    let c = word[0] otherwise "?"
+    if c >= "a" and c <= "z":
+        return 1
+    if c == "_":
+        return 1
+    return 0
+
 # ── the capability registry the checker knows ──────────────────────────
 #
 # The same table as kaze/src/caps.rs. It lives here so the pure-Kaze front end
@@ -319,6 +332,8 @@ action is_boolean_expr(e: AstNode):
             return 1
         if e.name == "and" or e.name == "or" or e.name == "not":
             return 1
+    if e.kind == "BETWEEN":
+        return 1
     if e.kind == "CALL":
         if has_dot(e.name) == 1 and head_words(e.name) == "policy":
             return 1
@@ -428,15 +443,17 @@ action find_len_fact(facts, ck):
 action dimension_of_unit(u: string) -> string:
     if u == "m" or u == "km" or u == "cm" or u == "mm":
         return "length"
-    if u == "seconds" or u == "ms" or u == "hours" or u == "minutes":
+    if u == "meters" or u == "kilometers" or u == "centimeters" or u == "millimeters":
+        return "length"
+    if u == "s" or u == "seconds" or u == "ms" or u == "milliseconds" or u == "h" or u == "hours" or u == "min" or u == "minutes":
         return "time"
-    if u == "kg" or u == "gram":
+    if u == "kg" or u == "kilograms" or u == "g" or u == "grams":
         return "mass"
-    if u == "Celsius" or u == "Kelvin":
+    if u == "C" or u == "Celsius" or u == "K" or u == "Kelvin":
         return "temperature"
-    if u == "Pascal" or u == "mbar" or u == "hPa":
+    if u == "Pa" or u == "Pascal" or u == "mbar" or u == "hPa" or u == "hectopascals":
         return "pressure"
-    if u == "ampere":
+    if u == "A" or u == "ampere":
         return "current"
     if u == "degrees" or u == "radians":
         return "angle"
@@ -498,6 +515,17 @@ action check_expr_g(e: AstNode, names, facts, items, needs, open, diags, guard):
         set diags to diags + [diag("E_KAZE_PARSE", e.line, "the parser could not read this expression")]
         return diags
 
+    # A hole is a deliberate gap. It is not an error to *have* one, but a
+    # program with one is not finished, so check reports it and the build
+    # refuses until it is filled or `kaze check --holes --json` is asked for
+    # the structured synthesis context.
+    if k == "HOLE":
+        let what = e.name
+        if what == "" or what == "_":
+            set what to "a value"
+        set diags to diags + [diag("E_KAZE_HOLE", e.line, "unfinished hole: expected " + what + "; run 'kaze check --holes --json' for its context")]
+        return diags
+
     if k == "FIELD":
         let out = check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
         let base = child_at(e, 0)
@@ -510,6 +538,12 @@ action check_expr_g(e: AstNode, names, facts, items, needs, open, diags, guard):
 
     if k == "LEN" or k == "IN_UNIT":
         return check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
+
+    if k == "BETWEEN":
+        let out = check_expr(child_at(e, 0), names, facts, items, needs, open, diags)
+        set out to check_expr(child_at(e, 1), names, facts, items, needs, open, out)
+        set out to check_expr(child_at(e, 2), names, facts, items, needs, open, out)
+        return out
 
     if k == "LIST":
         let out = diags
@@ -673,7 +707,10 @@ action check_call(e: AstNode, names, facts, items, needs, open, diags, guarded):
         return out
 
     if is_upper(name) == 1:
-        if open == 0 and record_named(items, name) == 0:
+        # An uppercase routine is a casing error reported at its declaration.
+        # Do not also call it an unknown record at every call site: the first
+        # diagnostic is the one that names the fix.
+        if open == 0 and record_named(items, name) == 0 and routine_named(items, name).kind == "NONE":
             set out to out + [diag("E_KAZE_UNKNOWN_NAME", e.line, "record '" + name + "' is not defined in this file")]
         return out
 
@@ -721,7 +758,10 @@ action check_stmt(s: AstNode, names, facts, items, needs, open, diags):
     recursion bounded 200
     let k = s.kind
     if k == "LET":
-        return check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        if starts_lower_word(s.name) == 0:
+            set out to out + [diag("E_KAZE_CASING", s.line, "binding '" + s.name + "' must start with a lowercase letter or underscore")]
+        return out
     if k == "SET":
         let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
         if list_has(names, s.name) == 0:
@@ -734,7 +774,18 @@ action check_stmt(s: AstNode, names, facts, items, needs, open, diags):
     if k == "EXPR":
         return check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
     if k == "GUARD":
-        return check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        if (length of s.children) > 1:
+            let exit_stmt = child_at(s, 1)
+            if exit_stmt.kind == "RETURN" and (length of exit_stmt.children) > 0:
+                set out to check_expr(child_at(exit_stmt, 0), names, facts, items, needs, open, out)
+        return out
+    if k == "BREAK" or k == "CONTINUE":
+        return diags
+    if k == "REPEAT":
+        let out = check_expr(child_at(s, 0), names, facts, items, needs, open, diags)
+        set out to check_stmts(kids_of(child_at(s, 1)), names, facts + ["in_loop"], items, needs, open, out)
+        return out
     if k == "IF":
         let cond = child_at(s, 0)
         let inner_facts = facts + facts_from_cond(cond, facts)
@@ -1157,17 +1208,23 @@ action contract_diags(item: AstNode):
 # record (src/ast.rs). A record declared with one of these names is never a record type,
 # so a parameter annotated with it counts as coming from outside.
 action is_builtin_type_word(w: string) -> num:
-    if w == "int" or w == "num" or w == "number" or w == "float":
+    if w == "int" or w == "num" or w == "number" or w == "float" or w == "double":
         return 1
-    if w == "str" or w == "text" or w == "bool" or w == "percent":
+    if w == "str" or w == "string" or w == "text" or w == "bool" or w == "percent":
         return 1
-    if w == "length" or w == "meters":
+    if w == "length" or w == "meters" or w == "kilometers" or w == "centimeters" or w == "millimeters":
         return 1
-    if w == "time" or w == "seconds":
+    if w == "time" or w == "seconds" or w == "milliseconds" or w == "hours" or w == "minutes" or w == "s" or w == "ms" or w == "h" or w == "min":
         return 1
-    if w == "angle" or w == "degrees":
+    if w == "mass" or w == "kilograms" or w == "grams" or w == "kg" or w == "g":
         return 1
-    if w == "temperature" or w == "Celsius" or w == "celsius" or w == "Kelvin" or w == "kelvin":
+    if w == "angle" or w == "degrees" or w == "radians":
+        return 1
+    if w == "temperature" or w == "Celsius" or w == "celsius" or w == "Kelvin" or w == "kelvin" or w == "C" or w == "K":
+        return 1
+    if w == "pressure" or w == "Pascal" or w == "pascal" or w == "Pa" or w == "hPa" or w == "mbar" or w == "hectopascals":
+        return 1
+    if w == "current" or w == "ampere" or w == "A":
         return 1
     return 0
 
@@ -1889,6 +1946,12 @@ action check_program(prog: AstNode):
     let use_node = program_uses(prog)
     if (length of use_node.children) > 0:
         set open to 1
+    # A module alias is a reader-facing name, so it follows the same lowercase
+    # rule as routines, parameters and fields.
+    for each u in use_node.children:
+        let alias = use_alias(u)
+        if alias != "" and starts_lower_word(alias) == 0:
+            set out to out + [diag("E_KAZE_CASING", u.line, "module alias '" + alias + "' must start with a lowercase letter or underscore")]
     # 1. needs: entries must name a family or a known instance.
     let i = 0
     while i < (length of need_list) bounded 100000:
@@ -1906,15 +1969,30 @@ action check_program(prog: AstNode):
     set i to 0
     while i < (length of items) bounded 1000000:
         let item = node_at(items, i)
-        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
+        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER" or item.kind == "TEST":
             set out to out + check_item(item, declared, items, names_all, froms, tos, open)
+        if item.kind == "RECORD":
+            if is_upper(item.name) == 0:
+                set out to out + [diag("E_KAZE_CASING", item.line, "record '" + item.name + "' must start with a capital letter (PascalCase)")]
+            for each f in item.children:
+                if starts_lower_word(f.name) == 0:
+                    set out to out + [diag("E_KAZE_CASING", f.line, "field '" + f.name + "' must start with a lowercase letter or underscore")]
+        if item.kind == "ACTION" or item.kind == "CHECK" or item.kind == "FILTER" or item.kind == "FIBER":
+            if starts_lower_word(item.name) == 0:
+                set out to out + [diag("E_KAZE_CASING", item.line, item_keyword(item) + " '" + item.name + "' must start with a lowercase letter or underscore")]
+            for each p in (child_at(item, 0)).children:
+                if starts_lower_word(p.name) == 0:
+                    set out to out + [diag("E_KAZE_CASING", p.line, "parameter '" + p.name + "' must start with a lowercase letter or underscore")]
         if item.kind == "RECORD" and (length of item.children) == 0:
             # A record written on one line ('record P: a: number') parses as a record with
             # no fields, and every field read of it then yields nil without a word. Refuse
             # it here instead: the indented form is the only form the reader accepts.
             set out to out + [diag("E_KAZE_RECORD_NO_FIELDS", item.line, "record '" + item.name + "' declares no fields; indent each 'name: type' line under it")]
         if item.kind == "UNKNOWN_ITEM":
-            set out to out + [diag("E_KAZE_PARSE", item.line, "the machine reader does not know the form '" + item.name + "'")]
+            let msg = item.val_str
+            if (length of msg) == 0:
+                set msg to "the machine reader does not know the form '" + item.name + "'"
+            set out to out + [diag("E_KAZE_PARSE", item.line, msg)]
         if item.kind == "WHEN" or item.kind == "EVERY":
             let body = child_at(item, 1)
             set out to check_stmts(body.children, [], [], items, declared, open, out)

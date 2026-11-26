@@ -334,6 +334,15 @@ action mz_alias_conflict(uses: list) -> num:
             set seen to seen + [a]
     return bad
 
+# Modules are normally human syntax, but `kaze patch` and semantic tools also
+# feed a machine-syntax target through the module loader. Detect it here rather
+# than assuming `tokenize` can read it: the human tokenizer would turn the
+# record field lists into expression statements and drop their types.
+action mz_parse_source(src):
+    if is_machine_source(src) == 1:
+        return parse_machine(src)
+    return parse_program(tokenize(src))
+
 # Depth-first load. Dependencies are appended before their importer, which is
 # the topological order the merger and the manifest both want.
 action mz_load_one(path: string, stack: list, mods: list, diags: list, root: num) -> list:
@@ -349,7 +358,7 @@ action mz_load_one(path: string, stack: list, mods: list, diags: list, root: num
     if not source_exists(norm):
         return [cur_mods, cur_diags + [diag_in("E_KAZE_MODULE_NOT_FOUND", 1, "module not found: " + norm, norm)]]
     let src = source_read(norm)
-    let prog = parse_program(tokenize(src))
+    let prog = mz_parse_source(src)
     let uses = (program_uses(prog)).children
     if mz_alias_conflict(uses) == 1:
         set cur_diags to cur_diags + [diag_in("E_KAZE_ALIAS_CONFLICT", 1, "two imports in this module share one alias", norm)]
@@ -415,6 +424,8 @@ action mz_exported_items(module: KzModule) -> list:
     let strict = mz_has_pub(module)
     let out = []
     for each it in module.items:
+        if item_is_test(it) == 1:
+            continue
         if strict == 0 or item_is_pub(it) == 1:
             set out to out + [it]
     return out
@@ -430,9 +441,23 @@ action mz_print_path(module: KzModule) -> string:
 
 # Diagnostics that belong to the import statement itself: a selected name the
 # target does not export, or a selected name that exists but is private.
+action mz_starts_lower_word(word: string) -> num:
+    let n = length of word
+    if n == 0:
+        return 1
+    let c = word[0] otherwise "?"
+    if c >= "a" and c <= "z":
+        return 1
+    if c == "_":
+        return 1
+    return 0
+
 action mz_validate_imports(module: KzModule, mods: list) -> list:
     let out = []
     for each u in module.uses:
+        let alias = use_alias(u)
+        if alias != "" and mz_starts_lower_word(alias) == 0:
+            set out to out + [diag_in("E_KAZE_CASING", u.line, "module alias '" + alias + "' must start with a lowercase letter or underscore", module.path)]
         let target = mz_use_target(module, u, mods)
         if target.path != "":
             for each s in use_symbols(u):
@@ -490,6 +515,14 @@ action mz_import_lookup(module: KzModule, name: string, mods: list) -> list:
 
 action mz_routine_kind(k: string) -> num:
     if k == "ACTION" or k == "CHECK" or k == "FILTER" or k == "FIBER":
+        return 1
+    return 0
+
+# Test blocks contain calls and must be rewritten like routines. They are not
+# callables for entry selection or the interface summary, so this stays
+# separate from mz_routine_kind.
+action mz_rewrite_kind(k: string) -> num:
+    if mz_routine_kind(k) == 1 or k == "TEST":
         return 1
     return 0
 
@@ -724,7 +757,7 @@ action mz_rewrite_item(item: AstNode, module: KzModule, mods: list) -> list:
             let nf = make_field_def(f.name, mz_rewrite_type(f.val_str, module, mods), f.line)
             set fields to fields + [nf]
         return [make_node("RECORD", mz_c_name(module, item), item.name, item.val_num, fields, item.line), out]
-    if mz_routine_kind(kind) == 1:
+    if mz_rewrite_kind(kind) == 1:
         let cur = module.needs + routine_needs(item)
         let out = []
         let params = []
@@ -976,6 +1009,10 @@ action mz_merged_program(mods: list) -> AstNode:
     let items = []
     for each m in mods:
         for each it in m.rewritten:
+            # A test belongs to the module that wrote it. Compiling a suite
+            # should not run its dependencies' tests a second time.
+            if m.root == 0 and item_is_test(it) == 1:
+                continue
             set items to items + [it]
     let entry = mz_root_entry(root)
     let config = mz_config_with_entry(program_config(root.prog), entry)

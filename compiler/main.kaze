@@ -12,6 +12,7 @@
 #   <bin> lsp [session]            serve a framed LSP session (see lsp.kaze)
 #   <bin> module-manifest <file>   print the resolved module DAG for the host
 #   <bin> emit-c-unit <file> <tag> emit one module as its own translation unit
+#   <bin> emit-lib-c <file>       emit the reentrant compiler library (no main)
 #   <bin> version | --version      print the Kaze language version (kaze 1.0)
 #
 # The first parameter is the mode so that the single-argument form keeps
@@ -36,9 +37,11 @@ action mode_of(word):
         return word
     if word == "emit-ir" or word == "emit-qbe" or word == "emit-ir-c":
         return word
-    if word == "fmt" or word == "compile" or word == "lsp" or word == "surface":
+    if word == "fmt" or word == "compile" or word == "lsp" or word == "surface" or word == "test-c":
         return word
-    if word == "module-manifest" or word == "emit-c-unit":
+    if word == "holes" or word == "ast-hash":
+        return word
+    if word == "module-manifest" or word == "emit-c-unit" or word == "emit-lib-c":
         return word
     if word == "version" or word == "--version" or word == "-V":
         return "version"
@@ -230,6 +233,20 @@ action emit_ir_c_source(src: string) -> string:
         return backend_diag_text(diags)
     return ir_emit_c(ir_lower_program(prepared[0] otherwise parse_source(src)))
 
+# Emit the compiler as a reentrant library: no main(), no process exit on a
+# trap, and a fixed API appended from compiler/embed_api_c.c. The generated
+# routines are still static; the appended door swaps a per-handle arena in and
+# out around every call, so two handles never share file-scope state.
+action emit_lib_c_source(src: string) -> string:
+    let program = parse_source(src)
+    let api = source_read("compiler/embed_api_c.c")
+    if (length of api) == 0:
+        set api to source_read("kaze/compiler/embed_api_c.c")
+    if (length of api) == 0:
+        let status = exit_code(1)
+        return "#error \"E_KAZE_EMBED_API: compiler/embed_api_c.c is missing\"\n"
+    return "#define KAZE_EMBEDDED 1\n" + emit_c_program_impl(program, [], 0, 0) + "\n" + api
+
 action main(mode, src, backend, extra):
     let selected = mode_of(mode)
     if selected == "lsp":
@@ -275,20 +292,49 @@ action main(mode, src, backend, extra):
         if tag == "":
             set tag to extra
         return emit_c_unit_source(src, tag)
+    if selected == "emit-lib-c":
+        return emit_lib_c_source(src)
     if selected == "emit-ir":
         return emit_ir_source(src)
     if selected == "emit-qbe":
         return emit_qbe_source(src)
     if selected == "emit-ir-c":
         return emit_ir_c_source(src)
+    if selected == "ast-hash":
+        return ast_hash_text_of(parse_source(src))
+    if selected == "holes":
+        let program = parse_source(src)
+        let found = holes_json(program)
+        if (found[1] otherwise 0) > 0:
+            let status = exit_code(1)
+        return found[0] otherwise "{\"holes\":[]}\n"
     if selected == "to-machine":
         let program = parse_source(src)
-        return emit_machine(program)
+        let legacy = 0
+        if backend == "--format=1" or backend == "1" or extra == "--format=1" or extra == "1":
+            set legacy to 1
+        if legacy == 1:
+            return emit_machine(program)
+        return emit_machine2(program)
     if selected == "surface":
         return surface_text()
     if selected == "version":
         return "kaze " + kaze_version()
 
+    if selected == "test-c":
+        let program = parse_source(src)
+        let path = root_path()
+        if program_has_uses(program) == 0 or path == "":
+            return emit_c_program(with_test_mode(program))
+        let prepared = mz_prepare(path)
+        let mods = prepared[0] otherwise []
+        let diags = prepared[1] otherwise []
+        if (length of diags) == 0:
+            set diags to mz_check_modules(mods)
+        if (length of diags) > 0:
+            let status = exit_code(1)
+            return mz_error_c(diags)
+        return emit_c_program(with_test_mode(mz_merged_program(mods)))
     if selected == "to-human":
         let program = parse_machine(src)
         return emit_human(program)
@@ -547,8 +593,8 @@ action bc_set_at(lst, i, v):
         set k to k + 1
     return out
 
-action bc_state(item_name, items_nodes, ensures, consts, caps):
-    return [0, [[]], [], consts, caps, "", item_name, items_nodes, ensures]
+action bc_state(item_name, items_nodes, ensures, consts, caps, hw_family):
+    return [0, [[]], [], consts, caps, "", item_name, items_nodes, ensures, hw_family]
 
 action bc_fail(st, msg):
     if (length of (st[5] otherwise "")) > 0:
@@ -766,33 +812,33 @@ action bc_item_index(items, name):
 # the reference engine normalises at parse time, and a constant only matches
 # its bytes if this walk does the same.
 action bc_unit_scale(u):
-    if u == "km":
+    if u == "km" or u == "kilometers":
         return 1000
-    if u == "cm":
+    if u == "cm" or u == "centimeters":
         return 0.01
-    if u == "mm":
+    if u == "mm" or u == "millimeters":
         return 0.001
     if u == "km/h":
         return 1000 / 3600
     if u == "radians":
         return 180 / 3.141592653589793
-    if u == "hours":
+    if u == "h" or u == "hours":
         return 3600
-    if u == "minutes":
+    if u == "min" or u == "minutes":
         return 60
-    if u == "ms":
+    if u == "ms" or u == "milliseconds":
         return 0.001
-    if u == "gram":
+    if u == "g" or u == "gram" or u == "grams":
         return 0.001
-    if u == "mbar":
+    if u == "mbar" or u == "millibars":
         return 100
-    if u == "hPa":
+    if u == "hPa" or u == "hectopascals":
         return 100
     return 1
 
 # Only Celsius has a zero that is not the dimension's zero.
 action bc_unit_offset(u):
-    if u == "Celsius":
+    if u == "C" or u == "Celsius" or u == "celsius":
         return 273.15
     return 0
 
@@ -976,6 +1022,12 @@ action bc_expr(st, e: AstNode, root):
     if k == "IDENT":
         let slot = bc_resolve(st[1] otherwise [], e.name)
         if slot < 0:
+            let hw = st[9] otherwise ""
+            if is_telemetry(e.name) == 1 and hw != "":
+                let r = bc_push_text(st, e.name)
+                let st1 = bc_wide1(r[0] otherwise [], 0, 0, r[1] otherwise 0)
+                let c = bc_push_cap(st1, hw, "telemetry", 1)
+                return bc_wide1(c[0] otherwise [], 22, 1, c[1] otherwise 0)
             return bc_fail(st, "line " + bc_num_text(e.line) + ": '" + e.name + "' is not defined in '" + (st[6] otherwise "") + "'")
         return bc_emit(st, 1, slot)
     if k == "LEN":
@@ -1583,9 +1635,17 @@ action bc_module(prog: AstNode):
     if (length of uses.children) > 0:
         return ["this file imports another module with 'use'; the pure-Kaze writer compiles one file — inline the import or leave the module to the reference engine", []]
     let needs = []
+    let hw_family = ""
     let needs_node = program_needs(prog)
     for each nd in needs_node.children:
         set needs to needs + [nd.name]
+        let wf = family_of_word(nd.name)
+        if wf == "drone" or wf == "rover" or wf == "sensor":
+            if hw_family == "":
+                set hw_family to wf
+            otherwise:
+                if hw_family != wf:
+                    set hw_family to ""
     let items_nodes = program_items(prog)
     let consts = []
     let caps = []
@@ -1604,7 +1664,7 @@ action bc_module(prog: AstNode):
             let params_node = bc_kid(item, 0)
             for each p in params_node.children:
                 set params to params + [p.name]
-        let st = bc_state(item.name, items_nodes, contracts, consts, caps)
+        let st = bc_state(item.name, items_nodes, contracts, consts, caps, hw_family)
         let st1 = bc_item(st, item, items_nodes)
         if (length of (st1[5] otherwise "")) > 0:
             return [st1[5] otherwise "", []]
