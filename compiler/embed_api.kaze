@@ -1,0 +1,57 @@
+# embed_api.kaze — the source-level half of libsofuu_kaze.a.
+#
+# The self-hosted compiler is compiled into C (`dist/kaze_embed.c`) with these
+# six routines as its only public door. `kaze_embed.c` turns their KzValue
+# results into the bounded `kz_embed_result_t` shape in kaze_embed.h: no
+# process exit, no stdout protocol, no globals leaking between calls.
+#
+# Keep this file thin. Anything that needs a new host intrinsic belongs in the
+# compiler proper, not here.
+use "./token.kaze"
+use "./ast.kaze"
+use "./lexer.kaze"
+use "./parser.kaze"
+use "./checker.kaze"
+use "./module.kaze"
+use "./isa.kaze"
+use "./machine.kaze"
+use "./codegen.kaze"
+use "./ir.kaze"
+use "./qbe_codegen.kaze"
+use "./main.kaze"
+
+# Front end only: parse + check. Returns "check: ok" or the rendered
+# diagnostics, exactly as `kaze check` does.
+action api_check(src: text) -> text:
+    return check_source(src)
+
+# Compile to a Format 5 bytecode module, returned as lowercase hex. A
+# diagnostic is returned as text; the wrapper tells the two apart by the
+# first character.
+action api_compile(src: text) -> text:
+    return compile_source(src)
+
+# Portable C99 for the whole dependency graph. `standalone` keeps the entry
+# point; the library form is a translation unit another program can call.
+action api_emit_c(src: text, standalone: bool) -> text:
+    if standalone:
+        return emit_c_source(src)
+    let program = parse_source(src)
+    let path = root_path()
+    if program_has_uses(program) > 0 and path != "":
+        let prepared = mz_prepare(path)
+        let mods = prepared[0] otherwise []
+        if (length of mods) > 0:
+            return emit_c_program_impl(mz_merged_program(mods), [], 0, 0)
+    return emit_c_program_impl(program, [], 0, 0)
+
+# Canonical machine S-expression form.
+action api_to_machine(src: text) -> text:
+    return emit_machine2(parse_source(src))
+
+# Human syntax from machine S-expressions.
+action api_to_human(src: text) -> text:
+    return emit_human(parse_machine(src))
+
+action api_version() -> text:
+    return kaze_version()
